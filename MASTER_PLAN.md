@@ -52,8 +52,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Central API-key model credentials and custom compatible model definitions
 - Linear conversation UI
 - Streaming assistant text, thinking, tool calls, and tool results
-- Follow-up queue with edit, cancel, and “steer after current turn” actions
-- Durable queueing while a pinned runner is offline
+- Pi-native `followUp()` and `steer()` behavior while the runner is connected
+- Durable control-panel pending delivery while a runner is offline, waking, or provisioning; durability ends at Pi handoff
 - Conversation-only “edit last message”; workspace changes remain
 - Aggregate Git diff and changed-file view
 - Read-only file browser
@@ -103,7 +103,9 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - **Draft session:** A session whose first prompt has not been sent. Its runner selection can still change.
 - **Workspace:** The session-specific host checkout mounted at `/workspace` in Gondolin.
 - **Turn:** One Pi model response plus its tool calls. One user prompt may produce multiple turns.
-- **Run:** All work resulting from an accepted prompt, including retries, compaction, and queued continuations, until Pi is fully settled.
+- **Run:** All work resulting from an accepted prompt, including retries, compaction, and Pi-native queued continuations, until Pi is fully settled.
+- **Pending delivery:** A normal user message durably held by the control panel before it is handed to Pi.
+- **Pi queue:** Pi’s process-local steering/follow-up queue. It is live-only, has no stable item IDs, and is not part of Pi JSONL until delivery.
 - **Lease:** A reason a VM must remain awake, such as active agent work, a terminal, provisioning, or a preview.
 - **Managed preview:** A preview with a restart command that can wake and resume after VM sleep.
 - **Live-only preview:** A published port without a restart command; it expires when the VM sleeps.
@@ -125,8 +127,9 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Idle lifecycle | Stop/checkpoint after 15 minutes without relevant activity |
 | Conversation | Linear UI; Pi tree remains an internal implementation detail |
 | Edit last | Conversation-only rewind; do not roll back files or VM state |
-| While running | New messages default to follow-up and are visibly queued; user can promote to steering |
-| Offline runner | Accept and durably queue prompts until reconnect/startup |
+| While running | Normal send calls Pi `followUp()`; an explicit “Steer now” action calls `steer()` |
+| Pi pending queue | Live-only and process-local; no edit, cancel, promotion, replay, or durability promise after handoff |
+| Offline/waking runner | Normal messages remain durably pending in the control panel only until Pi handoff; steering requires a connected active runner |
 | Model credentials | Centralized in control panel; API keys first |
 | Git credentials | Centralized HTTPS tokens and SSH private keys |
 | Git push | Agent may push, with credentials mediated outside the guest |
@@ -538,27 +541,29 @@ interface Preview {
 }
 ```
 
-### 11.6 Queued message
+### 11.6 Pending delivery
+
+This model covers only messages that have not yet been handed to Pi. It does not mirror Pi’s in-memory queue.
 
 ```ts
-type QueuedMessageState =
+type PendingMessageState =
   | "waiting-for-runner"
   | "waiting-for-capacity"
-  | "waiting-for-agent"
-  | "steering"
-  | "delivered"
-  | "cancelled"
+  | "waiting-for-session"
+  | "handing-off"
+  | "delivery-uncertain"
 
-interface QueuedMessage {
+interface PendingMessage {
   id: string
   sessionId: string
   clientRequestId: string
   content: ContentBlock[]
-  delivery: "follow-up" | "steer"
-  state: QueuedMessageState
+  state: PendingMessageState
   createdAt: string
 }
 ```
+
+A waiting pending message may be cancelled with a compare-and-set transition before handoff begins. It is not editable; the user cancels and sends a replacement. Once state becomes `handing-off`, cancellation is rejected.
 
 ## 12. Resource scheduling
 
@@ -616,7 +621,7 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 1. User chooses project, ref, model, thinking level, CPU, memory, and optional branch name.
 2. Scheduler displays the currently selected automatic runner.
 3. User may override the runner while drafting.
-4. Sending the first prompt creates a durable queued message and starts reservation.
+4. Sending the first prompt creates a durable pending delivery and starts reservation.
 5. Runner assignment becomes immutable after reservation/provisioning succeeds.
 6. Runner creates an empty session workspace, boots Gondolin with requested resources, and mounts it.
 7. Git inside Gondolin clones the repository through mediated HTTPS/SSH credentials and reports the exact base commit.
@@ -627,27 +632,35 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 
 Provisioning logs stream to the browser as session events.
 
-### 13.2 Subsequent prompt
+### 13.2 Subsequent normal message
 
-1. Control panel accepts the prompt with a unique `clientRequestId`.
-2. If runner is offline, keep it in `waiting-for-runner`.
-3. If VM is sleeping, request resources and resume the checkpoint.
+1. Control panel stores the message as a pending delivery with a unique `clientRequestId`.
+2. If the runner is offline, leave it in `waiting-for-runner`.
+3. If the VM is sleeping or lacks capacity, wake/reserve it and retain the pending record.
 4. Recreate transient Gondolin policy, mounts, ingress, and secret placeholders.
-5. Run `.agents/resume`.
-6. Open Pi’s existing JSONL session.
-7. Dispatch the message.
-8. Stream normalized Pi events.
-9. When Pi is fully settled, run status/diff inside Gondolin and update the host-owned cached Git report.
-10. If no active lease remains, start the idle timer.
+5. Run `.agents/resume` and open Pi’s existing JSONL session.
+6. Send one `session.deliver-message` command to the runner.
+7. Runner calls `session.prompt()` if Pi is idle or `session.followUp()` if Pi is currently streaming. For idle prompts, use Pi’s documented preflight acceptance callback rather than waiting for the complete run.
+8. When Pi reports preflight acceptance or `followUp()` returns successfully, runner records `accepted-by-pi`, acknowledges the command, and the control panel removes it from pending delivery.
+9. If it was a follow-up, subsequent queue state is Pi-owned and process-local until Pi emits the user message.
+10. Stream normalized Pi events. When Pi settles, refresh Git status/diff inside Gondolin and start the idle timer if no lease remains.
 
 ### 13.3 Message while running
 
-- Default to Pi follow-up delivery.
-- Render the message as a queued UI element immediately.
-- Permit editing and cancellation until delivery.
-- “Steer after turn” promotes it to Pi’s steering queue.
-- Preserve ordering among messages with the same delivery class.
-- Do not send extension commands through the queue unless explicitly supported later.
+The UI exposes two send actions matching Pi directly:
+
+- **Follow up** (default): submit a normal message; the runner calls `session.followUp()` when Pi is streaming.
+- **Steer now**: call `session.steer()` immediately. Steering is accepted only when the pinned runner is connected, the VM/session is ready, and Pi is running.
+
+After either SDK method accepts a message:
+
+- The item may be displayed from Pi’s live queue-update events.
+- It has no stable OpenOrb item ID or mutation controls.
+- It cannot be edited, cancelled, or promoted between queues.
+- It is not durably represented in Pi JSONL until Pi actually delivers it as a user message.
+- A runner-process crash can lose it; OpenOrb does not silently replay it because replay could duplicate a message Pi already accepted.
+
+If steering is unavailable, return a conflict response and let the user send a normal pending message instead. Extension commands are not supported through follow-up or steering.
 
 ### 13.4 Edit last message
 
@@ -812,7 +825,8 @@ type SessionEvent =
   | { type: "tool.started"; toolCall: ToolCall }
   | { type: "tool.updated"; toolCallId: string; output: ToolOutput }
   | { type: "tool.completed"; toolCallId: string; result: ToolResult }
-  | { type: "queue.changed"; queued: QueuedMessage[] }
+  | { type: "pending-delivery.changed"; pending: PendingMessage[] }
+  | { type: "pi.queue.changed"; followUps: string[]; steering: string[] }
   | { type: "usage.changed"; usage: SessionUsage }
   | { type: "workspace.changed"; summary: DiffSummary }
   | { type: "preview.changed"; preview: Preview }
@@ -1233,31 +1247,31 @@ interface CreateSessionInput {
 }
 ```
 
-### 20.6 Conversation and queue
+### 20.6 Conversation and delivery
 
 ```http
 GET    /api/sessions/:sessionId/messages
 POST   /api/sessions/:sessionId/messages
+POST   /api/sessions/:sessionId/steer
 POST   /api/sessions/:sessionId/abort
 POST   /api/sessions/:sessionId/edit-last
-GET    /api/sessions/:sessionId/queue
-PATCH  /api/sessions/:sessionId/queue/:messageId
-DELETE /api/sessions/:sessionId/queue/:messageId
-POST   /api/sessions/:sessionId/queue/:messageId/steer
+GET    /api/sessions/:sessionId/pending-messages
+DELETE /api/sessions/:sessionId/pending-messages/:messageId
 GET    /api/sessions/:sessionId/events?after=<cursor>
 ```
 
-Message input:
+Normal message input:
 
 ```ts
 interface SendMessageInput {
   clientRequestId: string
   content: ContentBlock[]
-  delivery?: "follow-up" | "steer"
 }
 ```
 
-Return `202 Accepted` once the message is durably queued, not only after runner execution.
+`POST /messages` durably stores the message before attempting delivery and returns `202 Accepted`. The durability promise covers only the pre-handoff pending record. `DELETE` succeeds only while the record is still in a waiting state; it returns `409 Conflict` once handoff starts.
+
+`POST /steer` uses the same input shape but is a direct, live Pi operation. It returns success only after `session.steer()` accepts the message and returns `409 Conflict` when the runner/session/agent is unavailable. Steering is not durably queued or automatically retried.
 
 ### 20.7 Workspace and Git
 
@@ -1312,7 +1326,8 @@ Requirements:
 - Reload completed state after cursor expiration/compaction
 - Do not persist every token delta
 - Coalesce high-frequency live deltas
-- Persist completed messages, completed tool results, lifecycle transitions, queue transitions, previews, and usage summaries
+- Persist completed messages, completed tool results, lifecycle transitions, pending-delivery transitions, previews, and usage summaries
+- Relay Pi queue updates live without treating them as durable SSE history
 - Browser reconnect must not duplicate completed messages
 
 The session list may use a separate lightweight global SSE stream for runner/session status, or poll initially. Do not overload every session stream with unrelated status.
@@ -1354,7 +1369,7 @@ runner.error
 session.reserve
 session.release-reservation
 session.provision
-session.prompt
+session.deliver-message
 session.steer
 session.abort
 session.wake
@@ -1377,15 +1392,19 @@ preview.stop
 preview.wake
 ```
 
-### 22.4 Idempotency
+### 22.4 Idempotency and message handoff
 
-- Every command has a stable ID.
+- Every command has a stable ID, but not every command is safe to replay.
 - Runner persists command receipt and terminal outcome before acknowledging.
-- Replayed prompt commands must not send the prompt twice.
-- Replayed push commands must not push twice unintentionally.
-- Control panel stores command state and retries only idempotently.
-- `clientRequestId` is unique per session for user messages.
-- Reconciliation resolves commands left ambiguous by disconnects.
+- `clientRequestId` deduplicates normal messages while they remain in control-panel pending delivery.
+- For `session.deliver-message`, runner journals `received` → `handing-off` → `accepted-by-pi`.
+- After `prompt()` or `followUp()` accepts a message, runner persists `accepted-by-pi` before acknowledging when possible.
+- An accepted message is never automatically replayed, because Pi may still hold or may already have delivered it.
+- If the runner crashes between SDK acceptance and persisting `accepted-by-pi`, reconciliation marks the message `delivery-uncertain`; it does not guess, edit Pi JSONL, or silently replay.
+- The UI shows the uncertain message and offers an explicit user-driven resend as a new message.
+- Direct steering is live-only and is never automatically retried.
+- Replayed push commands must not push twice unintentionally; ambiguous non-idempotent operations require reconciliation or user action.
+- Control panel automatically retries only commands classified as idempotent.
 
 ### 22.5 Offline reconciliation
 
@@ -1402,8 +1421,9 @@ On reconnect, runner reports:
 Control panel then:
 
 - Marks missing runner-local sessions as errors, never silently recreates them
-- Replays unacknowledged idempotent commands
-- Delivers queued messages in order
+- Replays unacknowledged commands only when their command type/state is idempotent
+- Delivers control-panel pending messages in FIFO order, without reconstructing or replaying Pi’s process-local queue
+- Marks ambiguous message handoffs `delivery-uncertain`
 - Applies deletion tombstones
 - Imports missed durable event batches
 
@@ -1533,7 +1553,7 @@ Initial SQLite tables should cover:
 - `runner_enrollment_tokens`
 - `runner_commands`
 - `sessions`
-- `queued_messages`
+- `pending_messages`
 - `messages`
 - `tool_calls`
 - `session_events`
@@ -1566,7 +1586,7 @@ Guidelines:
 │ Project/ref     │ Streaming assistant output  │ Changes             │
 │ Status          │ Thinking (collapsed)        │ Files               │
 │ Runner          │ Tool calls/results          │ Terminal            │
-│ Resource size   │ Queued follow-ups           │ Previews            │
+│ Resource size   │ Pending/Pi queue status      │ Previews            │
 │                 │ Composer + model controls   │ Session details     │
 └─────────────────┴─────────────────────────────┴─────────────────────┘
 ```
@@ -1579,7 +1599,8 @@ Guidelines:
 - Model, thinking level, CPU/memory, and draft runner selection live in a composer/settings sheet.
 - Runner selector becomes read-only after first send.
 - Terminal can enter dedicated full-screen mode.
-- Queued follow-ups remain visible and actionable.
+- Control-panel pending messages remain visible and cancellable before handoff.
+- Pi-native follow-up/steering items are visible while connected but have no edit/cancel/promote actions.
 - Preview opens in a new tab or dedicated embedded frame depending on browser limitations.
 
 ### 26.3 Session status communication
@@ -1592,7 +1613,8 @@ Always distinguish:
 - Running setup
 - Waking VM
 - Agent running
-- Follow-up queued
+- Message pending delivery
+- Follow-up/steering held in Pi’s live queue
 - Idle, VM awake
 - Sleeping
 - Runner offline
@@ -1724,7 +1746,7 @@ Record:
 ### Runner disconnect
 
 - Mark runner offline after heartbeat timeout.
-- Preserve transcript and queued messages.
+- Preserve transcript and control-panel pending messages; do not claim recovery of Pi’s in-memory queue.
 - Do not reassign pinned sessions.
 - Private/capability previews return runner-offline status.
 - Reconcile commands and events after reconnect.
@@ -1734,7 +1756,7 @@ Record:
 - Runner reconnects automatically with exponential backoff and jitter.
 - Commands are recovered from SQLite.
 - Browser SSE reconnects using cursor.
-- Runner command journal prevents duplicate execution.
+- Runner command journal supports reconciliation; only proven-idempotent commands are replayed, and ambiguous message handoffs are surfaced.
 
 ### VM start/resume failure
 
@@ -1762,6 +1784,14 @@ Record:
 - Keep the control channel alive.
 - Bound buffers and cancel upstream work on browser disconnect.
 
+### Message handoff or runner-process crash
+
+- Messages still waiting in control-panel pending delivery remain durable.
+- Pi-native follow-up and steering queues disappear if the Pi/runner process dies.
+- Never reconstruct those queues from the control-panel live projection.
+- If the journal proves Pi accepted a message, do not replay it.
+- If a crash leaves handoff ambiguous, mark `delivery-uncertain` and require explicit user resend rather than choosing between loss and duplication invisibly.
+
 ### Disk pressure
 
 - Runner advertises disk safety threshold.
@@ -1778,7 +1808,8 @@ Record:
 - Scheduler scoring and reservation fallback
 - Resource accounting
 - Session state transitions
-- Queue ordering/promotion/cancellation
+- Pending-message FIFO ordering and cancellation-before-handoff state guard
+- Pi `prompt()`/`followUp()`/`steer()` selection from current agent state
 - Path normalization and symlink escape protection
 - Preview auth/capability exchange
 - Secret encryption/redaction
@@ -1793,7 +1824,8 @@ Record:
 ### 30.2 Contract tests
 
 - Control ↔ runner handshake across protocol versions
-- Command idempotency after dropped acknowledgments
+- Idempotent command replay after dropped acknowledgments
+- Non-idempotent message handoff transitions to `delivery-uncertain` rather than replay
 - Event batch deduplication
 - Runner reconciliation
 - Binary open/data/window/end/reset behavior
@@ -1815,8 +1847,9 @@ Scenarios:
 - Sleeping diff uses a final guest-generated cached report and wakes for refresh
 - Provision setup hook
 - Prompt → tools → settled → sleep → wake → continue
-- Follow-up queue and steering promotion
-- Offline runner queue and reconnect delivery
+- Pi-native follow-up and steering with no post-handoff mutation controls
+- Offline/waking pending delivery and reconnect handoff
+- Crash during Pi handoff produces `delivery-uncertain` and no automatic replay
 - Edit last without workspace rollback
 - Diff/file browsing while VM sleeps
 - Browser terminal through data tunnel
@@ -1846,7 +1879,8 @@ Scenarios:
 - Server route/controller tests first, following Remix 3 guidance
 - Desktop and mobile viewport coverage
 - Reconnect while assistant streams
-- Queue controls
+- Pending-message cancellation before handoff
+- Follow-up and explicit “Steer now” controls without post-handoff mutation actions
 - Runner/resource selection before first send
 - Runner lock after first send
 - Terminal resize/input
@@ -1916,12 +1950,13 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Persistent Pi JSONL
 - Event normalization and runner spool
 - HTTP prompt API and SSE stream
-- Follow-up queue, steering, abort
-- Offline runner queue/reconnect
+- Pi-native follow-up, direct steering, and abort
+- Durable pre-handoff pending delivery for offline/waking runners
+- Ambiguous-handoff state without automatic replay
 - Model/thinking controls
 - Edit-last conversation semantics
 
-**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, including sleep/wake and offline queueing.
+**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, including sleep/wake, durable pre-handoff pending messages, and Pi-native live follow-up/steering semantics.
 
 ### Milestone 5 — Review surfaces
 
@@ -2000,8 +2035,8 @@ A release is MVP-complete when all of the following are true:
 6. User can override the automatic runner before the first message and cannot move the session afterward.
 7. Session boots an isolated Gondolin VM, clones the repository inside it, runs setup, and starts host-side Pi.
 8. Chat, thinking, tool calls, and tool output stream to desktop and mobile UI.
-9. Follow-up messages are visibly queued, editable/cancellable, and promotable to steering.
-10. Messages sent while runner is offline are delivered once after reconnect.
+9. While Pi is running, the UI exposes normal follow-up and explicit “Steer now” actions; Pi-accepted queue items are visible when connected but are not editable, cancellable, promotable, or claimed durable.
+10. Normal messages sent while a runner is offline/waking remain durable and cancellable until handoff after reconnect; an ambiguous crash-time handoff is surfaced instead of silently replayed.
 11. VM checkpoints after 15 minutes idle and wakes for subsequent work.
 12. User can review the last guest-generated aggregate diff and files while the VM is sleeping, without native host Git interpreting the checkout.
 13. Browser terminal works without any inbound runner port.
@@ -2033,6 +2068,12 @@ A release is MVP-complete when all of the following are true:
 
 **Mitigation:** Establish the full-control loader in Milestone 0, centralize SDK session creation in one audited factory, forbid `DefaultResourceLoader` and `SettingsManager.create(...)` in runner session code, test hostile workspaces, and require a security review for any new resource type.
 
+### Pi in-memory message queues
+
+**Risk:** `followUp()` and `steer()` are process-local, lack stable editable/cancellable item APIs, and are not persisted to Pi JSONL before delivery. A process crash can lose accepted queue items, while blind replay can duplicate them.
+
+**Mitigation:** Keep durability only before handoff, expose Pi-native behavior without mutation promises, never auto-replay accepted/ambiguous message commands, and surface `delivery-uncertain` for explicit user action.
+
 ### Reverse tunnel complexity
 
 **Risk:** Backpressure, WebSockets, slow consumers, and large assets can destabilize control traffic.
@@ -2049,7 +2090,7 @@ A release is MVP-complete when all of the following are true:
 
 **Risk:** A dead runner makes its sessions unavailable.
 
-**Mitigation:** Show cached transcript, durable queued messages, explicit offline state, backups/exports later, and defer migration rather than implementing unsafe partial movement.
+**Mitigation:** Show cached transcript, durable pre-handoff pending messages, explicit offline state, backups/exports later, and defer migration rather than implementing unsafe partial movement.
 
 ### SQLite concurrency
 
