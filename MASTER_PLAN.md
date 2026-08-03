@@ -27,13 +27,14 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 1. **Easy compute enrollment.** A new runner requires the control-panel URL and an enrollment token, not model credentials, Git credentials, VPN setup, or inbound networking.
 2. **Outbound-only runners.** Control, terminal, and preview traffic all use connections initiated by the runner.
 3. **One session, one VM, one checkout.** This is the isolation and concurrency boundary.
-4. **Trusted host, isolated guest.** The runner host is trusted. Agent-generated commands and repository setup scripts run in Gondolin.
-5. **Central configuration.** Model credentials, Git credentials, project secrets, project configuration, and defaults live in the control panel.
-6. **Automatic lifecycle.** VMs wake when needed and checkpoint after 15 minutes without relevant activity.
-7. **Useful remotely.** Chat, tools, diffs, files, terminals, and app previews must work without SSHing into a runner.
-8. **Mobile-capable.** The main workflows must be usable from a phone, not merely render on a narrow screen.
-9. **Web-standard interfaces.** Use HTTP, SSE, WebSockets, Fetch APIs, and versioned runtime-validated protocol types.
-10. **No premature infrastructure.** Do not require an SDN, Kubernetes, Redis, Postgres, or multi-node control plane for the MVP.
+4. **Trusted host, isolated guest.** The runner host is trusted. Agent-generated commands, repository setup scripts, and every Git operation against a guest-writable checkout run in Gondolin.
+5. **Untrusted workspace metadata.** The entire checkout, including `.git`, is attacker-controlled data once mounted into the guest. Native host Git must never consume it.
+6. **Central configuration.** Model credentials, Git credentials, project secrets, project configuration, and defaults live in the control panel.
+7. **Automatic lifecycle.** VMs wake when needed and checkpoint after 15 minutes without relevant activity.
+8. **Useful remotely.** Chat, tools, diffs, files, terminals, and app previews must work without SSHing into a runner.
+9. **Mobile-capable.** The main workflows must be usable from a phone, not merely render on a narrow screen.
+10. **Web-standard interfaces.** Use HTTP, SSE, WebSockets, Fetch APIs, and versioned runtime-validated protocol types.
+11. **No premature infrastructure.** Do not require an SDN, Kubernetes, Redis, Postgres, or multi-node control plane for the MVP.
 
 ## 3. Scope
 
@@ -61,10 +62,10 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Private previews and optional revocable capability links
 - Managed restartable previews and live-only previews
 - Central HTTPS Git credentials and SSH private keys
-- Agent-initiated Git fetch, commit, and push without exposing credentials to the VM
+- Agent-initiated Git fetch, commit, and push without exposing real credentials to the VM
 - User-defined push branch names
-- Project `.agents/setup` and `.agents/resume` hooks
-- Project `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.pi/skills`, and `.pi/prompts`
+- Project `.agents/setup` and `.agents/resume` hooks, executed only inside Gondolin
+- Explicit allowlist-only Pi `ResourceLoader` with no project resource discovery and in-memory Pi settings
 - Batteries-included Gondolin developer image
 - Shared package download caches
 - Archive and explicit deletion
@@ -87,6 +88,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Patch-download workflow
 - Model-provider OAuth/subscription logins
 - Automatic pull-request creation
+- Automatic Pi loading of project context files, settings, packages, extensions, skills, prompts, themes, or system-prompt fragments
 - Arbitrary untrusted project Pi extensions
 - Memory/process VM snapshots
 - GPU scheduling
@@ -95,7 +97,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 ## 4. Terminology
 
 - **Control panel:** The self-hosted Remix web application, API, scheduler, secret store, runner gateway, and preview gateway.
-- **Runner:** A native Linux service running Pi, Gondolin, Git operations, and session storage.
+- **Runner:** A native Linux service running Pi, managing Gondolin/session storage, and orchestrating Git operations inside the guest.
 - **Project:** Repository configuration, credentials, secrets, defaults, and policies shared by sessions.
 - **Session:** One linear user-visible Pi conversation, one checkout, one pinned runner, and one Gondolin VM/checkpoint.
 - **Draft session:** A session whose first prompt has not been sent. Its runner selection can still change.
@@ -115,8 +117,9 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | VM mapping | One Gondolin VM per session |
 | Pi placement | Pi SDK runs on the runner host |
 | Tool execution | Pi read/write/edit/bash operations execute through Gondolin |
-| Repository | Fresh clone per session |
-| Workspace storage | Host directory mounted into Gondolin with `RealFSProvider` |
+| Repository | Fresh clone per session, performed inside Gondolin |
+| Workspace storage | Host directory mounted into Gondolin with `RealFSProvider`; all contents including `.git` are untrusted |
+| Git execution boundary | Never run native host Git against a session checkout; all clone/status/diff/fetch/commit/push operations execute inside Gondolin |
 | Session placement | Auto-select runner; user may override before first prompt; immutable afterward |
 | Resource scheduling | Sessions request CPU and memory; runners advertise total/reserved/free resources |
 | Idle lifecycle | Stop/checkpoint after 15 minutes without relevant activity |
@@ -137,7 +140,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Control DB | SQLite for the single-user control panel |
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | Separate logical control and binary data channels, both outbound |
-| Project customization | Load guidance, skills, and prompts; do not auto-run project Pi extensions |
+| Pi workspace resources | No project resource discovery in MVP; use an explicit empty/allowlist-only `ResourceLoader` and in-memory settings |
+| Project guidance | Project files are available only through Gondolin-backed tools; Pi does not host-load `AGENTS.md`, `CLAUDE.md`, skills, prompts, packages, settings, or extensions |
 | Guest image | Batteries-included OpenOrb Gondolin image |
 | Caches | Shared package download caches enabled |
 | Retention | No automatic deletion; explicit archive and delete |
@@ -202,7 +206,7 @@ packages/
   runner-core/             runner orchestration and command handling
   pi-runtime/              Pi SDK adapter and normalized events
   gondolin-runtime/        VM lifecycle, tools, terminal, preview ingress
-  git-service/             clone/status/diff/push and credential mediation
+  git-service/             guest Git orchestration, safe snapshots, and credential mediation
   test-support/            fixtures, fake runner, fake model, protocol harness
 images/
   developer/               OpenOrb Gondolin image build configuration
@@ -368,11 +372,14 @@ Recommended layout:
 The runner is authoritative for:
 
 - Raw Pi JSONL
-- Working tree and Git objects
+- Working tree and Git objects, treated as untrusted bytes by the host
 - Full file contents
+- Host-owned cached Git reports produced by guest-side Git
 - VM checkpoint
 - Guest service logs
 - Local command/event idempotency journal
+
+The session workspace is guest-writable. The runner may safely store, mount, copy, hash, or serve bounded file bytes from it, but must never invoke native host Git—or another executable selected by workspace metadata—against that directory.
 
 The control panel is authoritative for:
 
@@ -611,11 +618,12 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 3. User may override the runner while drafting.
 4. Sending the first prompt creates a durable queued message and starts reservation.
 5. Runner assignment becomes immutable after reservation/provisioning succeeds.
-6. Runner clones the repository and records the exact base commit.
-7. Runner creates the local working branch.
-8. Runner boots Gondolin with requested resources and mounts the workspace.
-9. Runner runs `.agents/setup` once.
-10. Runner creates the persistent Pi session and dispatches the first message.
+6. Runner creates an empty session workspace, boots Gondolin with requested resources, and mounts it.
+7. Git inside Gondolin clones the repository through mediated HTTPS/SSH credentials and reports the exact base commit.
+8. Git inside Gondolin creates the local working branch.
+9. Runner stores the reported base/branch state outside the guest-writable workspace.
+10. Runner runs `.agents/setup` once inside Gondolin.
+11. Runner creates the persistent Pi session and dispatches the first message.
 
 Provisioning logs stream to the browser as session events.
 
@@ -629,7 +637,7 @@ Provisioning logs stream to the browser as session events.
 6. Open Pi’s existing JSONL session.
 7. Dispatch the message.
 8. Stream normalized Pi events.
-9. When Pi is fully settled, update Git status/diff summary.
+9. When Pi is fully settled, run status/diff inside Gondolin and update the host-owned cached Git report.
 10. If no active lease remains, start the idle timer.
 
 ### 13.3 Message while running
@@ -680,9 +688,10 @@ At timeout:
 2. Mark live-only previews expired.
 3. Stop managed services cleanly with a short deadline.
 4. Close terminal sessions.
-5. Flush guest filesystems.
-6. Create a disk checkpoint; this consumes/stops the current Gondolin VM.
-7. Persist checkpoint metadata and set VM state to `sleeping`.
+5. Run a final controlled status/diff operation inside Gondolin and atomically store the report outside the workspace.
+6. Flush guest filesystems.
+7. Create a disk checkpoint; this consumes/stops the current Gondolin VM.
+8. Persist checkpoint metadata and set VM state to `sleeping`.
 
 Gondolin checkpoints are disk-only. Processes and RAM do not survive.
 
@@ -735,29 +744,60 @@ Replace Pi’s built-in tools with Gondolin-backed operations, following Gondoli
 
 All paths map from the host session workspace to `/workspace` and reject escapes.
 
-### 14.3 Resource loading
+### 14.3 Allowlist-only resource and settings boundary
 
-Load:
+The untrusted workspace must never be passed to Pi’s default discovery machinery. OpenOrb must follow Pi 0.83’s **full control** SDK pattern:
 
-```text
-AGENTS.md
-CLAUDE.md
-.agents/skills/**
-.pi/skills/**
-.pi/prompts/**
+- Never instantiate, wrap, subclass, or delegate to `DefaultResourceLoader` for a session.
+- Provide an explicit OpenOrb-owned object implementing the `ResourceLoader` interface.
+- Use `SettingsManager.inMemory(...)`; never use `SettingsManager.create(...)` for a session.
+- Never load workspace `.pi/settings.json`, user/global Pi settings, package declarations, or settings-selected resource paths.
+- Point Pi’s `agentDir` and any model/auth metadata paths at runner-owned locations outside the workspace, while supplying model credentials through runtime APIs.
+- Treat `cwd` as an untrusted tool-path value only; the custom loader must not use it for discovery.
+- Route all Pi session construction through one `OpenOrbPiSessionFactory`; every SDK session creation call must explicitly pass both `resourceLoader` and `settingsManager`, so omission cannot silently activate defaults.
+
+For the MVP, the project-resource allowlist is deliberately empty. The loader returns:
+
+- No extensions and a fresh empty extension runtime
+- No skills
+- No prompt templates
+- No themes
+- No agent/context files
+- No append-system-prompt fragments
+- No project system-prompt override
+- No package resources
+
+The only system prompt is trusted OpenOrb-owned static text plus explicit control-panel configuration. It is created without reading the workspace.
+
+The implementation should structurally resemble:
+
+```ts
+const settingsManager = SettingsManager.inMemory(openOrbSettings)
+
+const resourceLoader: ResourceLoader = {
+  getExtensions: () => ({
+    extensions: [],
+    errors: [],
+    runtime: createExtensionRuntime(),
+  }),
+  getSkills: () => ({ skills: [], diagnostics: [] }),
+  getPrompts: () => ({ prompts: [], diagnostics: [] }),
+  getThemes: () => ({ themes: [], diagnostics: [] }),
+  getAgentsFiles: () => ({ agentsFiles: [] }),
+  getSystemPrompt: () => trustedOpenOrbSystemPrompt,
+  getSystemPromptSource: () => undefined,
+  getAppendSystemPrompt: () => [],
+  getAppendSystemPromptSources: () => [],
+  extendResources: () => {},
+  reload: async () => {},
+}
 ```
 
-Do not automatically load:
+Repository files such as `AGENTS.md`, `CLAUDE.md`, `.agents/skills/**`, `.pi/skills/**`, and `.pi/prompts/**` remain ordinary untrusted workspace files. They are not scanned or parsed by the runner host. The model may inspect them only by invoking Gondolin-backed `read`, `find`, or `bash` tools. Any referenced or skill-associated script can therefore execute only through a Gondolin-backed tool inside the guest.
 
-```text
-.pi/extensions/**
-```
+Add restricted-import/lint rules that forbid `DefaultResourceLoader` in runner packages and forbid direct Pi session construction outside `OpenOrbPiSessionFactory`. A test must fail if session creation observes any workspace-discovered extension, package, setting, prompt, skill, theme, context file, or system-prompt fragment.
 
-A custom or filtered Pi resource loader must enforce this. Project-local executable extensions would run on the trusted runner host and bypass Gondolin.
-
-A future centrally managed **Agent Profile** may contain trusted global skills, prompts, and host extensions distributed by the control panel.
-
-Any scripts bundled with project skills execute only when invoked through Gondolin-backed tools.
+A future centrally managed **Agent Profile** may add explicitly approved resources. Such resources must be selected by control-panel configuration, copied into immutable runner-owned storage outside the workspace, and returned directly by the allowlist loader. Project workspace discovery must remain disabled, and scripts referenced by passive skill metadata must remain executable only through Gondolin-backed tools.
 
 ### 14.4 Event normalization
 
@@ -879,57 +919,109 @@ Defer OAuth/subscription credentials because refresh-token concurrency and provi
 
 ## 17. Git and repository handling
 
-### 17.1 Clone
+### 17.1 Absolute execution boundary
 
-- Clone on the trusted runner host into the session workspace.
-- Resolve and store the exact base commit.
-- Create a session working branch.
-- Default branch pattern:
+The complete session checkout, including `.git`, becomes untrusted as soon as it is mounted into Gondolin. A repository or agent can modify executable Git configuration such as:
+
+- Credential helpers
+- `core.sshCommand`
+- `core.hooksPath` and hooks
+- Diff and textconv drivers
+- Clean/smudge filters
+- `core.fsmonitor`
+- URL rewrites, remote helpers, aliases, and include files
+
+Consequently, **the runner must never run native host Git against a session workspace**. This applies to clone, status, log, diff, fetch, commit, push, cleanup, and any future Git operation. It also applies when the VM is sleeping. Otherwise a later host-side Git command could execute guest-controlled code with runner privileges.
+
+All Git operations against session data execute inside Gondolin. The host may handle the workspace only as untrusted file bytes and may consume bounded serialized reports returned by the guest.
+
+### 17.2 Clone and branch creation
+
+1. Runner creates an empty host workspace and mounts it into Gondolin.
+2. Git inside Gondolin clones the configured repository into `/workspace` through mediated credentials.
+3. Automatic recursive submodule initialization is disabled.
+4. The clone command permits only the configured network protocol and canonical repository URL.
+5. Guest Git reports the exact base commit to the runner.
+6. Git inside Gondolin creates the session working branch.
+7. Runner stores base commit, branch, and remote metadata in a host-owned file outside the workspace; these values are reports, not trusted instructions.
+
+Default branch pattern:
 
 ```text
 openorb/<sanitized-session-name>-<short-session-id>
 ```
 
-- User may provide a custom branch name.
-- Branch can change until its first successful push; afterward it is fixed for the session.
+The user may provide a custom branch name. It can change until its first successful push and is fixed afterward.
 
-### 17.2 HTTPS credentials without guest exposure
+### 17.3 Controlled Git operations
 
-For host clone/fetch operations:
+Control-panel Git actions ask the runner to execute a narrowly constructed command inside Gondolin. The runner does not shell-concatenate user data. Commands use explicit argument arrays, a controlled working directory, a clean environment, bounded output, timeouts, and explicit safe overrides where applicable.
 
-- Use an ephemeral `GIT_ASKPASS` process/script.
-- Do not write credentials into `.git/config`, command arguments, or global Git config.
-- Remove temporary material immediately.
+For review-oriented commands:
 
-For Git commands inside Gondolin:
+- Disable pagers and interactive prompts.
+- Use `--no-ext-diff` and `--no-textconv`.
+- Disable configured filesystem monitors.
+- Do not invoke hooks.
+- Bound patch/file size and sanitize terminal control characters before browser rendering.
 
-1. A guest credential helper returns generated placeholder username/token values.
+For network operations:
+
+- Pass the project’s canonical remote URL explicitly instead of trusting an agent-modified `origin` URL.
+- Restrict allowed protocols; deny `file`, `ext`, and arbitrary remote helpers.
+- Do not recurse into submodules automatically.
+- Apply credential and egress policy to the exact configured host/repository.
+
+These controls make OpenOrb-owned actions deterministic, but the main privilege boundary remains Gondolin. An agent can intentionally run Git features that execute repository-controlled code, but that code stays inside the guest.
+
+### 17.4 HTTPS credentials without guest exposure
+
+1. A trusted helper included in the guest image returns generated placeholder username/token values.
 2. Git encodes placeholders into HTTP authorization headers.
-3. Gondolin host hooks substitute the real secret only for the configured Git host.
-4. Request policy restricts host and repository URL path where feasible.
+3. Gondolin host hooks substitute the real secret only for the configured Git host and canonical smart-HTTP repository paths.
+4. Other hosts and repository paths never receive substitution.
 5. The guest can print only placeholders, never the real token.
 
-### 17.3 SSH credentials without guest exposure
+The real HTTPS credential is not placed in guest environment variables, files, process arguments, or `.git/config`.
+
+### 17.5 SSH credentials without guest exposure
 
 - SSH private key is decrypted only on the trusted runner.
 - Configure Gondolin’s host-side SSH proxy with the key and known-host policy.
 - Use `execPolicy` to allow only Git operations for the configured repository.
-- Permit `git-upload-pack` and `git-receive-pack` for the project repository.
-- Deny interactive SSH, SFTP, and unrelated repositories.
+- Permit `git-upload-pack` and `git-receive-pack` for that repository.
+- Deny interactive SSH, SFTP, agent forwarding, port forwarding, and unrelated repositories.
+- Agent-modified `core.sshCommand` may execute only inside the guest and cannot obtain the host-held key.
 
-### 17.4 Commit and push
+### 17.6 Diff/status snapshots and sleeping sessions
 
-The agent may inspect history, create branches, commit, fetch, and push. System guidance says to push only when the user explicitly requests it.
+After agent settlement, terminal closure, and immediately before sleep, the runner executes controlled status/diff commands inside Gondolin. It parses and stores a bounded normalized report and optional patch in a host-owned runtime path that is not mounted guest-writable. The control panel mirrors the report.
+
+While the VM sleeps:
+
+- Show the last complete cached report.
+- Mark it stale if terminal or VM failure prevented a final refresh.
+- Wake the VM for an authoritative refresh when requested.
+- Never run host Git against the sleeping workspace.
+
+A future host-side implementation may use a deliberately non-executing parser over a sanitized immutable snapshot, but it must not use native Git, load `.git/config`, invoke hooks/drivers/filters/fsmonitor, or execute workspace-selected programs. This parser is not required for the MVP.
+
+Read-only file browsing may read bounded workspace bytes directly with path/symlink protections because it does not interpret Git configuration or execute repository-selected code.
+
+### 17.7 Commit and push
+
+The agent may inspect history, create branches, commit, fetch, and push from inside Gondolin. System guidance says to push only when the user explicitly requests it.
 
 The control-panel **Commit & Push** action:
 
-1. Refreshes aggregate diff/status.
-2. Preserves existing agent-created commits.
-3. If dirty, creates a commit using global Git author defaults and a user-supplied/default message.
-4. Pushes to the selected branch and sets upstream.
-5. Records the resulting remote ref and commit IDs.
+1. Wakes the VM if necessary.
+2. Refreshes aggregate diff/status using controlled Git inside Gondolin.
+3. Preserves existing agent-created commits.
+4. If dirty, commits inside Gondolin using explicit author name/email and a user-supplied/default message.
+5. Pushes the explicit local ref to the configured canonical remote URL and branch.
+6. Records reported remote ref and commit IDs outside the workspace.
 
-Never issue force flags from OpenOrb-owned UI/actions. Best-effort command policy should detect obvious force pushes, but true enforcement belongs in remote branch protection because raw Git protocol intent is difficult to police reliably at the HTTP/SSH transport boundary.
+Never issue force flags from OpenOrb-owned UI/actions. Best-effort guest command policy should detect obvious force pushes, but true enforcement belongs in remote branch protection because raw Git protocol intent is difficult to police reliably at the HTTP/SSH transport boundary.
 
 No patch download is part of the primary workflow.
 
@@ -1386,11 +1478,13 @@ interface VmManager {
 
 ```ts
 interface GitService {
-  clone(config: CloneConfig): Promise<CloneResult>
-  status(): Promise<GitStatus>
-  diff(): Promise<WorkspaceDiff>
-  commit(input: CommitInput): Promise<CommitResult>
-  push(branch: string): Promise<PushResult>
+  // Every method executes Git inside the session's Gondolin VM.
+  clone(vm: RunningVm, config: CloneConfig): Promise<CloneResult>
+  status(vm: RunningVm): Promise<GitStatus>
+  diff(vm: RunningVm): Promise<WorkspaceDiff>
+  commit(vm: RunningVm, input: CommitInput): Promise<CommitResult>
+  push(vm: RunningVm, input: PushInput): Promise<PushResult>
+  getCachedReport(): Promise<CachedGitReport | undefined>
 }
 ```
 
@@ -1405,9 +1499,9 @@ interface PreviewManager {
 
 ```ts
 interface WorkspaceService {
+  // File access treats workspace content as untrusted bytes and executes nothing.
   list(path: string): Promise<FileEntry[]>
   read(path: string): Promise<File>
-  diff(): Promise<WorkspaceDiff>
 }
 ```
 
@@ -1531,8 +1625,14 @@ Untrusted or constrained:
 - All runner traffic uses authenticated outbound TLS.
 - Model credentials remain control-panel/runner-side and never enter Gondolin.
 - Git credentials remain control-panel/runner-side; guest sees placeholders or an SSH proxy.
+- The session checkout and `.git` metadata are untrusted; native host Git never consumes them.
+- Every Git operation against a session checkout executes inside Gondolin, including status/diff while the VM is awake and clone/fetch/commit/push.
+- Sleeping-session review uses a host-owned cached report generated inside Gondolin, not host Git.
 - Project secrets use Gondolin placeholder substitution scoped to allowed destinations.
-- Project Pi extensions do not execute on the runner host.
+- Pi uses an explicit allowlist-only `ResourceLoader`; `DefaultResourceLoader` is forbidden for untrusted workspaces.
+- Pi uses `SettingsManager.inMemory(...)` and never loads workspace or global Pi settings/packages.
+- No project context, prompt, skill, theme, package, extension, or system-prompt resource is host-discovered in the MVP.
+- Pi/the model can access project files and skill-associated scripts only through Gondolin-backed tools.
 - Workspace path APIs reject traversal and symlink escape.
 - Preview hosts are origin-isolated from control UI and one another.
 - Preview gateway strips OpenOrb auth material before guest forwarding.
@@ -1541,7 +1641,23 @@ Untrusted or constrained:
 - Control and runner protocol messages are runtime validated.
 - Sensitive values are redacted from logs and error messages.
 
-### 27.3 Mediated project secrets
+### 27.3 Guest-controlled Git metadata
+
+Treat `.git` as executable configuration, not passive data. The agent can rewrite helpers, hooks, SSH commands, diff/textconv drivers, filters, fsmonitor commands, URL rewrites, and includes. The host must therefore never invoke Git with the session workspace as a repository or working tree.
+
+This prohibition applies even to apparently read-only commands such as `git status`, `git diff`, `git log`, and `git rev-parse`; Git configuration and attributes can cause subprocess execution. It also applies after the VM stops, when the workspace remains on the host filesystem.
+
+Only code inside Gondolin may interpret Git metadata. Host-owned Git reports must live outside guest-writable mounts, be treated as untrusted display data, and never be evaluated as commands or configuration.
+
+### 27.4 Pi resource-discovery boundary
+
+Pi resource discovery is a host-code execution boundary, not a convenience feature. Default discovery can involve settings, packages, extension paths, system-prompt files, context files, skills, prompts, and themes. Filtering results after discovery is insufficient because executable extensions may already have been imported or initialized.
+
+The runner therefore constructs the `ResourceLoader` itself and returns only trusted in-memory resources. It never calls `DefaultResourceLoader`, never scans the workspace for Pi resources, and never loads `.pi/settings.json`. In the MVP all project resource collections are empty. The only host-provided prompt material is OpenOrb-owned.
+
+Project documentation remains accessible to the agent through Gondolin-backed file tools. This preserves the VM boundary: reading or executing a script associated with a repository skill happens inside Gondolin, never through host-side Pi discovery.
+
+### 27.5 Mediated project secrets
 
 Project secrets are centrally encrypted. When a VM needs them:
 
@@ -1667,7 +1783,11 @@ Record:
 - Preview auth/capability exchange
 - Secret encryption/redaction
 - Git URL/repository policy
+- Controlled guest Git argument/environment construction
+- Cached Git report parsing and terminal-control sanitization
 - Pi event normalization
+- Allowlist-only `ResourceLoader` always returns empty project resource collections
+- In-memory Pi settings ignore hostile workspace/global settings files
 - Binary channel flow control
 
 ### 30.2 Contract tests
@@ -1691,6 +1811,8 @@ Scenarios:
 - Clone public HTTPS repository
 - Clone/push private HTTPS repository with guest-visible placeholder only
 - Clone/push private SSH repository through Gondolin proxy
+- Every clone/status/diff/fetch/commit/push process runs inside the guest, never on the runner host
+- Sleeping diff uses a final guest-generated cached report and wakes for refresh
 - Provision setup hook
 - Prompt → tools → settled → sleep → wake → continue
 - Follow-up queue and steering promotion
@@ -1705,13 +1827,17 @@ Scenarios:
 
 ### 30.4 Security tests
 
-- Project extension cannot execute on host
+- A hostile workspace containing `.pi/extensions`, `.pi/settings.json`, package resources, prompt/system-prompt files, context files, skills, and themes cannot execute host code or alter the resources/system prompt returned to Pi
+- Runner source/build checks forbid `DefaultResourceLoader` and session use of file-backed `SettingsManager.create(...)`
+- Pi/the model reaches workspace `AGENTS.md`, `CLAUDE.md`, and skill-associated scripts only through Gondolin-backed tools
 - Workspace traversal and escaping symlink denied
 - Preview cannot target runner LAN/loopback arbitrarily
 - Control/preview cookies never reach guest
 - Capability token removed from URL and stored hashed
 - Placeholder secret cannot be recovered in guest
 - Git credentials absent from process args, env, files, logs, and tool output
+- Hostile `.git/config`, hooks, textconv/diff drivers, filters, fsmonitor, and `core.sshCommand` cannot create a runner-host marker during any OpenOrb Git/review action
+- A test process monitor confirms no native host Git process is launched with a session workspace in its arguments, environment, repository/work-tree options, or current working directory
 - Internal/cloud metadata addresses blocked
 - Replayed enrollment/control messages rejected
 
@@ -1737,10 +1863,12 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Pin Remix 3 beta and core dependency versions.
 - Establish formatting, linting, tests, and CI.
 - Define domain IDs, runtime schemas, protocol envelope, and compatibility policy.
-- Add architecture decision records for trust model, outbound tunnels, SQLite, and Pi-on-host.
+- Add architecture decision records for trust model, outbound tunnels, SQLite, Pi-on-host, and the no-workspace-resource-discovery boundary.
+- Implement and unit-test the explicit empty/allowlist-only Pi `ResourceLoader` and in-memory `SettingsManager` factory.
+- Add static enforcement forbidding `DefaultResourceLoader`, file-backed Pi settings, and direct Pi session construction outside the audited OpenOrb factory.
 - Create fake runner/model test harness.
 
-**Exit:** Control and fake runner can perform a versioned authenticated handshake in tests.
+**Exit:** Control and fake runner can perform a versioned authenticated handshake in tests, and a Pi session created over a hostile fixture workspace exposes only trusted OpenOrb resources without executing workspace code.
 
 ### Milestone 1 — Control-panel identity and configuration
 
@@ -1768,7 +1896,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 
 ### Milestone 3 — Workspace and Gondolin lifecycle
 
-- Public repository host clone
+- Guest-side public repository clone with no native host Git against the workspace
 - Session storage layout
 - Developer image build and distribution
 - Per-session VM creation with CPU/memory
@@ -1777,13 +1905,13 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Checkpoint/sleep/wake lifecycle
 - Provisioning logs/events
 
-**Exit:** First prompt provisioning can clone, boot, run setup, checkpoint, resume, and preserve workspace state without Pi yet.
+**Exit:** First prompt provisioning can boot Gondolin, clone inside the guest, run setup, checkpoint, resume, and preserve workspace state without Pi yet.
 
 ### Milestone 4 — Pi runtime and conversation
 
 - Host-side Pi SDK adapter
 - Central model config delivery
-- Filtered project resource loader
+- Milestone 0’s allowlist-only Pi resource loader and in-memory settings, with no workspace discovery
 - Gondolin-backed Pi tools
 - Persistent Pi JSONL
 - Event normalization and runner spool
@@ -1797,7 +1925,8 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 
 ### Milestone 5 — Review surfaces
 
-- Aggregate Git status/diff
+- Aggregate Git status/diff generated inside Gondolin and cached outside the workspace
+- Hostile `.git/config` regression tests
 - Changed-file navigation
 - Read-only file browser
 - Runner/control transcript reconciliation
@@ -1821,6 +1950,8 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 
 - HTTPS placeholder credential helper and policy
 - SSH host proxy credentials and repository exec policy
+- Controlled in-guest Git command runner and canonical-remote enforcement
+- Verification that control-panel Git actions never invoke host Git
 - Global Git author settings
 - Commit & Push UI
 - Agent Git fetch/commit/push
@@ -1867,12 +1998,12 @@ A release is MVP-complete when all of the following are true:
 4. A Linux runner behind NAT enrolls using only control-panel URL and enrollment token.
 5. Runner reports free CPU/memory/disk and accepts a requested session size.
 6. User can override the automatic runner before the first message and cannot move the session afterward.
-7. Session clones a repository, boots an isolated Gondolin VM, runs setup, and starts host-side Pi.
+7. Session boots an isolated Gondolin VM, clones the repository inside it, runs setup, and starts host-side Pi.
 8. Chat, thinking, tool calls, and tool output stream to desktop and mobile UI.
 9. Follow-up messages are visibly queued, editable/cancellable, and promotable to steering.
 10. Messages sent while runner is offline are delivered once after reconnect.
 11. VM checkpoints after 15 minutes idle and wakes for subsequent work.
-12. User can review aggregate diff and files while VM is sleeping.
+12. User can review the last guest-generated aggregate diff and files while the VM is sleeping, without native host Git interpreting the checkout.
 13. Browser terminal works without any inbound runner port.
 14. Agent can fetch, commit, and push to a private repository without obtaining the real credential in the guest.
 15. User can choose the pushed branch name.
@@ -1880,7 +2011,7 @@ A release is MVP-complete when all of the following are true:
 17. Managed preview wakes and restarts after sleep; live-only preview clearly expires.
 18. Capability preview links are revocable and do not expose control-panel authentication to the guest.
 19. Archive preserves state; delete removes runner artifacts and control-panel records, including after an offline runner reconnects.
-20. Project Pi extensions cannot execute on the runner host by default.
+20. Pi never discovers project settings, packages, extensions, skills, prompts, themes, context files, or system-prompt fragments on the runner host; Pi/the model accesses project files and scripts only through Gondolin-backed tools.
 
 ## 33. Known risks and mitigations
 
@@ -1895,6 +2026,12 @@ A release is MVP-complete when all of the following are true:
 **Risk:** Experimental APIs, Alpine-only image builder, disk-only checkpoints, and serialized guest exec behavior.
 
 **Mitigation:** Pin versions/build IDs, own a tested developer image, use SSH for terminal, supervise background services, and maintain real-QEMU integration tests.
+
+### Pi discovery defaults
+
+**Risk:** A future refactor could omit the custom loader or use file-backed settings, re-enabling executable project extension/package discovery on the trusted runner.
+
+**Mitigation:** Establish the full-control loader in Milestone 0, centralize SDK session creation in one audited factory, forbid `DefaultResourceLoader` and `SettingsManager.create(...)` in runner session code, test hostile workspaces, and require a security review for any new resource type.
 
 ### Reverse tunnel complexity
 
