@@ -10,11 +10,11 @@ A contributor can install dependencies and start the real Remix control applicat
 ## Scope
 
 - Create the minimal pnpm/TypeScript workspace required for `apps/control`, `apps/runner`, and shared runtime-validated wire types.
-- Scaffold Remix 3 using the current `preview/main` source and lock its exact resolved revision. Record the source revision used.
+- Scaffold Remix 3 with `npx remix@next new`, then lock the generated Remix dependencies to their exact resolved versions. Record the resolved Remix version used.
 - Add only formatting, type-check, test, and development commands needed by current code.
 - Provide a control-page shell and process health output.
 - Provide a temporary macOS runner entry point using the same runner code intended for Linux, without claiming macOS support.
-- Document the local prerequisites already present on the development machine: Node, pnpm, QEMU, Gondolin, and `gh`.
+- Document Node and pnpm as repository tooling and QEMU as the runner's only external executable prerequisite. Install Gondolin as a pinned runner package dependency; `gh` belongs in the guest image introduced by OO-009, not on the runner host.
 
 ## Acceptance criteria
 
