@@ -34,7 +34,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 8. **Useful remotely.** Chat, tools, diffs, files, terminals, and app previews must work without SSHing into a runner.
 9. **Mobile-capable.** The main workflows must be usable from a phone, not merely render on a narrow screen.
 10. **Web-standard interfaces.** Use HTTP, SSE, WebSockets, Fetch APIs, and versioned runtime-validated protocol types.
-11. **No premature infrastructure.** Do not require an SDN, Kubernetes, Redis, Postgres, or multi-node control plane for the MVP.
+11. **Single control persistence.** PostgreSQL is the control panel's only durable persistence, including for future control-plane growth. Never introduce Redis, another database/KV service, or application-owned durable local files. For the MVP, do not require an SDN, Kubernetes, or a multi-node control plane.
 
 ## 3. Scope
 
@@ -69,7 +69,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Batteries-included Gondolin developer image
 - Shared package download caches
 - Archive and explicit deletion
-- Minimal control-panel session catalog (project, creation time, trimmed initial prompt); all full session data is runner-backed
+- Minimal control-panel live-session catalog (project, creation time, trimmed initial prompt) plus deleted-session ID/time markers; all full session data is runner-backed
 
 ### 3.2 Explicit non-goals for MVP
 
@@ -140,14 +140,15 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Preview lifecycle | Managed previews wake/restart; live-only previews expire on sleep |
 | Runner OS | Native Linux first |
 | Control UI | Remix 3, end-to-end TypeScript |
-| Control DB | SQLite for control configuration plus a four-field session catalog: ID, project, creation time, and trimmed initial-prompt preview |
+| Control persistence | PostgreSQL only, for control configuration, a four-field live-session catalog, and minimal deleted-session ID/time markers; no Redis, secondary database/KV store, or durable local control files |
+| Runner persistence | Ordinary files/directories only for metadata, JSONL, logs, workspaces, reports, checkpoints, and journals; no runner database |
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | Separate logical control and binary data channels, both outbound |
 | Pi workspace resources | No project resource discovery in MVP; use an explicit empty/allowlist-only `ResourceLoader` and in-memory settings |
 | Project guidance | Project files are available only through Gondolin-backed tools; Pi does not host-load `AGENTS.md`, `CLAUDE.md`, skills, prompts, packages, settings, or extensions |
 | Guest image | Batteries-included OpenOrb Gondolin image |
 | Caches | Shared package download caches enabled |
-| Retention | No automatic deletion; explicit archive and delete |
+| Retention | No automatic deletion; explicit archive and delete; offline delete is represented by a durable minimal control-plane marker |
 
 ## 6. High-level architecture
 
@@ -160,7 +161,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
                                  │    ├── Remix 3 web application
                                  │    ├── Browser HTTP API + SSE
                                  │    ├── Authentication
-                                 │    ├── SQLite + encrypted secret store
+                                 │    ├── PostgreSQL + encrypted secret store
                                  │    ├── Scheduler and runner registry
                                  │    ├── Runner control gateway
                                  │    ├── Binary tunnel gateway
@@ -238,8 +239,10 @@ Use pnpm workspaces and strict TypeScript. Keep Node-specific code behind packag
 - `remix/node-fetch-server` for normal Node HTTP handling
 - Explicit Node upgrade handling for WebSockets
 - `remix/data-schema` for runtime validation
-- Prefer `remix/data-table/sqlite` unless an implementation spike proves it insufficient
-- SQLite in WAL mode
+- PostgreSQL with explicit committed migrations
+- PostgreSQL is the only durable control-panel persistence; do not add Redis, another database/KV service, or application-owned durable local files
+- Keep only rebuildable routing/live state in control-process memory
+- Keep the PostgreSQL driver/framework integration behind a small local persistence interface; confirm the exact adapter before implementation
 
 Because Remix 3 is under active development, wrap framework-specific persistence and server adapters behind small local interfaces. An exact dependency upgrade must be an intentional implementation task with tests.
 
@@ -283,11 +286,11 @@ Preview capability tokens are session data: the runner generates them, returns t
 
 Use envelope-style application encryption:
 
-- A control-panel master key is supplied through `OPENORB_MASTER_KEY` or generated into the persistent control volume on first boot.
-- Store the key with filesystem mode `0600`.
+- A control-panel master key is supplied through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection.
+- The control panel never generates or persists the master key to local disk or PostgreSQL and fails startup if it is missing or invalid.
 - Encrypt values with AES-256-GCM, a random nonce, authenticated metadata, and a key-version field.
 - Never derive the server encryption key from the login password; the service must restart unattended.
-- Backups are incomplete without the SQLite database and master key.
+- Backups are incomplete without the PostgreSQL database and master key.
 - Secret values are never returned to the browser after creation; only metadata and a redacted hint are returned.
 
 ## 9. Runner bootstrap and identity
@@ -340,6 +343,8 @@ The data connection authenticates using a short-lived channel credential issued 
 
 ## 10. Runner storage
 
+The runner persists state in ordinary files and directories, not a database. Sensitive identity and token files use restrictive filesystem permissions.
+
 Recommended layout:
 
 ```text
@@ -347,7 +352,6 @@ Recommended layout:
   runner.json
   identity/
     ed25519.key
-  runner.db
   images/
   caches/
     npm/
@@ -368,12 +372,13 @@ Recommended layout:
         services/
         logs/
       spool/
-        events.db
+        events.jsonl
+        command-journal/
       git/
         state.json
 ```
 
-The runner is authoritative for all complete session data; the control panel duplicates only the four catalog fields described below:
+The runner is authoritative for all complete live-session data; the control panel duplicates only the four catalog fields described below and retains minimal deleted-session ID/time markers:
 
 - Session metadata and pinned-runner identity
 - Raw Pi JSONL
@@ -385,7 +390,7 @@ The runner is authoritative for all complete session data; the control panel dup
 - Preview definitions, access policy, and capability hashes
 - VM checkpoint
 - Guest service logs
-- Local command/event idempotency journal
+- Local file-backed command/event idempotency journal; define its exact file format before implementing the broader durable-command scope
 
 The session workspace is guest-writable. The runner may safely store, mount, copy, hash, or serve bounded file bytes from it, but must never invoke native host Git—or another executable selected by workspace metadata—against that directory.
 
@@ -409,11 +414,11 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is derived from the initial textual prompt by collapsing whitespace and truncating to at most 200 Unicode code points. It excludes attachments and is display-only; it must never be used to reconstruct or replay a prompt.
 
-No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the control panel. Connected runners advertise their session inventories. The control panel builds an in-memory routing index and proxies all full session reads/events to the owning runner.
+No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the control panel. The only session record outside the live four-field catalog is a deleted-session marker containing the session ID and deletion time. Connected runners send complete session snapshots containing the four catalog fields plus live routing/state data. The control panel upserts missing non-deleted catalog rows, builds an in-memory routing index, and proxies all full session reads/events to the owning runner. Snapshot absence alone does not delete a catalog row because session ownership is not persisted. A tombstoned snapshot entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
 
 ## 11. Domain model
 
-Project/configuration entities and the four-field `SessionCatalogEntry` are persisted by the control panel. Complete session entities, pending messages, previews, events, and runtime state are persisted only by their owning runner and merely proxied by the control panel.
+Project/configuration entities, the four-field `SessionCatalogEntry`, and minimal deleted-session ID/time markers are persisted by the control panel. Complete session entities, pending messages, previews, events, and runtime state are persisted only by their owning runner and merely proxied by the control panel.
 
 ### 11.1 Project
 
@@ -739,10 +744,12 @@ Archive:
 Delete:
 
 - Require explicit confirmation.
-- Require the owning runner to be online.
-- Runner revokes preview capabilities and removes metadata, checkout, Pi JSONL, normalized events, checkpoint, logs, and reports.
-- Control panel removes the four-field catalog row and its ephemeral route entry after runner deletion succeeds.
-- There is no control-panel deletion tombstone; retry deletion when the runner reconnects.
+- If the owning runner is online and any agent, provisioning, setup/resume, maintenance, terminal, or preview work is active, reject deletion until that work settles; do not interrupt it implicitly.
+- In one PostgreSQL transaction, write a durable deleted-session marker containing only session ID and deletion time, remove the four-field catalog row, and remove any persisted control configuration that is scoped only to that session. Remove the ephemeral route immediately afterward.
+- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, normalized events, checkpoint, logs, and reports.
+- If the runner is offline or permanently lost, deletion still succeeds at the control plane. The marker prevents a stale runner disk or backup from recreating the catalog entry.
+- If a runner later reports a tombstoned session, do not route or reinsert it. Repeatedly request runner cleanup; if the runner reports active work, wait for it to settle rather than interrupting it.
+- Retain the deleted-session marker after runner cleanup so a later stale snapshot cannot resurrect the ID.
 
 ## 14. Pi integration
 
@@ -1266,6 +1273,8 @@ interface CreateSessionInput {
 }
 ```
 
+`DELETE /api/sessions/:sessionId` is available while the runner is offline. After explicit confirmation, it atomically records the minimal deletion marker and removes the catalog row. Runner-local cleanup occurs immediately when the runner is online and idle, or is requested repeatedly from future snapshots without resurrecting the session.
+
 ### 20.6 Conversation and delivery
 
 ```http
@@ -1430,7 +1439,7 @@ preview.wake
 
 On reconnect, runner reports:
 
-- Known sessions and local states
+- A complete snapshot of known sessions, including the four catalog fields and local states
 - Active VM IDs
 - Pi session file identity and last durable event cursor
 - Pending/finished command journal entries
@@ -1440,8 +1449,11 @@ On reconnect, runner reports:
 
 Control panel then:
 
-- Rebuilds its in-memory session-to-runner routing index from the runner inventory
-- Does not recreate or persist missing runner-local sessions
+- Runtime-validates the complete runner snapshot
+- Upserts missing four-field catalog rows for valid, non-tombstoned runner-local sessions, recovering sessions created before a control-panel catalog commit
+- Rejects tombstoned snapshot entries, does not route them, and requests idempotent runner cleanup once active work settles
+- Rebuilds its in-memory session-to-runner routing index from the runner snapshot
+- Does not recreate runner-local sessions from control-panel data and does not remove catalog rows based only on snapshot absence
 - Proxies browser history requests and SSE replay to the runner
 - Does not reconstruct or replay Pi’s process-local queue
 - Leaves runner-local ambiguous handoffs marked `delivery-uncertain`
@@ -1558,7 +1570,7 @@ These boundaries allow Pi, Gondolin, Git, and transport details to be tested ind
 
 ## 25. Persistence ownership
 
-Control-panel SQLite stores configuration plus the minimal session catalog:
+Control-panel PostgreSQL is the control panel's only durable persistence. It stores configuration plus the minimal session catalog:
 
 - `users`
 - `password_credentials`
@@ -1567,16 +1579,18 @@ Control-panel SQLite stores configuration plus the minimal session catalog:
 - `encrypted_secrets`
 - `model_providers`
 - `git_credentials`
+- Global Git author configuration; confirm its exact relation/API shape before implementation
 - `projects`
 - `project_secrets`
 - `runners`
 - `runner_enrollment_tokens`
 - `sessions`, restricted to `id`, `project_id`, `created_at`, and `initial_prompt_preview`
+- `deleted_sessions`, restricted to `session_id` and `deleted_at`
 - Control-plane audit events that contain no session content beyond the catalog identity
 
-It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews/capabilities, Git session state, checkpoints, runner commands containing prompt content, or deletion tombstones.
+It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews/capabilities, Git session state, checkpoints, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
 
-Each runner owns a local session metadata/event store in addition to the filesystem layout in section 10. It persists:
+Each runner owns a file-backed local session metadata/event store in addition to the filesystem layout in section 10. It persists:
 
 - Session identity, project snapshot/reference, and pinned runner
 - Conversation/tool/usage records and event cursors
@@ -1584,13 +1598,13 @@ Each runner owns a local session metadata/event store in addition to the filesys
 - Preview definitions/capability hashes
 - Git reports and session lifecycle state
 
-The control panel keeps an in-memory session routing index populated by connected runner inventories. After a restart the route index starts empty and is rebuilt as runners reconnect. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and actions are unavailable until the owning runner reconnects.
+The control panel keeps an in-memory session routing index populated by complete connected-runner snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot also upserts any missing four-field catalog row for a valid, non-tombstoned runner-local session. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the control-plane marker without waiting for the runner.
 
-Control-panel SQLite guidelines:
+Control-panel PostgreSQL guidelines:
 
+- Do not add Redis, another database/KV service, or application-owned durable local files
 - UUIDv7 or another time-sortable random identifier for configuration entities
 - Foreign keys enabled
-- WAL mode
 - Explicit migrations committed to source
 - Secret ciphertext separate from searchable metadata
 - Store timestamps in UTC
@@ -1736,7 +1750,7 @@ Control panel:
 - Tunnel channels/bytes/resets
 - Preview wake latency
 - Scheduler reservation rejection rate
-- SQLite write latency
+- PostgreSQL query/write latency
 
 Runner:
 
@@ -1770,15 +1784,15 @@ Session-scoped audit records remain on the owning runner:
 
 - Mark the runner offline and remove its sessions from the live routing index.
 - Keep minimal catalog cards visible using only project, creation time, and trimmed initial-prompt preview.
-- Transcript, status, pending messages, diffs, files, terminals, and previews become unavailable because the control panel has no full session copy.
+- Transcript, status, pending messages, diffs, files, terminals, previews, and other runner-backed actions become unavailable because the control panel has no full session copy. Explicit deletion remains available through a control-plane deletion marker.
 - Do not reassign pinned sessions.
 - Return runner-offline status for session and preview requests.
 - Rebuild inventory/routes and resume runner-backed event replay after reconnect.
 
 ### Control-panel restart
 
-- Runner reconnects automatically with exponential backoff and jitter and advertises its session inventory.
-- Control panel retains minimal catalog rows but rebuilds all in-memory routes/live session state; it recovers no full sessions or commands from SQLite.
+- Runner reconnects automatically with exponential backoff and jitter and sends a complete session snapshot.
+- Control panel retains minimal catalog rows and deleted-session markers, upserts a missing four-field row from a valid non-tombstoned runner snapshot, rejects tombstoned entries, and rebuilds all in-memory routes/live session state; it recovers no full sessions or commands from PostgreSQL.
 - Browser SSE reconnects through the runner-owned cursor after the runner is available.
 - Runner-local journals handle reconciliation and surface ambiguous message handoffs.
 
@@ -1833,6 +1847,7 @@ Session-scoped audit records remain on the owning runner:
 - Scheduler scoring and reservation fallback
 - Resource accounting
 - Session state transitions
+- Deleted-session marker transaction and anti-resurrection guard
 - Pending-message FIFO ordering and cancellation-before-handoff state guard
 - Pi `prompt()`/`followUp()`/`steer()` selection from current agent state
 - Path normalization and symlink escape protection
@@ -1852,7 +1867,7 @@ Session-scoped audit records remain on the owning runner:
 - Idempotent command replay after dropped acknowledgments
 - Non-idempotent message handoff transitions to `delivery-uncertain` rather than replay
 - Runner-local event replay/deduplication through an unpersisted control-panel proxy
-- Runner inventory reconciliation and in-memory route rebuilding
+- Runner snapshot reconciliation and in-memory route rebuilding, including tombstoned-entry rejection and cleanup request
 - Binary open/data/window/end/reset behavior
 - SSE cursor reconnect using runner-owned event history through the control-panel proxy
 - Preview HTTP header/body streaming
@@ -1882,7 +1897,7 @@ Scenarios:
 - Managed preview wake/restart
 - Live-only preview expiration
 - Capability revocation
-- Archive/delete while the owning runner is online; offline deletion is rejected
+- Online idle deletion removes runner data; offline deletion removes the catalog card, records a minimal marker, and causes cleanup rather than resurrection if the runner later reconnects
 
 ### 30.4 Security tests
 
@@ -1899,6 +1914,7 @@ Scenarios:
 - A test process monitor confirms no native host Git process is launched with a session workspace in its arguments, environment, repository/work-tree options, or current working directory
 - Internal/cloud metadata addresses blocked
 - Replayed enrollment/control messages rejected
+- A stale or restored runner snapshot cannot recreate or route a tombstoned session
 
 ### 30.5 UI tests
 
@@ -1923,7 +1939,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Pin Remix 3 beta and core dependency versions.
 - Establish formatting, linting, tests, and CI.
 - Define domain IDs, runtime schemas, protocol envelope, and compatibility policy.
-- Add architecture decision records for trust model, outbound tunnels, SQLite, Pi-on-host, and the no-workspace-resource-discovery boundary.
+- Add architecture decision records for trust model, outbound tunnels, PostgreSQL, Pi-on-host, runner file storage, and the no-workspace-resource-discovery boundary.
 - Implement and unit-test the explicit empty/allowlist-only Pi `ResourceLoader` and in-memory `SettingsManager` factory.
 - Add static enforcement forbidding `DefaultResourceLoader`, file-backed Pi settings, and direct Pi session construction outside the audited OpenOrb factory.
 - Create fake runner/model test harness.
@@ -1938,6 +1954,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Master-key setup and encrypted secret storage
 - Model-provider CRUD/test
 - Git-credential CRUD/test
+- Global Git author name/email configuration
 - Project CRUD/defaults
 
 **Exit:** User can log in, configure a project, model API key, and Git credential without secrets being returned by APIs.
@@ -1983,7 +2000,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Model/thinking controls
 - Edit-last conversation semantics
 
-**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with transcript/event state replayed from the runner and only the four-field catalog stored by the control panel.
+**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with transcript/event state replayed from the runner and only the four-field live-session catalog plus minimal deleted-session markers stored by the control panel.
 
 ### Milestone 5 — Review surfaces
 
@@ -1993,9 +2010,9 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Read-only file browser
 - Runner-owned transcript/event replay through the control-panel proxy
 - Explicit unavailable state while the runner is offline
-- Session archive/delete on the online owning runner and disk reporting
+- Session archive on the online owning runner, online/offline deletion with durable anti-resurrection markers, and disk reporting
 
-**Exit:** While the owning runner is connected, the user can inspect an agent’s complete result from runner-owned data and cleanly remove the session.
+**Exit:** While the owning runner is connected, the user can inspect an agent’s complete result from runner-owned data. The user can delete the session while the runner is online or offline without allowing a stale snapshot to resurrect it.
 
 ### Milestone 6 — Generic binary tunnel and terminal
 
@@ -2014,7 +2031,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - SSH host proxy credentials and repository exec policy
 - Controlled in-guest Git command runner and canonical-remote enforcement
 - Verification that control-panel Git actions never invoke host Git
-- Global Git author settings
+- Apply the centrally configured global Git author settings to guest commits
 - Commit & Push UI
 - Agent Git fetch/commit/push
 - Branch naming/upstream state
@@ -2056,7 +2073,7 @@ A release is MVP-complete when all of the following are true:
 
 1. Control panel can be deployed persistently with HTTPS and a wildcard preview domain.
 2. User can create a password account, register a passkey, and recover with password.
-3. User can centrally configure a model API key, private Git credential, project, and project secrets.
+3. User can centrally configure a model API key, private Git credential, global Git author identity, project, and project secrets.
 4. A Linux runner behind NAT enrolls using only control-panel URL and enrollment token.
 5. Runner reports free CPU/memory/disk and accepts a requested session size.
 6. User can override the automatic runner before the first message and cannot move the session afterward.
@@ -2072,7 +2089,7 @@ A release is MVP-complete when all of the following are true:
 16. Agent can publish a private managed preview that supports HTTP/WebSockets over the outbound tunnel.
 17. Managed preview wakes and restarts after sleep; live-only preview clearly expires.
 18. Capability preview links are revocable and do not expose control-panel authentication to the guest.
-19. Archive and delete operate on the online owning runner; deletion also removes the four-field control-panel catalog row, and no offline deletion tombstone is stored.
+19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the four-field catalog row, stores only a deleted-session ID/time marker, and causes any later stale runner snapshot to be cleaned up rather than resurrected.
 20. Pi never discovers project settings, packages, extensions, skills, prompts, themes, context files, or system-prompt fragments on the runner host; Pi/the model accesses project files and scripts only through Gondolin-backed tools.
 
 ## 33. Known risks and mitigations
@@ -2117,13 +2134,13 @@ A release is MVP-complete when all of the following are true:
 
 **Risk:** A dead runner makes its sessions unavailable.
 
-**Mitigation:** Show an explicit unavailable state, reject session operations while offline, add runner-side backups/exports later, and defer migration rather than implementing unsafe partial movement.
+**Mitigation:** Show an explicit unavailable state, reject runner-backed session operations while offline, permit marker-backed offline deletion, add runner-side backups/exports later, and defer migration rather than implementing unsafe partial movement.
 
-### SQLite concurrency
+### PostgreSQL load and runner file growth
 
-**Risk:** Control configuration writes or a runner’s local session-event bursts could create write contention in their separate databases.
+**Risk:** Control configuration/catalog traffic can exhaust PostgreSQL connections, while runner-local session event files can grow or be left with a partial final append after a crash.
 
-**Mitigation:** Keep all session data except the four-field catalog out of control-panel SQLite; use WAL and short transactions in both stores, batch runner-local durable events, and avoid persisting token deltas.
+**Mitigation:** Keep all full session data out of control-panel PostgreSQL, use a bounded connection pool and short transactions, append runner events to crash-checked files without persisting token deltas, and compact only through an explicit future policy.
 
 ### Disk growth
 
@@ -2146,7 +2163,7 @@ A release is MVP-complete when all of the following are true:
 - Managed service manifest committed to repositories
 - Portals for multiple coordinated services
 - Object-store backup of checkpoints/workspaces
-- Postgres/Redis and multi-instance control plane
+- PostgreSQL-only multi-instance control-plane coordination
 - macOS runners
 - GPU resources
 - Webhooks/event-triggered sessions

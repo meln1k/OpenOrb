@@ -10,7 +10,7 @@ Every required MVP failure mode is distinguishable in the browser and has the do
 ## Scope
 
 - Exercise and surface runner disconnect during provisioning and prompt execution.
-- Surface setup, model, VM start, GitHub authentication, clone, report, and push failures.
+- Surface setup, model, VM start, GitHub authentication, clone, report, and push failures. Clone failure is a non-fatal unavailable-checkout warning and the Pi session still starts.
 - Preserve runner-owned diagnostics without putting prompt/tool content or secrets in infrastructure logs.
 - Add explicit retry only where `MVP.md` allows it; never silently replay ambiguous prompt or push work.
 - Ensure a failed VM can be destroyed and explicitly cold-started without deleting workspace/Pi data.
@@ -18,7 +18,8 @@ Every required MVP failure mode is distinguishable in the browser and has the do
 ## Acceptance criteria
 
 - Each failure has a specific user-visible category and useful next action.
-- Setup failure shows bounded stdout/stderr and never prompts Pi.
+- Setup failure after a successful clone shows bounded stdout/stderr and never prompts Pi.
+- Clone failure shows bounded diagnostics, marks the checkout unavailable, and still permits the stored prompt to run.
 - Authentication errors do not reveal credentials/placeholders beyond safe redaction.
 - Ambiguous prompt/push outcomes require user action and make no exactly-once claim.
 - Recovery preserves all data that `MVP.md` says must survive.

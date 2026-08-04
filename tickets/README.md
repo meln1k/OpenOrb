@@ -76,7 +76,7 @@ These tickets split `MVP.md` into dependency-ordered vertical slices. The first 
 | Ticket | Outcome |
 |---|---|
 | [OO-018](OO-018-stop-idle-and-cold-continuation.md) | VM destruction and continuation preserve workspace and Pi JSONL |
-| [OO-019](OO-019-session-deletion.md) | Explicit deletion removes runner data and the catalog row |
+| [OO-019](OO-019-session-deletion.md) | Online/offline deletion removes the catalog card and prevents stale runner resurrection |
 
 **Slice exit — first runnable iteration:** The complete real workflow in `MVP.md` works locally from browser configuration through private GitHub push, VM destruction, cold continuation, and deletion.
 

@@ -29,7 +29,7 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 6. **No Pi workspace discovery.** Pi uses an explicit empty `ResourceLoader` and in-memory settings.
 7. **One prompt at a time.** Do not implement durable follow-up queues or editable pending Pi messages.
 8. **Cold VM lifecycle.** Preserve the workspace and Pi JSONL, not guest root/process state.
-9. **Runner-owned session data.** Complete session state lives on the assigned runner. The control panel keeps only a minimal catalog row: session ID, project, creation time, and a trimmed initial-prompt preview.
+9. **Runner-owned session data.** Complete live-session state lives on the assigned runner. The control panel keeps only a minimal catalog row—session ID, project, creation time, and a trimmed initial-prompt preview—plus deleted-session ID/time markers that prevent stale runner resurrection.
 10. **Prefer explicit failure.** If a runner disconnects or an operation becomes ambiguous, show an error and let the user retry.
 
 ## 3. Included features
@@ -37,14 +37,16 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 ### Control panel
 
 - Single-user password authentication
-- SQLite persistence for control configuration only
+- PostgreSQL as the control panel's only durable persistence, covering control configuration, the minimal live-session catalog, and deleted-session markers
 - Project configuration
 - OpenCode Go API-key configuration, initially targeting `opencode-go/deepseek-v4-flash`
 - GitHub token configuration using a mediated guest-visible `GH_TOKEN` placeholder
+- Global Git author name and email configuration
 - Runner enrollment and revocation
 - Runner online/offline status
-- Minimal session catalog containing only project, creation time, and trimmed initial prompt
-- Session creation, stop, continuation, and deletion
+- Minimal live-session catalog containing only project, creation time, and trimmed initial prompt
+- Minimal deleted-session ID/time markers
+- Session creation, stop, continuation, and online/offline deletion
 - Responsive chat UI
 - Streaming assistant text, thinking, tool calls, and results
 - Session status and provisioning logs
@@ -120,7 +122,7 @@ Browser
 Control panel
   ├── Remix 3 web UI and HTTP API
   ├── Password authentication
-  ├── SQLite
+  ├── PostgreSQL
   ├── Encrypted model/Git credentials
   └── Runner registry, minimal session catalog, and live routing
           ▲
@@ -137,7 +139,7 @@ Per-session Gondolin VM
   ├── /workspace via RealFSProvider
   ├── Agent tool execution
   ├── Repository Git operations
-  └── Mediated HTTP/HTTPS egress for GitHub and model traffic
+  └── Mediated HTTP/HTTPS egress for GitHub
 ```
 
 There is no browser-to-runner connection and no runner listener exposed to the network.
@@ -167,13 +169,15 @@ Do not create additional abstraction packages until they are justified by workin
 - Remix 3
 - Resolve Remix 3 from the current `preview/main` source when scaffolding and pin the exact resolved commit in the lockfile
 - Node.js server
-- SQLite in WAL mode
+- PostgreSQL with explicit committed migrations
+- No Redis, KV store, or application-owned durable local files; the control process may keep only rebuildable in-memory routing/live state
 - HTTP commands and SSE session events
 - No browser WebSocket requirements in the MVP
 
 ### Runner
 
 - Native Linux service
+- Ordinary file-backed persistence only; no runner database. Sensitive identity/token files use restrictive filesystem permissions.
 - A temporary macOS development harness may run the same runner workflow locally; macOS is not a supported release target
 - Node.js version compatible with Gondolin
 - QEMU/KVM and Gondolin
@@ -197,13 +201,13 @@ The control panel encrypts:
 - The OpenCode Go API key
 - The GitHub token
 
-Use an application master key supplied through configuration or generated into the persistent control volume. Secret values are never returned to the browser after creation.
+Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The control panel never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Secret values are never returned to the browser after creation.
 
 ### Runner enrollment
 
 Use a simple bearer-token design:
 
-1. Administrator creates an enrollment PSK.
+1. Administrator creates a reusable enrollment PSK. It remains valid for additional enrollments until the administrator revokes it.
 2. Runner submits the PSK, name, architecture, and capabilities.
 3. Control panel returns a random revocable runner token.
 4. Runner stores the token with filesystem mode `0600`.
@@ -264,7 +268,7 @@ interface RunnerCapacity {
 }
 ```
 
-The VM size is configured runner-wide rather than per session.
+The VM size is configured runner-wide rather than per session. `activeSessions` counts provisioned VMs currently consuming a concurrency slot, including VMs that are provisioning or running. Stopped sessions with no VM do not count.
 
 Selection algorithm:
 
@@ -279,6 +283,8 @@ No reservation handshake, labels, resource ratios, or migration are required.
 If no runner is available, session creation is rejected with a clear error. The control panel does not queue work for an offline runner.
 
 ## 10. Session storage
+
+Runner persistence uses ordinary files and directories, not a database. Sensitive runner identity/token files use restrictive filesystem permissions.
 
 Suggested runner layout:
 
@@ -321,7 +327,7 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is the initial textual prompt with whitespace collapsed and truncated to at most 200 Unicode code points. It excludes attachments and is never used to replay a prompt. No runner ID, title, status, branch, model, transcript, tool data, event cursor, diff, or other runtime state is persisted in the control panel.
 
-While connected, the runner advertises a session inventory so the control panel can build an in-memory routing index and enrich catalog entries with live state. After a control-panel restart, catalog entries remain visible, while routes and live state reappear as runners reconnect.
+On connect and reconnect, the runner sends a complete snapshot of its sessions, including the four catalog fields and live routing/state data. The control panel runtime-validates the snapshot, upserts any missing four-field catalog rows that are not marked deleted, and rebuilds its in-memory routing index. This recovers a runner-local session created before a control-panel crash could commit its catalog row. Existing catalog entries remain visible while their runner is offline. Snapshot absence alone does not delete a catalog row because the control panel does not persist session ownership. A snapshot entry whose session ID has a control-panel deletion marker is never reinserted or routed; the runner is instructed to remove it once any active work settles.
 
 Do not persist:
 
@@ -342,21 +348,22 @@ Do not persist:
 6. Mount the workspace at `/workspace` with `RealFSProvider`.
 7. Configure mediated network and Git credentials.
 8. Clone the repository from inside Gondolin.
-9. Create the session branch inside Gondolin.
-10. Run executable `.agents/setup` inside Gondolin if present.
+9. If cloning succeeds, create the session branch and run executable `.agents/setup` inside Gondolin if present.
+10. If cloning fails, preserve and stream the bounded failure log, mark the checkout unavailable, and continue to Pi rather than failing the session. Do not run branch creation or `.agents/setup` without a valid checkout.
 11. Create/open the host-side Pi session.
 12. Send the initial prompt.
 
 ### While active
 
-- Keep the VM running during agent work.
-- Start the idle timer after Pi settles.
+- Keep the VM running during agent, provisioning, setup, and report work.
+- Record the latest accepted user-message time for idle shutdown.
 - A normal prompt is allowed only when Pi is idle.
 - Refresh the guest-generated Git report after Pi settles.
+- Manual Stop is accepted only when Pi is idle and no provisioning, setup, or report operation is active; otherwise the user must wait or Abort the active run first.
 
 ### Idle stop
 
-After 15 minutes idle:
+The VM may stop when at least 15 minutes have passed since the latest accepted user message and no agent, provisioning, setup, or report work is active:
 
 1. Run a final Git status/diff inside Gondolin.
 2. Store the bounded report outside the guest-writable workspace.
@@ -375,6 +382,16 @@ After 15 minutes idle:
 `.agents/setup` must therefore be idempotent. Dependencies installed under `/workspace` persist; guest OS/root changes do not.
 
 No checkpoint creation, compatibility management, `.agents/resume`, service restoration, or lease system is required.
+
+### Delete
+
+Deletion requires explicit confirmation. In one PostgreSQL transaction, the control panel writes a durable deleted-session marker containing only the session ID and deletion time and removes the four-field catalog row. It then removes any live route before requesting runner cleanup. The marker is committed first so a control-panel crash cannot resurrect a session after runner-side deletion.
+
+- If the runner is online and idle, it removes the workspace, Pi JSONL, metadata, events, reports, and logs.
+- If the runner is online but active, deletion is rejected; the user must wait for the work to settle. An offline deletion cannot determine live state, so if the runner later reconnects with active work, cleanup waits until that work settles rather than interrupting it.
+- If the runner is offline or its host has been lost, the catalog card is still removed and the marker remains.
+- If any runner later reports the deleted session ID in a complete snapshot, the control panel does not recreate the catalog row and repeatedly requests idempotent cleanup until the runner confirms removal.
+- Deleted-session markers are retained so a stale runner disk or backup cannot resurrect a deleted session.
 
 ## 12. Pi integration
 
@@ -424,7 +441,7 @@ This security rule remains mandatory even in the lean MVP:
 
 ### Initial prompt
 
-The initial prompt is stored with the session while provisioning occurs. If provisioning fails, show the session as failed and require an explicit retry.
+The initial prompt is stored with the session while provisioning occurs. If VM creation or another fatal provisioning step fails, show the session as failed and require an explicit retry. Retry destroys any current VM, creates a fresh VM, remounts the existing workspace, and reruns provisioning. A repository clone failure is a visible non-fatal warning: preserve its log and continue the Pi session with the checkout marked unavailable.
 
 ### Subsequent prompts
 
@@ -485,6 +502,8 @@ SSH repositories, private keys, and non-GitHub hosts are deferred.
 
 There is no separate Commit & Push control-panel workflow. The user asks the agent to commit and push.
 
+The control panel requires a global Git author name and email. The runner supplies that identity to guest Git for OpenOrb session commits.
+
 The trusted OpenOrb system prompt instructs the agent:
 
 - Commit/push only when explicitly requested.
@@ -512,7 +531,7 @@ When the VM is stopped but the runner is online, display the runner’s cached r
 - Login/setup
 - Projects
 - Model credentials
-- Git credentials
+- Git credentials and global Git author identity
 - Runners
 - Session list
 - Session create
@@ -578,6 +597,8 @@ GET    /api/sessions/:sessionId/events?after=<cursor>
 GET    /api/sessions/:sessionId/diff
 ```
 
+`DELETE /api/sessions/:sessionId` remains available while the runner is offline. After explicit confirmation, it commits the minimal deletion marker and removes the catalog row without waiting for runner cleanup.
+
 A later implementation may primarily use Remix actions rather than exposing every route as a standalone JSON API. The behavior matters more than preserving this exact route list.
 
 ## 17. Session events
@@ -609,21 +630,23 @@ If the runner is offline, session history and SSE replay are unavailable.
 
 ## 18. Minimal persistence model
 
-Control-panel SQLite stores configuration plus the minimal session catalog:
+Control-panel PostgreSQL is the control panel's only durable persistence. It stores configuration plus the minimal session catalog:
 
 - `users`
 - `browser_sessions`
 - `encrypted_secrets`
 - `models`
 - `git_credentials`
+- Global Git author configuration; confirm its exact relation/API shape before implementing OO-004
 - `projects`
 - `runners`
 - `runner_enrollment_tokens`
 - `sessions`, restricted to `id`, `project_id`, `created_at`, and `initial_prompt_preview`
+- `deleted_sessions`, restricted to `session_id` and `deleted_at`
 
-It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. Session routing is an in-memory index rebuilt from connected runner inventories.
+It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only session identity and deletion time. Session routing is an in-memory index rebuilt from connected runner snapshots. Do not add Redis, another database/KV service, or application-owned durable control-panel files.
 
-Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as conversation truth, atomic JSON for session metadata, an append-only OpenOrb `events.jsonl` for normalized replayable events/cursors, ordinary log files, and JSON/patch Git reports. Do not add a runner SQLite database for the MVP.
+Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as conversation truth, atomic JSON for session metadata, an append-only OpenOrb `events.jsonl` for normalized replayable events/cursors, ordinary log files, and JSON/patch Git reports. Do not add a runner-local database for the MVP.
 
 Do not add control-panel tables for:
 
@@ -636,6 +659,7 @@ Do not add control-panel tables for:
 - Pending message editing
 - Resource reservations
 - Archives
+- Any deletion record beyond the minimal `deleted_sessions` marker
 - Agent profiles
 
 ## 19. Failure behavior
@@ -644,7 +668,7 @@ Do not add control-panel tables for:
 
 - Mark the runner offline and remove its sessions from the live routing index.
 - Keep minimal catalog cards visible using project, creation time, and initial-prompt preview.
-- Session transcript, diff, files, status, and actions are unavailable because no control-panel copy exists.
+- Session transcript, diff, files, status, Stop, and other runner-backed actions are unavailable because no control-panel copy exists. Explicit deletion remains available because it records a control-panel deletion marker and removes the catalog card without waiting for the runner.
 - Disable prompt submission.
 - Do not move sessions to another runner.
 - Restore the session inventory and access after the same runner reconnects.
@@ -671,7 +695,7 @@ Do not add control-panel tables for:
 ### Control-panel restart
 
 - Minimal catalog rows remain available.
-- Runners reconnect automatically and re-advertise their session inventories.
+- Runners reconnect automatically and send complete session snapshots; the control panel upserts missing non-deleted four-field catalog rows, rejects tombstoned entries, and rebuilds live routes.
 - Browsers reload full history/state through the reconnected runner.
 - No full session reconstruction occurs from control-panel storage.
 - In-flight operations may be marked failed and manually retried.
@@ -713,12 +737,14 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 - Runner disconnect during a prompt
 - Control-panel restart during a session
 - Setup failure
+- Non-fatal clone failure with a usable Pi session and visible diagnostics
 - Model failure
 - VM start failure
 - HTTPS Git authentication failure
 - Private GitHub clone/push through the mediated `GH_TOKEN`
 - Verification that the real GitHub token never enters the guest
 - Idle cold restart
+- Offline deletion followed by a stale runner reconnect cannot recreate the catalog row or route
 
 ## 21. Implementation milestones
 
@@ -727,7 +753,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 - TypeScript/pnpm monorepo
 - Remix 3 resolved from current `preview/main` and pinned exactly
 - Shared protocol schemas
-- SQLite control configuration and four-field session catalog
+- PostgreSQL control configuration, four-field live-session catalog, and minimal deleted-session markers
 - Explicit empty Pi `ResourceLoader`
 - In-memory Pi settings
 - Gondolin-backed tools
@@ -740,6 +766,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 
 - Password setup/login
 - Encrypted OpenCode Go and GitHub token credentials
+- Global Git author name/email configuration
 - Projects
 - Runner enrollment bearer token
 - Single outbound runner WebSocket
@@ -793,7 +820,7 @@ The lean MVP is complete when:
 1. A user can deploy the password-protected control panel.
 2. A Linux runner behind NAT enrolls using a URL and enrollment PSK.
 3. The runner needs no inbound port or VPN.
-4. The user can configure an OpenCode Go API key and GitHub token.
+4. The user can configure an OpenCode Go API key, GitHub token, and global Git author name/email.
 5. The user can create a project and start a session on an available runner.
 6. The repository is cloned inside Gondolin, never with host Git against the session workspace.
 7. `.agents/setup` runs inside Gondolin.
@@ -801,13 +828,13 @@ The lean MVP is complete when:
 9. Pi tools read, write, edit, and execute commands through Gondolin.
 10. Chat text, thinking, tool calls, results, and status stream to the browser.
 11. The UI permits one normal prompt at a time and supports Abort.
-12. The control panel stores only session ID, project, creation time, and a 200-code-point initial-prompt preview; completed transcript data is replayed from the runner after reconnect.
+12. The control panel stores only session ID, project, creation time, and a 200-code-point initial-prompt preview for live sessions, plus minimal deleted-session ID/time markers; completed transcript data is replayed from the runner after reconnect.
 13. The user can view the last guest-generated Git diff while the runner is connected.
 14. The agent can clone, commit, and push a private GitHub repository without obtaining the real GitHub token.
 15. Idle VMs are destroyed while workspace and Pi JSONL remain.
 16. The session can cold-start and continue with the same checkout and conversation.
 17. A pinned session remains unavailable rather than migrating while its runner is offline.
-18. The user can stop and explicitly delete a session.
+18. The user can stop and explicitly delete a session; offline deletion removes its catalog card and prevents a stale runner snapshot from resurrecting it.
 
 ## 23. Post-MVP order
 

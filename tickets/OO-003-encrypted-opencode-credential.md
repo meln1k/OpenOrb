@@ -9,8 +9,8 @@ The administrator configures the OpenCode Go API key through the browser without
 
 ## Scope
 
-- Load or create the application master key in persistent control storage with mode `0600`.
-- Encrypt the OpenCode Go key with the scheme required by `MVP.md`, including authenticated metadata and key version.
+- Require the application master key through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection. Never generate or persist it in control-panel files or PostgreSQL.
+- Encrypt the OpenCode Go key with the application-encryption scheme defined in `MASTER_PLAN.md`, including authenticated metadata and key version.
 - Add the smallest browser form/list state needed to create, replace, and delete the credential.
 - Represent the MVP model as Pi provider `opencode-go`, model `deepseek-v4-flash`.
 - Redact secrets from responses, errors, and infrastructure logs.
@@ -20,7 +20,7 @@ The administrator configures the OpenCode Go API key through the browser without
 - The browser can save an OpenCode Go API key and later sees only metadata/redacted hint.
 - Database inspection does not reveal the plaintext key.
 - Restarting the control panel with the same master key preserves decryptability.
-- Starting with a missing/wrong key for existing ciphertext fails visibly rather than destroying data.
+- Starting with a missing or invalid master key always fails visibly; a wrong key for existing ciphertext fails without destroying data.
 - No credential testing UI or additional provider abstraction is added.
 
 ## Tests
@@ -28,7 +28,7 @@ The administrator configures the OpenCode Go API key through the browser without
 - Encryption/decryption and authenticated-metadata tamper failure.
 - API/route response never includes the submitted key.
 - Log/error redaction.
-- Restart/master-key behavior.
+- Restart/master-key behavior, including proof that no control-panel file or PostgreSQL row contains the master key.
 
 ## Not included
 

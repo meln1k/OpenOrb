@@ -9,7 +9,7 @@ The administrator creates an enrollment PSK in the browser, and the temporary ma
 
 ## Scope
 
-- Add enrollment-token creation through the authenticated browser UI.
+- Add reusable enrollment-PSK creation and revocation through the authenticated browser UI. A PSK remains valid for multiple enrollments until revoked.
 - Implement runner enrollment using control-panel URL, PSK, runner name, architecture, and capabilities.
 - Return and persist a random revocable runner bearer token with file mode `0600`.
 - Establish the one outbound authenticated JSON WebSocket defined by `MVP.md`.
@@ -27,7 +27,7 @@ The administrator creates an enrollment PSK in the browser, and the temporary ma
 
 ## Tests
 
-- Enrollment success, invalid PSK, consumed/revoked token behavior selected by the UI.
+- Enrollment success, repeated enrollment with the same reusable PSK, invalid PSK, and revoked-PSK rejection.
 - WebSocket authentication and schema rejection.
 - Runner token file permissions.
 - Reconnect behavior with bounded timers.

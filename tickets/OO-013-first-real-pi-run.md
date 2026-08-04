@@ -23,7 +23,7 @@ After provisioning, the stored initial prompt runs through host-side Pi with `op
 - A prompt can inspect and change the repository only through Gondolin tools.
 - Text/thinking/tool activity appears while the run is active.
 - Completed semantic records survive browser reconnect in runner storage.
-- Token deltas, prompt content, and tool output are not persisted by the control panel or infrastructure logs.
+- Token deltas, full prompt content, and tool output are not persisted by the control panel or infrastructure logs; the only control-panel prompt-derived value is the required trimmed `initial_prompt_preview` catalog field.
 - The model key never enters Gondolin or Pi auth files.
 - Composer state reflects real runner/Pi state rather than optimistic completion.
 

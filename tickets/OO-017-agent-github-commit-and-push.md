@@ -10,7 +10,7 @@ When explicitly asked, the real agent commits workspace changes and pushes the s
 ## Scope
 
 - Add trusted OpenOrb prompt guidance to commit/push only on explicit request, use the session branch, and never force-push.
-- Make the configured branch and Git author identity available to guest Git operations without exposing the real token.
+- Make the configured branch and the global control-panel Git author name/email from OO-004 available to guest Git operations without exposing the real token.
 - Ensure network Git/`gh` operations use the canonical configured GitHub repository rather than an agent-modified remote destination.
 - Refresh the guest-generated report after commit/push and expose reported branch/head state from the connected runner.
 - Add a real end-to-end acceptance path against a disposable GitHub test repository.

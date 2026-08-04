@@ -9,7 +9,7 @@ The first user creates the single administrator through the browser and subseque
 
 ## Scope
 
-- Add control-panel SQLite with WAL mode, foreign keys, and committed migrations.
+- Add control-panel PostgreSQL with foreign keys and committed migrations. PostgreSQL is the control panel's only durable persistence; do not add Redis, another database/KV store, or application-owned durable local files.
 - Implement first-run setup, password login, and logout.
 - Hash passwords with Argon2id.
 - Add browser-session rotation, expiry, secure cookie handling, and CSRF protection for state changes.
@@ -23,7 +23,7 @@ The first user creates the single administrator through the browser and subseque
 - Login rotates the session identifier; logout invalidates it.
 - State-changing requests without valid CSRF protection fail.
 - Production cookies are `HttpOnly`, `Secure`, host-only, and `SameSite=Lax`.
-- A restart preserves the administrator and valid persisted browser-session behavior.
+- A control-panel restart against the same PostgreSQL database preserves the administrator and valid persisted browser-session behavior; deleting the control process's local working directory loses no application state.
 
 ## Tests
 
