@@ -6,7 +6,8 @@ These tickets split `MVP.md` into dependency-ordered vertical slices. The first 
 
 - Use real Remix, runner transport, Gondolin, Pi, OpenCode Go, and GitHub components in acceptance paths. Test doubles are allowed only in lower-level tests.
 - Preserve the security boundaries from the first executable implementation. Never defer the empty Pi resource loader, in-memory settings, Gondolin-backed tools, or host-Git prohibition.
-- Do not invent system design, architecture, protocol, persistence, or UI interfaces not settled by `MVP.md` or a ticket. Ask the user when a new decision is required.
+- Do not invent system design, architecture, protocol, persistence, or code interfaces not settled by `MVP.md` or a ticket. Ask the user when a new decision is required.
+- Always double-check the APIs/interfaces with the user, even if they're described in the `MVP.md`.
 - Add only the packages and abstractions required by the ticket being implemented.
 - Every ticket must merge with the repository runnable and tests passing.
 - The temporary macOS harness is for local iteration only. Linux remains the release runner target.
