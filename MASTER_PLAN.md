@@ -53,7 +53,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Linear conversation UI
 - Streaming assistant text, thinking, tool calls, and tool results
 - Pi-native `followUp()` and `steer()` behavior while the runner is connected
-- Durable control-panel pending delivery while a runner is offline, waking, or provisioning; durability ends at Pi handoff
+- Runner-local pending delivery while the assigned runner is connected, waking, or provisioning; durability ends at Pi handoff
 - Conversation-only “edit last message”; workspace changes remain
 - Aggregate Git diff and changed-file view
 - Read-only file browser
@@ -69,7 +69,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Batteries-included Gondolin developer image
 - Shared package download caches
 - Archive and explicit deletion
-- Offline transcript viewing from the control-panel mirror
+- Minimal control-panel session catalog (project, creation time, trimmed initial prompt); all full session data is runner-backed
 
 ### 3.2 Explicit non-goals for MVP
 
@@ -104,7 +104,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - **Workspace:** The session-specific host checkout mounted at `/workspace` in Gondolin.
 - **Turn:** One Pi model response plus its tool calls. One user prompt may produce multiple turns.
 - **Run:** All work resulting from an accepted prompt, including retries, compaction, and Pi-native queued continuations, until Pi is fully settled.
-- **Pending delivery:** A normal user message durably held by the control panel before it is handed to Pi.
+- **Pending delivery:** A normal user message durably held by the assigned runner before it is handed to Pi.
 - **Pi queue:** Pi’s process-local steering/follow-up queue. It is live-only, has no stable item IDs, and is not part of Pi JSONL until delivery.
 - **Lease:** A reason a VM must remain awake, such as active agent work, a terminal, provisioning, or a preview.
 - **Managed preview:** A preview with a restart command that can wake and resume after VM sleep.
@@ -129,7 +129,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Edit last | Conversation-only rewind; do not roll back files or VM state |
 | While running | Normal send calls Pi `followUp()`; an explicit “Steer now” action calls `steer()` |
 | Pi pending queue | Live-only and process-local; no edit, cancel, promotion, replay, or durability promise after handoff |
-| Offline/waking runner | Normal messages remain durably pending in the control panel only until Pi handoff; steering requires a connected active runner |
+| Offline/waking runner | Reject sends while the runner is offline; a connected runner may durably hold messages while waking/provisioning until Pi handoff |
 | Model credentials | Centralized in control panel; API keys first |
 | Git credentials | Centralized HTTPS tokens and SSH private keys |
 | Git push | Agent may push, with credentials mediated outside the guest |
@@ -140,7 +140,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Preview lifecycle | Managed previews wake/restart; live-only previews expire on sleep |
 | Runner OS | Native Linux first |
 | Control UI | Remix 3, end-to-end TypeScript |
-| Control DB | SQLite for the single-user control panel |
+| Control DB | SQLite for control configuration plus a four-field session catalog: ID, project, creation time, and trimmed initial-prompt preview |
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | Separate logical control and binary data channels, both outbound |
 | Pi workspace resources | No project resource discovery in MVP; use an explicit empty/allowlist-only `ResourceLoader` and in-memory settings |
@@ -278,7 +278,8 @@ Secrets include:
 - Git HTTPS tokens
 - SSH private keys/passphrases
 - Project environment secrets
-- Preview capability tokens, stored hashed rather than recoverable
+
+Preview capability tokens are session data: the runner generates them, returns the clear value once through the proxy, and stores only their hash in its local session store.
 
 Use envelope-style application encryption:
 
@@ -372,29 +373,47 @@ Recommended layout:
         state.json
 ```
 
-The runner is authoritative for:
+The runner is authoritative for all complete session data; the control panel duplicates only the four catalog fields described below:
 
+- Session metadata and pinned-runner identity
 - Raw Pi JSONL
+- Normalized conversation, tool, usage, and replayable event records
+- Runner-local pending message handoff records
 - Working tree and Git objects, treated as untrusted bytes by the host
 - Full file contents
 - Host-owned cached Git reports produced by guest-side Git
+- Preview definitions, access policy, and capability hashes
 - VM checkpoint
 - Guest service logs
 - Local command/event idempotency journal
 
 The session workspace is guest-writable. The runner may safely store, mount, copy, hash, or serve bounded file bytes from it, but must never invoke native host Git—or another executable selected by workspace metadata—against that directory.
 
-The control panel is authoritative for:
+The control panel persists control configuration:
 
+- Users and browser authentication
 - Projects and configuration
 - Credentials and secrets
 - Runner identities and revocation
-- Session metadata and pinned runner
-- Pending user messages
-- Normalized completed conversation/tool records
-- Preview access policy and capability hashes
+
+It also persists one deliberately minimal catalog row per session:
+
+```ts
+interface SessionCatalogEntry {
+  id: string
+  projectId: string
+  createdAt: string
+  initialPromptPreview: string
+}
+```
+
+`initialPromptPreview` is derived from the initial textual prompt by collapsing whitespace and truncating to at most 200 Unicode code points. It excludes attachments and is display-only; it must never be used to reconstruct or replay a prompt.
+
+No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the control panel. Connected runners advertise their session inventories. The control panel builds an in-memory routing index and proxies all full session reads/events to the owning runner.
 
 ## 11. Domain model
+
+Project/configuration entities and the four-field `SessionCatalogEntry` are persisted by the control panel. Complete session entities, pending messages, previews, events, and runtime state are persisted only by their owning runner and merely proxied by the control panel.
 
 ### 11.1 Project
 
@@ -547,7 +566,6 @@ This model covers only messages that have not yet been handed to Pi. It does not
 
 ```ts
 type PendingMessageState =
-  | "waiting-for-runner"
   | "waiting-for-capacity"
   | "waiting-for-session"
   | "handing-off"
@@ -563,7 +581,7 @@ interface PendingMessage {
 }
 ```
 
-A waiting pending message may be cancelled with a compare-and-set transition before handoff begins. It is not editable; the user cancels and sends a replacement. Once state becomes `handing-off`, cancellation is rejected.
+Pending messages live only in the assigned runner’s local session store. A waiting message may be cancelled through the control-panel proxy with a compare-and-set transition before handoff begins. It is not editable; the user cancels and sends a replacement. Once state becomes `handing-off`, cancellation is rejected. If the runner is offline, reads, sends, and cancellation are unavailable.
 
 ## 12. Resource scheduling
 
@@ -618,30 +636,31 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 
 ### 13.1 Draft and first prompt
 
-1. User chooses project, ref, model, thinking level, CPU, memory, and optional branch name.
+1. User chooses project, ref, model, thinking level, CPU, memory, and optional branch name in browser/control request state.
 2. Scheduler displays the currently selected automatic runner.
 3. User may override the runner while drafting.
-4. Sending the first prompt creates a durable pending delivery and starts reservation.
-5. Runner assignment becomes immutable after reservation/provisioning succeeds.
-6. Runner creates an empty session workspace, boots Gondolin with requested resources, and mounts it.
-7. Git inside Gondolin clones the repository through mediated HTTPS/SSH credentials and reports the exact base commit.
-8. Git inside Gondolin creates the local working branch.
-9. Runner stores the reported base/branch state outside the guest-writable workspace.
-10. Runner runs `.agents/setup` once inside Gondolin.
-11. Runner creates the persistent Pi session and dispatches the first message.
+4. Sending the first prompt reserves an online runner.
+5. Runner creates the session locally, durably stores the full initial prompt, and becomes permanently assigned.
+6. After runner confirmation, control panel stores only the four-field catalog entry with the trimmed prompt preview; the runner assignment remains in the live routing index, not the catalog row.
+7. Runner creates an empty session workspace, boots Gondolin with requested resources, and mounts it.
+8. Git inside Gondolin clones the repository through mediated HTTPS/SSH credentials and reports the exact base commit.
+9. Git inside Gondolin creates the local working branch.
+10. Runner stores the reported base/branch state outside the guest-writable workspace.
+11. Runner runs `.agents/setup` once inside Gondolin.
+12. Runner creates the persistent Pi session and dispatches the first message.
 
 Provisioning logs stream to the browser as session events.
 
 ### 13.2 Subsequent normal message
 
-1. Control panel stores the message as a pending delivery with a unique `clientRequestId`.
-2. If the runner is offline, leave it in `waiting-for-runner`.
-3. If the VM is sleeping or lacks capacity, wake/reserve it and retain the pending record.
+1. Control panel resolves the session through its live runner index; if the assigned runner is offline, reject the send.
+2. Runner durably stores the message in its local session store with a unique `clientRequestId` before acknowledging HTTP acceptance.
+3. If the VM is sleeping or lacks capacity, wake/reserve it and retain the runner-local pending record.
 4. Recreate transient Gondolin policy, mounts, ingress, and secret placeholders.
 5. Run `.agents/resume` and open Pi’s existing JSONL session.
 6. Send one `session.deliver-message` command to the runner.
 7. Runner calls `session.prompt()` if Pi is idle or `session.followUp()` if Pi is currently streaming. For idle prompts, use Pi’s documented preflight acceptance callback rather than waiting for the complete run.
-8. When Pi reports preflight acceptance or `followUp()` returns successfully, runner records `accepted-by-pi`, acknowledges the command, and the control panel removes it from pending delivery.
+8. When Pi reports preflight acceptance or `followUp()` returns successfully, runner records `accepted-by-pi` and removes it from its local pending-delivery set.
 9. If it was a follow-up, subsequent queue state is Pi-owned and process-local until Pi emits the user message.
 10. Stream normalized Pi events. When Pi settles, refresh Git status/diff inside Gondolin and start the idle timer if no lease remains.
 
@@ -720,11 +739,10 @@ Archive:
 Delete:
 
 - Require explicit confirmation.
-- Revoke preview capability links.
-- Remove control-panel transcript/tool/session records.
-- Send idempotent deletion to the runner when online.
-- Runner removes checkout, Pi JSONL, checkpoint, logs, and spooled events.
-- If runner is offline, retain a deletion tombstone until acknowledged.
+- Require the owning runner to be online.
+- Runner revokes preview capabilities and removes metadata, checkout, Pi JSONL, normalized events, checkpoint, logs, and reports.
+- Control panel removes the four-field catalog row and its ephemeral route entry after runner deletion succeeds.
+- There is no control-panel deletion tombstone; retry deletion when the runner reconnects.
 
 ## 14. Pi integration
 
@@ -833,7 +851,7 @@ type SessionEvent =
   | { type: "runner.changed"; runner: RunnerSummary }
 ```
 
-Persist completed semantic records, not every token delta. Live deltas are relay traffic. On reconnect, reload completed state and resume the live stream.
+Persist completed semantic records and replay cursors on the runner, not the control panel. Live deltas are relay traffic. On browser reconnect, the control panel asks the owning runner to replay completed state/events and then resume the live stream.
 
 Use Pi’s fully settled event when available. Do not sleep on a low-level `turn_end` or retryable `agent_end`.
 
@@ -1009,7 +1027,7 @@ The real HTTPS credential is not placed in guest environment variables, files, p
 
 ### 17.6 Diff/status snapshots and sleeping sessions
 
-After agent settlement, terminal closure, and immediately before sleep, the runner executes controlled status/diff commands inside Gondolin. It parses and stores a bounded normalized report and optional patch in a host-owned runtime path that is not mounted guest-writable. The control panel mirrors the report.
+After agent settlement, terminal closure, and immediately before sleep, the runner executes controlled status/diff commands inside Gondolin. It parses and stores a bounded normalized report and optional patch in a host-owned runtime path that is not mounted guest-writable. The control panel proxies this report without persisting it.
 
 While the VM sleeps:
 
@@ -1107,9 +1125,10 @@ Require wildcard DNS and TLS. A path-based fallback is not a primary target beca
 
 ### 19.4 Capability access
 
-- Generate a high-entropy token.
-- Store only its hash.
-- Exchange the token for an exact-host preview cookie, then redirect to a clean URL.
+- Owning runner generates a high-entropy token and stores only its hash in runner-local session data.
+- Control panel returns the clear token once without persisting it.
+- On access, the gateway asks the connected owning runner to validate the token before exchange.
+- Exchange a valid token for an exact-host preview cookie, then redirect to a clean URL.
 - Allow explicit revocation and regeneration.
 - Rate-limit capability exchange and wake attempts.
 - Valid capability access may wake a managed preview.
@@ -1167,7 +1186,7 @@ Never accept arbitrary runner-side hostnames or ports from a browser request.
 
 ## 20. Browser API
 
-The browser API is internal and may evolve before a stable public API is declared. It still uses shared runtime schemas and explicit response types.
+The browser API is internal and may evolve before a stable public API is declared. It still uses shared runtime schemas and explicit response types. Session-list/catalog responses may come from the four persisted metadata fields. Every full session-scoped read or mutation requires the owning runner to be connected and is proxied to that runner.
 
 ### 20.1 Authentication
 
@@ -1269,7 +1288,7 @@ interface SendMessageInput {
 }
 ```
 
-`POST /messages` durably stores the message before attempting delivery and returns `202 Accepted`. The durability promise covers only the pre-handoff pending record. `DELETE` succeeds only while the record is still in a waiting state; it returns `409 Conflict` once handoff starts.
+`POST /messages` returns `202 Accepted` only after the online owning runner durably stores the message before attempting delivery. The durability promise covers only that runner-local pre-handoff record. If the runner is offline, return `503 Service Unavailable`. `DELETE` is proxied to the runner and succeeds only while the record is still waiting; it returns `409 Conflict` once handoff starts.
 
 `POST /steer` uses the same input shape but is a direct, live Pi operation. It returns success only after `session.steer()` accepts the message and returns `409 Conflict` when the runner/session/agent is unavailable. Steering is not durably queued or automatically retried.
 
@@ -1320,14 +1339,15 @@ Accept: text/event-stream
 
 Requirements:
 
-- Monotonic per-session durable event cursor
+- Runner-owned monotonic per-session durable event cursor
 - Support `Last-Event-ID`
 - Send periodic keepalives
-- Reload completed state after cursor expiration/compaction
+- Ask the runner to reload completed state after cursor expiration/compaction
+- Do not persist event history in the control panel
 - Do not persist every token delta
 - Coalesce high-frequency live deltas
-- Persist completed messages, completed tool results, lifecycle transitions, pending-delivery transitions, previews, and usage summaries
-- Relay Pi queue updates live without treating them as durable SSE history
+- Runner persists completed messages, tool results, lifecycle transitions, pending-delivery transitions, previews, and usage summaries
+- Relay Pi queue updates live without treating them as durable history
 - Browser reconnect must not duplicate completed messages
 
 The session list may use a separate lightweight global SSE stream for runner/session status, or poll initially. Do not overload every session stream with unrelated status.
@@ -1396,7 +1416,7 @@ preview.wake
 
 - Every command has a stable ID, but not every command is safe to replay.
 - Runner persists command receipt and terminal outcome before acknowledging.
-- `clientRequestId` deduplicates normal messages while they remain in control-panel pending delivery.
+- `clientRequestId` deduplicates normal messages in the runner-local session store before Pi handoff.
 - For `session.deliver-message`, runner journals `received` → `handing-off` → `accepted-by-pi`.
 - After `prompt()` or `followUp()` accepts a message, runner persists `accepted-by-pi` before acknowledging when possible.
 - An accepted message is never automatically replayed, because Pi may still hold or may already have delivered it.
@@ -1420,12 +1440,12 @@ On reconnect, runner reports:
 
 Control panel then:
 
-- Marks missing runner-local sessions as errors, never silently recreates them
-- Replays unacknowledged commands only when their command type/state is idempotent
-- Delivers control-panel pending messages in FIFO order, without reconstructing or replaying Pi’s process-local queue
-- Marks ambiguous message handoffs `delivery-uncertain`
-- Applies deletion tombstones
-- Imports missed durable event batches
+- Rebuilds its in-memory session-to-runner routing index from the runner inventory
+- Does not recreate or persist missing runner-local sessions
+- Proxies browser history requests and SSE replay to the runner
+- Does not reconstruct or replay Pi’s process-local queue
+- Leaves runner-local ambiguous handoffs marked `delivery-uncertain`
+- Does not import or retain durable session event batches
 
 ## 23. Runner binary data protocol
 
@@ -1536,9 +1556,9 @@ interface RunnerTransport {
 
 These boundaries allow Pi, Gondolin, Git, and transport details to be tested independently.
 
-## 25. Control-panel persistence model
+## 25. Persistence ownership
 
-Initial SQLite tables should cover:
+Control-panel SQLite stores configuration plus the minimal session catalog:
 
 - `users`
 - `password_credentials`
@@ -1551,29 +1571,29 @@ Initial SQLite tables should cover:
 - `project_secrets`
 - `runners`
 - `runner_enrollment_tokens`
-- `runner_commands`
-- `sessions`
-- `pending_messages`
-- `messages`
-- `tool_calls`
-- `session_events`
-- `previews`
-- `preview_capabilities`
-- `audit_events`
-- `deletion_tombstones`
+- `sessions`, restricted to `id`, `project_id`, `created_at`, and `initial_prompt_preview`
+- Control-plane audit events that contain no session content beyond the catalog identity
 
-Guidelines:
+It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews/capabilities, Git session state, checkpoints, runner commands containing prompt content, or deletion tombstones.
 
-- UUIDv7 or another time-sortable random identifier for primary entities
+Each runner owns a local session metadata/event store in addition to the filesystem layout in section 10. It persists:
+
+- Session identity, project snapshot/reference, and pinned runner
+- Conversation/tool/usage records and event cursors
+- Pending handoff and local command journal
+- Preview definitions/capability hashes
+- Git reports and session lifecycle state
+
+The control panel keeps an in-memory session routing index populated by connected runner inventories. After a restart the route index starts empty and is rebuilt as runners reconnect. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and actions are unavailable until the owning runner reconnects.
+
+Control-panel SQLite guidelines:
+
+- UUIDv7 or another time-sortable random identifier for configuration entities
 - Foreign keys enabled
 - WAL mode
 - Explicit migrations committed to source
 - Secret ciphertext separate from searchable metadata
-- Unique `(session_id, client_request_id)`
-- Unique durable event cursor per session
-- Unique runner command ID
 - Store timestamps in UTC
-- Bounded retention for verbose tool updates; completed records retained with session
 
 ## 26. UI and information architecture
 
@@ -1599,7 +1619,7 @@ Guidelines:
 - Model, thinking level, CPU/memory, and draft runner selection live in a composer/settings sheet.
 - Runner selector becomes read-only after first send.
 - Terminal can enter dedicated full-screen mode.
-- Control-panel pending messages remain visible and cancellable before handoff.
+- Runner-local pending messages remain visible and cancellable through the proxy before handoff while the runner is connected.
 - Pi-native follow-up/steering items are visible while connected but have no edit/cancel/promote actions.
 - Preview opens in a new tab or dedicated embedded frame depending on browser limitations.
 
@@ -1731,11 +1751,14 @@ Runner:
 
 ### 28.3 Audit events
 
-Record:
+Control-panel audit records contain only control-configuration actions:
 
 - Login and passkey changes
 - Secret/provider/Git credential changes
 - Runner enrollment/revocation
+
+Session-scoped audit records remain on the owning runner:
+
 - Session creation/archive/delete
 - Preview capability creation/revocation
 - Git pushes
@@ -1745,18 +1768,19 @@ Record:
 
 ### Runner disconnect
 
-- Mark runner offline after heartbeat timeout.
-- Preserve transcript and control-panel pending messages; do not claim recovery of Pi’s in-memory queue.
+- Mark the runner offline and remove its sessions from the live routing index.
+- Keep minimal catalog cards visible using only project, creation time, and trimmed initial-prompt preview.
+- Transcript, status, pending messages, diffs, files, terminals, and previews become unavailable because the control panel has no full session copy.
 - Do not reassign pinned sessions.
-- Private/capability previews return runner-offline status.
-- Reconcile commands and events after reconnect.
+- Return runner-offline status for session and preview requests.
+- Rebuild inventory/routes and resume runner-backed event replay after reconnect.
 
 ### Control-panel restart
 
-- Runner reconnects automatically with exponential backoff and jitter.
-- Commands are recovered from SQLite.
-- Browser SSE reconnects using cursor.
-- Runner command journal supports reconciliation; only proven-idempotent commands are replayed, and ambiguous message handoffs are surfaced.
+- Runner reconnects automatically with exponential backoff and jitter and advertises its session inventory.
+- Control panel retains minimal catalog rows but rebuilds all in-memory routes/live session state; it recovers no full sessions or commands from SQLite.
+- Browser SSE reconnects through the runner-owned cursor after the runner is available.
+- Runner-local journals handle reconciliation and surface ambiguous message handoffs.
 
 ### VM start/resume failure
 
@@ -1786,7 +1810,8 @@ Record:
 
 ### Message handoff or runner-process crash
 
-- Messages still waiting in control-panel pending delivery remain durable.
+- Messages already stored in runner-local pending delivery remain durable across runner process restart.
+- Nothing can be queued while the runner itself is unreachable.
 - Pi-native follow-up and steering queues disappear if the Pi/runner process dies.
 - Never reconstruct those queues from the control-panel live projection.
 - If the journal proves Pi accepted a message, do not replay it.
@@ -1826,10 +1851,10 @@ Record:
 - Control ↔ runner handshake across protocol versions
 - Idempotent command replay after dropped acknowledgments
 - Non-idempotent message handoff transitions to `delivery-uncertain` rather than replay
-- Event batch deduplication
-- Runner reconciliation
+- Runner-local event replay/deduplication through an unpersisted control-panel proxy
+- Runner inventory reconciliation and in-memory route rebuilding
 - Binary open/data/window/end/reset behavior
-- SSE cursor reconnect
+- SSE cursor reconnect using runner-owned event history through the control-panel proxy
 - Preview HTTP header/body streaming
 - Preview WebSocket tunneling
 
@@ -1848,7 +1873,8 @@ Scenarios:
 - Provision setup hook
 - Prompt → tools → settled → sleep → wake → continue
 - Pi-native follow-up and steering with no post-handoff mutation controls
-- Offline/waking pending delivery and reconnect handoff
+- Runner-local waking/provisioning pending delivery
+- Offline runner rejects message submission and exposes only the minimal catalog card, not cached full session data
 - Crash during Pi handoff produces `delivery-uncertain` and no automatic replay
 - Edit last without workspace rollback
 - Diff/file browsing while VM sleeps
@@ -1856,7 +1882,7 @@ Scenarios:
 - Managed preview wake/restart
 - Live-only preview expiration
 - Capability revocation
-- Archive/delete with offline tombstone
+- Archive/delete while the owning runner is online; offline deletion is rejected
 
 ### 30.4 Security tests
 
@@ -1866,7 +1892,7 @@ Scenarios:
 - Workspace traversal and escaping symlink denied
 - Preview cannot target runner LAN/loopback arbitrarily
 - Control/preview cookies never reach guest
-- Capability token removed from URL and stored hashed
+- Capability token removed from URL and stored hashed only on the owning runner
 - Placeholder secret cannot be recovered in guest
 - Git credentials absent from process args, env, files, logs, and tool output
 - Hostile `.git/config`, hooks, textconv/diff drivers, filters, fsmonitor, and `core.sshCommand` cannot create a runner-host marker during any OpenOrb Git/review action
@@ -1951,12 +1977,13 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Event normalization and runner spool
 - HTTP prompt API and SSE stream
 - Pi-native follow-up, direct steering, and abort
-- Durable pre-handoff pending delivery for offline/waking runners
+- Runner-local pre-handoff pending delivery while connected/waking
+- Offline runner rejection with only the minimal catalog card available
 - Ambiguous-handoff state without automatic replay
 - Model/thinking controls
 - Edit-last conversation semantics
 
-**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, including sleep/wake, durable pre-handoff pending messages, and Pi-native live follow-up/steering semantics.
+**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with transcript/event state replayed from the runner and only the four-field catalog stored by the control panel.
 
 ### Milestone 5 — Review surfaces
 
@@ -1964,11 +1991,11 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Hostile `.git/config` regression tests
 - Changed-file navigation
 - Read-only file browser
-- Runner/control transcript reconciliation
-- Offline transcript viewing
-- Session archive/delete and disk reporting
+- Runner-owned transcript/event replay through the control-panel proxy
+- Explicit unavailable state while the runner is offline
+- Session archive/delete on the online owning runner and disk reporting
 
-**Exit:** User can inspect an agent’s complete result while its VM is sleeping and cleanly remove the session.
+**Exit:** While the owning runner is connected, the user can inspect an agent’s complete result from runner-owned data and cleanly remove the session.
 
 ### Milestone 6 — Generic binary tunnel and terminal
 
@@ -2036,16 +2063,16 @@ A release is MVP-complete when all of the following are true:
 7. Session boots an isolated Gondolin VM, clones the repository inside it, runs setup, and starts host-side Pi.
 8. Chat, thinking, tool calls, and tool output stream to desktop and mobile UI.
 9. While Pi is running, the UI exposes normal follow-up and explicit “Steer now” actions; Pi-accepted queue items are visible when connected but are not editable, cancellable, promotable, or claimed durable.
-10. Normal messages sent while a runner is offline/waking remain durable and cancellable until handoff after reconnect; an ambiguous crash-time handoff is surfaced instead of silently replayed.
+10. Sends are rejected while the assigned runner is offline; while connected/waking, pending messages are stored only on that runner until handoff, and ambiguous handoff is surfaced instead of silently replayed.
 11. VM checkpoints after 15 minutes idle and wakes for subsequent work.
-12. User can review the last guest-generated aggregate diff and files while the VM is sleeping, without native host Git interpreting the checkout.
+12. While the owning runner is connected, the user can review the runner-owned guest-generated aggregate diff and files while the VM is sleeping, without native host Git interpreting the checkout.
 13. Browser terminal works without any inbound runner port.
 14. Agent can fetch, commit, and push to a private repository without obtaining the real credential in the guest.
 15. User can choose the pushed branch name.
 16. Agent can publish a private managed preview that supports HTTP/WebSockets over the outbound tunnel.
 17. Managed preview wakes and restarts after sleep; live-only preview clearly expires.
 18. Capability preview links are revocable and do not expose control-panel authentication to the guest.
-19. Archive preserves state; delete removes runner artifacts and control-panel records, including after an offline runner reconnects.
+19. Archive and delete operate on the online owning runner; deletion also removes the four-field control-panel catalog row, and no offline deletion tombstone is stored.
 20. Pi never discovers project settings, packages, extensions, skills, prompts, themes, context files, or system-prompt fragments on the runner host; Pi/the model accesses project files and scripts only through Gondolin-backed tools.
 
 ## 33. Known risks and mitigations
@@ -2090,13 +2117,13 @@ A release is MVP-complete when all of the following are true:
 
 **Risk:** A dead runner makes its sessions unavailable.
 
-**Mitigation:** Show cached transcript, durable pre-handoff pending messages, explicit offline state, backups/exports later, and defer migration rather than implementing unsafe partial movement.
+**Mitigation:** Show an explicit unavailable state, reject session operations while offline, add runner-side backups/exports later, and defer migration rather than implementing unsafe partial movement.
 
 ### SQLite concurrency
 
-**Risk:** Event bursts and tunnel metadata could create write contention.
+**Risk:** Control configuration writes or a runner’s local session-event bursts could create write contention in their separate databases.
 
-**Mitigation:** WAL, short transactions, batch durable events, avoid storing token deltas, and keep bulk preview/terminal traffic out of the database.
+**Mitigation:** Keep all session data except the four-field catalog out of control-panel SQLite; use WAL and short transactions in both stores, batch runner-local durable events, and avoid persisting token deltas.
 
 ### Disk growth
 

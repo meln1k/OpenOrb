@@ -1,0 +1,829 @@
+# OpenOrb Lean MVP
+
+> This document defines the first implementable OpenOrb release. It intentionally overrides the broader MVP scope in `MASTER_PLAN.md`. The master plan remains the longer-term product direction.
+
+## 1. Goal
+
+Prove the core OpenOrb workflow with the smallest useful system:
+
+1. Deploy a control panel.
+2. Enroll outbound-only Linux runners.
+3. Configure an OpenCode Go API key and a public or private GitHub repository.
+4. Start a session on an available runner.
+5. Clone the repository inside a Gondolin VM.
+6. Run host-side Pi with tools backed by Gondolin.
+7. Stream conversation and tool activity to the browser.
+8. Review workspace changes.
+9. Ask the agent to commit and push a branch.
+10. Stop and later continue the session.
+
+The MVP is successful if a user can safely use spare Linux compute behind NAT as a remote coding-agent runner without configuring inbound networking.
+
+## 2. Core principles
+
+1. **Outbound-only runners.** Runners require no public IP, forwarded port, VPN, or SDN.
+2. **One session, one VM, one checkout.** Each session has an independent workspace and Gondolin VM.
+3. **Pi on the trusted runner host.** All agent tools execute through Gondolin-backed implementations.
+4. **Untrusted workspace.** Repository files and `.git` metadata must never execute on the runner host.
+5. **Git runs inside Gondolin.** Native host Git never consumes a guest-writable checkout.
+6. **No Pi workspace discovery.** Pi uses an explicit empty `ResourceLoader` and in-memory settings.
+7. **One prompt at a time.** Do not implement durable follow-up queues or editable pending Pi messages.
+8. **Cold VM lifecycle.** Preserve the workspace and Pi JSONL, not guest root/process state.
+9. **Runner-owned session data.** Complete session state lives on the assigned runner. The control panel keeps only a minimal catalog row: session ID, project, creation time, and a trimmed initial-prompt preview.
+10. **Prefer explicit failure.** If a runner disconnects or an operation becomes ambiguous, show an error and let the user retry.
+
+## 3. Included features
+
+### Control panel
+
+- Single-user password authentication
+- SQLite persistence for control configuration only
+- Project configuration
+- OpenCode Go API-key configuration, initially targeting `opencode-go/deepseek-v4-flash`
+- GitHub token configuration using a mediated guest-visible `GH_TOKEN` placeholder
+- Runner enrollment and revocation
+- Runner online/offline status
+- Minimal session catalog containing only project, creation time, and trimmed initial prompt
+- Session creation, stop, continuation, and deletion
+- Responsive chat UI
+- Streaming assistant text, thinking, tool calls, and results
+- Session status and provisioning logs
+- Aggregate Git status/diff and changed-file view while the runner is online
+- Live proxying of runner-owned session history and events; no control-panel session mirror
+
+### Runner
+
+- Native Linux x86-64 and ARM64 service
+- Simple enrollment with control-panel URL and enrollment PSK
+- One persistent outbound WebSocket
+- Heartbeat and basic capacity reporting
+- Automatic or manual runner selection before provisioning
+- One Gondolin VM and checkout per session
+- Host-side Pi SDK runtime
+- Gondolin-backed `read`, `write`, `edit`, and `bash` tools
+- Guest-side GitHub clone, status, diff, commit, fetch, and push using Git/`gh`
+- GitHub `GH_TOKEN` mediation; the real token remains outside the guest
+- Pi JSONL, transcript/event history, metadata, reports, and workspace persistence
+- Idle VM destruction and cold recreation
+
+### Conversation
+
+- Send a prompt only while Pi is idle
+- Disable the composer during active work
+- Abort the active run
+- Continue an idle session with another prompt
+- Persist completed messages and tool results on the runner
+- No native follow-up or steering queue in the required MVP
+
+A best-effort “Steer now” action may be added later if trivial, but it is not part of MVP acceptance.
+
+## 4. Explicitly deferred
+
+- Browser terminal
+- HTTP/WebSocket previews and portals
+- Binary runner data connection
+- Wildcard preview DNS and TLS
+- Capability links
+- Managed guest services
+- Durable offline prompt queue
+- Pi follow-up queue UI
+- Steering queue UI
+- Queued-message edit, cancel, or promotion
+- Exactly-once message delivery
+- Gondolin checkpoints
+- `.agents/resume`
+- Per-session CPU and memory selection
+- Reservation handshakes and resource scoring
+- Runner labels and draining workflows
+- Passkeys/WebAuthn
+- Project environment secrets
+- Providers and models beyond `opencode-go/deepseek-v4-flash`
+- Provider credential testing UI
+- Non-GitHub Git hosts and generic Git credentials
+- SSH repository credentials and transport
+- Control-panel Commit & Push workflow
+- Shared package caches
+- Archive semantics
+- Session migration
+- Automatic pull requests
+- Multi-user support
+- Stable public API commitments
+- Project Pi settings, packages, extensions, skills, prompts, themes, or context discovery
+
+## 5. High-level architecture
+
+```text
+Browser
+  │
+  │ HTTPS + SSE
+  ▼
+Control panel
+  ├── Remix 3 web UI and HTTP API
+  ├── Password authentication
+  ├── SQLite
+  ├── Encrypted model/Git credentials
+  └── Runner registry, minimal session catalog, and live routing
+          ▲
+          │ one outbound authenticated WebSocket
+          │
+Runner behind NAT
+  ├── Heartbeat, session inventory, and command handling
+  ├── Complete session metadata, transcripts, events, reports, workspaces, and Pi JSONL
+  ├── Host-side Pi SDK
+  └── Gondolin manager
+          │
+          ▼
+Per-session Gondolin VM
+  ├── /workspace via RealFSProvider
+  ├── Agent tool execution
+  ├── Repository Git operations
+  └── Mediated HTTP/HTTPS egress for GitHub and model traffic
+```
+
+There is no browser-to-runner connection and no runner listener exposed to the network.
+
+## 6. Technology choices
+
+### Monorepo
+
+- TypeScript throughout
+- pnpm workspaces
+- Suggested initial packages:
+
+```text
+apps/
+  control/
+  runner/
+packages/
+  protocol/
+  pi-runtime/
+  gondolin-runtime/
+```
+
+Do not create additional abstraction packages until they are justified by working code.
+
+### Control panel
+
+- Remix 3
+- Resolve Remix 3 from the current `preview/main` source when scaffolding and pin the exact resolved commit in the lockfile
+- Node.js server
+- SQLite in WAL mode
+- HTTP commands and SSE session events
+- No browser WebSocket requirements in the MVP
+
+### Runner
+
+- Native Linux service
+- A temporary macOS development harness may run the same runner workflow locally; macOS is not a supported release target
+- Node.js version compatible with Gondolin
+- QEMU/KVM and Gondolin
+- One JSON WebSocket to the control panel
+- systemd service for normal deployment
+
+## 7. Authentication and credentials
+
+### User authentication
+
+- First-run setup creates one admin user.
+- Passwords use Argon2id.
+- Browser sessions use secure, HTTP-only, host-only cookies.
+- State-changing requests use CSRF protection.
+- Passkeys are deferred.
+
+### Secret storage
+
+The control panel encrypts:
+
+- The OpenCode Go API key
+- The GitHub token
+
+Use an application master key supplied through configuration or generated into the persistent control volume. Secret values are never returned to the browser after creation.
+
+### Runner enrollment
+
+Use a simple bearer-token design:
+
+1. Administrator creates an enrollment PSK.
+2. Runner submits the PSK, name, architecture, and capabilities.
+3. Control panel returns a random revocable runner token.
+4. Runner stores the token with filesystem mode `0600`.
+5. Runner authenticates its outbound WebSocket with that token.
+6. Revocation immediately prevents reconnect.
+
+Ed25519 challenge-response is deferred.
+
+## 8. Runner connection
+
+Each runner opens one connection:
+
+```text
+wss://openorb.example.com/api/runners/connect
+```
+
+The socket carries JSON messages for:
+
+- Authentication and protocol version
+- Heartbeats
+- Session provisioning
+- Prompt dispatch
+- Abort
+- Pi events
+- Provisioning logs
+- Session lifecycle state
+- Git status/diff reports
+- Command results
+
+There is no binary multiplexing protocol in the MVP.
+
+### Minimal envelope
+
+```ts
+interface RunnerMessage<T = unknown> {
+  version: 1
+  id: string
+  type: string
+  sessionId?: string
+  correlationId?: string
+  payload: T
+}
+```
+
+Commands have IDs for logging and basic duplicate detection. The MVP does not promise exactly-once execution for non-idempotent commands.
+
+## 9. Runner selection
+
+Each runner advertises:
+
+```ts
+interface RunnerCapacity {
+  maxConcurrentSessions: number
+  activeSessions: number
+  vmCpuCount: number
+  vmMemoryMiB: number
+  diskFreeMiB: number
+}
+```
+
+The VM size is configured runner-wide rather than per session.
+
+Selection algorithm:
+
+1. Consider connected runners with `activeSessions < maxConcurrentSessions`.
+2. Reject runners below a disk safety threshold.
+3. Honor a manually selected runner if available.
+4. Otherwise choose the runner with the fewest active sessions.
+5. Pin the session after provisioning begins.
+
+No reservation handshake, labels, resource ratios, or migration are required.
+
+If no runner is available, session creation is rejected with a clear error. The control panel does not queue work for an offline runner.
+
+## 10. Session storage
+
+Suggested runner layout:
+
+```text
+/var/lib/openorb-runner/
+  runner.json
+  token
+  images/
+  sessions/
+    <session-id>/
+      metadata.json
+      workspace/
+      pi/
+        session.jsonl
+      reports/
+        git-status.json
+        diff.patch
+      logs/
+```
+
+Persist only on the runner:
+
+- Workspace and `.git`
+- Pi JSONL
+- Complete normalized transcript/event history
+- Complete session metadata and pinned-runner identity
+- Provisioning and operation logs
+- Last bounded Git status/diff report
+
+The control panel stores only this minimal session catalog record:
+
+```ts
+interface SessionCatalogEntry {
+  id: string
+  projectId: string
+  createdAt: string
+  initialPromptPreview: string
+}
+```
+
+`initialPromptPreview` is the initial textual prompt with whitespace collapsed and truncated to at most 200 Unicode code points. It excludes attachments and is never used to replay a prompt. No runner ID, title, status, branch, model, transcript, tool data, event cursor, diff, or other runtime state is persisted in the control panel.
+
+While connected, the runner advertises a session inventory so the control panel can build an in-memory routing index and enrich catalog entries with live state. After a control-panel restart, catalog entries remain visible, while routes and live state reappear as runners reconnect.
+
+Do not persist:
+
+- Running guest processes
+- Guest memory
+- Guest root filesystem changes
+- Pi’s in-memory message queues
+
+## 11. VM lifecycle
+
+### First start
+
+1. Select and pin an online runner.
+2. Runner creates the session locally and stores the full initial prompt.
+3. After runner confirmation, control panel stores the four-field catalog entry with the trimmed prompt preview.
+4. Create an empty session workspace.
+5. Start a fresh Gondolin VM using the runner’s fixed CPU/memory configuration.
+6. Mount the workspace at `/workspace` with `RealFSProvider`.
+7. Configure mediated network and Git credentials.
+8. Clone the repository from inside Gondolin.
+9. Create the session branch inside Gondolin.
+10. Run executable `.agents/setup` inside Gondolin if present.
+11. Create/open the host-side Pi session.
+12. Send the initial prompt.
+
+### While active
+
+- Keep the VM running during agent work.
+- Start the idle timer after Pi settles.
+- A normal prompt is allowed only when Pi is idle.
+- Refresh the guest-generated Git report after Pi settles.
+
+### Idle stop
+
+After 15 minutes idle:
+
+1. Run a final Git status/diff inside Gondolin.
+2. Store the bounded report outside the guest-writable workspace.
+3. Destroy the VM.
+4. Keep the workspace and Pi JSONL.
+
+### Cold continuation
+
+1. Start a clean Gondolin VM.
+2. Remount the existing workspace.
+3. Reconfigure egress and credential mediation.
+4. Run `.agents/setup` again.
+5. Reopen the existing Pi JSONL session.
+6. Accept the next prompt.
+
+`.agents/setup` must therefore be idempotent. Dependencies installed under `/workspace` persist; guest OS/root changes do not.
+
+No checkpoint creation, compatibility management, `.agents/resume`, service restoration, or lease system is required.
+
+## 12. Pi integration
+
+### Placement
+
+Pi runs on the trusted runner host. It never receives unrestricted host filesystem or shell tools.
+
+### Tools
+
+Provide Gondolin-backed implementations for:
+
+- `read`
+- `write`
+- `edit`
+- `bash`
+
+Additional file-search tools may be added only if they use the same Gondolin/path boundary.
+
+### Resource loading
+
+This security rule remains mandatory even in the lean MVP:
+
+- Never use `DefaultResourceLoader` against the workspace.
+- Use one audited `OpenOrbPiSessionFactory`.
+- Pass an explicit `ResourceLoader` returning no project extensions, packages, skills, prompts, themes, agent files, or appended system prompts.
+- Use `SettingsManager.inMemory(...)`.
+- Never load `.pi/settings.json` or global Pi settings.
+- Use only the trusted OpenOrb system prompt.
+- Project files may be inspected by the model only through Gondolin-backed tools.
+
+### Model credentials
+
+- The MVP stores an OpenCode Go API key and uses Pi's built-in `opencode-go/deepseek-v4-flash` model definition.
+- Project configuration selects that model; additional providers and models are deferred.
+- Control panel sends the selected credential only to the pinned trusted runner.
+- Runner supplies it through Pi runtime credential APIs.
+- Model credentials never enter Gondolin.
+
+### Persistence
+
+- Pi JSONL lives in the session’s runner directory.
+- The runner also stores normalized completed user/assistant messages, tool calls/results, usage summaries, state transitions, and replayable event cursors.
+- The control panel relays history and events but does not persist session content or state.
+- Token deltas may be streamed live; completed semantic events are persisted on the runner for reconnect replay.
+
+## 13. Messaging semantics
+
+### Initial prompt
+
+The initial prompt is stored with the session while provisioning occurs. If provisioning fails, show the session as failed and require an explicit retry.
+
+### Subsequent prompts
+
+A prompt may be sent only when:
+
+- Runner is connected
+- Session VM is running or can be cold-started
+- Pi is idle
+- No other prompt dispatch is in progress
+
+The composer is disabled otherwise.
+
+### Active run
+
+While Pi is running:
+
+- Show streaming progress.
+- Disable normal sending.
+- Permit Abort.
+- Do not call `followUp()` in the required MVP.
+- Do not expose editable/cancellable Pi queue items.
+
+### Failure semantics
+
+- If a runner disconnects before prompt handoff, show an error and let the user retry.
+- If a process crashes during prompt handoff, reconcile from Pi JSONL where obvious; otherwise show an ambiguous failure and require user retry.
+- Do not claim exactly-once prompt execution.
+- Do not silently replay an ambiguous prompt.
+
+## 14. Git security and workflow
+
+### Absolute boundary
+
+The workspace and `.git` are guest-controlled. Never run native host Git against a session checkout, including for read-only-looking commands such as status, diff, or log.
+
+All of these run inside Gondolin:
+
+- Clone
+- Branch creation
+- Status
+- Diff
+- Log
+- Fetch
+- Commit
+- Push
+
+### GitHub token mediation
+
+1. The guest receives a generated placeholder value as `GH_TOKEN` for GitHub CLI/Git operations.
+2. Gondolin host hooks replace the placeholder only for the configured GitHub endpoints and canonical repository.
+3. The real GitHub token remains in runner memory and never enters guest files, environment values, process arguments, logs, or tool output.
+4. Other hosts and repositories receive no substitution.
+5. Public repositories work without a credential; private clone/fetch/push use the same mediated token path.
+
+SSH repositories, private keys, and non-GitHub hosts are deferred.
+
+### Agent workflow
+
+There is no separate Commit & Push control-panel workflow. The user asks the agent to commit and push.
+
+The trusted OpenOrb system prompt instructs the agent:
+
+- Commit/push only when explicitly requested.
+- Use the session branch.
+- Never force-push.
+
+Remote branch protection remains authoritative.
+
+### Change review
+
+After each settled run and before VM destruction:
+
+1. Execute controlled `git status` and `git diff` inside Gondolin.
+2. Disable external diff/textconv and configured filesystem monitors.
+3. Bound output size.
+4. Store a normalized report in the runner’s host-owned session directory outside the workspace.
+5. Serve it through the control panel only while that runner is connected.
+
+When the VM is stopped but the runner is online, display the runner’s cached report. Do not run host Git.
+
+## 15. Browser UI
+
+### Required screens
+
+- Login/setup
+- Projects
+- Model credentials
+- Git credentials
+- Runners
+- Session list
+- Session create
+- Session conversation
+- Session changes
+
+### Session page
+
+Show:
+
+- Project, ref, branch, and pinned runner
+- Provisioning/VM/agent status
+- Conversation and tool calls
+- Prompt composer while idle
+- Abort while running
+- Aggregate diff and changed files
+- Stop and Delete actions
+
+### Mobile
+
+- Conversation is the primary view.
+- Session list uses a drawer.
+- Changes use a separate tab/sheet.
+- Composer and Abort remain reachable without horizontal scrolling.
+
+No terminal or embedded preview UI is required.
+
+## 16. Browser API
+
+The API is internal and unstable for the MVP.
+
+```http
+POST   /auth/setup
+POST   /auth/login
+POST   /auth/logout
+
+GET    /api/projects
+POST   /api/projects
+PATCH  /api/projects/:projectId
+DELETE /api/projects/:projectId
+
+GET    /api/models
+POST   /api/models
+DELETE /api/models/:modelId
+
+GET    /api/git-credentials
+POST   /api/git-credentials
+DELETE /api/git-credentials/:credentialId
+
+GET    /api/runners
+POST   /api/runner-enrollment-tokens
+POST   /api/runners/:runnerId/revoke
+
+GET    /api/sessions
+POST   /api/sessions
+GET    /api/sessions/:sessionId
+POST   /api/sessions/:sessionId/messages
+POST   /api/sessions/:sessionId/abort
+POST   /api/sessions/:sessionId/stop
+DELETE /api/sessions/:sessionId
+
+GET    /api/sessions/:sessionId/events?after=<cursor>
+GET    /api/sessions/:sessionId/diff
+```
+
+A later implementation may primarily use Remix actions rather than exposing every route as a standalone JSON API. The behavior matters more than preserving this exact route list.
+
+## 17. Session events
+
+Use SSE:
+
+```http
+GET /api/sessions/:sessionId/events?after=<cursor>
+Accept: text/event-stream
+```
+
+Minimal events:
+
+```ts
+type SessionEvent =
+  | { type: "session.state"; state: SessionState }
+  | { type: "provisioning.log"; stream: "stdout" | "stderr"; text: string }
+  | { type: "assistant.text.delta"; messageId: string; delta: string }
+  | { type: "assistant.thinking.delta"; messageId: string; delta: string }
+  | { type: "assistant.completed"; message: AssistantMessage }
+  | { type: "tool.started"; toolCall: ToolCall }
+  | { type: "tool.completed"; toolCallId: string; result: ToolResult }
+  | { type: "workspace.changed"; summary: DiffSummary }
+```
+
+The runner persists completed semantic records and state transitions with a per-session cursor. The control panel proxies SSE and asks the runner to replay events after the browser’s cursor. It does not store event history.
+
+If the runner is offline, session history and SSE replay are unavailable.
+
+## 18. Minimal persistence model
+
+Control-panel SQLite stores configuration plus the minimal session catalog:
+
+- `users`
+- `browser_sessions`
+- `encrypted_secrets`
+- `models`
+- `git_credentials`
+- `projects`
+- `runners`
+- `runner_enrollment_tokens`
+- `sessions`, restricted to `id`, `project_id`, `created_at`, and `initial_prompt_preview`
+
+It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. Session routing is an in-memory index rebuilt from connected runner inventories.
+
+Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as conversation truth, atomic JSON for session metadata, an append-only OpenOrb `events.jsonl` for normalized replayable events/cursors, ordinary log files, and JSON/patch Git reports. Do not add a runner SQLite database for the MVP.
+
+Do not add control-panel tables for:
+
+- Session routes or additional session fields beyond the four catalog columns
+- Messages, tool calls, or events
+- Diffs, files, or logs
+- Preview capabilities
+- Terminals
+- Queued follow-ups
+- Pending message editing
+- Resource reservations
+- Archives
+- Agent profiles
+
+## 19. Failure behavior
+
+### Runner offline
+
+- Mark the runner offline and remove its sessions from the live routing index.
+- Keep minimal catalog cards visible using project, creation time, and initial-prompt preview.
+- Session transcript, diff, files, status, and actions are unavailable because no control-panel copy exists.
+- Disable prompt submission.
+- Do not move sessions to another runner.
+- Restore the session inventory and access after the same runner reconnects.
+
+### Runner process crash
+
+- Reopen Pi JSONL and workspace.
+- Mark an interrupted run failed.
+- Do not reconstruct Pi in-memory queues.
+- Let the user send a new prompt after recovery.
+
+### VM failure
+
+- Preserve workspace, Pi JSONL, reports, and logs.
+- Destroy the failed VM.
+- Permit an explicit cold-start retry.
+
+### Setup failure
+
+- Stop before prompting Pi.
+- Show setup stdout/stderr.
+- Permit retry after the repository is corrected.
+
+### Control-panel restart
+
+- Minimal catalog rows remain available.
+- Runners reconnect automatically and re-advertise their session inventories.
+- Browsers reload full history/state through the reconnected runner.
+- No full session reconstruction occurs from control-panel storage.
+- In-flight operations may be marked failed and manually retried.
+
+The MVP favors visible manual recovery over distributed exactly-once machinery.
+
+## 20. Testing priorities
+
+### Security invariants
+
+- No native host Git process consumes a session workspace.
+- Hostile `.git/config`, hooks, helpers, filters, textconv, fsmonitor, and configured external commands cannot execute on the runner host.
+- `DefaultResourceLoader` is forbidden in runner session code.
+- Hostile `.pi` resources/settings cannot execute or alter Pi configuration.
+- All Pi file/shell tools execute through Gondolin.
+- Real Git and model credentials never appear in guest files, environment variables, logs, process arguments, or tool output.
+- `GH_TOKEN` placeholder substitution is restricted to the configured GitHub endpoints and canonical repository.
+- Workspace path traversal and escaping symlinks are rejected.
+
+### End-to-end path
+
+1. Enroll a runner behind NAT.
+2. Configure an OpenCode Go credential and a GitHub token.
+3. Create a project.
+4. Start a session.
+5. Clone inside Gondolin.
+6. Run `.agents/setup`.
+7. Stream a real Pi response and tool calls.
+8. Modify files.
+9. Review the cached diff.
+10. Ask the agent to commit and push.
+11. Destroy the idle VM.
+12. Cold-start and continue from the same workspace/Pi JSONL.
+13. Delete the session.
+
+### Failure tests
+
+- Runner disconnect during provisioning
+- Runner disconnect during a prompt
+- Control-panel restart during a session
+- Setup failure
+- Model failure
+- VM start failure
+- HTTPS Git authentication failure
+- Private GitHub clone/push through the mediated `GH_TOKEN`
+- Verification that the real GitHub token never enters the guest
+- Idle cold restart
+
+## 21. Implementation milestones
+
+### Milestone 0 — Foundation and security boundaries
+
+- TypeScript/pnpm monorepo
+- Remix 3 resolved from current `preview/main` and pinned exactly
+- Shared protocol schemas
+- SQLite control configuration and four-field session catalog
+- Explicit empty Pi `ResourceLoader`
+- In-memory Pi settings
+- Gondolin-backed tools
+- Static prohibition of `DefaultResourceLoader`
+- Host-Git prohibition tests
+
+**Exit:** A hostile fixture workspace cannot execute code through Pi discovery or host Git.
+
+### Milestone 1 — Control panel and runner connection
+
+- Password setup/login
+- Encrypted OpenCode Go and GitHub token credentials
+- Projects
+- Runner enrollment bearer token
+- Single outbound runner WebSocket
+- Heartbeat/status UI
+- Basic runner selection
+
+**Exit:** A NATed runner enrolls and appears online using only the control-panel URL and enrollment PSK.
+
+### Milestone 2 — Session provisioning
+
+- Session storage
+- Gondolin developer image
+- Fixed runner-wide VM resources
+- Guest-side public/private GitHub clone through mediated `GH_TOKEN`
+- Session branch
+- `.agents/setup`
+- Provisioning events and logs
+
+**Exit:** The browser can create a session that clones and prepares a private repository entirely inside Gondolin.
+
+### Milestone 3 — Pi conversation
+
+- Host-side Pi session factory
+- Runtime model credentials
+- Gondolin tools
+- Persistent Pi JSONL
+- HTTP prompt/abort
+- SSE event streaming
+- Runner-local transcript/event persistence and control-panel live proxying
+- One-prompt-at-a-time UI
+
+**Exit:** The user can run and continue a streamed coding-agent conversation from desktop or mobile.
+
+### Milestone 4 — Changes, push, and cold lifecycle
+
+- Guest-side status/diff reports
+- Changes UI
+- Agent Git commit/push to GitHub through mediated `GH_TOKEN`
+- 15-minute idle VM destruction
+- Cold VM recreation
+- Repeated idempotent setup
+- Stop and delete
+- Reconnect/failure polish
+
+**Exit:** The agent can modify and push a private repository, the user can review changes, and the session continues after its VM is destroyed and recreated.
+
+## 22. MVP acceptance criteria
+
+The lean MVP is complete when:
+
+1. A user can deploy the password-protected control panel.
+2. A Linux runner behind NAT enrolls using a URL and enrollment PSK.
+3. The runner needs no inbound port or VPN.
+4. The user can configure an OpenCode Go API key and GitHub token.
+5. The user can create a project and start a session on an available runner.
+6. The repository is cloned inside Gondolin, never with host Git against the session workspace.
+7. `.agents/setup` runs inside Gondolin.
+8. Host-side Pi uses only the explicit empty resource loader and in-memory settings.
+9. Pi tools read, write, edit, and execute commands through Gondolin.
+10. Chat text, thinking, tool calls, results, and status stream to the browser.
+11. The UI permits one normal prompt at a time and supports Abort.
+12. The control panel stores only session ID, project, creation time, and a 200-code-point initial-prompt preview; completed transcript data is replayed from the runner after reconnect.
+13. The user can view the last guest-generated Git diff while the runner is connected.
+14. The agent can clone, commit, and push a private GitHub repository without obtaining the real GitHub token.
+15. Idle VMs are destroyed while workspace and Pi JSONL remain.
+16. The session can cold-start and continue with the same checkout and conversation.
+17. A pinned session remains unavailable rather than migrating while its runner is offline.
+18. The user can stop and explicitly delete a session.
+
+## 23. Post-MVP order
+
+After the lean MVP is stable, add major features in this order:
+
+1. Generic HTTPS Git hosts and SSH repository credentials
+2. Pi-native follow-up and steering UX
+3. Passkeys
+4. Shared package caches
+5. Browser terminal and binary runner transport
+6. Private live-only previews
+7. Managed previews with restart commands
+8. Project secret mediation
+9. Per-session resource scheduling and reservations
+10. Gondolin checkpoints if cold restarts prove inadequate
+11. Archive/retention workflows
+12. Centrally managed trusted Agent Profiles
+
+Do not implement these opportunistically during MVP work. Each should be an explicit scope change.
