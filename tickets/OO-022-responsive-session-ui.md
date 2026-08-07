@@ -9,7 +9,7 @@ The complete MVP workflow is usable at desktop and mobile widths without adding 
 
 ## Scope
 
-- Finish the required screens: setup/login, projects, model credential, GitHub credential, runners, session list/create/conversation/changes.
+- Finish the required Remix UI screens: setup/login, projects, model credential, GitHub credential, runners, session list/create/conversation/changes. Keep server-rendered behavior as the default and use `remix/ui`/client entrypoints only for necessary interaction or streaming.
 - Make conversation primary on mobile, session list accessible as a drawer, and Changes a separate tab/sheet.
 - Keep composer or Abort reachable without horizontal scrolling.
 - Make provisioning, VM, runner, agent, stopped, offline, and failed states distinguishable.

@@ -11,7 +11,7 @@ The administrator configures the OpenCode Go API key through the browser without
 
 - Require the application master key through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection. Never generate or persist it in control-panel files or PostgreSQL.
 - Encrypt the OpenCode Go key with the application-encryption scheme defined in `MASTER_PLAN.md`, including authenticated metadata and key version.
-- Add the smallest browser form/list state needed to create, replace, and delete the credential.
+- Add the smallest authenticated Remix form/list state needed to create, replace, and delete the credential. Validate form input with `remix/data-schema`; use the session/CSRF middleware from OO-002 rather than hand-rolled request protection.
 - Represent the MVP model as Pi provider `opencode-go`, model `deepseek-v4-flash`.
 - Redact secrets from responses, errors, and infrastructure logs.
 

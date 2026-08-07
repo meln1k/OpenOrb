@@ -10,9 +10,9 @@ The browser shows connected runners and enough real capacity information to choo
 ## Scope
 
 - Send periodic runner heartbeat/capacity reports using the MVP fields. `activeSessions` counts provisioned VMs consuming concurrency slots; stopped sessions without a VM do not count.
-- Show online/offline state and basic capacity in the runner UI.
+- Show online/offline state and basic capacity in the server-rendered Remix runner UI.
 - Implement the MVP selection rule: manual available runner or connected runner with the fewest active sessions, subject to configured concurrency and disk threshold.
-- Add runner revocation and immediate connection termination/reconnect rejection. Sessions become unavailable but remain removable through OO-019's later marker-backed offline deletion flow.
+- Add runner revocation as an authenticated Remix action protected by OO-002's session/CSRF middleware, plus immediate connection termination/reconnect rejection. Sessions become unavailable but remain removable through OO-019's later marker-backed offline deletion flow.
 - Keep selection provisional until session provisioning begins.
 
 ## Acceptance criteria

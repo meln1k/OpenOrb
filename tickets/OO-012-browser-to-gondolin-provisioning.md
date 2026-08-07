@@ -9,7 +9,7 @@ A logged-in user sends an initial prompt from the browser and the selected real 
 
 ## Scope
 
-- Add session creation UI for project, ref, optional runner, branch name, and initial textual prompt.
+- Add a server-rendered Remix session-creation form/action for project, ref, optional runner, branch name, and initial textual prompt. Parse and validate the form with `remix/data-schema/form-data`; use OO-002's session/CSRF middleware.
 - Select an available runner using the MVP rule and pin it when provisioning begins.
 - Runner durably stores full initial prompt and session metadata before acknowledging creation.
 - Create an empty workspace, start the fixed-size VM, configure mediation, and clone inside Gondolin. On clone success, create the branch and run executable `.agents/setup` inside Gondolin.

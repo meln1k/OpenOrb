@@ -9,7 +9,7 @@ The administrator configures a GitHub token, the global Git author identity, and
 
 ## Scope
 
-- Add encrypted GitHub token create/replace/delete UI using the existing secret store.
+- Add encrypted GitHub token create/replace/delete UI using the existing secret store and authenticated Remix controllers/actions. Validate forms and project input with `remix/data-schema`; use the session/CSRF middleware from OO-002.
 - Add required global Git author name and email configuration in the control panel. Store it as non-secret control configuration; project overrides are deferred. Confirm the exact PostgreSQL relation and browser/API shape with the user before implementation.
 - Add project create/edit/delete UI for name, canonical GitHub repository, default ref, default branch pattern, and the fixed MVP model.
 - Validate and canonicalize only the GitHub repository forms explicitly supported by the MVP.

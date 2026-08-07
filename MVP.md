@@ -169,8 +169,12 @@ Do not create additional abstraction packages until they are justified by workin
 - Remix 3
 - Resolve Remix 3 from the current `preview/main` source when scaffolding and pin the exact resolved commit in the lockfile
 - Node.js server
-- PostgreSQL with explicit committed migrations
-- No Redis, KV store, or application-owned durable local files; the control process may keep only rebuildable in-memory routing/live state
+- Remix routes/controllers/actions and middleware for browser request handling
+- `remix/data-table` with its PostgreSQL adapter and explicit committed migrations; `pg` is an explicit application dependency
+- Remix session/auth/CSRF primitives (`remix/middleware/session`, `remix/auth`, `remix/middleware/auth`, and `remix/middleware/csrf`)
+- A narrow PostgreSQL adapter for Remix `SessionStorage`; no Redis, KV store, cookie-only production sessions, or application-owned durable local files
+- No custom auth/session framework; only application-owned credential verification and persistence adapters
+- The control process may keep only rebuildable in-memory routing/live state; no Redis, KV store, or application-owned durable local files
 - HTTP commands and SSE session events
 - No browser WebSocket requirements in the MVP
 
@@ -189,9 +193,13 @@ Do not create additional abstraction packages until they are justified by workin
 ### User authentication
 
 - First-run setup creates one admin user.
-- Passwords use Argon2id.
-- Browser sessions use secure, HTTP-only, host-only cookies.
-- State-changing requests use CSRF protection.
+- Use Remix's credentials-auth primitives: `createCredentialsAuthProvider()`, `verifyCredentials()`, and `completeAuth()`.
+- Password creation and verification use a maintained Argon2id package. OpenOrb does not implement hashing, salting, PHC parsing, or password-format handling.
+- Use Remix session middleware and `auth()`/`createSessionAuthScheme()` for request identity; protect authenticated routes with `requireAuth()`.
+- Browser sessions use opaque signed session IDs in secure, HTTP-only, host-only cookies; session data and expiry are stored in PostgreSQL through a narrow Remix `SessionStorage` adapter.
+- Login rotates the session ID and logout destroys the session.
+- State-changing requests use Remix CSRF middleware.
+- Require a deployment-injected session-cookie signing secret outside tests; local development may omit `Secure` only when not serving HTTPS.
 - Passkeys are deferred.
 
 ### Secret storage
@@ -599,7 +607,7 @@ GET    /api/sessions/:sessionId/diff
 
 `DELETE /api/sessions/:sessionId` remains available while the runner is offline. After explicit confirmation, it commits the minimal deletion marker and removes the catalog row without waiting for runner cleanup.
 
-A later implementation may primarily use Remix actions rather than exposing every route as a standalone JSON API. The behavior matters more than preserving this exact route list.
+Remix actions/controllers are the default implementation for browser flows. JSON/resource routes are used only where needed for commands, SSE, or browser-side interactions. The behavior matters more than preserving this exact route list.
 
 ## 17. Session events
 
@@ -633,7 +641,8 @@ If the runner is offline, session history and SSE replay are unavailable.
 Control-panel PostgreSQL is the control panel's only durable persistence. It stores configuration plus the minimal session catalog:
 
 - `users`
-- `browser_sessions`
+- `password_credentials`
+- `browser_sessions` (the PostgreSQL backing store for Remix sessions)
 - `encrypted_secrets`
 - `models`
 - `git_credentials`
@@ -764,7 +773,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 
 ### Milestone 1 — Control panel and runner connection
 
-- Password setup/login
+- Remix-backed password setup/login and PostgreSQL browser sessions
 - Encrypted OpenCode Go and GitHub token credentials
 - Global Git author name/email configuration
 - Projects
@@ -817,7 +826,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 
 The lean MVP is complete when:
 
-1. A user can deploy the password-protected control panel.
+1. A user can complete first-run password setup and use the Remix-backed password-protected control panel; valid sessions survive a control-process restart against the same PostgreSQL database.
 2. A Linux runner behind NAT enrolls using a URL and enrollment PSK.
 3. The runner needs no inbound port or VPN.
 4. The user can configure an OpenCode Go API key, GitHub token, and global Git author name/email.
