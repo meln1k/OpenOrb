@@ -1,0 +1,25 @@
+{
+  "name": "openorb",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --stream --filter @openorb/control --filter @openorb/runner run dev",
+    "dev:control": "pnpm --filter @openorb/control run dev",
+    "dev:runner": "pnpm --filter @openorb/runner run dev",
+    "start": "pnpm --parallel --stream --filter @openorb/control --filter @openorb/runner run start",
+    "start:control": "pnpm --filter @openorb/control run start",
+    "start:runner": "pnpm --filter @openorb/runner run start",
+    "format": "oxfmt --ignore-path=.oxfmtignore .",
+    "format:check": "oxfmt --ignore-path=.oxfmtignore --check .",
+    "typecheck": "pnpm --recursive --if-present run typecheck",
+    "test": "pnpm --recursive --if-present run test"
+  },
+  "devDependencies": {
+    "oxfmt": "catalog:"
+  },
+  "engines": {
+    "node": ">=24.3.0",
+    "pnpm": ">=11.9.0"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

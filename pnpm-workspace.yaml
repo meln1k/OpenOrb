@@ -1,0 +1,16 @@
+allowBuilds:
+  cpu-features: true
+  esbuild: true
+  ssh2: true
+
+catalog:
+  "@earendil-works/gondolin": 0.12.0
+  "@remix-run/data-schema": 0.3.0
+  "@types/node": 24.6.0
+  oxfmt: 0.51.0
+  remix: 3.0.0-beta.5
+  typescript: 7.0.2
+
+packages:
+  - apps/*
+  - packages/*
