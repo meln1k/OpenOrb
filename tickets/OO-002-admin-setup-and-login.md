@@ -12,7 +12,7 @@ The first user creates the single administrator through the browser and subseque
 - Add control-panel PostgreSQL with foreign keys and committed migrations using `remix/data-table` and its PostgreSQL adapter. PostgreSQL is the control panel's only durable persistence; do not add Redis, another database/KV store, or application-owned durable local files.
 - Add the `users`, `password_credentials`, and `browser_sessions` persistence needed by this ticket.
 - Implement first-run setup, password login, and logout with Remix's credentials-auth primitives: `createCredentialsAuthProvider()`, `verifyCredentials()`, and `completeAuth()`.
-- Use a maintained Argon2id package only for password creation and verification. OpenOrb must not implement hashing, salting, PHC parsing, or password-format handling.
+- Use Node.js 24.7+'s built-in `node:crypto` `argon2()` API with the `argon2id` algorithm for password creation and verification. Use the asynchronous API, generate a unique random salt with `randomBytes()`, and store the salt, derived key, and KDF parameters in `password_credentials`. OpenOrb must not implement the Argon2 algorithm or use a third-party password-hashing runtime dependency.
 - Implement the narrow PostgreSQL-backed `SessionStorage` adapter required by Remix's session middleware. Store an opaque session ID and session data/expiry in PostgreSQL; do not use filesystem, memory, Redis, or cookie-only storage in production.
 - Add Remix session middleware, session-ID rotation, expiry, secure signed-cookie handling, and Remix CSRF middleware for state changes.
 - Use Remix `auth()`/`createSessionAuthScheme()` to resolve the current administrator and `requireAuth()` to protect the authenticated browser shell.
@@ -23,7 +23,7 @@ The first user creates the single administrator through the browser and subseque
 ## Acceptance criteria
 
 - Setup is available only when no administrator exists. Concurrent setup attempts cannot create a second administrator; the database enforces the invariant.
-- Passwords are never stored or logged in clear text. Only the maintained password-hashing package handles password hashes.
+- Passwords are never stored or logged in clear text. Password derivation uses only Node.js's built-in asynchronous `node:crypto.argon2()` with `argon2id`; the derived key and parameters are stored separately from the submitted password.
 - Login uses Remix credentials verification, rotates the session identifier with `completeAuth()`, and establishes the authenticated identity.
 - Logout destroys or invalidates the Remix session and prevents the old session cookie from authenticating.
 - Expired sessions are rejected and removed from the PostgreSQL session store.
@@ -35,7 +35,7 @@ The first user creates the single administrator through the browser and subseque
 ## Tests
 
 - First-run setup race/second-admin rejection at the database boundary.
-- Password setup and login success/failure through the Remix credentials provider, including hash redaction.
+- Password setup and login success/failure through the Remix credentials provider and Node.js built-in Argon2id implementation, including hash redaction.
 - Session persistence, expiry, rotation, old-cookie rejection, and logout invalidation.
 - CSRF rejection for form and request-header token paths.
 - Production and development cookie attributes.

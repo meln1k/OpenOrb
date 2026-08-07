@@ -168,7 +168,7 @@ Do not create additional abstraction packages until they are justified by workin
 
 - Remix 3
 - Resolve Remix 3 from the current `preview/main` source when scaffolding and pin the exact resolved commit in the lockfile
-- Node.js server
+- Node.js 24.7+ server; the control panel uses the built-in `node:crypto.argon2()` API
 - Remix routes/controllers/actions and middleware for browser request handling
 - `remix/data-table` with its PostgreSQL adapter and explicit committed migrations; `pg` is an explicit application dependency
 - Remix session/auth/CSRF primitives (`remix/middleware/session`, `remix/auth`, `remix/middleware/auth`, and `remix/middleware/csrf`)
@@ -194,7 +194,7 @@ Do not create additional abstraction packages until they are justified by workin
 
 - First-run setup creates one admin user.
 - Use Remix's credentials-auth primitives: `createCredentialsAuthProvider()`, `verifyCredentials()`, and `completeAuth()`.
-- Password creation and verification use a maintained Argon2id package. OpenOrb does not implement hashing, salting, PHC parsing, or password-format handling.
+- Password creation and verification use Node.js 24.7+'s built-in asynchronous `node:crypto.argon2()` API with the `argon2id` algorithm. Use a unique random salt and store the derived key plus KDF parameters in `password_credentials`; OpenOrb does not implement the Argon2 algorithm or use a third-party password-hashing runtime dependency.
 - Use Remix session middleware and `auth()`/`createSessionAuthScheme()` for request identity; protect authenticated routes with `requireAuth()`.
 - Browser sessions use opaque signed session IDs in secure, HTTP-only, host-only cookies; session data and expiry are stored in PostgreSQL through a narrow Remix `SessionStorage` adapter.
 - Login rotates the session ID and logout destroys the session.

@@ -4,7 +4,7 @@ OpenOrb is an open-source, self-hostable control panel and runner for Pi coding-
 
 ## Tooling and prerequisites
 
-- Node.js 24.3.0 or newer
+- Node.js 24.7.0 or newer
 - pnpm 11.9.0 or newer
 - QEMU, the runner's only external executable prerequisite
 
