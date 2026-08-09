@@ -1,7 +1,8 @@
 # OO-001 — Runnable development baseline
 
 **Slice:** 0 — Runnable development baseline  
-**Depends on:** None
+**Depends on:** None  
+**Follow-up:** [OO-001A — Deno-only toolchain and runtime migration](OO-001A-deno-migration.md)
 
 ## Outcome
 

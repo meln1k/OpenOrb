@@ -41,7 +41,7 @@ Before implementation, follow `AGENTS.md`:
 3. Read `tickets/README.md` completely.
 4. Read the complete migration ticket.
 
-There is currently no dedicated Deno migration ticket. Do not start code changes until the user designates an existing ticket to amend or approves a new migration ticket. Copy the resolved decisions in section 12 into that ticket and define any ticket-specific acceptance interfaces rather than allowing implementation to invent them.
+The dedicated Deno migration follow-up is `tickets/OO-001A-deno-migration.md`, approved as a follow-up to OO-001. Copy the resolved decisions in section 12 into that ticket and use its ticket-specific acceptance interfaces rather than allowing implementation to invent them. Do not begin implementation work outside that ticket's scope.
 
 ## 4. Deno API findings
 
@@ -362,7 +362,7 @@ Not every `node:` import must disappear: documented Deno compatibility APIs may 
 
 ### Phase 0 — Approve scope and update decisions
 
-- Create/approve the migration ticket.
+- Create/approve the migration ticket. **Complete:** `OO-001A` is the dedicated follow-up to OO-001.
 - Update `MVP.md` and `MASTER_PLAN.md` technology decisions.
 - Lock the minimum Deno version.
 - Copy the resolved section 12 decisions into the migration ticket and acceptance criteria.
@@ -503,7 +503,7 @@ Do not change these decisions silently while editing code; a change requires exp
 ## 15. Handoff status
 
 - Research completed against current Deno documentation.
+- `tickets/OO-001A-deno-migration.md` is the approved dedicated follow-up to OO-001.
 - Password hashing is resolved to Deno's documented Web Crypto PBKDF2 recipe; implementation has not started.
 - No implementation migration has started.
-- The repository was clean before this document was added.
-- The next session should begin with section 3, not by immediately replacing manifests.
+- The next implementation session should begin with OO-001A's workspace/toolchain phase, after reviewing its complete acceptance criteria.
