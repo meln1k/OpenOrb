@@ -1,5 +1,7 @@
 # OpenOrb
 
+![OpenOrb logo](logo.png)
+
 OpenOrb is an open-source, self-hostable control panel and runner for Pi coding-agent sessions on user-owned compute. The control panel currently includes the OO-002 single-admin setup and password-authenticated browser shell; runner enrollment and coding sessions arrive in later tickets.
 
 ## Tooling and prerequisites
