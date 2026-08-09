@@ -235,6 +235,7 @@ Use a Deno-native workspace with strict TypeScript and pin Deno exactly to 2.9.5
 - Controllers under `app/actions`
 - Middleware for auth, sessions, CSRF, database, and request context
 - `remix/ui`, not React
+- Browser `/assets` serves only `packages/control/app/assets/**`; the Deno-owned `node_modules` tree is never mapped or allowed in the asset server, because unauthenticated requests could otherwise compile server-only dependencies (including the transitive `.deno` layout). When a client entry first needs an npm package, audit the complete browser dependency closure and expose only the required files.
 - Deno-native TypeScript execution with `Deno.serve()` around Remix's Fetch-oriented router
 - Explicit Deno WebSocket upgrade handling
 - `remix/data-schema` for runtime validation
