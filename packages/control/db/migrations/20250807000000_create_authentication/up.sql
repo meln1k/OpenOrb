@@ -7,11 +7,10 @@ create table password_credentials (
   user_id smallint primary key references users(id) on delete cascade,
   salt text not null,
   derived_key text not null,
-  algorithm text not null,
-  memory_kib integer not null,
-  passes integer not null,
-  parallelism integer not null,
-  key_length integer not null,
+  algorithm text not null check (algorithm = 'PBKDF2'),
+  hash text not null check (hash = 'SHA-256'),
+  iterations integer not null check (iterations = 600000),
+  key_length_bits integer not null check (key_length_bits = 256),
   created_at text not null
 );
 

@@ -1,36 +1,39 @@
 # OO-001 — Runnable development baseline
 
 **Slice:** 0 — Runnable development baseline  
-**Depends on:** None
+**Depends on:** None  
+**Status:** Completed, then migrated in place by [OO-001A](OO-001A-deno-migration.md)
 
 ## Outcome
 
-A contributor can install dependencies and start the real Remix control application plus a temporary macOS runner harness from this repository.
+A contributor can resolve dependencies and start the real Remix control application plus a temporary macOS runner harness from this repository using the Deno-only baseline established by OO-001A.
 
-## Scope
+## Final baseline after OO-001A
 
-- Create the minimal pnpm/TypeScript workspace required for `packages/control`, `packages/runner`, and shared runtime-validated wire types.
-- Scaffold Remix 3 with `npx remix@next new`, then lock the generated Remix dependencies to their exact resolved versions. Record the resolved Remix version used.
-- Add only formatting, type-check, test, and development commands needed by current code.
-- Provide a control-page shell and process health output.
-- Provide a temporary macOS runner entry point using the same runner code intended for Linux, without claiming macOS support.
-- Document Node and pnpm as repository tooling and QEMU as the runner's only external executable prerequisite. Install Gondolin as a pinned runner package dependency; `gh` belongs in the guest image introduced by OO-009, not on the runner host.
+- The original Node.js/pnpm workspace was intentionally replaced rather than retained in parallel.
+- Deno 2.9.5 is the exact development runtime, workspace manager, checker, formatter, linter, test runner, and runner compiler.
+- `packages/control`, `packages/runner`, and `packages/protocol` use Deno-native manifests and exact dependency imports.
+- Remix remains pinned to `3.0.0-beta.5`.
+- The control application runs with `Deno.serve()` and keeps `/healthz` plus the browser shell at `http://localhost:44100`.
+- The temporary macOS harness uses the same runner entry point intended for Linux and reports actionable QEMU errors without starting a VM.
+- QEMU is the runner's external executable prerequisite. Linux releases are standalone GNU-target executables and require neither Node.js nor an installed Deno executable.
+- `gh` belongs in the guest image introduced by OO-009, not on the runner host.
 
 ## Acceptance criteria
 
-- A clean checkout has documented install and start commands.
+- A clean checkout has documented Deno install and start commands.
 - The control page opens in a browser on the current Mac.
-- The runner harness starts and reports actionable prerequisite errors; it does not yet fake enrollment or a session.
-- Remix is not left on a floating branch/tag after installation.
-- Type-check and tests pass from the workspace root.
+- The runner harness starts and reports actionable prerequisite errors; it does not fake enrollment or a session.
+- Remix and Deno are pinned exactly.
+- Deno format, lint, type-check, and tests pass from the workspace root.
 - No speculative domain or service packages are introduced.
 
 ## Tests
 
-- Workspace type-check/test command.
-- Control health/request smoke test.
+- Deno workspace format/lint/type-check/test commands.
+- Deno-native control health/request smoke test.
 - Runner harness startup/prerequisite test that does not require a VM.
 
 ## Not included
 
-Authentication, persistence, runner connection, sessions, or fake end-to-end behavior.
+Authentication beyond the already completed OO-002 baseline, runner connection, sessions, or fake end-to-end behavior.

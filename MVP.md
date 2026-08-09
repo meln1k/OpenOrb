@@ -149,7 +149,7 @@ There is no browser-to-runner connection and no runner listener exposed to the n
 ### Monorepo
 
 - TypeScript throughout
-- pnpm workspaces
+- Deno 2.9.5 workspace with Deno-native package manifests, exact `npm:`/`jsr:` imports, `nodeModulesDir: "auto"`, and committed `deno.lock`; Deno owns the generated local `node_modules` tree needed by Remix browser-asset resolution, while no OpenOrb `package.json` or pnpm files are retained
 - Suggested initial packages:
 
 ```text
@@ -167,7 +167,7 @@ Do not create additional abstraction packages until they are justified by workin
 
 - Remix 3
 - Resolve Remix 3 from the current `preview/main` source when scaffolding and pin the exact resolved commit in the lockfile
-- Node.js 24.7+ server; the control panel uses the built-in `node:crypto.argon2()` API
+- Deno 2.9.5 server using `Deno.serve()` around Remix's Fetch-oriented router
 - Remix routes/controllers/actions and middleware for browser request handling
 - `remix/data-table` with its PostgreSQL adapter and explicit committed migrations; `pg` is an explicit application dependency
 - Remix session/auth/CSRF primitives (`remix/middleware/session`, `remix/auth`, `remix/middleware/auth`, and `remix/middleware/csrf`)
@@ -182,10 +182,17 @@ Do not create additional abstraction packages until they are justified by workin
 - Native Linux service
 - Ordinary file-backed persistence only; no runner database. Sensitive identity/token files use restrictive filesystem permissions.
 - A temporary macOS development harness may run the same runner workflow locally; macOS is not a supported release target
-- Node.js version compatible with Gondolin
-- QEMU/KVM and Gondolin
+- Standalone Deno-compiled GNU Linux x86-64/ARM64 executable; runner hosts need neither Node.js nor an installed Deno executable
+- glibc 2.27 or newer for the current Deno 2.9.5 artifacts; reject musl with an actionable error
+- QEMU/KVM and pinned Gondolin 0.12.0
 - One JSON WebSocket to the control panel
 - systemd service for normal deployment
+
+Release artifacts are exactly `dist/openorb-runner-linux-x64` and `dist/openorb-runner-linux-arm64`, built with Deno's GNU targets and accompanied by SHA-256 checksums. The startup CWD is the canonical runner working directory; development uses ignored `.openorb-runner-dev/`, production systemd sets `WorkingDirectory=/var/lib/openorb-runner`, and the MVP has no `--data-dir` option.
+
+The one compiled runner process has working-directory-only read/write permission, unrestricted Deno network permission, architecture-appropriate QEMU-suite-only subprocess permission, narrow environment/system permission, and no FFI or `--allow-all`. Public network permission is not an SSRF boundary: application/Gondolin egress policy must deny loopback, private, link-local, cloud-metadata, redirected, and DNS-rebinding targets. QEMU is outside Deno's sandbox, so OpenOrb exposes no raw QEMU argv/path/device interface and creates VMs only with trusted OpenOrb-owned options passed to the pinned Gondolin `VM` API.
+
+Guest assets are separate from the executable. Runner release metadata pins one exact image build ID and per-architecture URL, size, and SHA-256 values. Downloads install atomically into `images/<build-id>/`; only verified real files may reach Gondolin/QEMU. Production never resolves `latest` or embeds VM images with `deno compile`.
 
 ## 7. Authentication and credentials
 
@@ -193,7 +200,7 @@ Do not create additional abstraction packages until they are justified by workin
 
 - First-run setup creates one admin user.
 - Use Remix's credentials-auth primitives: `createCredentialsAuthProvider()`, `verifyCredentials()`, and `completeAuth()`.
-- Password creation and verification use Node.js 24.7+'s built-in asynchronous `node:crypto.argon2()` API with the `argon2id` algorithm. Use a unique random salt and store the derived key plus KDF parameters in `password_credentials`; OpenOrb does not implement the Argon2 algorithm or use a third-party password-hashing runtime dependency.
+- Password creation and verification use asynchronous Web Crypto PBKDF2-HMAC-SHA-256 with exactly 600,000 iterations, a unique random 16-byte salt, and a 256-bit derived key. Accept only this fixed profile. The unreleased Argon2 development database is explicitly reset; no Argon2 or dual-KDF compatibility path exists.
 - Use Remix session middleware and `auth()`/`createSessionAuthScheme()` for request identity; protect authenticated routes with `requireAuth()`.
 - Browser sessions use opaque signed session IDs in secure, HTTP-only, host-only cookies; session data and expiry are stored in PostgreSQL through a narrow Remix `SessionStorage` adapter.
 - Login rotates the session ID and logout destroys the session.
@@ -208,7 +215,7 @@ The control panel encrypts:
 - The OpenCode Go API key
 - The GitHub token
 
-Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The control panel never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Secret values are never returned to the browser after creation.
+Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The control panel never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Import the 256-bit key with Web Crypto and use `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()` directly. Persist their returned bytes unchanged as one opaque value, store key version separately, and authenticate immutable metadata plus key version as AAD. Secret values are never returned to the browser after creation.
 
 ### Runner enrollment
 
@@ -758,7 +765,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 
 ### Milestone 0 — Foundation and security boundaries
 
-- TypeScript/pnpm monorepo
+- Deno 2.9.5 TypeScript workspace and lockfile
 - Remix 3 resolved from current `preview/main` and pinned exactly
 - Shared protocol schemas
 - PostgreSQL control configuration, four-field live-session catalog, and minimal deleted-session markers

@@ -30,6 +30,7 @@ Unless a ticket explicitly says otherwise:
 | Ticket | Outcome |
 |---|---|
 | [OO-001](OO-001-runnable-development-baseline.md) | Control app and temporary macOS runner harness start locally |
+| [OO-001A](OO-001A-deno-migration.md) | Replace the Node.js/pnpm baseline with the pinned Deno-only toolchain and standalone runner path |
 
 ## Slice 1 — Configure and enroll
 

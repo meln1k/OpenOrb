@@ -2,7 +2,6 @@ import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
 import { assetServer } from "../assets.ts";
-import { ControlRuntimeKey } from "../data/runtime.ts";
 import { routes } from "../routes.ts";
 
 export default createController(routes, {
@@ -16,7 +15,7 @@ export default createController(routes, {
       return Response.json({ service: "openorb-control", status: "ok" });
     },
     async home(context) {
-      const { store } = context.get(ControlRuntimeKey);
+      const { store } = context.controlRuntime;
       if (context.auth.ok) {
         return redirect(routes.app.index.href(), 303);
       }

@@ -4,7 +4,6 @@ import { createController } from "remix/router";
 import { csrf, getCsrfToken } from "remix/middleware/csrf";
 import { redirect } from "remix/response/redirect";
 
-import { ControlRuntimeKey } from "../../../data/runtime.ts";
 import { routes } from "../../../routes.ts";
 import { SetupPage } from "./page.tsx";
 
@@ -17,7 +16,7 @@ export default createController(routes.auth.setup, {
   middleware: [csrf()],
   actions: {
     async index(context) {
-      const { store } = context.get(ControlRuntimeKey);
+      const { store } = context.controlRuntime;
       if (await store.hasAdministrator()) {
         return redirect(routes.auth.login.index.href(), 303);
       }
@@ -25,7 +24,7 @@ export default createController(routes.auth.setup, {
       return context.render(<SetupPage csrfToken={getCsrfToken(context)} />);
     },
     async action(context) {
-      const { store } = context.get(ControlRuntimeKey);
+      const { store } = context.controlRuntime;
       if (await store.hasAdministrator()) {
         return new Response("Administrator setup is already complete.", { status: 409 });
       }

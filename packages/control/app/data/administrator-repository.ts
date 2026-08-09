@@ -1,7 +1,16 @@
 import type { Database } from "remix/data-table";
 
-import { hashPassword, verifyPassword } from "./password.ts";
-import { passwordCredentials, users } from "./schema.ts";
+import {
+  hashPassword,
+  PASSWORD_ALGORITHM,
+  PASSWORD_HASH,
+  PASSWORD_ITERATIONS,
+  PASSWORD_KEY_LENGTH_BITS,
+  PASSWORD_SALT_LENGTH,
+  type PasswordHash,
+  verifyPassword,
+} from "./password.ts";
+import { type PasswordCredential, passwordCredentials, users } from "./schema.ts";
 
 export interface Administrator {
   id: number;
@@ -41,13 +50,12 @@ export function createAdministratorRepository(database: Database): Administrator
           });
           await transaction.create(passwordCredentials, {
             user_id: ADMINISTRATOR_ID,
-            salt: passwordHash.salt.toString("base64"),
-            derived_key: passwordHash.derivedKey.toString("base64"),
+            salt: passwordHash.salt.toBase64(),
+            derived_key: passwordHash.derivedKey.toBase64(),
             algorithm: passwordHash.algorithm,
-            memory_kib: passwordHash.memoryKib,
-            passes: passwordHash.passes,
-            parallelism: passwordHash.parallelism,
-            key_length: passwordHash.keyLength,
+            hash: passwordHash.hash,
+            iterations: passwordHash.iterations,
+            key_length_bits: passwordHash.keyLengthBits,
             created_at: new Date().toISOString(),
           });
         });
@@ -65,19 +73,46 @@ export function createAdministratorRepository(database: Database): Administrator
         return null;
       }
 
-      const valid = await verifyPassword(password, {
-        salt: Buffer.from(credential.salt, "base64"),
-        derivedKey: Buffer.from(credential.derived_key, "base64"),
-        algorithm: credential.algorithm,
-        memoryKib: credential.memory_kib,
-        passes: credential.passes,
-        parallelism: credential.parallelism,
-        keyLength: credential.key_length,
-      });
+      const passwordHash = decodePasswordHash(credential);
+      if (!passwordHash) return null;
 
+      const valid = await verifyPassword(password, passwordHash);
       return valid ? { id: ADMINISTRATOR_ID } : null;
     },
   };
+}
+
+function decodePasswordHash(credential: PasswordCredential): PasswordHash | null {
+  if (
+    credential.algorithm !== PASSWORD_ALGORITHM ||
+    credential.hash !== PASSWORD_HASH ||
+    credential.iterations !== PASSWORD_ITERATIONS ||
+    credential.key_length_bits !== PASSWORD_KEY_LENGTH_BITS
+  ) {
+    return null;
+  }
+
+  try {
+    const salt = Uint8Array.fromBase64(credential.salt);
+    const derivedKey = Uint8Array.fromBase64(credential.derived_key);
+    if (
+      salt.byteLength !== PASSWORD_SALT_LENGTH ||
+      derivedKey.byteLength * 8 !== PASSWORD_KEY_LENGTH_BITS
+    ) {
+      return null;
+    }
+
+    return {
+      salt,
+      derivedKey,
+      algorithm: credential.algorithm,
+      hash: credential.hash,
+      iterations: credential.iterations,
+      keyLengthBits: credential.key_length_bits,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function isConstraintViolation(error: unknown): boolean {

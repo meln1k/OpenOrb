@@ -21,7 +21,7 @@ const passwordProvider = createCredentialsAuthProvider({
 
     return s.parse(loginSchema, formData);
   },
-  async verify({ password }, context) {
+  verify({ password }, context) {
     const runtime = context.get(ControlRuntimeKey);
     if (!runtime) {
       throw new Error("Control runtime middleware is missing.");
@@ -38,7 +38,7 @@ export default createController(routes.auth.login, {
         return redirect(routes.app.index.href(), 303);
       }
 
-      const { store } = context.get(ControlRuntimeKey);
+      const { store } = context.controlRuntime;
       if (!(await store.hasAdministrator())) {
         return redirect(routes.auth.setup.index.href(), 303);
       }
@@ -46,7 +46,7 @@ export default createController(routes.auth.login, {
       return context.render(<LoginPage csrfToken={getCsrfToken(context)} />);
     },
     async action(context) {
-      const runtime = context.get(ControlRuntimeKey);
+      const runtime = context.controlRuntime;
       if (!(await runtime.store.hasAdministrator())) {
         return redirect(routes.auth.setup.index.href(), 303);
       }

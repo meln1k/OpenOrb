@@ -18,9 +18,10 @@ export const ControlRuntimeKey = createContextKey<ControlRuntime>();
 export function provideControlRuntime(runtime: ControlRuntime): Middleware<{
   key: typeof ControlRuntimeKey;
   value: ControlRuntime;
+  property: "controlRuntime";
 }> {
   return (context, next) => {
-    context.set(ControlRuntimeKey, runtime);
+    context.set(ControlRuntimeKey, runtime, { property: "controlRuntime" });
     return next();
   };
 }

@@ -1,4 +1,4 @@
-import * as path from "node:path";
+import { basename, extname } from "@std/path";
 
 import type { Router } from "remix/router";
 import { renderWith } from "remix/middleware/render";
@@ -12,7 +12,7 @@ export function render() {
   return renderWith(
     ({ request, router }) =>
       function render(node: RemixNode, init?: ResponseInit) {
-        let stream = renderToStream(node, {
+        const stream = renderToStream(node, {
           frameSrc: request.url,
           signal: request.signal,
           resolveFrame: (src) => resolveFrame(router, request, src),
@@ -37,15 +37,15 @@ export function render() {
 }
 
 async function resolveFrame(router: Router, request: Request, src: string) {
-  let url = new URL(src, request.url);
+  const url = new URL(src, request.url);
 
-  let headers = new Headers();
+  const headers = new Headers();
   headers.set("Accept", "text/html");
 
-  let cookie = request.headers.get("Cookie");
+  const cookie = request.headers.get("Cookie");
   if (cookie) headers.set("Cookie", cookie);
 
-  let response = await router.fetch(
+  const response = await router.fetch(
     new Request(url, {
       method: "GET",
       headers,
@@ -62,8 +62,8 @@ async function resolveFrame(router: Router, request: Request, src: string) {
 }
 
 function titleCaseFileName(fileUrl: string): string {
-  let url = new URL(fileUrl);
-  let fileName = path.basename(url.pathname, path.extname(url.pathname));
+  const url = new URL(fileUrl);
+  const fileName = basename(url.pathname, extname(url.pathname));
   return fileName
     .split(/[^A-Za-z0-9]+/)
     .filter(Boolean)

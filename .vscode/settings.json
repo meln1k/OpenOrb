@@ -1,0 +1,4 @@
+{
+  "deno.enable": true,
+  "js/ts.experimental.useTsgo": false
+}

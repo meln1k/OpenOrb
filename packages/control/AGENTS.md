@@ -5,10 +5,10 @@ This app was scaffolded with `remix new`. Use these conventions when continuing 
 ## Commands
 
 ```sh
-npm i
-npm run start
-npm test
-npm run typecheck
+deno install --frozen
+deno task --filter @openorb/control start
+deno task check
+deno task test
 ```
 
 ## Building Features

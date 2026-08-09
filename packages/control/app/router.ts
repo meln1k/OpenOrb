@@ -1,4 +1,4 @@
-import { createCookie, type Cookie } from "remix/cookie";
+import { type Cookie, createCookie } from "remix/cookie";
 import { auth, createSessionAuthScheme } from "remix/middleware/auth";
 import { formData } from "remix/middleware/form-data";
 import { session } from "remix/middleware/session";
@@ -11,20 +11,20 @@ import setupController from "./actions/auth/setup/controller.tsx";
 import appController from "./actions/app/controller.tsx";
 import controller from "./actions/controller.tsx";
 import type { Administrator } from "./data/administrator-repository.ts";
-import { ControlRuntimeKey, provideControlRuntime, type ControlRuntime } from "./data/runtime.ts";
+import { type ControlRuntime, ControlRuntimeKey, provideControlRuntime } from "./data/runtime.ts";
 import { render } from "./middleware/render.tsx";
 import { routes } from "./routes.ts";
 import { BROWSER_SESSION_MAX_AGE_SECONDS } from "./session-policy.ts";
 
 export function createSessionCookie(options: { secure?: boolean; secret?: string } = {}): Cookie {
-  const secret = options.secret ?? process.env.SESSION_SECRET;
-  if (!secret && process.env.NODE_ENV !== "test") {
+  const secret = options.secret ?? Deno.env.get("SESSION_SECRET");
+  if (!secret && Deno.env.get("NODE_ENV") !== "test") {
     throw new Error("SESSION_SECRET is required outside tests.");
   }
 
-  const secure =
-    options.secure ??
-    (process.env.NODE_ENV === "production" || process.env.OPENORB_SESSION_COOKIE_SECURE === "true");
+  const secure = options.secure ??
+    (Deno.env.get("NODE_ENV") === "production" ||
+      Deno.env.get("OPENORB_SESSION_COOKIE_SECURE") === "true");
 
   return createCookie("openorb_session", {
     secrets: [secret ?? "test-only-session-secret"],
@@ -53,7 +53,7 @@ export function createAppRouter(
               const value = currentSession.get("auth");
               return isAuthSession(value) ? value : null;
             },
-            async verify(value, context) {
+            verify(value, context) {
               const currentRuntime = context.get(ControlRuntimeKey);
               if (!currentRuntime) {
                 throw new Error("Control runtime middleware is missing.");
