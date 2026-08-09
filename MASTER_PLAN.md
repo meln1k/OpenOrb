@@ -200,10 +200,9 @@ A future `RunnerTransport` abstraction may add an optional direct or SDN-backed 
 Recommended monorepo shape:
 
 ```text
-apps/
+packages/
   control/                 Remix 3 control panel and gateway
   runner/                  published Linux runner CLI/service
-packages/
   protocol/                shared runtime schemas and wire types
   domain/                  entities, state types, shared policy
   control-core/            scheduler, commands, events, secret broker

@@ -1,0 +1,38 @@
+import type { Handle } from "remix/ui";
+
+import { routes } from "../../../routes.ts";
+import {
+  AuthCopy,
+  AuthDocument,
+  AuthForm,
+  type AuthPageProps,
+  AuthPasswordField,
+} from "../../../ui/auth.tsx";
+
+export function SetupPage(handle: Handle<AuthPageProps>) {
+  return () => (
+    <AuthDocument
+      title="Set up OpenOrb"
+      eyebrow="First-run setup"
+      heading="Create your administrator"
+    >
+      <AuthCopy>
+        Choose the password that protects this single-user control panel. The password never leaves
+        this server.
+      </AuthCopy>
+      <AuthForm
+        action={routes.auth.setup.action.href()}
+        csrfToken={handle.props.csrfToken}
+        error={handle.props.error}
+        submitLabel="Create administrator"
+      >
+        <AuthPasswordField label="Password" name="password" autoComplete="new-password" />
+        <AuthPasswordField
+          label="Confirm password"
+          name="confirmPassword"
+          autoComplete="new-password"
+        />
+      </AuthForm>
+    </AuthDocument>
+  );
+}

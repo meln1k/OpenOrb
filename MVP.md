@@ -153,10 +153,9 @@ There is no browser-to-runner connection and no runner listener exposed to the n
 - Suggested initial packages:
 
 ```text
-apps/
+packages/
   control/
   runner/
-packages/
   protocol/
   pi-runtime/
   gondolin-runtime/

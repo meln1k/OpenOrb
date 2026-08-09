@@ -9,7 +9,7 @@ A contributor can install dependencies and start the real Remix control applicat
 
 ## Scope
 
-- Create the minimal pnpm/TypeScript workspace required for `apps/control`, `apps/runner`, and shared runtime-validated wire types.
+- Create the minimal pnpm/TypeScript workspace required for `packages/control`, `packages/runner`, and shared runtime-validated wire types.
 - Scaffold Remix 3 with `npx remix@next new`, then lock the generated Remix dependencies to their exact resolved versions. Record the resolved Remix version used.
 - Add only formatting, type-check, test, and development commands needed by current code.
 - Provide a control-page shell and process health output.

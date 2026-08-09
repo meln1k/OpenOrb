@@ -18,7 +18,7 @@ These tickets split `MVP.md` into dependency-ordered vertical slices. The first 
 
 Unless a ticket explicitly says otherwise:
 
-- Define browser URLs in `apps/control/app/routes.ts` and implement them with Remix controllers/actions under `app/actions/`.
+- Define browser URLs in `packages/control/app/routes.ts` and implement them with Remix controllers/actions under `app/actions/`.
 - Use `remix/data-schema` (and `remix/data-schema/form-data` for forms) at browser/request boundaries.
 - Use the global Remix session, auth, and CSRF middleware established by OO-002; state-changing browser actions must not hand-roll cookie or CSRF handling.
 - Use `remix/data-table` for control-panel PostgreSQL reads/writes and committed migrations. Keep persistence adapters narrow and app-owned only where Remix has no required PostgreSQL adapter.

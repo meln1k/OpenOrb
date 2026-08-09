@@ -12,5 +12,4 @@ catalog:
   typescript: 7.0.2
 
 packages:
-  - apps/*
   - packages/*

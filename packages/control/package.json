@@ -5,14 +5,16 @@
   "scripts": {
     "dev": "NODE_ENV=development node --watch --import remix/node-tsx server.ts",
     "start": "NODE_ENV=production node --import remix/node-tsx server.ts",
-    "test": "NODE_ENV=test node --import remix/node-tsx --test test/*.test.ts",
+    "test": "NODE_ENV=test DATABASE_URL=postgres://localhost/openorb-test node --import remix/node-tsx --test-concurrency=1 --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "pg": "8.16.3",
     "remix": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/pg": "8.15.5",
     "typescript": "catalog:"
   },
   "engines": {
