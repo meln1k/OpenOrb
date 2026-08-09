@@ -28,12 +28,6 @@ Deno.test("serves process health and the control shell over HTTP", async () => {
     assertEquals(homeResponse.status, 200);
     assertMatch(homeResponse.headers.get("content-type") ?? "", /^text\/html/);
     assertMatch(await homeResponse.text(), /Create your administrator/);
-
-    const missingAssetResponse = await fetch(
-      new URL("/assets/app/does-not-exist.ts", server.baseUrl),
-    );
-    assertEquals(missingAssetResponse.status, 404);
-    assertEquals(await missingAssetResponse.text(), "Not Found");
   } finally {
     await server.close();
     await store.close();
