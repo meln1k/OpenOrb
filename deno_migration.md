@@ -20,12 +20,13 @@ Using npm packages or Deno's `node:` compatibility APIs under the Deno runtime i
 ## 2. Decisions already made
 
 1. **One runtime:** use Deno everywhere; do not maintain parallel Node and Deno execution paths.
-   - Pin Deno exactly to **2.9.5** for development, CI, control-panel deployment, lockfile generation, and runner compilation.
+   - Pin Deno to **2.9.5** in `.tool-versions`, CI, control-panel deployment, lockfile generation, and runner compilation.
+   - Keep repository tasks simple rather than running a separate version-check prerequisite before every task; developers are expected to use the pinned toolchain.
    - Deno upgrades are intentional compatibility changes that rebuild both runner artifacts.
 2. **Standalone runner:** release Linux x86-64 and ARM64 runner executables produced by `deno compile`.
 3. **Password KDF:** replace Node 24.7 `crypto.argon2()` with Deno's documented Web Crypto password-hashing recipe: PBKDF2-HMAC-SHA-256, 600,000 iterations, a random 16-byte salt, and a 256-bit derived key.
 4. **No native password package:** use the Web Crypto API built into Deno; do not add a native npm password-hashing dependency or require a `node:` crypto compatibility import for password hashing.
-5. **Control secret encryption:** use `@std/crypto`'s `encryptAesGcm()` and `decryptAesGcm()` directly, persist their returned bytes unchanged as an opaque payload, and store the key version separately while authenticating required immutable metadata as AAD.
+5. **Future control secret encryption:** when credential storage is implemented, use `@std/crypto`'s `encryptAesGcm()` and `decryptAesGcm()` directly, persist their returned bytes unchanged as an opaque payload, and store the key version separately while authenticating required immutable metadata as AAD. The helper and persistence implementation are deferred to the credential-storage tickets that first use them.
 6. **Least privilege:** the runner must not run with `--allow-all`. Its filesystem, subprocess, environment, FFI, and system-information permissions remain restricted. Network permission is intentionally not hostname-allowlisted because Pi must expose web search/fetch capabilities that reach arbitrary public hosts; existing policy blocking loopback, private/link-local networks, and cloud metadata remains mandatory.
 7. **External runtime dependency:** QEMU/KVM remains an external host prerequisite; Node.js and Deno do not.
 8. **Deno-native manifests:** remove project `package.json` files and express workspace packages, tasks, imports, exports, and dependency versions through `deno.json` files. npm packages remain usable through explicit `npm:` specifiers; using an npm dependency does not require an OpenOrb `package.json`.
@@ -188,9 +189,9 @@ Requirements:
 
 The migration requires an explicit reset of the unreleased development PostgreSQL database. Do not carry forward Argon2 credentials, users, sessions, or any other legacy development data, and do not implement dual-KDF verification. The reset must be documented and intentional rather than silently deleting a database during normal startup. After reset, run first-time administrator setup to create the PBKDF2 credential.
 
-### 6.3 Secret encryption
+### 6.3 Deferred secret-encryption design
 
-Keep the master-key and envelope-encryption requirements from the plans.
+Secret storage is not implemented by this migration. Keep the master-key and envelope-encryption requirements below for the credential-storage tickets that first need them; do not add an unused helper in OO-001A.
 
 Use:
 
@@ -385,7 +386,6 @@ Not every `node:` import must disappear: documented Deno compatibility APIs may 
 - Reset the unreleased development PostgreSQL database, then replace Argon2 with PBKDF2-HMAC-SHA-256; carry no legacy data or dual-KDF path.
 - Replace Node startup adapter with Deno startup.
 - Prove Remix routes, PostgreSQL sessions, CSRF/auth, migrations, and graceful shutdown.
-- Use Deno/Web Crypto primitives for new encrypted-secret work.
 
 **Exit:** Control tests pass under Deno and login survives a control restart against PostgreSQL.
 
@@ -432,7 +432,6 @@ Add tests proving:
 - PBKDF2-HMAC-SHA-256 hashes and verifies valid passwords using the resolved Deno-documented profile.
 - Wrong passwords and malformed persisted metadata fail safely.
 - Password derivation is asynchronous and rate-limited at the endpoint.
-- AES-GCM rejects modified ciphertext, tag, nonce, key version, or authenticated metadata.
 - PostgreSQL sessions survive process restart.
 
 ### Runner executable
@@ -461,13 +460,13 @@ The user explicitly approved all decisions below. Preserve them in the migration
 1. **Minimum Deno version — RESOLVED:** pin Deno exactly to **2.9.5** for development, CI, control-panel deployment, lockfile generation, and runner compilation. Do not use a loose minimum-version range during the MVP.
 2. **Password-hashing profile — RESOLVED:** use PBKDF2-HMAC-SHA-256 through Web Crypto with exactly 600,000 iterations, a random 16-byte salt, and a 256-bit derived key, following Deno's documented password-hashing example.
 3. **Existing Argon2 development rows — RESOLVED:** explicitly reset the unreleased development PostgreSQL database and recreate the administrator. Carry no legacy users, credentials, browser sessions, or other development data, and implement no Argon2 compatibility or dual-KDF path.
-4. **Secret ciphertext format — RESOLVED:** use `@std/crypto`'s `encryptAesGcm()` and `decryptAesGcm()` directly. Persist the returned encrypted bytes unchanged as one opaque PostgreSQL value, store key version separately, and authenticate the required immutable metadata as AAD. Do not manually parse or construct nonce/ciphertext/tag fields.
+4. **Secret ciphertext format — RESOLVED, IMPLEMENTATION DEFERRED:** when a credential-storage ticket first needs encrypted secrets, use `@std/crypto`'s `encryptAesGcm()` and `decryptAesGcm()` directly. Persist the returned encrypted bytes unchanged as one opaque PostgreSQL value, store key version separately, and authenticate the required immutable metadata as AAD. Do not manually parse or construct nonce/ciphertext/tag fields. OO-001A does not add an unused encryption helper.
 5. **Permission architecture — RESOLVED:** use one compiled runner process with runner-directory read/write scope, unrestricted network permission for arbitrary public web search/fetch, QEMU-suite-only subprocess permission, no FFI, and narrowly scoped environment/system access. Do not use a supervisor/Worker split. Preserve application/Gondolin blocking of loopback, private, link-local, and cloud-metadata destinations.
 6. **QEMU launch interface — RESOLVED:** do not create an OpenOrb raw-QEMU interface. Use the pinned Gondolin `VM` API exclusively with OpenOrb-owned trusted typed options. Browser, protocol, project, and model input cannot select QEMU paths, arguments, devices, or arbitrary sandbox options. Permit only the architecture-specific `qemu-system-*` command and `qemu-img` if integration tests prove it necessary; fail tests on any other host subprocess.
-7. **Runner working directory — RESOLVED:** the startup CWD is the runner data root and the compiled filesystem permissions are relative to it. Production systemd sets `WorkingDirectory=/var/lib/openorb-runner` under a dedicated service user; development uses a dedicated ignored data directory, never the repository root. Do not support a configurable `--data-dir` in the MVP. Canonicalize the CWD, reject a symlinked root, and retain explicit workspace traversal/symlink protections.
-8. **Guest asset distribution — RESOLVED:** distribute architecture-specific guest assets separately from the runner executable. Pin an exact image build ID and trusted hashes in runner release metadata; download atomically into `images/<build-id>/`, verify before use, and pass only verified real filesystem paths to Gondolin/QEMU. Never resolve `latest` in production and do not embed the VM image with `deno compile`.
+7. **Runner working directory — RESOLVED:** the startup CWD is the canonical runner working directory and the compiled filesystem permissions are relative to it. Production systemd sets `WorkingDirectory=/var/lib/openorb-runner` under a dedicated service user; development uses a dedicated ignored working directory, never the repository root. Do not support a configurable `--data-dir` in the MVP. Canonicalize the CWD, reject a symlinked root, and retain explicit workspace traversal/symlink protections.
+8. **Guest asset distribution — RESOLVED, IMPLEMENTATION DEFERRED:** distribute architecture-specific guest assets separately from the runner executable. Pin an exact image build ID and trusted hashes in runner release metadata; download atomically, verify before use, and pass only verified real filesystem paths to Gondolin/QEMU. Never resolve `latest` in production and do not embed the VM image with `deno compile`. OO-009 implements this when real image assets exist; OO-001A adds no unused installer.
 9. **Host libc support — RESOLVED:** support glibc Linux x86-64 and ARM64 runner hosts only for the MVP, matching Deno's official `*-unknown-linux-gnu` compile targets. `doctor` must reject musl with an actionable message. Alpine remains allowed as the Gondolin guest; custom denort musl builds and unverified compatibility layers are deferred. Determine and test the exact minimum glibc version from final artifacts before OO-023 completes.
-10. **Manifest-removal compatibility — RESOLVED:** enforce a fully Deno-native tracked repository. Root and package `deno.json` files own configuration; use exact `npm:`/`jsr:` imports, `deno.lock`, and `nodeModulesDir: "none"` unless proven impossible. Dependency-owned npm metadata in Deno's cache/compiled graph is allowed, but OpenOrb-owned `package.json`, pnpm workspace, and pnpm lock files are forbidden. Treat any dependency requirement for an application `package.json` as a compatibility blocker to isolate or patch, not a reason to retain a shim manifest.
+10. **Manifest-removal compatibility — RESOLVED, THEN AMENDED BY USER:** enforce a fully Deno-native tracked repository. Root and package `deno.json` files own configuration; use exact `npm:`/`jsr:` imports and `deno.lock`. Remix's browser-asset compiler was proven unable to resolve package imports from Deno's global npm cache, so the user explicitly approved `nodeModulesDir: "auto"`; Deno creates and owns the ignored local tree. OpenOrb-owned `package.json`, pnpm workspace, and pnpm lock files remain forbidden, and no Node.js or npm executable is introduced.
 
 Do not change these decisions silently while editing code; a change requires explicit user approval and corresponding plan/ticket updates.
 
@@ -480,7 +479,7 @@ Do not change these decisions silently while editing code; a change requires exp
 - Optional native dependencies can make cross-compilation host-dependent.
 - Broad compile-time permissions can undermine the intended runner confinement.
 - QEMU is not confined by Deno permissions after launch.
-- Embedded QEMU-consumed assets require extraction to real files and integrity verification.
+- Separately distributed QEMU-consumed assets require integrity verification before use.
 - Deno's built-in TypeScript version and diagnostics may differ from the currently pinned npm TypeScript version.
 - Official Deno standalone Linux targets are GNU, potentially excluding musl-only hosts.
 
@@ -502,8 +501,10 @@ Do not change these decisions silently while editing code; a change requires exp
 
 ## 15. Handoff status
 
-- Research completed against current Deno documentation.
-- `tickets/OO-001A-deno-migration.md` is the approved dedicated follow-up to OO-001.
-- Password hashing is resolved to Deno's documented Web Crypto PBKDF2 recipe; implementation has not started.
-- No implementation migration has started.
-- The next implementation session should begin with OO-001A's workspace/toolchain phase, after reviewing its complete acceptance criteria.
+- OO-001A implementation is in progress on the Deno 2.9.5-only workspace.
+- Root/package `deno.json` files and `deno.lock` replaced all OpenOrb package/pnpm manifests. The workspace uses `nodeModulesDir: "auto"` because a temporary browser TypeScript compatibility probe proved Remix's asset compiler requires Node-style package resolution; Deno exclusively manages the ignored local tree. The probe was removed rather than shipping test-only browser behavior.
+- The control server now uses `Deno.serve()`, migrations load with Deno filesystem APIs, tests use a Deno-native HTTP server, and the existing control/auth/session path runs under Deno.
+- Password hashing now uses the fixed Web Crypto PBKDF2 profile. The local unreleased `openorb` and `openorb-test` databases were explicitly reset; there is no Argon2 compatibility path.
+- Secret encryption remains an approved design but its helper, persistence, and tests are deferred to the credential-storage tickets that first use it.
+- The runner harness uses Deno APIs and an ignored canonical working directory. Exact GNU Linux x86-64/ARM64 artifacts compile reproducibly with restricted permissions; artifact inspection records glibc 2.27 and emits SHA-256 checksums.
+- Guest-image metadata, acquisition, integrity verification, and Gondolin integration are deferred to OO-009 so OO-001A does not ship an unused installer. Native no-Deno/no-Node artifact smoke tests, QEMU/KVM integration, Gondolin/Pi security-boundary regression tests, and the exact approved Pi web search/fetch contract still require their owning Linux/image/runtime work. Do not invent image identifiers, hashes, or web-tool interfaces to close those items.

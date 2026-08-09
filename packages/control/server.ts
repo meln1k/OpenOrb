@@ -1,6 +1,3 @@
-import * as http from "node:http";
-import { createRequestListener } from "remix/node-fetch-server";
-
 import { createControlRuntime } from "./app/data/runtime.ts";
 import { createDefaultStore } from "./app/data/store.ts";
 import { createAppRouter } from "./app/router.ts";
@@ -10,10 +7,25 @@ const store = createDefaultStore();
 await migrate(store.pool);
 const router = createAppRouter(createControlRuntime(store));
 
-const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 44100;
-
-const server = http.createServer(
-  createRequestListener(async (request) => {
+const port = Number(Deno.env.get("PORT") ?? "44100");
+const abortController = new AbortController();
+const server = Deno.serve(
+  {
+    port,
+    signal: abortController.signal,
+    onListen({ hostname, port: listeningPort }) {
+      const displayHost = hostname === "0.0.0.0" ? "localhost" : hostname;
+      console.log(
+        JSON.stringify({
+          component: "openorb-control",
+          status: "healthy",
+          url: `http://${displayHost}:${listeningPort}`,
+          healthUrl: `http://${displayHost}:${listeningPort}/healthz`,
+        }),
+      );
+    },
+  },
+  async (request) => {
     try {
       return await router.fetch(request);
     } catch (error) {
@@ -22,34 +34,24 @@ const server = http.createServer(
       }
       return new Response("Internal Server Error", { status: 500 });
     }
-  }),
+  },
 );
-
-server.listen(port, () => {
-  console.log(
-    JSON.stringify({
-      component: "openorb-control",
-      status: "healthy",
-      url: `http://localhost:${port}`,
-      healthUrl: `http://localhost:${port}/healthz`,
-    }),
-  );
-});
 
 let shuttingDown = false;
 
-function shutdown() {
-  if (shuttingDown) {
-    return;
-  }
-
+function shutdown(signal: Deno.Signal) {
+  if (shuttingDown) return;
   shuttingDown = true;
-  server.close(async () => {
-    await store.close();
-    process.exit(0);
-  });
-  server.closeAllConnections();
+  console.log(`[openorb-control] received ${signal}; shutting down`);
+  abortController.abort();
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  Deno.addSignalListener(signal, () => shutdown(signal));
+}
+
+try {
+  await server.finished;
+} finally {
+  await store.close();
+}

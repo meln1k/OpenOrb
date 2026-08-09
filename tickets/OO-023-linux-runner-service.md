@@ -9,27 +9,29 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 
 ## Scope
 
-- Add the supported Linux runner CLI/service packaging path.
-- Implement `doctor` checks for architecture/kernel, Node, QEMU/KVM, virtualization access, CPU/memory/disk, control-panel reachability, image availability, and writable data directory.
-- Add systemd unit/install instructions and secure runner data/token permissions.
+- Package the OO-001A standalone `openorb-runner-linux-x64` and `openorb-runner-linux-arm64` executables plus checksums; target glibc 2.27+ Linux only. Runner hosts require neither Node.js nor an installed Deno executable.
+- Implement `doctor` checks for architecture/kernel, glibc (with actionable musl rejection), QEMU/KVM, virtualization access, CPU/memory/disk, control-panel reachability, verified pinned image availability, and writable data directory.
+- Add systemd unit/install instructions under a dedicated service user. Set `WorkingDirectory=/var/lib/openorb-runner`, preserve the no-`--data-dir` rule, and secure runner data/token permissions.
+- Apply systemd hardening compatible with KVM/QEMU, including `NoNewPrivileges`, narrowly selected `ProtectSystem`/`ReadWritePaths`, and explicit device access. QEMU children are outside Deno's permission sandbox.
 - Configure runner-wide VM CPU/memory and maximum concurrent sessions.
 - Ensure service reconnect and session inventory behavior matches the tested harness.
 - Keep macOS code as an explicitly temporary development harness, not a release artifact.
 
 ## Acceptance criteria
 
-- Fresh supported Linux x86-64 and ARM64 environments receive actionable `doctor` output.
+- Fresh glibc 2.27+ Linux x86-64 and ARM64 environments receive actionable `doctor` output; musl hosts are rejected.
 - A passing host enrolls using only control URL and PSK and requires no inbound port/VPN.
 - Service restart preserves identity and runner-owned sessions.
 - Fixed VM resources and concurrency are reported accurately.
-- Installation does not require container orchestration or a containerized runner.
+- Installation does not require Node.js, Deno, container orchestration, or a containerized runner.
+- The service runs the compiled permission profile without `--allow-all` or FFI and can spawn only the architecture-appropriate QEMU suite through OpenOrb-owned Gondolin VM construction.
 
 ## Tests
 
-- Linux x86-64 and ARM64 packaging/startup tests where CI capacity exists.
-- `doctor` success and each major failed prerequisite.
-- systemd restart/reconnect/inventory smoke test.
-- File ownership/mode checks.
+- Linux x86-64 and ARM64 no-Node/no-Deno artifact startup tests on glibc 2.27+ hosts where CI capacity exists.
+- Checksum, architecture, glibc baseline, and `doctor` success/failed-prerequisite tests, including musl rejection.
+- systemd restart/reconnect/inventory and QEMU/KVM smoke tests.
+- File ownership/mode, working-directory, systemd sandbox, and permitted-subprocess checks.
 
 ## Not included
 

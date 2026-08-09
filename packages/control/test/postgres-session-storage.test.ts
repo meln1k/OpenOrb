@@ -1,18 +1,17 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 
 import { createTestStore } from "./postgres-test.ts";
 
 const REJECT_REPLACEMENT_CONSTRAINT = "browser_sessions_reject_test_replacement";
 
-test("keeps the old session when session rotation cannot persist its replacement", async () => {
+Deno.test("keeps the old session when session rotation cannot persist its replacement", async () => {
   const store = await createTestStore();
 
   try {
     const original = await store.sessionStorage.read(null);
     original.set("state", "original");
     const originalId = await store.sessionStorage.save(original);
-    assert.ok(originalId);
+    assert(originalId);
 
     const replacement = await store.sessionStorage.read(originalId);
     replacement.regenerateId(true);
@@ -25,16 +24,18 @@ test("keeps the old session when session rotation cannot persist its replacement
        check ((data -> 0 ->> 'rejectTestReplacement') is null)`,
     );
 
-    await assert.rejects(store.sessionStorage.save(replacement), {
-      code: "23514",
-      constraint: REJECT_REPLACEMENT_CONSTRAINT,
-    });
+    const error = await assertRejects(() => store.sessionStorage.save(replacement));
+    assertEquals((error as { code?: unknown }).code, "23514");
+    assertEquals(
+      (error as { constraint?: unknown }).constraint,
+      REJECT_REPLACEMENT_CONSTRAINT,
+    );
 
     const result = await store.pool.query<{ id: string }>(
       "select id from browser_sessions where id = any($1::text[]) order by id",
       [[originalId, replacement.id]],
     );
-    assert.deepEqual(result.rows, [{ id: originalId }]);
+    assertEquals(result.rows, [{ id: originalId }]);
   } finally {
     await store.pool.query(
       `alter table browser_sessions drop constraint if exists ${REJECT_REPLACEMENT_CONSTRAINT}`,
@@ -43,37 +44,38 @@ test("keeps the old session when session rotation cannot persist its replacement
   }
 });
 
-test("does not recreate a session deleted by a concurrent request", async () => {
+Deno.test("does not recreate a session deleted by a concurrent request", async () => {
   const store = await createTestStore();
 
   try {
     const original = await store.sessionStorage.read(null);
     original.set("auth", { userId: 1 });
     const originalId = await store.sessionStorage.save(original);
-    assert.ok(originalId);
+    assert(originalId);
 
     const logoutRequest = await store.sessionStorage.read(originalId);
     const staleRequest = await store.sessionStorage.read(originalId);
 
     logoutRequest.destroy();
-    assert.equal(await store.sessionStorage.save(logoutRequest), "");
+    assertEquals(await store.sessionStorage.save(logoutRequest), "");
 
     staleRequest.set("otherState", true);
-    assert.equal(await store.sessionStorage.save(staleRequest), "");
+    assertEquals(await store.sessionStorage.save(staleRequest), "");
 
-    const persisted = await store.pool.query("select id from browser_sessions where id = $1", [
-      originalId,
-    ]);
-    assert.equal(persisted.rowCount, 0);
+    const persisted = await store.pool.query(
+      "select id from browser_sessions where id = $1",
+      [originalId],
+    );
+    assertEquals(persisted.rowCount, 0);
 
     const reloaded = await store.sessionStorage.read(originalId);
-    assert.equal(reloaded.get("auth"), undefined);
+    assertEquals(reloaded.get("auth"), undefined);
   } finally {
     await store.close();
   }
 });
 
-test("removes abandoned expired sessions during the next session write", async () => {
+Deno.test("removes abandoned expired sessions during the next session write", async () => {
   const store = await createTestStore();
 
   try {
@@ -89,7 +91,7 @@ test("removes abandoned expired sessions during the next session write", async (
     const expired = await store.pool.query(
       "select id from browser_sessions where id = 'abandoned-expired-session'",
     );
-    assert.equal(expired.rowCount, 0);
+    assertEquals(expired.rowCount, 0);
   } finally {
     await store.close();
   }

@@ -103,11 +103,13 @@ export function AuthFootnote(handle: Handle<{ children?: RemixNode }>) {
 
 function AuthError(handle: Handle<{ message?: string }>) {
   return () =>
-    handle.props.message ? (
-      <p role="alert" mix={errorStyle}>
-        {handle.props.message}
-      </p>
-    ) : null;
+    handle.props.message
+      ? (
+        <p role="alert" mix={errorStyle}>
+          {handle.props.message}
+        </p>
+      )
+      : null;
 }
 
 const eyebrowStyle = css({

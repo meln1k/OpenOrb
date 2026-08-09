@@ -1,0 +1,49 @@
+{
+  "workspace": [
+    "./packages/control",
+    "./packages/protocol",
+    "./packages/runner"
+  ],
+  "nodeModulesDir": "auto",
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["ES2024", "DOM", "DOM.Iterable", "Deno.ns"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "remix/ui",
+    "verbatimModuleSyntax": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "fmt": {
+    "exclude": [
+      "packages/control/.agents",
+      "packages/control/public",
+      "packages/control/AGENTS.md",
+      "packages/control/README.md",
+      "AGENTS.md",
+      "deno_migration.md",
+      "MASTER_PLAN.md",
+      "MVP.md",
+      "README.md",
+      "tickets"
+    ],
+    "lineWidth": 100
+  },
+  "tasks": {
+    "dev": {
+      "dependencies": ["dev:control", "dev:runner"]
+    },
+    "dev:control": "deno task --filter @openorb/control dev",
+    "dev:runner": "deno task --filter @openorb/runner dev",
+    "check": "deno fmt --check && deno lint && deno check",
+    "test": "NODE_ENV=test deno test --allow-env --allow-ffi --allow-net=127.0.0.1,localhost --allow-read",
+    "compile:runner:linux-x64": "deno compile --frozen --target x86_64-unknown-linux-gnu --output dist/openorb-runner-linux-x64 --allow-read=. --allow-write=. --allow-net --allow-env=PATH,PWD --allow-run=qemu-system-x86_64,qemu-img packages/runner/src/index.ts",
+    "compile:runner:linux-arm64": "deno compile --frozen --target aarch64-unknown-linux-gnu --output dist/openorb-runner-linux-arm64 --allow-read=. --allow-write=. --allow-net --allow-env=PATH,PWD --allow-run=qemu-system-aarch64,qemu-img packages/runner/src/index.ts",
+    "release:runner": {
+      "dependencies": [
+        "compile:runner:linux-x64",
+        "compile:runner:linux-arm64"
+      ],
+      "command": "deno run --allow-read=dist --allow-write=dist scripts/runner-artifact-metadata.ts"
+    }
+  }
+}

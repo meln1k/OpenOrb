@@ -5,8 +5,8 @@ import type { SessionStorage } from "remix/session";
 
 import { BROWSER_SESSION_MAX_AGE_SECONDS } from "../session-policy.ts";
 import {
-  createAdministratorRepository,
   type AdministratorRepository,
+  createAdministratorRepository,
 } from "./administrator-repository.ts";
 import { PostgresSessionStorage } from "./postgres-session-storage.ts";
 
@@ -34,9 +34,8 @@ export function createPostgresStore(databaseUrl: string): PostgresStore {
 }
 
 export function createDefaultStore(): PostgresStore {
-  const databaseUrl =
-    process.env.DATABASE_URL ??
-    (process.env.NODE_ENV === "test" ? "postgres://localhost/openorb-test" : undefined);
+  const databaseUrl = Deno.env.get("DATABASE_URL") ??
+    (Deno.env.get("NODE_ENV") === "test" ? "postgres://localhost/openorb-test" : undefined);
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required outside tests.");
   }

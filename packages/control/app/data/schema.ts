@@ -16,10 +16,9 @@ export const passwordCredentials = table({
     salt: c.text().notNull(),
     derived_key: c.text().notNull(),
     algorithm: c.text().notNull(),
-    memory_kib: c.integer().notNull(),
-    passes: c.integer().notNull(),
-    parallelism: c.integer().notNull(),
-    key_length: c.integer().notNull(),
+    hash: c.text().notNull(),
+    iterations: c.integer().notNull(),
+    key_length_bits: c.integer().notNull(),
     created_at: c.text().notNull(),
   },
 });

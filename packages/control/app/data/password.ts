@@ -1,129 +1,64 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
-import * as crypto from "node:crypto";
+import { timingSafeEqual } from "@std/crypto/timing-safe-equal";
 
-const ARGON2_ALGORITHM = "argon2id" as const;
-const ARGON2_MEMORY_KIB = 19_456;
-const ARGON2_PASSES = 2;
-const ARGON2_PARALLELISM = 1;
-const ARGON2_KEY_LENGTH = 32;
-const ARGON2_SALT_LENGTH = 16;
-
-type Argon2Parameters = {
-  message: string | Uint8Array;
-  nonce: Uint8Array;
-  memory: number;
-  passes: number;
-  parallelism: number;
-  tagLength: number;
-};
-
-type Argon2 = (
-  algorithm: "argon2id",
-  parameters: Argon2Parameters,
-  callback: (error: Error | null, derivedKey?: Buffer) => void,
-) => void;
-
-const nodeArgon2 = (crypto as typeof crypto & { argon2?: Argon2 }).argon2;
-
-if (!nodeArgon2) {
-  throw new Error("OpenOrb requires Node.js 24.7 or newer with crypto.argon2().");
-}
+export const PASSWORD_ALGORITHM = "PBKDF2" as const;
+export const PASSWORD_HASH = "SHA-256" as const;
+export const PASSWORD_ITERATIONS = 600_000 as const;
+export const PASSWORD_SALT_LENGTH = 16 as const;
+export const PASSWORD_KEY_LENGTH_BITS = 256 as const;
 
 export interface PasswordHash {
-  salt: Buffer;
-  derivedKey: Buffer;
-  algorithm: typeof ARGON2_ALGORITHM;
-  memoryKib: number;
-  passes: number;
-  parallelism: number;
-  keyLength: number;
+  salt: Uint8Array;
+  derivedKey: Uint8Array;
+  algorithm: typeof PASSWORD_ALGORITHM;
+  hash: typeof PASSWORD_HASH;
+  iterations: typeof PASSWORD_ITERATIONS;
+  keyLengthBits: typeof PASSWORD_KEY_LENGTH_BITS;
 }
 
 export async function hashPassword(password: string): Promise<PasswordHash> {
-  const salt = randomBytes(ARGON2_SALT_LENGTH);
-  const derivedKey = await derive(password, salt, {
-    memoryKib: ARGON2_MEMORY_KIB,
-    passes: ARGON2_PASSES,
-    parallelism: ARGON2_PARALLELISM,
-    keyLength: ARGON2_KEY_LENGTH,
-  });
-
+  const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_LENGTH));
   return {
     salt,
-    derivedKey,
-    algorithm: ARGON2_ALGORITHM,
-    memoryKib: ARGON2_MEMORY_KIB,
-    passes: ARGON2_PASSES,
-    parallelism: ARGON2_PARALLELISM,
-    keyLength: ARGON2_KEY_LENGTH,
+    derivedKey: await derive(password, salt),
+    algorithm: PASSWORD_ALGORITHM,
+    hash: PASSWORD_HASH,
+    iterations: PASSWORD_ITERATIONS,
+    keyLengthBits: PASSWORD_KEY_LENGTH_BITS,
   };
 }
 
 export async function verifyPassword(
   password: string,
-  stored: {
-    salt: Buffer;
-    derivedKey: Buffer;
-    algorithm: string;
-    memoryKib: number;
-    passes: number;
-    parallelism: number;
-    keyLength: number;
-  },
+  stored: PasswordHash,
 ): Promise<boolean> {
-  if (stored.algorithm !== ARGON2_ALGORITHM || stored.keyLength <= 0) {
-    return false;
-  }
-
-  let derivedKey: Buffer;
+  let derivedKey: Uint8Array;
   try {
-    derivedKey = await derive(password, stored.salt, {
-      memoryKib: stored.memoryKib,
-      passes: stored.passes,
-      parallelism: stored.parallelism,
-      keyLength: stored.keyLength,
-    });
+    derivedKey = await derive(password, stored.salt);
   } catch {
     return false;
   }
 
-  return (
-    derivedKey.length === stored.derivedKey.length && timingSafeEqual(derivedKey, stored.derivedKey)
-  );
+  if (derivedKey.byteLength !== stored.derivedKey.byteLength) return false;
+  return timingSafeEqual(derivedKey, stored.derivedKey);
 }
 
-const argon2 = nodeArgon2;
-
-async function derive(
-  password: string,
-  salt: Buffer,
-  options: {
-    memoryKib: number;
-    passes: number;
-    parallelism: number;
-    keyLength: number;
-  },
-): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    argon2(
-      ARGON2_ALGORITHM,
-      {
-        message: password,
-        nonce: salt,
-        memory: options.memoryKib,
-        passes: options.passes,
-        parallelism: options.parallelism,
-        tagLength: options.keyLength,
-      },
-      (error, derivedKey) => {
-        if (error) {
-          reject(error);
-        } else if (!derivedKey) {
-          reject(new Error("Node crypto.argon2() did not return a derived key."));
-        } else {
-          resolve(derivedKey);
-        }
-      },
-    );
-  });
+async function derive(password: string, salt: Uint8Array): Promise<Uint8Array> {
+  const passwordKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const derived = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: PASSWORD_HASH,
+      salt: salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer,
+      iterations: PASSWORD_ITERATIONS,
+    },
+    passwordKey,
+    PASSWORD_KEY_LENGTH_BITS,
+  );
+  return new Uint8Array(derived);
 }

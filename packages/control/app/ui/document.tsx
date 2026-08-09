@@ -8,7 +8,7 @@ export interface DocumentProps {
 
 export function Document(handle: Handle<DocumentProps>) {
   return () => {
-    let { children, head, title = "OpenOrb" } = handle.props;
+    const { children, head, title = "OpenOrb" } = handle.props;
 
     return (
       <html lang="en">

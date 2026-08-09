@@ -222,7 +222,7 @@ docs/
 MASTER_PLAN.md
 ```
 
-Use pnpm workspaces and strict TypeScript. Keep Node-specific code behind package boundaries; browser/control HTTP contracts should prefer Web APIs (`Request`, `Response`, `ReadableStream`, `Uint8Array`, Web Crypto).
+Use a Deno-native workspace with strict TypeScript and pin Deno exactly to 2.9.5 for development, CI, control deployment, lockfile generation, and runner compilation. `deno.json`/`deno.lock` are authoritative and no OpenOrb `package.json` or pnpm files are retained. Deno generates and owns a local `node_modules` tree because Remix's browser-asset compiler requires Node-style package resolution; this does not require npm tooling or a Node.js runtime. Exact `npm:` compatibility dependencies remain locked by Deno. Browser/control contracts should prefer Web APIs (`Request`, `Response`, `ReadableStream`, `Uint8Array`, Web Crypto).
 
 ## 8. Control panel
 
@@ -235,8 +235,8 @@ Use pnpm workspaces and strict TypeScript. Keep Node-specific code behind packag
 - Controllers under `app/actions`
 - Middleware for auth, sessions, CSRF, database, and request context
 - `remix/ui`, not React
-- `remix/node-fetch-server` for normal Node HTTP handling
-- Explicit Node upgrade handling for WebSockets
+- Deno-native TypeScript execution with `Deno.serve()` around Remix's Fetch-oriented router
+- Explicit Deno WebSocket upgrade handling
 - `remix/data-schema` for runtime validation
 - PostgreSQL with explicit committed migrations
 - PostgreSQL is the only durable control-panel persistence; do not add Redis, another database/KV service, or application-owned durable local files
@@ -248,7 +248,7 @@ Because Remix 3 is under active development, wrap framework-specific persistence
 ### 8.2 Server request split
 
 ```text
-Node HTTP server
+Deno HTTP server
 ├── preview wildcard host          → PreviewGateway
 ├── normal HTTP                    → Remix Fetch handler
 ├── session event SSE              → Remix streaming Response
@@ -264,7 +264,7 @@ Guest preview content must never be served from the control panel’s origin.
 ### 8.3 Single-user authentication
 
 - First-run setup creates the single admin user.
-- Passwords use Argon2id with current recommended parameters.
+- Passwords use Web Crypto PBKDF2-HMAC-SHA-256 with exactly 600,000 iterations, a random 16-byte salt, and a 256-bit derived key. The fixed profile is runtime validated; there is no Argon2 compatibility path.
 - Passkeys use WebAuthn and require HTTPS except for local development.
 - Password remains a recovery method unless the user explicitly disables it in a later release.
 - Login rotates the browser session ID.
@@ -287,7 +287,7 @@ Use envelope-style application encryption:
 
 - A control-panel master key is supplied through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection.
 - The control panel never generates or persists the master key to local disk or PostgreSQL and fails startup if it is missing or invalid.
-- Encrypt values with AES-256-GCM, a random nonce, authenticated metadata, and a key-version field.
+- Import the 256-bit master key with Web Crypto and encrypt with `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()`. Persist the returned nonce/ciphertext/tag bytes unchanged as one opaque value, store key version separately, and authenticate immutable metadata plus key version as AAD.
 - Never derive the server encryption key from the login password; the service must restart unattended.
 - Backups are incomplete without the PostgreSQL database and master key.
 - Secret values are never returned to the browser after creation; only metadata and a redacted hint are returned.
@@ -298,15 +298,23 @@ Use envelope-style application encryption:
 
 - Linux x86-64 and ARM64
 - Native service, preferably installed with a package or `curl | sh` wrapper
-- Node version compatible with Gondolin (currently Node 23.6+)
+- Standalone OpenOrb executable compiled by Deno 2.9.5 for GNU Linux x86-64 or ARM64; no installed Deno or Node.js runtime
+- glibc 2.27 or newer; musl is unsupported in the MVP
 - QEMU/KVM
-- OpenSSH client
+- No host OpenSSH prerequisite in the current compiled permission profile; the later terminal ticket must select and explicitly permit an audited Deno-compatible SSH/PTTY bridge before adding one
 - systemd service
+
+Release artifacts are exactly `dist/openorb-runner-linux-x64` (`x86_64-unknown-linux-gnu`) and `dist/openorb-runner-linux-arm64` (`aarch64-unknown-linux-gnu`), with SHA-256 checksums. The startup CWD is the canonical runner working directory; production systemd sets `WorkingDirectory=/var/lib/openorb-runner`, development uses an ignored dedicated working directory, and the MVP exposes no `--data-dir` option.
+
+The compiled runner uses one least-privilege Deno process: read/write is scoped to its working directory, network is unrestricted because approved Pi web tools must reach arbitrary public hosts, subprocess permission is limited to the architecture-appropriate QEMU suite, FFI is disabled, and environment/system permissions are narrow. Deno network permission is not the SSRF boundary; application/Gondolin egress policy must still block loopback, private, link-local, cloud-metadata, redirect, and DNS-rebinding targets. QEMU children are outside Deno's sandbox, so OpenOrb exposes no raw-QEMU interface and creates VMs only through pinned Gondolin `VM` options owned by trusted code.
+
+Guest images are separate architecture-specific release assets. Release metadata pins one exact build ID, URLs, sizes, and trusted hashes; the runner downloads atomically into `images/<build-id>/`, verifies before every use, and passes only verified real paths to Gondolin. Do not embed VM images or resolve `latest` in production.
 
 The runner package must include a `doctor` command that checks:
 
 - Supported architecture/kernel
-- Node version
+- Embedded Deno/denort and runner version
+- glibc compatibility (with actionable musl rejection)
 - QEMU availability/version
 - `/dev/kvm` access and hardware virtualization
 - Available CPU, memory, and disk
@@ -473,7 +481,7 @@ interface Runner {
     protocol: number
     pi: string
     gondolin: string
-    node: string
+    deno: string
     qemu: string
   }
   labels: Record<string, string>
@@ -905,7 +913,7 @@ Gondolin currently builds Alpine images, so the initial OpenOrb image should be 
 - Git and OpenSSH
 - curl/wget and CA certificates
 - ripgrep, jq, file, tar, unzip, zstd
-- Node.js and npm/corepack/pnpm/Yarn
+- Node.js and npm/corepack/pnpm/Yarn inside the guest only when required by supported project workflows; these are not runner-host prerequisites
 - Python, pip, and uv if practical
 - C/C++ build toolchain, make, pkg-config
 - `gh`
@@ -1078,7 +1086,7 @@ No patch download is part of the primary workflow.
 Do not hold Gondolin’s serialized `vm.exec` channel with a long-running interactive shell. Use:
 
 1. `vm.enableSsh()` on loopback only.
-2. Runner launches a local OpenSSH client under a PTY (for example, `node-pty`).
+2. Runner launches a local OpenSSH client under an approved Deno-compatible PTY bridge; select and compatibility-test the exact implementation before the terminal ticket.
 3. Terminal bytes are tunneled over the outbound runner data channel.
 4. SSH forwarding and agent forwarding remain disabled.
 5. Terminal activity acquires and refreshes a VM lease.
@@ -1934,7 +1942,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 
 ### Milestone 0 — Foundation and contracts
 
-- Create pnpm TypeScript monorepo.
+- Create a Deno 2.9.5 TypeScript workspace with Deno-native manifests, lockfile, tasks, formatting, linting, checking, and tests.
 - Pin Remix 3 beta and core dependency versions.
 - Establish formatting, linting, tests, and CI.
 - Define domain IDs, runtime schemas, protocol envelope, and compatibility policy.
