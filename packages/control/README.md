@@ -2,11 +2,16 @@
 
 The Remix 3 control application runs directly on Deno 2.9.5 with `Deno.serve()`. PostgreSQL remains available through Deno's compatibility support for the pinned `pg` npm package. `deno install --frozen` creates a Deno-managed local `node_modules` tree because Remix's browser-asset compiler uses Node-style package resolution. The trusted control process reads that workspace tree and loads pinned OXC native bindings through FFI; npm lifecycle scripts remain disabled and no Node.js or npm executable is used.
 
-From the repository root, configure PostgreSQL and a deployment-injected session-cookie secret:
+From the repository root, configure PostgreSQL and a deployment-injected session-cookie secret. Either export them, or copy `packages/control/.env.example` to `packages/control/.env` (gitignored) — the `dev` and `start` tasks load `.env` automatically, and shell-exported variables take precedence:
 
 ```sh
+# Option A: copy the example and edit
+cp packages/control/.env.example packages/control/.env
+
+# Option B: export explicitly
 export DATABASE_URL=postgres://localhost/openorb
 export SESSION_SECRET="replace-with-a-long-random-secret"
+
 deno task dev:control
 ```
 

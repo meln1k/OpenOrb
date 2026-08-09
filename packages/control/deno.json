@@ -14,7 +14,7 @@
   },
   "publish": false,
   "tasks": {
-    "dev": "NODE_ENV=development deno run --watch --allow-env --allow-ffi --allow-net --allow-read server.ts",
-    "start": "NODE_ENV=production deno run --allow-env --allow-ffi --allow-net --allow-read server.ts"
+    "dev": "NODE_ENV=development deno run --watch --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts",
+    "start": "NODE_ENV=production deno run --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts"
   }
 }
