@@ -15,7 +15,7 @@ export default createController(routes, {
       return Response.json({ service: "openorb-control", status: "ok" });
     },
     async home(context) {
-      const { store } = context.controlRuntime;
+      const { store } = context.services;
       if (context.auth.ok) {
         return redirect(routes.app.index.href(), 303);
       }

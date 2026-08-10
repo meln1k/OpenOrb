@@ -23,5 +23,18 @@ export const passwordCredentials = table({
   },
 });
 
+export const encryptedSecrets = table({
+  name: "encrypted_secrets",
+  columns: {
+    id: c.uuid().primaryKey(),
+    key: c.text().notNull(),
+    key_version: c.integer().notNull(),
+    ciphertext: c.text().notNull(),
+    created_at: c.text().notNull(),
+    updated_at: c.text().notNull(),
+  },
+});
+
 export type User = TableRow<typeof users>;
 export type PasswordCredential = TableRow<typeof passwordCredentials>;
+export type EncryptedSecretRow = TableRow<typeof encryptedSecrets>;

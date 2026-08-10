@@ -37,7 +37,7 @@ Unless a ticket explicitly says otherwise:
 | Ticket | Outcome |
 |---|---|
 | [OO-002](OO-002-admin-setup-and-login.md) | First-run admin setup and authenticated browser shell |
-| [OO-003](OO-003-encrypted-opencode-credential.md) | OpenCode Go key configured through the browser |
+| [OO-003](OO-003-encrypted-opencode-credential.md) | Encrypted provider API keys (key-value) configured through the browser |
 | [OO-004](OO-004-github-credential-and-project.md) | GitHub credential and project configured through the browser |
 | [OO-005](OO-005-runner-enrollment-and-connection.md) | Real outbound runner enrollment and authenticated connection |
 | [OO-006](OO-006-runner-status-selection-and-revocation.md) | Runner status, basic capacity, selection, and revocation |

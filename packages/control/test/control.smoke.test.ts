@@ -1,14 +1,14 @@
 import { assertEquals, assertMatch } from "@std/assert";
 
 import { createAppRouter } from "../app/router.ts";
-import { createControlRuntime } from "../app/data/runtime.ts";
+import { createAppServices } from "../app/middleware/services.ts";
 import { routes } from "../app/routes.ts";
 import { createTestServer } from "./http-test-server.ts";
 import { createTestStore } from "./postgres-test.ts";
 
 Deno.test("serves process health and the control shell over HTTP", async () => {
   const store = await createTestStore();
-  const router = createAppRouter(createControlRuntime(store));
+  const router = createAppRouter(createAppServices(store));
   const server = await createTestServer((request) => router.fetch(request));
 
   try {

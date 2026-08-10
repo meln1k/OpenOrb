@@ -39,7 +39,7 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 - Single-user password authentication
 - PostgreSQL as the control panel's only durable persistence, covering control configuration, the minimal live-session catalog, and deleted-session markers
 - Project configuration
-- OpenCode Go API-key configuration, initially targeting `opencode-go/deepseek-v4-flash`
+- Provider API-key configuration in key-value form (e.g. `OPENCODE_API_KEY`, `OPENAI_API_KEY`); sessions initially target `opencode-go/deepseek-v4-flash`
 - GitHub token configuration using a mediated guest-visible `GH_TOKEN` placeholder
 - Global Git author name and email configuration
 - Runner enrollment and revocation
@@ -99,7 +99,7 @@ A best-effort “Steer now” action may be added later if trivial, but it is no
 - Runner labels and draining workflows
 - Passkeys/WebAuthn
 - Project environment secrets
-- Providers and models beyond `opencode-go/deepseek-v4-flash`
+- Provider and model support in sessions beyond `opencode-go/deepseek-v4-flash` (storing additional provider keys is supported)
 - Provider credential testing UI
 - Non-GitHub Git hosts and generic Git credentials
 - SSH repository credentials and transport
@@ -212,7 +212,7 @@ Guest assets are separate from the executable. Runner release metadata pins one 
 
 The control panel encrypts:
 
-- The OpenCode Go API key
+- Provider API keys in key-value form (e.g. `OPENCODE_API_KEY`, `OPENAI_API_KEY`)
 - The GitHub token
 
 Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The control panel never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Import the 256-bit key with Web Crypto and use `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()` directly. Persist their returned bytes unchanged as one opaque value, store key version separately, and authenticate immutable metadata plus key version as AAD. Secret values are never returned to the browser after creation.
@@ -438,8 +438,8 @@ This security rule remains mandatory even in the lean MVP:
 
 ### Model credentials
 
-- The MVP stores an OpenCode Go API key and uses Pi's built-in `opencode-go/deepseek-v4-flash` model definition.
-- Project configuration selects that model; additional providers and models are deferred.
+- The control panel stores provider API keys as encrypted key-value credentials (credential key → encrypted value), each with a UUID row id and the unique credential key as authenticated metadata.
+- The MVP session run uses Pi's built-in `opencode-go/deepseek-v4-flash` model definition; project configuration selects it. Provider/model support beyond that remains deferred.
 - Control panel sends the selected credential only to the pinned trusted runner.
 - Runner supplies it through Pi runtime credential APIs.
 - Model credentials never enter Gondolin.
@@ -649,7 +649,7 @@ Control-panel PostgreSQL is the control panel's only durable persistence. It sto
 - `users`
 - `password_credentials`
 - `browser_sessions` (the PostgreSQL backing store for Remix sessions)
-- `encrypted_secrets`
+- `encrypted_secrets` (uuid id primary key, unique credential key, encrypted value)
 - `models`
 - `git_credentials`
 - Global Git author configuration; confirm its exact relation/API shape before implementing OO-004

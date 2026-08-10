@@ -1,11 +1,11 @@
-import { createControlRuntime } from "./app/data/runtime.ts";
+import { createAppServices } from "./app/middleware/services.ts";
 import { createDefaultStore } from "./app/data/store.ts";
 import { createAppRouter } from "./app/router.ts";
 import { migrate } from "./db/migrate.ts";
 
-const store = createDefaultStore();
+const store = await createDefaultStore();
 await migrate(store.pool);
-const router = createAppRouter(createControlRuntime(store));
+const router = createAppRouter(createAppServices(store));
 
 const port = Number(Deno.env.get("PORT") ?? "44100");
 const abortController = new AbortController();

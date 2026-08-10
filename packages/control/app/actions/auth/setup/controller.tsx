@@ -16,7 +16,7 @@ export default createController(routes.auth.setup, {
   middleware: [csrf()],
   actions: {
     async index(context) {
-      const { store } = context.controlRuntime;
+      const { store } = context.services;
       if (await store.hasAdministrator()) {
         return redirect(routes.auth.login.index.href(), 303);
       }
@@ -24,7 +24,7 @@ export default createController(routes.auth.setup, {
       return context.render(<SetupPage csrfToken={getCsrfToken(context)} />);
     },
     async action(context) {
-      const { store } = context.controlRuntime;
+      const { store } = context.services;
       if (await store.hasAdministrator()) {
         return new Response("Administrator setup is already complete.", { status: 409 });
       }

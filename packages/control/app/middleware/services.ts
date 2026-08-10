@@ -1,32 +1,32 @@
 import { createContextKey, type Middleware } from "remix/router";
 
-import type { Store } from "./store.ts";
-import { TokenBucketRateLimiter } from "./token-bucket-rate-limiter.ts";
+import type { Store } from "../data/store.ts";
+import { TokenBucketRateLimiter } from "../utils/token-bucket-rate-limiter.ts";
 
 export interface LoginRateLimiter {
   allow(key: string): boolean;
   reset(key: string): void;
 }
 
-export interface ControlRuntime {
+export interface AppServices {
   readonly store: Store;
   readonly loginRateLimiter: LoginRateLimiter;
 }
 
-export const ControlRuntimeKey = createContextKey<ControlRuntime>();
+export const AppServicesKey = createContextKey<AppServices>();
 
-export function provideControlRuntime(runtime: ControlRuntime): Middleware<{
-  key: typeof ControlRuntimeKey;
-  value: ControlRuntime;
-  property: "controlRuntime";
+export function provideAppServices(services: AppServices): Middleware<{
+  key: typeof AppServicesKey;
+  value: AppServices;
+  property: "services";
 }> {
   return (context, next) => {
-    context.set(ControlRuntimeKey, runtime, { property: "controlRuntime" });
+    context.set(AppServicesKey, services, { property: "services" });
     return next();
   };
 }
 
-export function createControlRuntime(store: Store): ControlRuntime {
+export function createAppServices(store: Store): AppServices {
   return {
     store,
     loginRateLimiter: new TokenBucketRateLimiter({

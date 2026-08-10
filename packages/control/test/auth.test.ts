@@ -1,7 +1,7 @@
 import { assert, assertEquals, assertMatch, assertNotEquals } from "@std/assert";
 
 import { createAppRouter } from "../app/router.ts";
-import { createControlRuntime } from "../app/data/runtime.ts";
+import { createAppServices } from "../app/middleware/services.ts";
 import { createTestServer } from "./http-test-server.ts";
 import { createTestStore } from "./postgres-test.ts";
 
@@ -19,7 +19,7 @@ function csrfFrom(html: string): string {
 
 Deno.test("sets up an administrator, rotates sessions on login, and logs out", async () => {
   const store = await createTestStore();
-  const router = createAppRouter(createControlRuntime(store));
+  const router = createAppRouter(createAppServices(store));
   const server = await createTestServer((request) => router.fetch(request));
 
   try {
@@ -139,7 +139,7 @@ Deno.test("rejects invalid setup input", async () => {
   const store = await createTestStore();
 
   try {
-    const router = createAppRouter(createControlRuntime(store));
+    const router = createAppRouter(createAppServices(store));
     const response = await router.fetch(
       new Request("http://localhost/auth/setup", {
         method: "POST",
