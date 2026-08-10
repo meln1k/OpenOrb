@@ -4,7 +4,7 @@ import { completeAuth, createCredentialsAuthProvider, verifyCredentials } from "
 import { csrf, getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
-import { ControlRuntimeKey, requestRateLimitKey } from "../../../data/runtime.ts";
+import { AppServicesKey, requestRateLimitKey } from "../../../middleware/services.ts";
 import { routes } from "../../../routes.ts";
 import { LoginPage } from "./page.tsx";
 
@@ -22,11 +22,11 @@ const passwordProvider = createCredentialsAuthProvider({
     return s.parse(loginSchema, formData);
   },
   verify({ password }, context) {
-    const runtime = context.get(ControlRuntimeKey);
-    if (!runtime) {
-      throw new Error("Control runtime middleware is missing.");
+    const services = context.get(AppServicesKey);
+    if (!services) {
+      throw new Error("App services middleware is missing.");
     }
-    return runtime.store.verifyAdministratorPassword(password);
+    return services.store.verifyAdministratorPassword(password);
   },
 });
 
@@ -38,7 +38,7 @@ export default createController(routes.auth.login, {
         return redirect(routes.app.index.href(), 303);
       }
 
-      const { store } = context.controlRuntime;
+      const { store } = context.services;
       if (!(await store.hasAdministrator())) {
         return redirect(routes.auth.setup.index.href(), 303);
       }
@@ -46,13 +46,13 @@ export default createController(routes.auth.login, {
       return context.render(<LoginPage csrfToken={getCsrfToken(context)} />);
     },
     async action(context) {
-      const runtime = context.controlRuntime;
-      if (!(await runtime.store.hasAdministrator())) {
+      const services = context.services;
+      if (!(await services.store.hasAdministrator())) {
         return redirect(routes.auth.setup.index.href(), 303);
       }
 
       const key = requestRateLimitKey(context.request);
-      if (!runtime.loginRateLimiter.allow(key)) {
+      if (!services.loginRateLimiter.allow(key)) {
         return context.render(
           <LoginPage
             csrfToken={getCsrfToken(context)}
@@ -78,7 +78,7 @@ export default createController(routes.auth.login, {
         );
       }
 
-      runtime.loginRateLimiter.reset(key);
+      services.loginRateLimiter.reset(key);
       const session = completeAuth(context);
       session.set("auth", { userId: user.id });
       return redirect(routes.app.index.href(), 303);

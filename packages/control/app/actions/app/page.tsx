@@ -1,70 +1,53 @@
 import { css, type Handle } from "remix/ui";
 
 import { routes } from "../../routes.ts";
-import { Document } from "../../ui/document.tsx";
+import { AppShell, navLinkStyle } from "../../ui/shell.tsx";
 
 export interface DashboardPageProps {
   csrfToken: string;
+  credentialCount: number;
 }
 
 export function DashboardPage(handle: Handle<DashboardPageProps>) {
   return () => (
-    <Document title="OpenOrb control">
-      <main
-        mix={css({
-          "--background": "#0b1020",
-          "--border": "#27304a",
-          "--muted": "#9da8c4",
-          "--panel": "#141b30",
-          "--success": "#72e0a7",
-          "--text": "#f3f6ff",
-          minHeight: "100vh",
-          padding: "clamp(32px, 8vw, 96px) 24px",
-          background:
-            "radial-gradient(circle at top right, #1c3154 0, transparent 38%), var(--background)",
-          color: "var(--text)",
-          fontFamily:
-            "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-          lineHeight: 1.5,
-          "& *, & *::before, & *::after": { boxSizing: "border-box" },
-        })}
-      >
-        <div mix={css({ margin: "0 auto", maxWidth: "960px" })}>
-          <header
-            mix={css({
-              display: "flex",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-              gap: "24px",
-              flexWrap: "wrap",
-              marginBottom: "48px",
-            })}
-          >
-            <div>
-              <p mix={eyebrowStyle}>Authenticated control panel</p>
-              <h1 mix={headingStyle}>OpenOrb control</h1>
-              <p mix={copyStyle}>Your admin shell is ready for projects, runners, and sessions.</p>
-            </div>
-            <form method="post" action={routes.auth.logout.href()}>
-              <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
-              <button type="submit" mix={logoutStyle}>
-                Log out
-              </button>
-            </form>
-          </header>
-
-          <section aria-label="Control panel status" mix={cardGridStyle}>
-            <StatusCard label="Authentication" value="Protected" detail="Password session active" />
-            <StatusCard
-              label="Next step"
-              value="Projects"
-              detail="Configuration arrives in OO-004"
-            />
-            <StatusCard label="Current scope" value="OO-002" detail="Setup, login, and logout" />
-          </section>
-        </div>
-      </main>
-    </Document>
+    <AppShell
+      title="OpenOrb control"
+      eyebrow="Authenticated control panel"
+      heading="OpenOrb control"
+      copy="Your admin shell is ready for projects, runners, and sessions."
+      actions={
+        <>
+          <a href={routes.app.credentials.index.href()} mix={navLinkStyle}>
+            Credentials
+          </a>
+          <form method="post" action={routes.auth.logout.href()}>
+            <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+            <button type="submit" mix={logoutStyle}>
+              Log out
+            </button>
+          </form>
+        </>
+      }
+    >
+      <section aria-label="Control panel status" mix={cardGridStyle}>
+        <StatusCard label="Authentication" value="Protected" detail="Password session active" />
+        <StatusCard
+          label="Provider credentials"
+          value={handle.props.credentialCount > 0
+            ? `${handle.props.credentialCount} configured`
+            : "Not configured"}
+          detail={handle.props.credentialCount > 0
+            ? "API keys encrypted at rest"
+            : "Provider API keys required before sessions"}
+        />
+        <StatusCard
+          label="Next step"
+          value="Projects"
+          detail="Configuration arrives in OO-004"
+        />
+        <StatusCard label="Current scope" value="OO-003" detail="Encrypted provider credentials" />
+      </section>
+    </AppShell>
   );
 }
 
@@ -78,23 +61,6 @@ function StatusCard(handle: Handle<{ label: string; value: string; detail: strin
   );
 }
 
-const eyebrowStyle = css({
-  margin: "0 0 16px",
-  color: "var(--success)",
-  fontSize: "13px",
-  fontWeight: 700,
-  letterSpacing: "0.14em",
-  textTransform: "uppercase",
-});
-
-const headingStyle = css({
-  margin: 0,
-  fontSize: "clamp(42px, 9vw, 76px)",
-  letterSpacing: "-0.055em",
-  lineHeight: 0.98,
-});
-
-const copyStyle = css({ margin: "24px 0 0", color: "var(--muted)", fontSize: "18px" });
 const cardGridStyle = css({
   display: "grid",
   gap: "16px",

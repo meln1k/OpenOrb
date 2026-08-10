@@ -9,12 +9,13 @@ import authController from "./actions/auth/controller.tsx";
 import loginController from "./actions/auth/login/controller.tsx";
 import setupController from "./actions/auth/setup/controller.tsx";
 import appController from "./actions/app/controller.tsx";
+import credentialsController from "./actions/credentials/controller.tsx";
 import controller from "./actions/controller.tsx";
 import type { Administrator } from "./data/administrator-repository.ts";
-import { type ControlRuntime, ControlRuntimeKey, provideControlRuntime } from "./data/runtime.ts";
+import { type AppServices, AppServicesKey, provideAppServices } from "./middleware/services.ts";
 import { render } from "./middleware/render.tsx";
 import { routes } from "./routes.ts";
-import { BROWSER_SESSION_MAX_AGE_SECONDS } from "./session-policy.ts";
+import { BROWSER_SESSION_MAX_AGE_SECONDS } from "./utils/session-policy.ts";
 
 export function createSessionCookie(options: { secure?: boolean; secret?: string } = {}): Cookie {
   const secret = options.secret ?? Deno.env.get("SESSION_SECRET");
@@ -37,15 +38,15 @@ export function createSessionCookie(options: { secure?: boolean; secret?: string
 }
 
 export function createAppRouter(
-  runtime: ControlRuntime,
+  services: AppServices,
   sessionCookie: Cookie = createSessionCookie(),
 ) {
   const appRouter = createRouter({
     middleware: [
       staticFiles("./public", { index: false }),
       formData(),
-      session(sessionCookie, runtime.store.sessionStorage),
-      provideControlRuntime(runtime),
+      session(sessionCookie, services.store.sessionStorage),
+      provideAppServices(services),
       auth({
         schemes: [
           createSessionAuthScheme<Administrator, { userId: number }>({
@@ -54,11 +55,11 @@ export function createAppRouter(
               return isAuthSession(value) ? value : null;
             },
             verify(value, context) {
-              const currentRuntime = context.get(ControlRuntimeKey);
-              if (!currentRuntime) {
-                throw new Error("Control runtime middleware is missing.");
+              const currentServices = context.get(AppServicesKey);
+              if (!currentServices) {
+                throw new Error("App services middleware is missing.");
               }
-              return currentRuntime.store.getAdministrator(value.userId);
+              return currentServices.store.getAdministrator(value.userId);
             },
             invalidate(currentSession) {
               currentSession.unset("auth");
@@ -75,6 +76,7 @@ export function createAppRouter(
   appRouter.map(routes.auth.login, loginController);
   appRouter.map(routes.auth.setup, setupController);
   appRouter.map(routes.app, appController);
+  appRouter.map(routes.app.credentials, credentialsController);
 
   return appRouter;
 }

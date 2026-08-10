@@ -8,7 +8,7 @@ import {
   AuthForm,
   type AuthPageProps,
   AuthPasswordField,
-} from "../../../ui/auth.tsx";
+} from "../ui.tsx";
 
 export function LoginPage(handle: Handle<AuthPageProps>) {
   return () => (

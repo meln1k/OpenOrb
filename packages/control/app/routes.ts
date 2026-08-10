@@ -11,5 +11,6 @@ export const routes = route({
   }),
   app: route("app", {
     index: get("/"),
+    credentials: form("credentials"),
   }),
 });

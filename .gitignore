@@ -4,3 +4,4 @@ dist/
 .openorb-runner-dev/
 .DS_Store
 *.log
+dogfood-output/
