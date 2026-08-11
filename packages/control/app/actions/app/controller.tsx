@@ -8,10 +8,9 @@ import { DashboardPage } from "./page.tsx";
 export default createController(routes.app, {
   middleware: [requireAuth()],
   actions: {
-    async index(context) {
-      const secrets = await context.services.store.listSecrets();
+    index(context) {
       return context.render(
-        <DashboardPage csrfToken={getCsrfToken(context)} credentialCount={secrets.length} />,
+        <DashboardPage csrfToken={getCsrfToken(context)} />,
       );
     },
   },

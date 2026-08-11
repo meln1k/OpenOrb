@@ -2,7 +2,7 @@ import { css, type Handle } from "remix/ui";
 
 import type { SecretEntry } from "../../data/secret-repository.ts";
 import { routes } from "../../routes.ts";
-import { AppShell, navLinkStyle } from "../../ui/shell.tsx";
+import { AppShell } from "../../ui/shell.tsx";
 
 export interface CredentialsPageProps {
   csrfToken: string;
@@ -15,15 +15,12 @@ export function CredentialsPage(handle: Handle<CredentialsPageProps>) {
 
   return () => (
     <AppShell
+      activePage="credentials"
+      csrfToken={csrfToken}
       title="Provider credentials"
       eyebrow="Configuration"
       heading="Provider credentials"
       copy="Provider API keys are encrypted with the control-panel master key and are never shown again after they are saved."
-      actions={
-        <a href={routes.app.index.href()} mix={navLinkStyle}>
-          Dashboard
-        </a>
-      }
     >
       {error
         ? (
@@ -134,13 +131,13 @@ const cardStyle = css({
 });
 const cardLabelStyle = css({
   margin: "0 0 16px",
-  color: "var(--muted)",
+  color: "var(--muted-foreground)",
   fontSize: "12px",
   fontWeight: 700,
   letterSpacing: "0.1em",
   textTransform: "uppercase",
 });
-const cardCopyStyle = css({ margin: 0, color: "var(--muted)", fontSize: "14px" });
+const cardCopyStyle = css({ margin: 0, color: "var(--muted-foreground)", fontSize: "14px" });
 const detailsStyle = css({
   display: "grid",
   gap: "10px 24px",
@@ -148,7 +145,7 @@ const detailsStyle = css({
   margin: "0 0 20px",
   "& div": { display: "grid", gap: "4px" },
   "& dt": {
-    color: "var(--muted)",
+    color: "var(--muted-foreground)",
     fontSize: "12px",
     fontWeight: 700,
     letterSpacing: "0.08em",
@@ -167,21 +164,26 @@ const formStyle = css({
   borderRadius: "18px",
 });
 const rowFormStyle = css({ display: "flex", alignItems: "end", gap: "12px", flexWrap: "wrap" });
-const fieldGridStyle = css({ display: "grid", gap: "18px", gridTemplateColumns: "1fr 2fr" });
+const fieldGridStyle = css({
+  display: "grid",
+  gap: "18px",
+  gridTemplateColumns: "1fr 2fr",
+  "@media (max-width: 640px)": { gridTemplateColumns: "1fr" },
+});
 const fieldLabelStyle = css({ display: "grid", gap: "8px", fontWeight: 650, fontSize: "14px" });
 const inputStyle = css({
   width: "100%",
   padding: "13px 14px",
-  color: "var(--text)",
-  background: "#0d1428",
-  border: "1px solid var(--border)",
+  color: "var(--foreground)",
+  background: "var(--background)",
+  border: "1px solid var(--input)",
   borderRadius: "10px",
   font: "inherit",
 });
 const buttonStyle = css({
   padding: "13px 16px",
-  color: "#08121a",
-  background: "var(--success)",
+  color: "var(--primary-foreground)",
+  background: "var(--primary)",
   border: 0,
   borderRadius: "10px",
   font: "inherit",
