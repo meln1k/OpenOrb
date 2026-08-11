@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v pg_isready >/dev/null 2>&1 || ! command -v pg_lsclusters >/dev/null 2>&1; then
+  echo 'PostgreSQL is not installed; run .agents/setup.' >&2
+  exit 1
+fi
+
+if pg_isready -q -h 127.0.0.1; then
+  echo 'PostgreSQL is ready.'
+  exit 0
+fi
+
+cluster="$(pg_lsclusters --no-header | awk 'NR == 1 { print $1, $2 }')"
+if [[ -z "$cluster" ]]; then
+  echo 'No PostgreSQL cluster exists; run .agents/setup.' >&2
+  exit 1
+fi
+
+read -r version name <<<"$cluster"
+if [[ $EUID -eq 0 ]]; then
+  pg_ctlcluster "$version" "$name" start
+else
+  sudo -n -- pg_ctlcluster "$version" "$name" start
+fi
+
+pg_isready -q -h 127.0.0.1
+echo 'PostgreSQL started and is ready.'

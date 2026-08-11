@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  local label="$1"
+  shift
+  local started=$SECONDS
+  printf '\n==> %s\n' "$label"
+  "$@"
+  printf '<== %s (%ss)\n' "$label" "$((SECONDS - started))"
+}
+
+as_root() {
+  if [[ $EUID -eq 0 ]]; then
+    "$@"
+  else
+    sudo -n -- "$@"
+  fi
+}
+
+as_postgres() {
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -n -u postgres -- "$@"
+  else
+    runuser -u postgres -- "$@"
+  fi
+}
+
+install_system_packages() {
+  local qemu_package
+  case "$(dpkg --print-architecture)" in
+    amd64) qemu_package=qemu-system-x86 ;;
+    arm64) qemu_package=qemu-system-arm ;;
+    *)
+      printf 'Unsupported Debian architecture: %s\n' "$(dpkg --print-architecture)" >&2
+      return 1
+      ;;
+  esac
+
+  local packages=(ca-certificates curl openssl postgresql qemu-utils unzip "$qemu_package")
+  local missing=()
+  local package
+  for package in "${packages[@]}"; do
+    if ! dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null |
+      grep -Fqx 'installed'; then
+      missing+=("$package")
+    fi
+  done
+
+  if ((${#missing[@]} == 0)); then
+    echo 'System packages already installed.'
+    return
+  fi
+
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get update
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    "${missing[@]}"
+}
+
+install_deno() {
+  local pinned_version
+  pinned_version="$(awk '$1 == "deno" { print $2 }' .tool-versions)"
+  if [[ -z "$pinned_version" ]]; then
+    echo 'No Deno version is pinned in .tool-versions.' >&2
+    return 1
+  fi
+
+  if command -v deno >/dev/null 2>&1 &&
+    [[ "$(deno --version | awk 'NR == 1 { print $2 }')" == "$pinned_version" ]]; then
+    echo "Deno $pinned_version already installed."
+    return
+  fi
+
+  local target
+  case "$(uname -m)" in
+    x86_64) target=x86_64-unknown-linux-gnu ;;
+    aarch64 | arm64) target=aarch64-unknown-linux-gnu ;;
+    *)
+      printf 'Unsupported CPU architecture: %s\n' "$(uname -m)" >&2
+      return 1
+      ;;
+  esac
+
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  curl --fail --location --silent --show-error \
+    "https://github.com/denoland/deno/releases/download/v${pinned_version}/deno-${target}.zip" \
+    --output "$temp_dir/deno.zip"
+  unzip -q "$temp_dir/deno.zip" -d "$temp_dir"
+  as_root install -m 0755 "$temp_dir/deno" /usr/local/bin/deno
+  rm -rf -- "$temp_dir"
+
+  deno --version | head -n 1
+}
+
+configure_postgres() {
+  local cluster
+  cluster="$(pg_lsclusters --no-header | awk 'NR == 1 { print $1, $2 }')"
+  if [[ -z "$cluster" ]]; then
+    echo 'PostgreSQL did not create a cluster.' >&2
+    return 1
+  fi
+
+  local version name hba marker
+  read -r version name <<<"$cluster"
+  hba="/etc/postgresql/$version/$name/pg_hba.conf"
+  marker='# OpenOrb orb loopback access'
+
+  if ! as_root grep -Fqx "$marker" "$hba"; then
+    local rules
+    rules="$(mktemp)"
+    cat >"$rules" <<EOF
+$marker
+host all all 127.0.0.1/32 trust
+host all all ::1/128 trust
+EOF
+    as_root sed -i "1r $rules" "$hba"
+    rm -f -- "$rules"
+  fi
+
+  if ! pg_isready -q -h 127.0.0.1; then
+    as_root pg_ctlcluster "$version" "$name" start
+  else
+    as_root pg_ctlcluster "$version" "$name" reload
+  fi
+
+  local dev_user
+  dev_user="$(id -un)"
+  if ! as_postgres psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname = '$dev_user'" postgres |
+    grep -Fqx 1; then
+    as_postgres createuser --login --superuser "$dev_user"
+  fi
+
+  local database
+  for database in openorb openorb-test; do
+    if ! as_postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname = '$database'" postgres |
+      grep -Fqx 1; then
+      as_postgres createdb --owner="$dev_user" "$database"
+    fi
+  done
+
+  pg_isready -q -h 127.0.0.1
+}
+
+create_local_environment() {
+  local env_file=packages/control/.env
+  if [[ -f "$env_file" ]]; then
+    echo "$env_file already exists; leaving it unchanged."
+    return
+  fi
+
+  umask 077
+  local session_secret master_key
+  session_secret="$(openssl rand -hex 32)"
+  master_key="$(openssl rand -hex 32)"
+  sed \
+    -e "s|^SESSION_SECRET=.*|SESSION_SECRET=$session_secret|" \
+    -e "s|^OPENORB_MASTER_KEY=.*|OPENORB_MASTER_KEY=$master_key|" \
+    packages/control/.env.example >"$env_file"
+  echo "Created ignored $env_file with orb-local secrets."
+}
+
+install_dependencies() {
+  deno install --frozen
+}
+
+step 'Install system packages' install_system_packages
+step 'Install pinned Deno toolchain' install_deno
+step 'Configure PostgreSQL' configure_postgres
+step 'Create local control environment' create_local_environment
+step 'Install locked Deno dependencies' install_dependencies
+
+echo
+echo 'Orb setup complete.'
