@@ -1,11 +1,12 @@
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
 import { completeAuth, createCredentialsAuthProvider, verifyCredentials } from "remix/auth";
-import { csrf, getCsrfToken } from "remix/middleware/csrf";
+import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 import { AppServicesKey, requestRateLimitKey } from "../../../middleware/services.ts";
 import { routes } from "../../../routes.ts";
+import { csrf } from "../../../middleware/csrf.ts";
 import { LoginPage } from "./page.tsx";
 
 const loginSchema = f.object({

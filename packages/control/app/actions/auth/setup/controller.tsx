@@ -1,10 +1,11 @@
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
 import { createController } from "remix/router";
-import { csrf, getCsrfToken } from "remix/middleware/csrf";
+import { getCsrfToken } from "remix/middleware/csrf";
 import { redirect } from "remix/response/redirect";
 
 import { routes } from "../../../routes.ts";
+import { csrf } from "../../../middleware/csrf.ts";
 import { SetupPage } from "./page.tsx";
 
 const setupSchema = f.object({
