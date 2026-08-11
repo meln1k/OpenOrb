@@ -1,5 +1,6 @@
 import { css, type Handle, type Props, type RemixNode } from "remix/ui";
 
+import { media } from "../responsive.ts";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible.tsx";
 import { Icon } from "./icons.tsx";
 
@@ -299,11 +300,12 @@ const layoutStyle = css({
 });
 
 const desktopStyle = css({
+  display: "none",
   flex: "0 0 0",
   width: 0,
   color: "var(--sidebar-foreground)",
   "&[open]": { flexBasis: "256px", width: "256px" },
-  "@media (max-width: 767px)": { display: "none" },
+  [media.md]: { display: "block" },
 });
 
 const desktopPanelStyle = css({
@@ -356,7 +358,10 @@ const mobilePanelStyle = css({
   overflow: "visible",
   "&:popover-open": { display: "flex", flexDirection: "column" },
   "&::backdrop": { background: "rgb(0 0 0 / 0.5)" },
-  "@media (min-width: 768px)": { display: "none" },
+  [media.md]: {
+    display: "none",
+    "&:popover-open": { display: "none" },
+  },
 });
 
 const mobileCloseStyle = css({
@@ -387,20 +392,20 @@ const insetStyle = css({
   flexDirection: "column",
   minWidth: 0,
   width: "100%",
-  minHeight: "calc(100svh - 16px)",
-  margin: "8px 8px 8px 0",
+  minHeight: "100svh",
+  margin: 0,
   background: "var(--background)",
-  borderRadius: "var(--radius-xl)",
-  boxShadow: "0 1px 3px rgb(0 0 0 / 0.08)",
+  borderRadius: 0,
+  boxShadow: "none",
   overflow: "hidden",
-  "[data-slot='sidebar-wrapper']:has([data-slot='sidebar-desktop']:not([open])) > &": {
-    marginLeft: "8px",
-  },
-  "@media (max-width: 767px)": {
-    minHeight: "100svh",
-    margin: 0,
-    borderRadius: 0,
-    boxShadow: "none",
+  [media.md]: {
+    minHeight: "calc(100svh - 16px)",
+    margin: "8px 8px 8px 0",
+    borderRadius: "var(--radius-xl)",
+    boxShadow: "0 1px 3px rgb(0 0 0 / 0.08)",
+    "[data-slot='sidebar-wrapper']:has([data-slot='sidebar-desktop']:not([open])) > &": {
+      marginLeft: "8px",
+    },
   },
 });
 
@@ -423,8 +428,7 @@ const triggerStyle = css({
 });
 
 const mobileTriggerStyle = css({
-  display: "none",
-  "@media (max-width: 767px)": { display: "flex" },
+  [media.md]: { display: "none" },
 });
 
 const sectionStyle = css({ display: "flex", flexDirection: "column", gap: "8px", padding: "8px" });

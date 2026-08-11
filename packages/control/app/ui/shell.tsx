@@ -42,6 +42,7 @@ import {
   SidebarTrigger,
 } from "./components/index.ts";
 import { Document } from "./document.tsx";
+import { media } from "./responsive.ts";
 
 export interface AppShellProps {
   activePage: "overview" | "credentials";
@@ -72,10 +73,10 @@ export function AppShell(handle: Handle<AppShellProps>) {
               <Separator orientation="vertical" mix={topBarSeparatorStyle} />
               <Breadcrumb>
                 <BreadcrumbList>
-                  <BreadcrumbItem mix={desktopBreadcrumbStyle}>
+                  <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
                     <BreadcrumbLink href={routes.app.index.href()}>Control panel</BreadcrumbLink>
                   </BreadcrumbItem>
-                  <BreadcrumbSeparator mix={desktopBreadcrumbStyle} />
+                  <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
                   <BreadcrumbItem>
                     <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
                   </BreadcrumbItem>
@@ -236,12 +237,17 @@ const topBarContentStyle = css({
   alignItems: "center",
   gap: "8px",
   minWidth: 0,
-  padding: "0 16px 0 56px",
-  "@media (max-width: 767px)": { paddingLeft: "16px" },
+  padding: "0 16px",
+  [media.md]: { paddingLeft: "56px" },
 });
 const topBarSeparatorStyle = css({ height: "16px", marginRight: "8px" });
-const desktopBreadcrumbStyle = css({
-  "@media (max-width: 767px)": { display: "none" },
+const desktopBreadcrumbItemStyle = css({
+  display: "none",
+  [media.md]: { display: "inline-flex" },
+});
+const desktopBreadcrumbSeparatorStyle = css({
+  display: "none",
+  [media.md]: { display: "list-item" },
 });
 const contentStyle = css({
   display: "flex",
@@ -250,7 +256,7 @@ const contentStyle = css({
   gap: "24px",
   minWidth: 0,
   padding: "0 16px 16px",
-  "@media (min-width: 768px)": { padding: "0 24px 24px" },
+  [media.md]: { padding: "0 24px 24px" },
 });
 const pageHeaderStyle = css({ display: "grid", gap: "6px", maxWidth: "720px" });
 const pageHeadingStyle = css({

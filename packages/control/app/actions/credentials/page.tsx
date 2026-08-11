@@ -2,6 +2,7 @@ import { css, type Handle } from "remix/ui";
 
 import type { SecretEntry } from "../../data/secret-repository.ts";
 import { routes } from "../../routes.ts";
+import { media } from "../../ui/responsive.ts";
 import { AppShell } from "../../ui/shell.tsx";
 
 export interface CredentialsPageProps {
@@ -167,8 +168,8 @@ const rowFormStyle = css({ display: "flex", alignItems: "end", gap: "12px", flex
 const fieldGridStyle = css({
   display: "grid",
   gap: "18px",
-  gridTemplateColumns: "1fr 2fr",
-  "@media (max-width: 640px)": { gridTemplateColumns: "1fr" },
+  gridTemplateColumns: "1fr",
+  [media.sm]: { gridTemplateColumns: "1fr 2fr" },
 });
 const fieldLabelStyle = css({ display: "grid", gap: "8px", fontWeight: 650, fontSize: "14px" });
 const inputStyle = css({

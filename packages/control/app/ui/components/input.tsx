@@ -1,5 +1,7 @@
 import { css, type Handle, type Props } from "remix/ui";
 
+import { media } from "../responsive.ts";
+
 export type InputProps = Props<"input">;
 
 export function Input(handle: Handle<InputProps>) {
@@ -58,5 +60,5 @@ const inputStyle = css({
       boxShadow: "0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent)",
     },
   },
-  "@media (min-width: 768px)": { fontSize: "14px" },
+  [media.md]: { fontSize: "14px" },
 });

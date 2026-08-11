@@ -1,5 +1,7 @@
 import { css, type Handle, type Props } from "remix/ui";
 
+import { media } from "../responsive.ts";
+
 export function DropdownMenu(handle: Handle<Props<"details">>) {
   return () => {
     const { mix, ...props } = handle.props;
@@ -80,8 +82,8 @@ const triggerStyle = css({
 
 const contentStyle = css({
   position: "absolute",
-  left: "calc(100% + 4px)",
-  bottom: 0,
+  left: 0,
+  bottom: "calc(100% + 4px)",
   zIndex: 50,
   display: "flex",
   flexDirection: "column",
@@ -97,9 +99,9 @@ const contentStyle = css({
   borderRadius: "var(--radius-lg)",
   boxShadow: "0 10px 28px rgb(0 0 0 / 0.18)",
   overflow: "hidden",
-  "@media (max-width: 767px)": {
-    left: 0,
-    bottom: "calc(100% + 4px)",
+  [media.md]: {
+    left: "calc(100% + 4px)",
+    bottom: 0,
   },
 });
 

@@ -1,5 +1,7 @@
 import { css, type Handle, type Props } from "remix/ui";
 
+import { media } from "../responsive.ts";
+
 export function Breadcrumb(handle: Handle<Props<"nav">>) {
   return () => {
     const { mix, ...props } = handle.props;
@@ -71,7 +73,7 @@ const listStyle = css({
   fontSize: "14px",
   listStyle: "none",
   overflowWrap: "anywhere",
-  "@media (min-width: 640px)": { gap: "10px" },
+  [media.sm]: { gap: "10px" },
 });
 const itemStyle = css({ display: "inline-flex", alignItems: "center", gap: "6px", minWidth: 0 });
 const linkStyle = css({
