@@ -101,13 +101,13 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
     const empty = await credentialsPage(client);
     assertMatch(empty, /<title>Settings<\/title>/);
     assertMatch(empty, /aria-label="Settings navigation"/);
-    assertMatch(empty, /href="\/app\/settings#credentials" aria-current="page"/);
+    assertMatch(empty, /href="\/app\/settings#secrets" aria-current="page"/);
     assertMatch(empty, /href="\/app" aria-label="Close settings"/);
     assertNotMatch(empty, /aria-label="Primary navigation"|>Overview<|>Settings<\/span>/);
     assertMatch(empty, /data-slot="table"/);
-    assertMatch(empty, /Stored credentials/);
-    assertMatch(empty, /No credentials configured\./);
-    assertMatch(empty, /commandfor="[^"]+-add-credential" command="show-modal"/);
+    assertMatch(empty, /Stored secrets/);
+    assertMatch(empty, /No secrets configured\./);
+    assertMatch(empty, /commandfor="[^"]+-add-secret" command="show-modal"/);
     assertMatch(empty, />Add<\/button>/);
     assertMatch(empty, /OPENCODE_API_KEY/);
     assertNotMatch(empty, /oc-go-secret/);
@@ -135,8 +135,8 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
     assertMatch(saved, />Edit<\/button>/);
     assertMatch(saved, />Delete<\/button>/);
     assertMatch(saved, /role="alertdialog"/);
-    assertMatch(saved, /Edit credential/);
-    assertMatch(saved, /Delete credential\?/);
+    assertMatch(saved, /Edit secret/);
+    assertMatch(saved, /Delete secret\?/);
     assertNotMatch(saved, /Encrypted · version/);
     assertNotMatch(saved, /oc-go-secret/);
     assertNotMatch(saved, /sk-openai-secret/);
@@ -214,7 +214,7 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
       key: OPENCODE_KEY,
     });
     assertEquals(deleteLastResponse.status, 303);
-    assertMatch(await credentialsPage(client), /No credentials configured\./);
+    assertMatch(await credentialsPage(client), /No secrets configured\./);
     const count = await client.store.pool.query(
       "select count(*)::integer as count from encrypted_secrets",
     );

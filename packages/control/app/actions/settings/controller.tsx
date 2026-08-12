@@ -59,7 +59,7 @@ export default createController(routes.app.settings, {
       }
 
       const error = save.issues[0]?.message ?? deletion.issues[0]?.message ??
-        "Invalid credential form submission.";
+        "Invalid secret form submission.";
       return context.render(
         <SettingsPage
           csrfToken={getCsrfToken(context)}

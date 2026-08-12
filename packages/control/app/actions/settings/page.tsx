@@ -37,7 +37,7 @@ export interface SettingsPageProps {
 
 export function SettingsPage(handle: Handle<SettingsPageProps>) {
   const { csrfToken, secrets, error } = handle.props;
-  const addCredentialDialogId = `${handle.id}-add-credential`;
+  const addSecretDialogId = `${handle.id}-add-secret`;
 
   return () => (
     <Document title="Settings">
@@ -46,7 +46,7 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
           <header mix={dialogHeaderStyle}>
             <div mix={dialogTitleStyle}>
               <h1 mix={pageHeadingStyle}>Settings</h1>
-              <p mix={pageCopyStyle}>Manage control-panel configuration and credentials.</p>
+              <p mix={pageCopyStyle}>Manage control-panel configuration and secrets.</p>
             </div>
             <a href={routes.app.index.href()} aria-label="Close settings" mix={closeButtonStyle}>
               <Icon name="x" size={18} />
@@ -56,23 +56,23 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
             <aside aria-label="Settings navigation" mix={settingsSidebarStyle}>
               <nav>
                 <a
-                  href={`${routes.app.settings.index.href()}#credentials`}
+                  href={`${routes.app.settings.index.href()}#secrets`}
                   aria-current="page"
                   mix={settingsNavLinkStyle}
                 >
-                  <Icon name="credentials" />
-                  Credentials
+                  <Icon name="secrets" />
+                  Secrets
                 </a>
               </nav>
             </aside>
 
             <section
-              id="credentials"
-              aria-labelledby="credentials-heading"
+              id="secrets"
+              aria-labelledby="secrets-heading"
               mix={settingsContentStyle}
             >
               <header mix={sectionHeaderStyle}>
-                <h2 id="credentials-heading" mix={sectionHeadingStyle}>Credentials</h2>
+                <h2 id="secrets-heading" mix={sectionHeadingStyle}>Secrets</h2>
                 <p mix={sectionCopyStyle}>
                   Provider API keys are encrypted with the control-panel master key and are never
                   shown again after they are saved.
@@ -87,11 +87,11 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
                 )
                 : null}
 
-              <section aria-label="Stored provider credentials" mix={listStyle}>
+              <section aria-label="Stored provider secrets" mix={listStyle}>
                 <div mix={tableFrameStyle}>
                   <header mix={tableToolbarStyle}>
-                    <h3 mix={tableTitleStyle}>Stored credentials</h3>
-                    <Button size="sm" commandFor={addCredentialDialogId} command="show-modal">
+                    <h3 mix={tableTitleStyle}>Stored secrets</h3>
+                    <Button size="sm" commandFor={addSecretDialogId} command="show-modal">
                       <Icon name="plus" />
                       Add
                     </Button>
@@ -99,7 +99,7 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Credential</TableHead>
+                        <TableHead>Secret</TableHead>
                         <TableHead>Updated</TableHead>
                         <TableHead mix={actionsHeadStyle}>
                           <span mix={screenReaderOnlyStyle}>Actions</span>
@@ -111,12 +111,12 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
                         ? (
                           <TableRow>
                             <TableCell colSpan={3} mix={emptyCellStyle}>
-                              No credentials configured.
+                              No secrets configured.
                             </TableCell>
                           </TableRow>
                         )
                         : secrets.map((secret) => (
-                          <CredentialRow
+                          <SecretRow
                             key={secret.key}
                             secret={secret}
                             csrfToken={csrfToken}
@@ -125,9 +125,9 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
                     </TableBody>
                   </Table>
                 </div>
-                <AddCredentialDialog
+                <AddSecretDialog
                   csrfToken={csrfToken}
-                  dialogId={addCredentialDialogId}
+                  dialogId={addSecretDialogId}
                 />
               </section>
             </section>
@@ -138,7 +138,7 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
   );
 }
 
-function AddCredentialDialog(
+function AddSecretDialog(
   handle: Handle<{ csrfToken: string; dialogId: string }>,
 ) {
   const { csrfToken, dialogId } = handle.props;
@@ -153,7 +153,7 @@ function AddCredentialDialog(
       aria-describedby={descriptionId}
     >
       <AlertDialogHeader>
-        <AlertDialogTitle id={titleId}>Add provider credential</AlertDialogTitle>
+        <AlertDialogTitle id={titleId}>Add provider secret</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
           Use the environment variable expected by the provider, such as OPENCODE_API_KEY.
         </AlertDialogDescription>
@@ -162,9 +162,9 @@ function AddCredentialDialog(
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="save" />
         <Field>
-          <FieldLabel for="credential-key">Key</FieldLabel>
+          <FieldLabel for="secret-key">Key</FieldLabel>
           <Input
-            id="credential-key"
+            id="secret-key"
             type="text"
             name="key"
             placeholder="OPENCODE_API_KEY"
@@ -172,9 +172,9 @@ function AddCredentialDialog(
           />
         </Field>
         <Field>
-          <FieldLabel for="credential-value">API key</FieldLabel>
+          <FieldLabel for="secret-value">API key</FieldLabel>
           <Input
-            id="credential-value"
+            id="secret-value"
             type="password"
             name="value"
             autoComplete="off"
@@ -190,14 +190,14 @@ function AddCredentialDialog(
           >
             Cancel
           </Button>
-          <Button type="submit">Save credential</Button>
+          <Button type="submit">Save secret</Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>
   );
 }
 
-function CredentialRow(
+function SecretRow(
   handle: Handle<{ secret: SecretEntry; csrfToken: string }>,
 ) {
   const { secret, csrfToken } = handle.props;
@@ -207,11 +207,11 @@ function CredentialRow(
   return () => (
     <TableRow>
       <TableCell>
-        <strong mix={credentialIdentityStyle}>{secret.key}</strong>
+        <strong mix={secretIdentityStyle}>{secret.key}</strong>
       </TableCell>
       <TableCell>
         <time dateTime={secret.updatedAt} mix={dateStyle}>
-          {formatCredentialDate(secret.updatedAt)}
+          {formatSecretDate(secret.updatedAt)}
         </time>
       </TableCell>
       <TableCell mix={actionsCellStyle}>
@@ -236,12 +236,12 @@ function CredentialRow(
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <EditCredentialDialog
+        <EditSecretDialog
           secret={secret}
           csrfToken={csrfToken}
           dialogId={editDialogId}
         />
-        <DeleteCredentialDialog
+        <DeleteSecretDialog
           secret={secret}
           csrfToken={csrfToken}
           dialogId={deleteDialogId}
@@ -251,7 +251,7 @@ function CredentialRow(
   );
 }
 
-function EditCredentialDialog(
+function EditSecretDialog(
   handle: Handle<{ secret: SecretEntry; csrfToken: string; dialogId: string }>,
 ) {
   const { secret, csrfToken, dialogId } = handle.props;
@@ -261,7 +261,7 @@ function EditCredentialDialog(
   return () => (
     <AlertDialog id={dialogId} aria-labelledby={titleId} aria-describedby={descriptionId}>
       <AlertDialogHeader>
-        <AlertDialogTitle id={titleId}>Edit credential</AlertDialogTitle>
+        <AlertDialogTitle id={titleId}>Edit secret</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
           Replace the stored value for{" "}
           <strong>{secret.key}</strong>. The new value will be encrypted and cannot be shown again.
@@ -297,7 +297,7 @@ function EditCredentialDialog(
   );
 }
 
-function DeleteCredentialDialog(
+function DeleteSecretDialog(
   handle: Handle<{ secret: SecretEntry; csrfToken: string; dialogId: string }>,
 ) {
   const { secret, csrfToken, dialogId } = handle.props;
@@ -307,7 +307,7 @@ function DeleteCredentialDialog(
   return () => (
     <AlertDialog id={dialogId} aria-labelledby={titleId} aria-describedby={descriptionId}>
       <AlertDialogHeader>
-        <AlertDialogTitle id={titleId}>Delete credential?</AlertDialogTitle>
+        <AlertDialogTitle id={titleId}>Delete secret?</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
           This will permanently delete <strong>{secret.key}</strong>. This action cannot be undone.
         </AlertDialogDescription>
@@ -325,14 +325,14 @@ function DeleteCredentialDialog(
           >
             Cancel
           </Button>
-          <Button type="submit" variant="destructive">Delete credential</Button>
+          <Button type="submit" variant="destructive">Delete secret</Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>
   );
 }
 
-function formatCredentialDate(value: string): string {
+function formatSecretDate(value: string): string {
   return new Intl.DateTimeFormat("en", {
     year: "numeric",
     month: "short",
@@ -460,7 +460,7 @@ const emptyCellStyle = css({
   color: "var(--muted-foreground)",
   textAlign: "center",
 });
-const credentialIdentityStyle = css({
+const secretIdentityStyle = css({
   display: "block",
   minWidth: 0,
   overflow: "hidden",

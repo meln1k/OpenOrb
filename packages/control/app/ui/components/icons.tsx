@@ -6,7 +6,7 @@ export type IconName =
   | "chevron-down"
   | "chevrons-up-down"
   | "credit-card"
-  | "credentials"
+  | "secrets"
   | "dashboard"
   | "folder"
   | "logout"
@@ -74,7 +74,7 @@ function IconPaths(handle: Handle<{ name: IconName }>) {
             <path d="M2 10h20" />
           </>
         );
-      case "credentials":
+      case "secrets":
         return (
           <>
             <circle cx="7.5" cy="15.5" r="5.5" />
