@@ -13,6 +13,7 @@ const server = Deno.serve(
   {
     port,
     signal: abortController.signal,
+    automaticCompression: true,
     onListen({ hostname, port: listeningPort }) {
       const displayHost = hostname === "0.0.0.0" ? "localhost" : hostname;
       console.log(

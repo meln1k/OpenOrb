@@ -4,6 +4,7 @@
     "./packages/protocol",
     "./packages/runner"
   ],
+  "unstable": ["no-legacy-abort"],
   "nodeModulesDir": "auto",
   "compilerOptions": {
     "strict": true,
