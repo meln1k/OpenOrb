@@ -11,9 +11,13 @@ export type IconName =
   | "folder"
   | "logout"
   | "message"
+  | "more-horizontal"
   | "panel-left"
+  | "plus"
   | "server"
-  | "sparkles";
+  | "settings"
+  | "sparkles"
+  | "x";
 
 export function Icon(handle: Handle<{ name: IconName; size?: number }>) {
   return () => {
@@ -100,11 +104,26 @@ function IconPaths(handle: Handle<{ name: IconName }>) {
         );
       case "message":
         return <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" />;
+      case "more-horizontal":
+        return (
+          <>
+            <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+            <circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
+          </>
+        );
       case "panel-left":
         return (
           <>
             <rect width="18" height="18" x="3" y="3" rx="2" />
             <path d="M9 3v18" />
+          </>
+        );
+      case "plus":
+        return (
+          <>
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
           </>
         );
       case "server":
@@ -115,12 +134,26 @@ function IconPaths(handle: Handle<{ name: IconName }>) {
             <path d="M6 6h.01M6 18h.01" />
           </>
         );
+      case "settings":
+        return (
+          <>
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+            <circle cx="12" cy="12" r="3" />
+          </>
+        );
       case "sparkles":
         return (
           <>
             <path d="m12 3-1.7 4.3L6 9l4.3 1.7L12 15l1.7-4.3L18 9l-4.3-1.7Z" />
             <path d="m5 16-.7 1.8-1.8.7 1.8.7L5 21l.7-1.8 1.8-.7-1.8-.7Z" />
             <path d="m19 15-.7 1.8-1.8.7 1.8.7L19 20l.7-1.8 1.8-.7-1.8-.7Z" />
+          </>
+        );
+      case "x":
+        return (
+          <>
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
           </>
         );
     }

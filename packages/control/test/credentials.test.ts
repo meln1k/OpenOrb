@@ -74,7 +74,7 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
 }
 
 async function credentialsPage(client: AuthenticatedClient): Promise<string> {
-  const response = await fetch(new URL("/app/credentials", client.server.baseUrl), {
+  const response = await fetch(new URL("/app/settings", client.server.baseUrl), {
     headers: { Cookie: client.cookie },
   });
   assertEquals(response.status, 200);
@@ -87,7 +87,7 @@ async function submitCredentialsForm(
 ): Promise<Response> {
   const page = await credentialsPage(client);
   const token = csrfFrom(page);
-  return fetch(new URL("/app/credentials", client.server.baseUrl), {
+  return fetch(new URL("/app/settings", client.server.baseUrl), {
     method: "POST",
     redirect: "manual",
     headers: { Cookie: client.cookie },
@@ -99,7 +99,16 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
   const client = await createAuthenticatedClient();
   try {
     const empty = await credentialsPage(client);
-    assertMatch(empty, /No provider credentials are configured/);
+    assertMatch(empty, /<title>Settings<\/title>/);
+    assertMatch(empty, /aria-label="Settings navigation"/);
+    assertMatch(empty, /href="\/app\/settings#credentials" aria-current="page"/);
+    assertMatch(empty, /href="\/app" aria-label="Close settings"/);
+    assertNotMatch(empty, /aria-label="Primary navigation"|>Overview<|>Settings<\/span>/);
+    assertMatch(empty, /data-slot="table"/);
+    assertMatch(empty, /Stored credentials/);
+    assertMatch(empty, /No credentials configured\./);
+    assertMatch(empty, /commandfor="[^"]+-add-credential" command="show-modal"/);
+    assertMatch(empty, />Add<\/button>/);
     assertMatch(empty, /OPENCODE_API_KEY/);
     assertNotMatch(empty, /oc-go-secret/);
 
@@ -115,12 +124,20 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
         value,
       });
       assertEquals(saveResponse.status, 303);
-      assertEquals(saveResponse.headers.get("location"), "/app/credentials");
+      assertEquals(saveResponse.headers.get("location"), "/app/settings");
     }
 
     const saved = await credentialsPage(client);
     assertMatch(saved, new RegExp(OPENCODE_KEY));
     assertMatch(saved, /OPENAI_API_KEY/);
+    assertMatch(saved, /data-slot="table"/);
+    assertMatch(saved, /aria-label="Open actions for OPENCODE_API_KEY"/);
+    assertMatch(saved, />Edit<\/button>/);
+    assertMatch(saved, />Delete<\/button>/);
+    assertMatch(saved, /role="alertdialog"/);
+    assertMatch(saved, /Edit credential/);
+    assertMatch(saved, /Delete credential\?/);
+    assertNotMatch(saved, /Encrypted · version/);
     assertNotMatch(saved, /oc-go-secret/);
     assertNotMatch(saved, /sk-openai-secret/);
 
@@ -197,7 +214,7 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
       key: OPENCODE_KEY,
     });
     assertEquals(deleteLastResponse.status, 303);
-    assertMatch(await credentialsPage(client), /No provider credentials are configured/);
+    assertMatch(await credentialsPage(client), /No credentials configured\./);
     const count = await client.store.pool.query(
       "select count(*)::integer as count from encrypted_secrets",
     );
@@ -356,8 +373,8 @@ Deno.test("rejects invalid keys, unauthenticated access, and un-CSRF'd saves", a
     });
     assertEquals(invalidKey.status, 400);
 
-    // Keys may be lowercase or start with a digit, but must stay free of
-    // spaces and punctuation.
+    // Portable environment variable names may be lowercase, but cannot start
+    // with a digit.
     const lowercaseKey = await submitCredentialsForm(client, {
       intent: "save",
       key: "opencode",
@@ -370,20 +387,20 @@ Deno.test("rejects invalid keys, unauthenticated access, and un-CSRF'd saves", a
       key: "1API_KEY",
       value: OPENCODE_VALUE,
     });
-    assertEquals(leadingDigitKey.status, 303);
+    assertEquals(leadingDigitKey.status, 400);
     assertEquals(
       (await client.store.pool.query("select count(*)::integer as count from encrypted_secrets"))
         .rows[0]?.count,
-      2,
+      1,
     );
 
-    const anonymous = await fetch(new URL("/app/credentials", client.server.baseUrl), {
+    const anonymous = await fetch(new URL("/app/settings", client.server.baseUrl), {
       redirect: "manual",
     });
     assertEquals(anonymous.status, 401);
 
     // Without a session, the auth boundary rejects before CSRF is evaluated.
-    const anonymousPost = await fetch(new URL("/app/credentials", client.server.baseUrl), {
+    const anonymousPost = await fetch(new URL("/app/settings", client.server.baseUrl), {
       method: "POST",
       redirect: "manual",
       body: new URLSearchParams({ intent: "save", key: "OPENAI_API_KEY", value: OPENAI_VALUE }),
@@ -391,7 +408,7 @@ Deno.test("rejects invalid keys, unauthenticated access, and un-CSRF'd saves", a
     assertEquals(anonymousPost.status, 401);
 
     // With a session but no CSRF token, the state change is rejected.
-    const missingCsrf = await fetch(new URL("/app/credentials", client.server.baseUrl), {
+    const missingCsrf = await fetch(new URL("/app/settings", client.server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: client.cookie },
@@ -401,7 +418,7 @@ Deno.test("rejects invalid keys, unauthenticated access, and un-CSRF'd saves", a
     assertEquals(
       (await client.store.pool.query("select count(*)::integer as count from encrypted_secrets"))
         .rows[0]?.count,
-      2,
+      1,
       "rejected requests must not create additional rows",
     );
   } finally {

@@ -45,15 +45,6 @@ export function SidebarMobile(handle: Handle<Props<"aside"> & { id: string }>) {
         data-slot="sidebar-mobile"
         mix={[mobilePanelStyle, mix]}
       >
-        <button
-          type="button"
-          popovertarget={id}
-          popovertargetaction="hide"
-          aria-label="Close sidebar"
-          mix={mobileCloseStyle}
-        >
-          ×
-        </button>
         {children}
       </aside>
     );
@@ -229,68 +220,6 @@ export function SidebarSubMenuLink(
   };
 }
 
-export const sidebarBrandStyle = css({
-  display: "flex",
-  alignItems: "center",
-  gap: "8px",
-  minWidth: 0,
-  height: "48px",
-  padding: "8px",
-  color: "var(--sidebar-foreground)",
-  borderRadius: "var(--radius-md)",
-  outline: "none",
-  textDecoration: "none",
-  "&:hover": { background: "var(--sidebar-accent)" },
-  "&:focus-visible": { boxShadow: "0 0 0 2px var(--sidebar-ring)" },
-});
-
-export const sidebarBrandMarkStyle = css({
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  flexShrink: 0,
-  width: "32px",
-  height: "32px",
-  padding: "6px",
-  background: "var(--sidebar-primary)",
-  borderRadius: "var(--radius-lg)",
-  "& img": { display: "block", width: "100%", height: "100%" },
-});
-
-export const sidebarBrandTextStyle = css({
-  display: "grid",
-  flex: 1,
-  minWidth: 0,
-  color: "var(--sidebar-foreground)",
-  fontSize: "14px",
-  lineHeight: 1.25,
-  textAlign: "left",
-  "& strong, & span": { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  "& strong": { fontWeight: 600 },
-  "& span": { fontSize: "12px" },
-});
-
-export const sidebarAccountTriggerStyle = css({
-  display: "flex",
-  alignItems: "center",
-  gap: "8px",
-  width: "100%",
-  height: "48px",
-  padding: "8px",
-  color: "var(--sidebar-foreground)",
-  background: "transparent",
-  border: 0,
-  borderRadius: "var(--radius-md)",
-  outline: "none",
-  font: "inherit",
-  textAlign: "left",
-  "&:hover, &:focus-visible": { background: "var(--sidebar-accent)" },
-  "details[open] &": { background: "var(--sidebar-accent)" },
-  "& > svg:last-child": { marginLeft: "auto" },
-});
-
-export const sidebarAccountTextStyle = sidebarBrandTextStyle;
-
 const layoutStyle = css({
   display: "flex",
   minHeight: "100svh",
@@ -344,45 +273,46 @@ const desktopTriggerStyle = css({
 
 const mobilePanelStyle = css({
   position: "fixed",
-  inset: "0 auto 0 0",
+  top: "max(8px, env(safe-area-inset-top))",
+  right: "auto",
+  bottom: "max(8px, env(safe-area-inset-bottom))",
+  left: "max(8px, env(safe-area-inset-left))",
   zIndex: 50,
   width: "min(288px, 85vw)",
-  height: "100svh",
+  height: "auto",
   maxHeight: "none",
   margin: 0,
   padding: "8px",
   color: "var(--sidebar-foreground)",
   background: "var(--sidebar)",
-  border: 0,
+  border: "1px solid var(--sidebar-border)",
+  borderRadius: "var(--radius-xl)",
   boxShadow: "12px 0 32px rgb(0 0 0 / 0.2)",
-  overflow: "visible",
-  "&:popover-open": { display: "flex", flexDirection: "column" },
+  overflow: "hidden",
+  "&:popover-open": {
+    display: "flex",
+    flexDirection: "column",
+    animation: "openorb-sidebar-in 300ms cubic-bezier(0.22, 1, 0.36, 1)",
+  },
   "&::backdrop": { background: "rgb(0 0 0 / 0.5)" },
+  "&:popover-open::backdrop": {
+    animation: "openorb-sidebar-backdrop-in 250ms ease-out",
+  },
+  "@keyframes openorb-sidebar-in": {
+    from: { opacity: 0, transform: "translateX(calc(-100% - 8px))" },
+    to: { opacity: 1, transform: "translateX(0)" },
+  },
+  "@keyframes openorb-sidebar-backdrop-in": {
+    from: { background: "rgb(0 0 0 / 0)" },
+    to: { background: "rgb(0 0 0 / 0.5)" },
+  },
+  "@media (prefers-reduced-motion: reduce)": {
+    "&:popover-open, &:popover-open::backdrop": { animation: "none" },
+  },
   [media.md]: {
     display: "none",
     "&:popover-open": { display: "none" },
   },
-});
-
-const mobileCloseStyle = css({
-  position: "absolute",
-  top: "10px",
-  right: "-42px",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: "32px",
-  height: "32px",
-  color: "white",
-  background: "rgb(0 0 0 / 0.55)",
-  border: 0,
-  borderRadius: "var(--radius-md)",
-  outline: "none",
-  font: "inherit",
-  fontSize: "22px",
-  lineHeight: 1,
-  cursor: "pointer",
-  "&:focus-visible": { boxShadow: "0 0 0 2px white" },
 });
 
 const insetStyle = css({

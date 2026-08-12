@@ -9,8 +9,8 @@ import authController from "./actions/auth/controller.tsx";
 import loginController from "./actions/auth/login/controller.tsx";
 import setupController from "./actions/auth/setup/controller.tsx";
 import appController from "./actions/app/controller.tsx";
-import credentialsController from "./actions/credentials/controller.tsx";
 import controller from "./actions/controller.tsx";
+import settingsController from "./actions/settings/controller.tsx";
 import type { Administrator } from "./data/administrator-repository.ts";
 import { type AppServices, AppServicesKey, provideAppServices } from "./middleware/services.ts";
 import { render } from "./middleware/render.tsx";
@@ -76,7 +76,7 @@ export function createAppRouter(
   appRouter.map(routes.auth.login, loginController);
   appRouter.map(routes.auth.setup, setupController);
   appRouter.map(routes.app, appController);
-  appRouter.map(routes.app.credentials, credentialsController);
+  appRouter.map(routes.app.settings, settingsController);
 
   return appRouter;
 }

@@ -13,39 +13,25 @@ import {
   designSystemStyle,
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuLink,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Icon,
   Separator,
-  sidebarAccountTextStyle,
-  sidebarAccountTriggerStyle,
-  sidebarBrandMarkStyle,
-  sidebarBrandStyle,
-  sidebarBrandTextStyle,
-  SidebarContent,
   SidebarDesktop,
   SidebarFooter,
-  SidebarGroup,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarLayout,
-  SidebarMenu,
-  SidebarMenuDisclosure,
-  SidebarMenuItem,
   SidebarMobile,
-  SidebarSubMenuItem,
-  SidebarSubMenuLink,
   SidebarTrigger,
 } from "./components/index.ts";
 import { Document } from "./document.tsx";
 import { media } from "./responsive.ts";
 
 export interface AppShellProps {
-  activePage: "overview" | "credentials";
   children?: RemixNode;
   copy?: string;
   csrfToken: string;
@@ -61,10 +47,10 @@ export function AppShell(handle: Handle<AppShellProps>) {
     <Document title={handle.props.title}>
       <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
         <SidebarDesktop>
-          <AppNavigation activePage={handle.props.activePage} csrfToken={handle.props.csrfToken} />
+          <AppNavigation csrfToken={handle.props.csrfToken} />
         </SidebarDesktop>
         <SidebarMobile id={MOBILE_SIDEBAR_ID}>
-          <AppNavigation activePage={handle.props.activePage} csrfToken={handle.props.csrfToken} />
+          <AppNavigation csrfToken={handle.props.csrfToken} />
         </SidebarMobile>
         <SidebarInset aria-label="Authenticated control panel">
           <header mix={topBarStyle}>
@@ -98,7 +84,7 @@ export function AppShell(handle: Handle<AppShellProps>) {
 }
 
 function AppNavigation(
-  handle: Handle<{ activePage: AppShellProps["activePage"]; csrfToken: string }>,
+  handle: Handle<{ csrfToken: string }>,
 ) {
   return () => (
     <>
@@ -113,37 +99,6 @@ function AppNavigation(
           </span>
         </a>
       </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Recent</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuDisclosure
-                label="Control panel"
-                icon={<Icon name="dashboard" />}
-                defaultOpen
-              >
-                <SidebarSubMenuItem>
-                  <SidebarSubMenuLink
-                    href={routes.app.index.href()}
-                    active={handle.props.activePage === "overview"}
-                  >
-                    Overview
-                  </SidebarSubMenuLink>
-                </SidebarSubMenuItem>
-                <SidebarSubMenuItem>
-                  <SidebarSubMenuLink
-                    href={routes.app.credentials.index.href()}
-                    active={handle.props.activePage === "credentials"}
-                  >
-                    Credentials
-                  </SidebarSubMenuLink>
-                </SidebarSubMenuItem>
-              </SidebarMenuDisclosure>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-      </SidebarContent>
       <SidebarFooter>
         <DropdownMenu>
           <DropdownMenuTrigger mix={sidebarAccountTriggerStyle}>
@@ -156,7 +111,7 @@ function AppNavigation(
             </span>
             <Icon name="chevrons-up-down" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent>
+          <DropdownMenuContent mix={accountMenuContentStyle}>
             <DropdownMenuLabel>
               <div mix={accountMenuIdentityStyle}>
                 <Avatar>
@@ -169,27 +124,10 @@ function AppNavigation(
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem>
-                <Icon name="sparkles" />
-                Upgrade to Pro
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem>
-                <Icon name="account" />
-                Account
-              </DropdownMenuItem>
-              <DropdownMenuItem>
-                <Icon name="credit-card" />
-                Billing
-              </DropdownMenuItem>
-              <DropdownMenuItem>
-                <Icon name="bell" />
-                Notifications
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
+            <DropdownMenuLink href={routes.app.settings.index.href()}>
+              <Icon name="settings" />
+              Settings
+            </DropdownMenuLink>
             <DropdownMenuSeparator />
             <form method="post" action={routes.auth.logout.href()}>
               <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
@@ -212,6 +150,67 @@ const appThemeAliasesStyle = css({
   fontFamily: "var(--font-sans)",
   lineHeight: 1.5,
   "& *, & *::before, & *::after": { boxSizing: "border-box" },
+});
+const sidebarBrandStyle = css({
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  minWidth: 0,
+  height: "48px",
+  padding: "8px",
+  color: "var(--sidebar-foreground)",
+  borderRadius: "var(--radius-md)",
+  outline: "none",
+  textDecoration: "none",
+  "&:hover": { background: "var(--sidebar-accent)" },
+  "&:focus-visible": { boxShadow: "0 0 0 2px var(--sidebar-ring)" },
+});
+const sidebarBrandMarkStyle = css({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
+  width: "32px",
+  height: "32px",
+  padding: "6px",
+  background: "var(--sidebar-primary)",
+  borderRadius: "var(--radius-lg)",
+  "& img": { display: "block", width: "100%", height: "100%" },
+});
+const sidebarBrandTextStyle = css({
+  display: "grid",
+  flex: 1,
+  minWidth: 0,
+  color: "var(--sidebar-foreground)",
+  fontSize: "14px",
+  lineHeight: 1.25,
+  textAlign: "left",
+  "& strong, & span": { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  "& strong": { fontWeight: 600 },
+  "& span": { fontSize: "12px" },
+});
+const sidebarAccountTriggerStyle = css({
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  width: "100%",
+  height: "48px",
+  padding: "8px",
+  color: "var(--sidebar-foreground)",
+  background: "transparent",
+  border: 0,
+  borderRadius: "var(--radius-md)",
+  outline: "none",
+  font: "inherit",
+  textAlign: "left",
+  "&:hover, &:focus-visible": { background: "var(--sidebar-accent)" },
+  "details[open] &": { background: "var(--sidebar-accent)" },
+  "& > svg:last-child": { marginLeft: "auto" },
+});
+const sidebarAccountTextStyle = sidebarBrandTextStyle;
+const accountMenuContentStyle = css({
+  inset: "auto auto calc(100% + 4px) 0",
+  [media.md]: { inset: "auto auto 0 calc(100% + 4px)" },
 });
 const accountMenuIdentityStyle = css({
   display: "flex",

@@ -9,7 +9,6 @@ export interface DashboardPageProps {
 export function DashboardPage(handle: Handle<DashboardPageProps>) {
   return () => (
     <AppShell
-      activePage="overview"
       csrfToken={handle.props.csrfToken}
       title="OpenOrb control"
       eyebrow="Overview"

@@ -1,4 +1,5 @@
 export * from "./alert.tsx";
+export * from "./alert-dialog.tsx";
 export * from "./avatar.tsx";
 export * from "./breadcrumb.tsx";
 export * from "./button.tsx";
@@ -10,4 +11,5 @@ export * from "./icons.tsx";
 export * from "./input.tsx";
 export * from "./separator.tsx";
 export * from "./sidebar.tsx";
+export * from "./table.tsx";
 export * from "./theme.ts";

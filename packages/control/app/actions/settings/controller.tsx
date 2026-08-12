@@ -5,16 +5,16 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import { routes } from "../../routes.ts";
 import { csrf } from "../../middleware/csrf.ts";
-import { CredentialsPage } from "./page.tsx";
+import { routes } from "../../routes.ts";
+import { SettingsPage } from "./page.tsx";
 
 const secretKeySchema = s.string().refine(
   (value) => {
     const key = value.trim();
-    return key.length > 0 && key.length <= 64 && /^[A-Za-z0-9_]+$/.test(key);
+    return key.length > 0 && key.length <= 64 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
   },
-  'Use a name of letters, digits, and underscores, such as "OPENCODE_API_KEY".',
+  'Start with a letter or underscore and use only letters, digits, and underscores, such as "OPENCODE_API_KEY".',
 );
 
 const saveSchema = f.object({
@@ -33,13 +33,13 @@ const deleteSchema = f.object({
   key: f.field(secretKeySchema),
 });
 
-export default createController(routes.app.credentials, {
+export default createController(routes.app.settings, {
   middleware: [requireAuth(), csrf()],
   actions: {
     async index(context) {
       const secrets = await context.services.store.listSecrets();
       return context.render(
-        <CredentialsPage csrfToken={getCsrfToken(context)} secrets={secrets} />,
+        <SettingsPage csrfToken={getCsrfToken(context)} secrets={secrets} />,
       );
     },
 
@@ -49,19 +49,19 @@ export default createController(routes.app.credentials, {
       const save = s.parseSafe(saveSchema, context.formData);
       if (save.success) {
         await store.saveSecret(save.value.key.trim(), save.value.value.trim());
-        return redirect(routes.app.credentials.index.href(), 303);
+        return redirect(routes.app.settings.index.href(), 303);
       }
 
       const deletion = s.parseSafe(deleteSchema, context.formData);
       if (deletion.success) {
         await store.deleteSecret(deletion.value.key.trim());
-        return redirect(routes.app.credentials.index.href(), 303);
+        return redirect(routes.app.settings.index.href(), 303);
       }
 
       const error = save.issues[0]?.message ?? deletion.issues[0]?.message ??
         "Invalid credential form submission.";
       return context.render(
-        <CredentialsPage
+        <SettingsPage
           csrfToken={getCsrfToken(context)}
           secrets={await store.listSecrets()}
           error={error}

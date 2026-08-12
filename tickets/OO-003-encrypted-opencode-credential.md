@@ -13,7 +13,7 @@ The administrator configures provider API keys — OpenCode Go, OpenAI, or any o
 - Store each credential in `encrypted_secrets` as a row with a UUID primary key, a unique immutable credential `key` (e.g. `OPENCODE_API_KEY`, `OPENAI_API_KEY`), and the encrypted value. Key names are the identity; duplicate keys are rejected.
 - Encrypt each value with the application-encryption scheme defined in `MASTER_PLAN.md`, authenticating the immutable credential key plus key version as AAD.
 - Add the smallest authenticated Remix form/list state needed to create, list, replace, and delete credentials. Validate form input with `remix/data-schema`; use the session/CSRF middleware from OO-002.
-- Validate credential keys in environment-variable style (`^[A-Za-z0-9_]+$`, at most 64 characters), e.g. `OPENCODE_API_KEY`. Keys may be lowercase or start with a digit; spaces and punctuation are rejected.
+- Validate credential keys using the portable environment-variable convention (`^[A-Za-z_][A-Za-z0-9_]*$`, at most 64 characters), e.g. `OPENCODE_API_KEY`. Keys may be lowercase but must start with a letter or underscore; spaces and punctuation are rejected.
 - The MVP session model remains Pi provider `opencode-go`, model `deepseek-v4-flash`; provider/model support in sessions is not part of this ticket.
 - Redact secrets from responses, errors, and infrastructure logs.
 

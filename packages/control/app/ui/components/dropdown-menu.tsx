@@ -1,7 +1,5 @@
 import { css, type Handle, type Props } from "remix/ui";
 
-import { media } from "../responsive.ts";
-
 export function DropdownMenu(handle: Handle<Props<"details">>) {
   return () => {
     const { mix, ...props } = handle.props;
@@ -56,9 +54,11 @@ export function DropdownMenuSeparator(handle: Handle<Props<"hr">>) {
   };
 }
 
-export function DropdownMenuItem(handle: Handle<Props<"button">>) {
+export function DropdownMenuItem(
+  handle: Handle<Props<"button"> & { variant?: "default" | "destructive" }>,
+) {
   return () => {
-    const { disabled, mix, type = "button", ...props } = handle.props;
+    const { disabled, mix, type = "button", variant = "default", ...props } = handle.props;
     return (
       <button
         {...props}
@@ -66,7 +66,22 @@ export function DropdownMenuItem(handle: Handle<Props<"button">>) {
         disabled={disabled}
         role="menuitem"
         data-slot="dropdown-menu-item"
-        mix={[itemStyle, mix]}
+        data-variant={variant}
+        mix={[itemStyle, variant === "destructive" ? destructiveItemStyle : null, mix]}
+      />
+    );
+  };
+}
+
+export function DropdownMenuLink(handle: Handle<Props<"a">>) {
+  return () => {
+    const { mix, ...props } = handle.props;
+    return (
+      <a
+        {...props}
+        role="menuitem"
+        data-slot="dropdown-menu-item"
+        mix={[itemStyle, linkStyle, mix]}
       />
     );
   };
@@ -82,8 +97,7 @@ const triggerStyle = css({
 
 const contentStyle = css({
   position: "absolute",
-  left: 0,
-  bottom: "calc(100% + 4px)",
+  inset: "calc(100% + 4px) 0 auto auto",
   zIndex: 50,
   display: "flex",
   flexDirection: "column",
@@ -99,10 +113,6 @@ const contentStyle = css({
   borderRadius: "var(--radius-lg)",
   boxShadow: "0 10px 28px rgb(0 0 0 / 0.18)",
   overflow: "hidden",
-  [media.md]: {
-    left: "calc(100% + 4px)",
-    bottom: 0,
-  },
 });
 
 const listStyle = css({
@@ -152,4 +162,13 @@ const itemStyle = css({
     background: "var(--accent)",
   },
   "&:disabled, &[aria-disabled='true']": { pointerEvents: "none", opacity: 0.5 },
+});
+
+const linkStyle = css({ textDecoration: "none" });
+const destructiveItemStyle = css({
+  color: "var(--destructive)",
+  "&:hover, &:focus-visible": {
+    color: "var(--destructive)",
+    background: "color-mix(in oklab, var(--destructive) 10%, transparent)",
+  },
 });
