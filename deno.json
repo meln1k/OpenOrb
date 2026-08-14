@@ -6,6 +6,9 @@
   ],
   "unstable": ["no-legacy-abort"],
   "nodeModulesDir": "auto",
+  "imports": {
+    "@std/assert": "jsr:@std/assert@1.0.19"
+  },
   "compilerOptions": {
     "strict": true,
     "lib": ["ES2024", "DOM", "DOM.Iterable", "Deno.ns"],
@@ -30,6 +33,9 @@
       "tickets"
     ],
     "lineWidth": 100
+  },
+  "lint": {
+    "plugins": ["./scripts/lint-plugin.ts"]
   },
   "tasks": {
     "dev": {
