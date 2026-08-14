@@ -30,6 +30,7 @@ interface AuthenticatedClient {
   store: Awaited<ReturnType<typeof createTestStore>>;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
+  userId: number;
 }
 
 async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
@@ -64,7 +65,9 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
       }),
     });
     assertEquals(loginResponse.status, 303);
-    return { store, server, cookie: cookieFrom(loginResponse) };
+    const user = await store.verifyAdministratorPassword(PASSWORD);
+    assert(user);
+    return { store, server, cookie: cookieFrom(loginResponse), userId: user.id };
   } catch (error) {
     await server.close();
     await store.close();
@@ -141,13 +144,14 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       authorResponse.headers.get("location"),
       "/app/settings?tab=git-author#git-author",
     );
-    const author = await client.store.getGitAuthorConfiguration();
+    const author = await client.store.getGitAuthorConfiguration(client.userId);
     assert(author);
     assertEquals(author.authorName, "OpenOrb Developer");
     assertEquals(author.authorEmail, "developer@example.com");
     assertEquals(
-      (await client.store.pool.query("select id from git_author_configuration")).rows[0]?.id,
-      1,
+      (await client.store.pool.query("select user_id from git_author_configuration")).rows[0]
+        ?.user_id,
+      client.userId,
     );
 
     const invalidAuthor = await submitForm(client, settingsPath, {
@@ -168,7 +172,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertMatch(firstStorage.secret_key, /^OPENORB_GITHUB_TOKEN_[0-9A-F]{32}$/);
     assertEquals(firstStorage.secret_purpose, "git-credential");
     assert(!firstStorage.ciphertext.includes(FIRST_TOKEN));
-    assertEquals(await client.store.listSecrets(), []);
+    assertEquals(await client.store.listSecrets(client.userId), []);
 
     const configuredSettings = await getPage(client, settingsPath);
     assertMatch(configuredSettings, /Configured · updated/);
@@ -191,7 +195,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       (await submitForm(client, settingsPath, { intent: "delete-github-credential" })).status,
       303,
     );
-    assertEquals(await client.store.getGitHubCredential(), null);
+    assertEquals(await client.store.getGitHubCredential(client.userId), null);
 
     const missingCsrf = await fetch(new URL(projectsPath, client.server.baseUrl), {
       method: "POST",
@@ -211,7 +215,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     });
     assertEquals(publicProject.status, 303);
     assertEquals(publicProject.headers.get("location"), "/app/projects");
-    let project = (await client.store.listProjects())[0]!;
+    let project = (await client.store.listProjects(client.userId))[0]!;
     assertEquals(project.repositoryUrl, "https://github.com/openorb-dev/openorb.git");
     assertEquals(project.defaultRef, DEFAULT_PROJECT_REF);
     assertEquals(project.defaultBranchPattern, DEFAULT_PROJECT_BRANCH_PATTERN);
@@ -226,7 +230,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       await invalidRepository.text(),
       /SSH and non-GitHub repositories are not supported/,
     );
-    assertEquals((await client.store.listProjects()).length, 1);
+    assertEquals((await client.store.listProjects(client.userId)).length, 1);
 
     assertEquals(
       (await submitForm(client, settingsPath, {
@@ -235,7 +239,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       })).status,
       303,
     );
-    assert(await client.store.getGitHubCredential());
+    assert(await client.store.getGitHubCredential(client.userId));
 
     const updateProject = await submitForm(client, projectsPath, {
       intent: "update-project",
@@ -244,7 +248,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       repository: project.repositoryUrl,
     });
     assertEquals(updateProject.status, 303);
-    project = (await client.store.listProjects())[0]!;
+    project = (await client.store.listProjects(client.userId))[0]!;
     assertEquals(project.name, "OpenOrb private");
     assertEquals(project.defaultRef, DEFAULT_PROJECT_REF);
     assertEquals(project.defaultBranchPattern, DEFAULT_PROJECT_BRANCH_PATTERN);
@@ -260,7 +264,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       (await submitForm(client, settingsPath, { intent: "delete-github-credential" })).status,
       303,
     );
-    assertEquals(await client.store.getGitHubCredential(), null);
+    assertEquals(await client.store.getGitHubCredential(client.userId), null);
     assertEquals(
       (await client.store.pool.query("select count(*)::integer as count from encrypted_secrets"))
         .rows[0]?.count,
@@ -283,7 +287,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       });
       assertEquals(inUseDeletion.status, 409);
       assertMatch(await inUseDeletion.text(), /used by a session and cannot be deleted/);
-      assert(await client.store.getProject(project.id));
+      assert(await client.store.getProject(client.userId, project.id));
     } finally {
       await client.store.pool.query("drop table project_delete_test_references");
     }
@@ -295,7 +299,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       })).status,
       303,
     );
-    assertEquals(await client.store.listProjects(), []);
+    assertEquals(await client.store.listProjects(client.userId), []);
     assertMatch(await getPage(client, projectsPath), /No projects configured/);
   } finally {
     await client.server.close();
@@ -307,7 +311,10 @@ Deno.test("the ticket down migration removes the encrypted GitHub token", async 
   const store = await createTestStore();
   const connection = await store.pool.connect();
   try {
-    await store.saveGitHubCredential(FIRST_TOKEN);
+    assert(await store.createAdministrator(PASSWORD));
+    const user = await store.verifyAdministratorPassword(PASSWORD);
+    assert(user);
+    await store.saveGitHubCredential(user.id, FIRST_TOKEN);
     const downSql = await Deno.readTextFile(
       new URL(
         "../db/migrations/20250809000000_create_git_configuration_and_projects/down.sql",

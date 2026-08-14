@@ -22,7 +22,7 @@ A reconnecting browser reloads completed history from its connected runner, and 
 - Reconnect after a cursor does not duplicate completed records.
 - A second prompt continues with prior Pi context and current workspace.
 - Control-panel restart does not create or import a session mirror.
-- An unavailable runner makes history/continuation unavailable while the four-field catalog card remains.
+- An unavailable runner makes history/continuation unavailable while the user-owned five-column catalog row continues to provide the four display fields.
 
 ## Tests
 

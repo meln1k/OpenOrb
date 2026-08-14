@@ -22,8 +22,12 @@ export class PostgresSessionStorage implements SessionStorage {
       return this.createNewSession();
     }
 
-    const result = await this.pool.query<{ data: unknown; expires_at: Date | string }>(
-      `select data, expires_at
+    const result = await this.pool.query<{
+      user_id: number | null;
+      data: unknown;
+      expires_at: Date | string;
+    }>(
+      `select user_id, data, expires_at
          from browser_sessions
         where id = $1`,
       [cookie],
@@ -39,7 +43,7 @@ export class PostgresSessionStorage implements SessionStorage {
     }
 
     const data = parseSessionData(row.data);
-    if (!data) {
+    if (!data || sessionUserId(data) !== row.user_id) {
       await this.deleteSessions([cookie]);
       return this.createNewSession();
     }
@@ -98,41 +102,51 @@ export class PostgresSessionStorage implements SessionStorage {
   }
 
   private async insert(currentSession: Session): Promise<void> {
+    const userId = sessionUserId(currentSession.data);
     await this.pool.query(
-      `insert into browser_sessions (id, data, expires_at, created_at, updated_at)
-       values ($1, $2::jsonb, now() + ($3 * interval '1 second'), now(), now())`,
-      [currentSession.id, JSON.stringify(currentSession.data), this.maxAgeSeconds],
+      `insert into browser_sessions (id, user_id, data, expires_at, created_at, updated_at)
+       values ($1, $2, $3::jsonb, now() + ($4 * interval '1 second'), now(), now())`,
+      [currentSession.id, userId, JSON.stringify(currentSession.data), this.maxAgeSeconds],
     );
   }
 
   private async update(currentSession: Session): Promise<boolean> {
+    const userId = sessionUserId(currentSession.data);
     const result = await this.pool.query(
       `update browser_sessions
           set data = $2::jsonb,
               expires_at = now() + ($3 * interval '1 second'),
               updated_at = now()
         where id = $1
+          and user_id is not distinct from $4
           and expires_at > now()`,
-      [currentSession.id, JSON.stringify(currentSession.data), this.maxAgeSeconds],
+      [currentSession.id, JSON.stringify(currentSession.data), this.maxAgeSeconds, userId],
     );
     return result.rowCount === 1;
   }
 
   private async rotate(previousId: string, currentSession: Session): Promise<boolean> {
+    const userId = sessionUserId(currentSession.data);
     const result = await this.pool.query<{ id: string }>(
       `with deleted_session as (
          delete from browser_sessions
-          where id = $4
+          where id = $5
             and expires_at > now()
          returning id
        ), inserted_session as (
-         insert into browser_sessions (id, data, expires_at, created_at, updated_at)
-         select $1, $2::jsonb, now() + ($3 * interval '1 second'), now(), now()
+         insert into browser_sessions (id, user_id, data, expires_at, created_at, updated_at)
+         select $1, $2, $3::jsonb, now() + ($4 * interval '1 second'), now(), now()
            from deleted_session
          returning id
        )
        select id from inserted_session`,
-      [currentSession.id, JSON.stringify(currentSession.data), this.maxAgeSeconds, previousId],
+      [
+        currentSession.id,
+        userId,
+        JSON.stringify(currentSession.data),
+        this.maxAgeSeconds,
+        previousId,
+      ],
     );
     return result.rowCount === 1;
   }
@@ -163,4 +177,17 @@ function parseSessionData(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sessionUserId(data: unknown): number | null {
+  const parsed = parseSessionData(data);
+  if (!parsed) {
+    throw new Error("Cannot persist malformed browser session data.");
+  }
+
+  const auth = parsed[0].auth;
+  if (!isRecord(auth) || typeof auth.userId !== "number" || !Number.isInteger(auth.userId)) {
+    return null;
+  }
+  return auth.userId;
 }

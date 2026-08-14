@@ -4,6 +4,8 @@ import type { MasterKey } from "./master-key.ts";
 
 /** Immutable metadata authenticated (but not encrypted) with each secret. */
 export interface SecretMetadata {
+  /** The immutable owner of the credential. */
+  userId: number;
   /** The credential key in environment-variable style, e.g. `OPENCODE_API_KEY`. */
   key: string;
 }
@@ -64,6 +66,6 @@ export async function decryptSecret(
 
 function secretAad(metadata: SecretMetadata, keyVersion: number): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(
-    JSON.stringify({ key: metadata.key, keyVersion }),
+    JSON.stringify({ userId: metadata.userId, key: metadata.key, keyVersion }),
   );
 }

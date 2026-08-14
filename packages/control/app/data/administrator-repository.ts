@@ -23,33 +23,32 @@ export interface AdministratorRepository {
   verifyAdministratorPassword(password: string): Promise<Administrator | null>;
 }
 
-const ADMINISTRATOR_ID = 1;
-
 export function createAdministratorRepository(database: Database): AdministratorRepository {
   return {
     async hasAdministrator() {
-      return (await database.find(users, ADMINISTRATOR_ID)) !== null;
+      return (await database.findOne(users, { where: { is_administrator: true } })) !== null;
     },
     async getAdministrator(id) {
-      if (id !== ADMINISTRATOR_ID) {
-        return null;
-      }
-
-      return (await database.find(users, ADMINISTRATOR_ID)) === null
-        ? null
-        : { id: ADMINISTRATOR_ID };
+      const user = await database.findOne(users, {
+        where: { id, is_administrator: true },
+      });
+      return user ? { id: user.id } : null;
     },
     async createAdministrator(password) {
       const passwordHash = await hashPassword(password);
 
       try {
         await database.transaction(async (transaction) => {
-          await transaction.create(users, {
-            id: ADMINISTRATOR_ID,
-            created_at: new Date().toISOString(),
-          });
+          const user = await transaction.create(
+            users,
+            {
+              is_administrator: true,
+              created_at: new Date().toISOString(),
+            },
+            { returnRow: true },
+          );
           await transaction.create(passwordCredentials, {
-            user_id: ADMINISTRATOR_ID,
+            user_id: user.id,
             salt: passwordHash.salt.toBase64(),
             derived_key: passwordHash.derivedKey.toBase64(),
             algorithm: passwordHash.algorithm,
@@ -68,7 +67,13 @@ export function createAdministratorRepository(database: Database): Administrator
       }
     },
     async verifyAdministratorPassword(password) {
-      const credential = await database.find(passwordCredentials, ADMINISTRATOR_ID);
+      const administrator = await database.findOne(users, {
+        where: { is_administrator: true },
+      });
+      if (!administrator) {
+        return null;
+      }
+      const credential = await database.find(passwordCredentials, administrator.id);
       if (!credential) {
         return null;
       }
@@ -77,7 +82,7 @@ export function createAdministratorRepository(database: Database): Administrator
       if (!passwordHash) return null;
 
       const valid = await verifyPassword(password, passwordHash);
-      return valid ? { id: ADMINISTRATOR_ID } : null;
+      return valid ? { id: administrator.id } : null;
     },
   };
 }

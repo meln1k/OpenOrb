@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 
-import { createTestStore } from "./postgres-test.ts";
+import { createTestStore, createTestUser } from "./postgres-test.ts";
 
 const REJECT_REPLACEMENT_CONSTRAINT = "browser_sessions_reject_test_replacement";
 
@@ -48,8 +48,9 @@ Deno.test("does not recreate a session deleted by a concurrent request", async (
   const store = await createTestStore();
 
   try {
+    const userId = await createTestUser(store);
     const original = await store.sessionStorage.read(null);
-    original.set("auth", { userId: 1 });
+    original.set("auth", { userId });
     const originalId = await store.sessionStorage.save(original);
     assert(originalId);
 
@@ -70,6 +71,64 @@ Deno.test("does not recreate a session deleted by a concurrent request", async (
 
     const reloaded = await store.sessionStorage.read(originalId);
     assertEquals(reloaded.get("auth"), undefined);
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("binds authenticated session data to its persisted user owner", async () => {
+  const store = await createTestStore();
+
+  try {
+    const userId = await createTestUser(store);
+    const currentSession = await store.sessionStorage.read(null);
+    currentSession.set("auth", { userId });
+    const sessionId = await store.sessionStorage.save(currentSession);
+    assert(sessionId);
+
+    const persisted = await store.pool.query<{ user_id: number }>(
+      "select user_id from browser_sessions where id = $1",
+      [sessionId],
+    );
+    assertEquals(persisted.rows, [{ user_id: userId }]);
+
+    await store.pool.query(
+      "update browser_sessions set user_id = null where id = $1",
+      [sessionId],
+    );
+    const rejected = await store.sessionStorage.read(sessionId);
+    assertEquals(rejected.get("auth"), undefined);
+    assertEquals(
+      (await store.pool.query("select id from browser_sessions where id = $1", [sessionId]))
+        .rowCount,
+      0,
+    );
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("does not reassign an existing browser session to another user", async () => {
+  const store = await createTestStore();
+
+  try {
+    const firstUserId = await createTestUser(store);
+    const secondUserId = await createTestUser(store);
+    const currentSession = await store.sessionStorage.read(null);
+    currentSession.set("auth", { userId: firstUserId });
+    const sessionId = await store.sessionStorage.save(currentSession);
+    assert(sessionId);
+
+    const loaded = await store.sessionStorage.read(sessionId);
+    loaded.set("auth", { userId: secondUserId });
+    assertEquals(await store.sessionStorage.save(loaded), "");
+
+    const persisted = await store.pool.query<{ user_id: number; data: unknown }>(
+      "select user_id, data from browser_sessions where id = $1",
+      [sessionId],
+    );
+    assertEquals(persisted.rows[0]?.user_id, firstUserId);
+    assertEquals(persisted.rows[0]?.data, [{ auth: { userId: firstUserId } }, {}]);
   } finally {
     await store.close();
   }

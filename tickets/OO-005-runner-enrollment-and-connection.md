@@ -9,9 +9,9 @@ The administrator creates an enrollment PSK in the browser, and the temporary ma
 
 ## Scope
 
-- Add reusable enrollment-PSK creation and revocation through authenticated Remix controllers/actions. Validate browser input with `remix/data-schema` and use OO-002's session/CSRF middleware. A PSK remains valid for multiple enrollments until revoked.
+- Add user-owned reusable enrollment-PSK creation and revocation through authenticated Remix controllers/actions. Validate browser input with `remix/data-schema` and use OO-002's session/CSRF middleware. A PSK remains valid for multiple enrollments by its owning user until revoked.
 - Implement runner enrollment using control-panel URL, PSK, runner name, architecture, and capabilities.
-- Return and persist a random revocable runner bearer token with file mode `0600`.
+- Derive immutable runner `user_id` from the enrollment PSK record, never runner input. Return and persist a random revocable runner bearer token with file mode `0600`; subsequent connections inherit the same owner from the authenticated runner record.
 - Establish the one outbound authenticated JSON WebSocket defined by `MVP.md`.
 - Add the minimum versioned runtime schemas and connection lifecycle needed by enrollment, authentication, and heartbeat; do not design future command families.
 - Validate every browser and runner payload at runtime.
@@ -22,12 +22,13 @@ The administrator creates an enrollment PSK in the browser, and the temporary ma
 - The enrollment PSK is not used as ongoing runner identity.
 - The runner token is not logged and is stored with mode `0600`.
 - Invalid/revoked tokens cannot connect.
+- One user cannot list, revoke, connect as, or attach snapshots to another user's runner; enrollment and runner rows cannot form cross-user references.
 - Disconnect/reconnect uses bounded exponential backoff with jitter.
 - The control panel exposes no runner listener and the runner opens no inbound network port.
 
 ## Tests
 
-- Enrollment success, repeated enrollment with the same reusable PSK, invalid PSK, and revoked-PSK rejection.
+- Enrollment success, repeated enrollment with the same reusable PSK, invalid PSK, revoked-PSK rejection, and two-user ownership separation.
 - WebSocket authentication and schema rejection.
 - Runner token file permissions.
 - Reconnect behavior with bounded timers.

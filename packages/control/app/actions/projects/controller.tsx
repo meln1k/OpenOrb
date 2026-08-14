@@ -5,6 +5,7 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
+import type { Administrator } from "../../data/administrator-repository.ts";
 import { csrf } from "../../middleware/csrf.ts";
 import { routes } from "../../routes.ts";
 import { ProjectsPage } from "./page.tsx";
@@ -41,10 +42,10 @@ const deleteSchema = f.object({
 });
 
 export default createController(routes.app.projects, {
-  middleware: [requireAuth(), csrf()],
+  middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
     async index(context) {
-      const projects = await context.services.store.listProjects();
+      const projects = await context.services.store.listProjects(context.auth.identity.id);
       return context.render(
         <ProjectsPage
           csrfToken={getCsrfToken(context)}
@@ -55,9 +56,10 @@ export default createController(routes.app.projects, {
 
     async action(context) {
       const { store } = context.services;
+      const userId = context.auth.identity.id;
       const intent = context.formData.get("intent");
       const renderError = async (error: string, status: number) => {
-        const projects = await store.listProjects();
+        const projects = await store.listProjects(userId);
         return context.render(
           <ProjectsPage
             csrfToken={getCsrfToken(context)}
@@ -75,7 +77,7 @@ export default createController(routes.app.projects, {
         if (!repositoryUrl) {
           return renderError("The GitHub repository is invalid.", 400);
         }
-        const result = await store.saveProject({
+        const result = await store.saveProject(userId, {
           id: projectId,
           name: values.name.trim(),
           repositoryUrl,
@@ -110,7 +112,7 @@ export default createController(routes.app.projects, {
         if (!parsed.success) {
           return renderError(parsed.issues[0]?.message ?? "Invalid project deletion.", 400);
         }
-        const result = await store.deleteProject(parsed.value.projectId);
+        const result = await store.deleteProject(userId, parsed.value.projectId);
         if (result === "in-use") {
           return renderError("This project is used by a session and cannot be deleted.", 409);
         }

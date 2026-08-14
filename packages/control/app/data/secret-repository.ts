@@ -12,10 +12,10 @@ export interface SecretEntry {
 }
 
 export interface SecretRepository {
-  listSecrets(): Promise<SecretEntry[]>;
-  getSecret(key: string): Promise<SecretEntry | null>;
-  saveSecret(key: string, value: string): Promise<SecretEntry>;
-  deleteSecret(key: string): Promise<boolean>;
+  listSecrets(userId: number): Promise<SecretEntry[]>;
+  getSecret(userId: number, key: string): Promise<SecretEntry | null>;
+  saveSecret(userId: number, key: string, value: string): Promise<SecretEntry>;
+  deleteSecret(userId: number, key: string): Promise<boolean>;
 }
 
 export function createSecretRepository(
@@ -23,27 +23,28 @@ export function createSecretRepository(
   masterKey: MasterKey,
 ): SecretRepository {
   return {
-    async listSecrets() {
+    async listSecrets(userId) {
       const rows = await database.findMany(encryptedSecrets, {
-        where: { purpose: encryptedSecretPurposes.providerApiKey },
+        where: { user_id: userId, purpose: encryptedSecretPurposes.providerApiKey },
         orderBy: ["key", "asc"],
       });
       return rows.map(mapRow);
     },
 
-    async getSecret(key) {
+    async getSecret(userId, key) {
       const row = await database.findOne(encryptedSecrets, {
-        where: { key, purpose: encryptedSecretPurposes.providerApiKey },
+        where: { user_id: userId, key, purpose: encryptedSecretPurposes.providerApiKey },
       });
       return row ? mapRow(row) : null;
     },
 
-    async saveSecret(key, value) {
+    async saveSecret(userId, key, value) {
       const now = new Date().toISOString();
-      const metadata: SecretMetadata = { key };
+      const metadata: SecretMetadata = { userId, key };
       const encrypted = await encryptSecret(masterKey, value, metadata);
       const row: EncryptedSecretRow = {
         id: crypto.randomUUID(),
+        user_id: userId,
         key,
         purpose: encryptedSecretPurposes.providerApiKey,
         key_version: encrypted.keyVersion,
@@ -54,7 +55,7 @@ export function createSecretRepository(
 
       await database.transaction(async (transaction) => {
         const existing = await transaction.findOne(encryptedSecrets, {
-          where: { key, purpose: encryptedSecretPurposes.providerApiKey },
+          where: { user_id: userId, key, purpose: encryptedSecretPurposes.providerApiKey },
         });
         if (existing) {
           await transaction.update(encryptedSecrets, existing.id, {
@@ -70,9 +71,9 @@ export function createSecretRepository(
       return mapRow(row);
     },
 
-    async deleteSecret(key) {
+    async deleteSecret(userId, key) {
       const result = await database.deleteMany(encryptedSecrets, {
-        where: { key, purpose: encryptedSecretPurposes.providerApiKey },
+        where: { user_id: userId, key, purpose: encryptedSecretPurposes.providerApiKey },
       });
       return result.affectedRows > 0;
     },

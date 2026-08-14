@@ -29,30 +29,37 @@ export type SaveProjectResult =
 export type DeleteProjectResult = "deleted" | "not-found" | "in-use";
 
 export interface ProjectRepository {
-  listProjects(): Promise<Project[]>;
-  getProject(id: string): Promise<Project | null>;
-  saveProject(input: SaveProjectInput): Promise<SaveProjectResult>;
-  deleteProject(id: string): Promise<DeleteProjectResult>;
+  listProjects(userId: number): Promise<Project[]>;
+  getProject(userId: number, id: string): Promise<Project | null>;
+  saveProject(userId: number, input: SaveProjectInput): Promise<SaveProjectResult>;
+  deleteProject(userId: number, id: string): Promise<DeleteProjectResult>;
 }
 
 export function createProjectRepository(database: Database): ProjectRepository {
   return {
-    async listProjects() {
-      const rows = await database.findMany(projects, { orderBy: ["name", "asc"] });
+    async listProjects(userId) {
+      const rows = await database.findMany(projects, {
+        where: { user_id: userId },
+        orderBy: ["name", "asc"],
+      });
       return rows.map(mapProject);
     },
 
-    async getProject(id) {
-      const row = await database.find(projects, id);
+    async getProject(userId, id) {
+      const row = await database.findOne(projects, { where: { id, user_id: userId } });
       return row ? mapProject(row) : null;
     },
 
-    saveProject(input) {
+    saveProject(userId, input) {
       return database.transaction(async (transaction) => {
-        const existing = input.id ? await transaction.find(projects, input.id) : null;
+        const existing = input.id
+          ? await transaction.findOne(projects, { where: { id: input.id, user_id: userId } })
+          : null;
         if (input.id && !existing) return { status: "not-found" } as const;
 
-        const duplicate = await transaction.findOne(projects, { where: { name: input.name } });
+        const duplicate = await transaction.findOne(projects, {
+          where: { user_id: userId, name: input.name },
+        });
         if (duplicate && duplicate.id !== input.id) return { status: "name-conflict" } as const;
 
         const now = new Date().toISOString();
@@ -69,6 +76,7 @@ export function createProjectRepository(database: Database): ProjectRepository {
 
         const row: ProjectRow = {
           id: crypto.randomUUID(),
+          user_id: userId,
           name: input.name,
           repository_url: input.repositoryUrl,
           default_ref: DEFAULT_PROJECT_REF,
@@ -81,9 +89,11 @@ export function createProjectRepository(database: Database): ProjectRepository {
       });
     },
 
-    async deleteProject(id) {
+    async deleteProject(userId, id) {
       try {
-        return (await database.delete(projects, id)) ? "deleted" : "not-found";
+        const row = await database.findOne(projects, { where: { id, user_id: userId } });
+        if (!row) return "not-found";
+        return (await database.delete(projects, row.id)) ? "deleted" : "not-found";
       } catch (error) {
         if (isPostgresForeignKeyViolation(error)) return "in-use";
         throw error;

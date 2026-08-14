@@ -28,6 +28,7 @@ interface AuthenticatedClient {
   router: ReturnType<typeof createAppRouter>;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
+  userId: number;
 }
 
 async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
@@ -65,7 +66,17 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
     });
     assertEquals(loginResponse.status, 303);
     assertEquals(loginResponse.headers.get("location"), "/app");
-    return { store, router, server, cookie: cookieFrom(loginResponse) };
+    const user = await store.pool.query<{ id: number }>(
+      "select id from users where is_administrator",
+    );
+    assertEquals(user.rows.length, 1);
+    return {
+      store,
+      router,
+      server,
+      cookie: cookieFrom(loginResponse),
+      userId: user.rows[0]!.id,
+    };
   } catch (error) {
     await server.close();
     await store.close();
@@ -248,8 +259,12 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
 
 Deno.test("restarting with the same master key preserves decryptability", async () => {
   const first = await createTestStore();
-  await first.saveSecret(OPENCODE_KEY, OPENCODE_VALUE);
-  await first.saveSecret("OPENAI_API_KEY", OPENAI_VALUE);
+  assert(await first.createAdministrator("restart test password"));
+  const user = await first.verifyAdministratorPassword("restart test password");
+  assert(user);
+  const userId = user.id;
+  await first.saveSecret(userId, OPENCODE_KEY, OPENCODE_VALUE);
+  await first.saveSecret(userId, "OPENAI_API_KEY", OPENAI_VALUE);
   const rows = (await first.pool.query(
     "select key, key_version, ciphertext, created_at, updated_at from encrypted_secrets order by key",
   )).rows as Array<{
@@ -267,7 +282,7 @@ Deno.test("restarting with the same master key preserves decryptability", async 
   try {
     const byKey = new Map(rows.map((row) => [row.key, row]));
     // Ascending key order: "OPENAI_API_KEY" < "OPENCODE_API_KEY".
-    assertEquals(await restarted.listSecrets(), [
+    assertEquals(await restarted.listSecrets(userId), [
       {
         key: "OPENAI_API_KEY",
         keyVersion: 1,
@@ -296,7 +311,7 @@ Deno.test("restarting with the same master key preserves decryptability", async 
             ciphertext: Uint8Array.fromBase64(row.ciphertext),
             keyVersion: row.key_version,
           },
-          { key },
+          { userId, key },
         ),
         value,
       );
@@ -308,7 +323,11 @@ Deno.test("restarting with the same master key preserves decryptability", async 
 
 Deno.test("a wrong master key fails visibly without destroying the stored data", async () => {
   const first = await createTestStore();
-  await first.saveSecret(OPENCODE_KEY, OPENCODE_VALUE);
+  assert(await first.createAdministrator("wrong key test password"));
+  const user = await first.verifyAdministratorPassword("wrong key test password");
+  assert(user);
+  const userId = user.id;
+  await first.saveSecret(userId, OPENCODE_KEY, OPENCODE_VALUE);
   await first.close();
 
   const wrongKey = await importMasterKey(new Uint8Array(32).fill(9));
@@ -327,7 +346,7 @@ Deno.test("a wrong master key fails visibly without destroying the stored data",
           ciphertext: Uint8Array.fromBase64(row.ciphertext),
           keyVersion: row.key_version,
         },
-        { key: row.key },
+        { userId, key: row.key },
       );
       assert(false, "expected decryption with the wrong key to fail");
     } catch (error) {
@@ -345,7 +364,7 @@ Deno.test("a wrong master key fails visibly without destroying the stored data",
 
   const restored = await createTestStore(undefined, false);
   try {
-    assertEquals((await restored.getSecret(OPENCODE_KEY))?.keyVersion, 1);
+    assertEquals((await restored.getSecret(userId, OPENCODE_KEY))?.keyVersion, 1);
   } finally {
     await restored.close();
   }

@@ -5,6 +5,7 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
+import type { Administrator } from "../../data/administrator-repository.ts";
 import { isReservedGitCredentialSecretKey } from "../../data/git-configuration-repository.ts";
 import { csrf } from "../../middleware/csrf.ts";
 import { routes } from "../../routes.ts";
@@ -68,14 +69,15 @@ const saveGitAuthorSchema = f.object({
 });
 
 export default createController(routes.app.settings, {
-  middleware: [requireAuth(), csrf()],
+  middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
     async index(context) {
+      const userId = context.auth.identity.id;
       const activeTab = settingsTabFromRequest(context.request);
       const [secrets, githubCredential, gitAuthor] = await Promise.all([
-        context.services.store.listSecrets(),
-        context.services.store.getGitHubCredential(),
-        context.services.store.getGitAuthorConfiguration(),
+        context.services.store.listSecrets(userId),
+        context.services.store.getGitHubCredential(userId),
+        context.services.store.getGitAuthorConfiguration(userId),
       ]);
       return context.render(
         <SettingsPage
@@ -90,13 +92,14 @@ export default createController(routes.app.settings, {
 
     async action(context) {
       const { store } = context.services;
+      const userId = context.auth.identity.id;
       const intent = context.formData.get("intent");
       const activeTab = settingsTabFromRequest(context.request, intent);
       const renderError = async (error: string, status: number) => {
         const [secrets, githubCredential, gitAuthor] = await Promise.all([
-          store.listSecrets(),
-          store.getGitHubCredential(),
-          store.getGitAuthorConfiguration(),
+          store.listSecrets(userId),
+          store.getGitHubCredential(userId),
+          store.getGitAuthorConfiguration(userId),
         ]);
         return context.render(
           <SettingsPage
@@ -119,7 +122,7 @@ export default createController(routes.app.settings, {
             400,
           );
         }
-        await store.saveSecret(save.value.key.trim(), save.value.value.trim());
+        await store.saveSecret(userId, save.value.key.trim(), save.value.value.trim());
         return redirect(settingsTabHref("secrets"), 303);
       }
 
@@ -131,7 +134,7 @@ export default createController(routes.app.settings, {
             400,
           );
         }
-        await store.deleteSecret(deletion.value.key.trim());
+        await store.deleteSecret(userId, deletion.value.key.trim());
         return redirect(settingsTabHref("secrets"), 303);
       }
 
@@ -143,7 +146,7 @@ export default createController(routes.app.settings, {
             400,
           );
         }
-        await store.saveGitHubCredential(parsed.value.token.trim());
+        await store.saveGitHubCredential(userId, parsed.value.token.trim());
         return redirect(settingsTabHref("github"), 303);
       }
 
@@ -152,7 +155,7 @@ export default createController(routes.app.settings, {
         if (!parsed.success) {
           return renderError("Invalid GitHub credential deletion.", 400);
         }
-        const result = await store.deleteGitHubCredential();
+        const result = await store.deleteGitHubCredential(userId);
         if (result.status === "not-found") {
           return renderError("The GitHub credential no longer exists.", 404);
         }
@@ -167,7 +170,7 @@ export default createController(routes.app.settings, {
             400,
           );
         }
-        await store.saveGitAuthorConfiguration({
+        await store.saveGitAuthorConfiguration(userId, {
           authorName: parsed.value.authorName.trim(),
           authorEmail: parsed.value.authorEmail.trim(),
         });

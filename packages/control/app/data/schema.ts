@@ -8,7 +8,8 @@ export const encryptedSecretPurposes = {
 export const users = table({
   name: "users",
   columns: {
-    id: c.integer().primaryKey(),
+    id: c.integer().primaryKey().autoIncrement(),
+    is_administrator: c.boolean().notNull(),
     created_at: c.text().notNull(),
   },
 });
@@ -32,6 +33,11 @@ export const encryptedSecrets = table({
   name: "encrypted_secrets",
   columns: {
     id: c.uuid().primaryKey(),
+    user_id: c
+      .integer()
+      .notNull()
+      .references("users", "id", "encrypted_secrets_user_fk")
+      .onDelete("cascade"),
     key: c.text().notNull(),
     purpose: c.text().notNull(),
     key_version: c.integer().notNull(),
@@ -43,9 +49,13 @@ export const encryptedSecrets = table({
 
 export const gitAuthorConfiguration = table({
   name: "git_author_configuration",
-  primaryKey: "id",
+  primaryKey: "user_id",
   columns: {
-    id: c.integer().primaryKey(),
+    user_id: c
+      .integer()
+      .primaryKey()
+      .references("users", "id", "git_author_configuration_user_fk")
+      .onDelete("cascade"),
     author_name: c.text().notNull(),
     author_email: c.text().notNull(),
     updated_at: c.text().notNull(),
@@ -56,6 +66,11 @@ export const gitCredentials = table({
   name: "git_credentials",
   columns: {
     id: c.uuid().primaryKey(),
+    user_id: c
+      .integer()
+      .notNull()
+      .references("users", "id", "git_credentials_user_fk")
+      .onDelete("cascade"),
     host: c.text().notNull(),
     encrypted_secret_id: c
       .uuid()
@@ -71,6 +86,11 @@ export const projects = table({
   name: "projects",
   columns: {
     id: c.uuid().primaryKey(),
+    user_id: c
+      .integer()
+      .notNull()
+      .references("users", "id", "projects_user_fk")
+      .onDelete("cascade"),
     name: c.text().notNull(),
     repository_url: c.text().notNull(),
     default_ref: c.text().notNull(),

@@ -29,23 +29,24 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 6. **No Pi workspace discovery.** Pi uses an explicit empty `ResourceLoader` and in-memory settings.
 7. **One prompt at a time.** Do not implement durable follow-up queues or editable pending Pi messages.
 8. **Cold VM lifecycle.** Preserve the workspace and Pi JSONL, not guest root/process state.
-9. **Runner-owned session data.** Complete live-session state lives on the assigned runner. The control panel keeps only a minimal catalog row—session ID, project, creation time, and a trimmed initial-prompt preview—plus deleted-session ID/time markers that prevent stale runner resurrection.
+9. **Runner-owned session data.** Complete live-session state lives on the assigned runner. The control panel keeps only a minimal user-owned catalog row—user ID, session ID, project, creation time, and a trimmed initial-prompt preview—plus user/session/time deletion markers that prevent stale runner resurrection.
 10. **Prefer explicit failure.** If a runner disconnects or an operation becomes ambiguous, show an error and let the user retry.
+11. **Tenant ownership from the start.** The MVP creates only one administrator, but every user-owned control-plane row and persistence operation is scoped by immutable `user_id`; uniqueness and foreign keys must not cross users.
 
 ## 3. Included features
 
 ### Control panel
 
-- Single-user password authentication
+- Single-administrator password authentication over a multi-row `users` schema
 - PostgreSQL as the control panel's only durable persistence, covering control configuration, the minimal live-session catalog, and deleted-session markers
 - Project configuration
 - Provider API-key configuration in key-value form (e.g. `OPENCODE_API_KEY`, `OPENAI_API_KEY`); sessions initially target `opencode-go/deepseek-v4-flash`
 - GitHub token configuration using a mediated guest-visible `GH_TOKEN` placeholder
-- Global Git author name and email configuration
+- Per-user Git author name and email configuration
 - Runner enrollment and revocation
 - Runner online/offline status
-- Minimal live-session catalog containing only project, creation time, and trimmed initial prompt
-- Minimal deleted-session ID/time markers
+- Minimal live-session catalog containing only user owner, project, creation time, and trimmed initial prompt
+- Minimal user/session/time deletion markers
 - Session creation, stop, continuation, and online/offline deletion
 - Responsive chat UI
 - Streaming assistant text, thinking, tool calls, and results
@@ -108,7 +109,7 @@ A best-effort “Steer now” action may be added later if trivial, but it is no
 - Archive semantics
 - Session migration
 - Automatic pull requests
-- Multi-user support
+- Additional user account creation, organizations, sharing, and collaborative permissions
 - Stable public API commitments
 - Project Pi settings, packages, extensions, skills, prompts, themes, or context discovery
 
@@ -215,9 +216,9 @@ The control panel encrypts:
 - Provider API keys in key-value form (e.g. `OPENCODE_API_KEY`, `OPENAI_API_KEY`)
 - The GitHub token
 
-Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The control panel never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Import the 256-bit key with Web Crypto and use `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()` directly. Persist their returned bytes unchanged as one opaque value, store key version separately, and authenticate immutable metadata plus key version as AAD. Secret values are never returned to the browser after creation.
+Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The control panel never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Import the 256-bit key with Web Crypto and use `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()` directly. Persist their returned bytes unchanged as one opaque value, store key version separately, and authenticate immutable user ID, credential key, and key version as AAD. Secret values are never returned to the browser after creation.
 
-Every `encrypted_secrets` row has an explicit required purpose. Provider keys use `provider-api-key`; rows referenced by `git_credentials` use `git-credential`. Secret repositories select rows by purpose, not key-prefix conventions or lookups into another credential repository.
+Every `encrypted_secrets` row has an immutable `user_id` and explicit required purpose. Provider keys use `provider-api-key`; rows referenced by `git_credentials` use `git-credential`. Secret repositories select rows by user and purpose, not key-prefix conventions or lookups into another credential repository.
 
 ### Runner enrollment
 
@@ -225,7 +226,7 @@ Use a simple bearer-token design:
 
 1. Administrator creates a reusable enrollment PSK. It remains valid for additional enrollments until the administrator revokes it.
 2. Runner submits the PSK, name, architecture, and capabilities.
-3. Control panel returns a random revocable runner token.
+3. Control panel derives immutable runner ownership from the enrollment PSK's authenticated user, stores `user_id` on both enrollment and runner rows, and returns a random revocable runner token. Runner input cannot choose a tenant.
 4. Runner stores the token with filesystem mode `0600`.
 5. Runner authenticates its outbound WebSocket with that token.
 6. Revocation immediately prevents reconnect.
@@ -334,6 +335,7 @@ The control panel stores only this minimal session catalog record:
 
 ```ts
 interface SessionCatalogEntry {
+  userId: number
   id: string
   projectId: string
   createdAt: string
@@ -343,7 +345,7 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is the initial textual prompt with whitespace collapsed and truncated to at most 200 Unicode code points. It excludes attachments and is never used to replay a prompt. No runner ID, title, status, branch, model, transcript, tool data, event cursor, diff, or other runtime state is persisted in the control panel.
 
-On connect and reconnect, the runner sends a complete snapshot of its sessions, including the four catalog fields and live routing/state data. The control panel runtime-validates the snapshot, upserts any missing four-field catalog rows that are not marked deleted, and rebuilds its in-memory routing index. This recovers a runner-local session created before a control-panel crash could commit its catalog row. Existing catalog entries remain visible while their runner is offline. Snapshot absence alone does not delete a catalog row because the control panel does not persist session ownership. A snapshot entry whose session ID has a control-panel deletion marker is never reinserted or routed; the runner is instructed to remove it once any active work settles.
+On connect and reconnect, the runner sends a complete snapshot of its sessions, including the four catalog data fields and live routing/state data. The control panel derives ownership from the authenticated runner record rather than accepting a snapshot-supplied tenant, runtime-validates the snapshot, upserts any missing five-column catalog rows that are not marked deleted, and rebuilds its user-scoped in-memory routing index. This recovers a runner-local session created before a control-panel crash could commit its catalog row. Existing catalog entries remain visible while their runner is offline. Snapshot absence alone does not delete a catalog row because the control panel does not persist runner assignment. A snapshot entry whose `(user_id, session_id)` has a control-panel deletion marker is never reinserted or routed; the runner is instructed to remove it once any active work settles.
 
 Do not persist:
 
@@ -358,7 +360,7 @@ Do not persist:
 
 1. Select and pin an online runner.
 2. Runner creates the session locally and stores the full initial prompt.
-3. After runner confirmation, control panel stores the four-field catalog entry with the trimmed prompt preview.
+3. After runner confirmation, control panel stores the immutable user owner and four catalog data fields with the trimmed prompt preview.
 4. Create an empty session workspace.
 5. Start a fresh Gondolin VM using the runner’s fixed CPU/memory configuration.
 6. Mount the workspace at `/workspace` with `RealFSProvider`.
@@ -401,7 +403,7 @@ No checkpoint creation, compatibility management, `.agents/resume`, service rest
 
 ### Delete
 
-Deletion requires explicit confirmation. In one PostgreSQL transaction, the control panel writes a durable deleted-session marker containing only the session ID and deletion time and removes the four-field catalog row. It then removes any live route before requesting runner cleanup. The marker is committed first so a control-panel crash cannot resurrect a session after runner-side deletion.
+Deletion requires explicit confirmation. In one PostgreSQL transaction, the control panel writes a durable deleted-session marker containing only user ID, session ID, and deletion time and removes the five-column catalog row. It then removes the user-scoped live route before requesting runner cleanup. The marker is committed first so a control-panel crash cannot resurrect a session after runner-side deletion.
 
 - If the runner is online and idle, it removes the workspace, Pi JSONL, metadata, events, reports, and logs.
 - If the runner is online but active, deletion is rejected; the user must wait for the work to settle. An offline deletion cannot determine live state, so if the runner later reconnects with active work, cleanup waits until that work settles rather than interrupting it.
@@ -511,7 +513,7 @@ All of these run inside Gondolin:
 3. The real GitHub token remains in runner memory and never enters guest files, environment values, process arguments, logs, or tool output.
 4. Other hosts and repositories receive no substitution.
 5. Public repositories work without a credential; private clone/fetch/push use the same mediated token path.
-6. Projects use the singleton GitHub credential when one is configured; credentials are not selected or persisted per project.
+6. Projects use their owning user's singleton GitHub credential when one is configured; credentials are not selected or persisted per project.
 
 SSH repositories, private keys, and non-GitHub hosts are deferred.
 
@@ -519,7 +521,7 @@ SSH repositories, private keys, and non-GitHub hosts are deferred.
 
 There is no separate Commit & Push control-panel workflow. The user asks the agent to commit and push.
 
-The control panel requires a global Git author name and email. The runner supplies that identity to guest Git for OpenOrb session commits.
+The control panel requires a per-user Git author name and email. The runner supplies the owning user's identity to guest Git for OpenOrb session commits.
 
 The trusted OpenOrb system prompt instructs the agent:
 
@@ -548,7 +550,7 @@ When the VM is stopped but the runner is online, display the runner’s cached r
 - Login/setup
 - Projects
 - Model credentials
-- Git credentials and global Git author identity
+- Git credentials and per-user Git author identity
 - Runners
 - Session list
 - Session create
@@ -651,24 +653,24 @@ Control-panel PostgreSQL is the control panel's only durable persistence. It sto
 
 - `users`
 - `password_credentials`
-- `browser_sessions` (the PostgreSQL backing store for Remix sessions)
-- `encrypted_secrets` (uuid id primary key, unique credential key, required purpose, encrypted value)
+- `browser_sessions` (the PostgreSQL backing store for Remix sessions, with nullable `user_id` for anonymous pre-login sessions and required owner consistency once authenticated)
+- `encrypted_secrets` (uuid id primary key, immutable user owner, per-user unique credential key, required purpose, encrypted value)
 - `models`
 - `git_credentials`
-- Global Git author configuration; confirm its exact relation/API shape before implementing OO-004
+- Per-user Git author configuration
 - `projects`
 - `runners`
 - `runner_enrollment_tokens`
-- `sessions`, restricted to `id`, `project_id`, `created_at`, and `initial_prompt_preview`
-- `deleted_sessions`, restricted to `session_id` and `deleted_at`
+- `sessions`, restricted to `user_id`, `id`, `project_id`, `created_at`, and `initial_prompt_preview`
+- `deleted_sessions`, restricted to `user_id`, `session_id`, and `deleted_at`
 
-It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only session identity and deletion time. Session routing is an in-memory index rebuilt from connected runner snapshots. Do not add Redis, another database/KV service, or application-owned durable control-panel files.
+It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only user ownership, session identity, and deletion time. Session routing is a user-scoped in-memory index rebuilt from connected runner snapshots. Do not add Redis, another database/KV service, or application-owned durable control-panel files.
 
 Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as conversation truth, atomic JSON for session metadata, an append-only OpenOrb `events.jsonl` for normalized replayable events/cursors, ordinary log files, and JSON/patch Git reports. Do not add a runner-local database for the MVP.
 
 Do not add control-panel tables for:
 
-- Session routes or additional session fields beyond the four catalog columns
+- Session routes or additional session fields beyond `user_id` and the four catalog data columns
 - Messages, tool calls, or events
 - Diffs, files, or logs
 - Preview capabilities
@@ -713,7 +715,7 @@ Do not add control-panel tables for:
 ### Control-panel restart
 
 - Minimal catalog rows remain available.
-- Runners reconnect automatically and send complete session snapshots; the control panel upserts missing non-deleted four-field catalog rows, rejects tombstoned entries, and rebuilds live routes.
+- Runners reconnect automatically and send complete session snapshots; the control panel derives ownership from the authenticated runner, upserts missing non-deleted five-column catalog rows, rejects user-scoped tombstoned entries, and rebuilds user-scoped live routes.
 - Browsers reload full history/state through the reconnected runner.
 - No full session reconstruction occurs from control-panel storage.
 - In-flight operations may be marked failed and manually retried.
@@ -771,7 +773,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 - Deno 2.9.5 TypeScript workspace and lockfile
 - Remix 3 resolved from current `preview/main` and pinned exactly
 - Shared protocol schemas
-- PostgreSQL control configuration, four-field live-session catalog, and minimal deleted-session markers
+- PostgreSQL user-owned control configuration, five-column live-session catalog, and minimal user/session/time deletion markers
 - Explicit empty Pi `ResourceLoader`
 - In-memory Pi settings
 - Gondolin-backed tools
@@ -784,7 +786,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 
 - Remix-backed password setup/login and PostgreSQL browser sessions
 - Encrypted OpenCode Go and GitHub token credentials
-- Global Git author name/email configuration
+- Per-user Git author name/email configuration
 - Projects
 - Runner enrollment bearer token
 - Single outbound runner WebSocket
@@ -838,7 +840,7 @@ The lean MVP is complete when:
 1. A user can complete first-run password setup and use the Remix-backed password-protected control panel; valid sessions survive a control-process restart against the same PostgreSQL database.
 2. A Linux runner behind NAT enrolls using a URL and enrollment PSK.
 3. The runner needs no inbound port or VPN.
-4. The user can configure an OpenCode Go API key, GitHub token, and global Git author name/email.
+4. The user can configure an OpenCode Go API key, GitHub token, and per-user Git author name/email.
 5. The user can create a project and start a session on an available runner.
 6. The repository is cloned inside Gondolin, never with host Git against the session workspace.
 7. `.agents/setup` runs inside Gondolin.
@@ -846,7 +848,7 @@ The lean MVP is complete when:
 9. Pi tools read, write, edit, and execute commands through Gondolin.
 10. Chat text, thinking, tool calls, results, and status stream to the browser.
 11. The UI permits one normal prompt at a time and supports Abort.
-12. The control panel stores only session ID, project, creation time, and a 200-code-point initial-prompt preview for live sessions, plus minimal deleted-session ID/time markers; completed transcript data is replayed from the runner after reconnect.
+12. The control panel stores only immutable user ownership, session ID, project, creation time, and a 200-code-point initial-prompt preview for live sessions, plus minimal user/session/time deletion markers; completed transcript data is replayed from the runner after reconnect.
 13. The user can view the last guest-generated Git diff while the runner is connected.
 14. The agent can clone, commit, and push a private GitHub repository without obtaining the real GitHub token.
 15. Idle VMs are destroyed while workspace and Pi JSONL remain.

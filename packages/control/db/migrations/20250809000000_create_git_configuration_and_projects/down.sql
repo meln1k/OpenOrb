@@ -1,7 +1,7 @@
 drop table projects;
 
 alter table git_credentials
-  drop constraint git_credentials_encrypted_secret_id_fkey;
+  drop constraint git_credentials_secret_owner_fk;
 
 delete from encrypted_secrets
 using git_credentials

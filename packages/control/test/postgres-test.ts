@@ -21,8 +21,16 @@ export async function createTestStore(
   await migrate(store.pool);
   if (reset) {
     await store.pool.query(
-      "truncate table projects, git_credentials, git_author_configuration, browser_sessions, password_credentials, users, encrypted_secrets",
+      "truncate table projects, git_credentials, git_author_configuration, browser_sessions, password_credentials, users, encrypted_secrets restart identity",
     );
   }
   return store;
+}
+
+export async function createTestUser(store: PostgresStore): Promise<number> {
+  const result = await store.pool.query<{ id: number }>(
+    "insert into users (is_administrator, created_at) values (false, $1) returning id",
+    [new Date().toISOString()],
+  );
+  return result.rows[0]!.id;
 }

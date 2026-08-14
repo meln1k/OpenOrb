@@ -33,14 +33,14 @@ export type DeleteGitCredentialResult =
   | { status: "not-found" };
 
 export interface GitConfigurationRepository {
-  getGitAuthorConfiguration(): Promise<GitAuthorConfiguration | null>;
-  saveGitAuthorConfiguration(input: {
+  getGitAuthorConfiguration(userId: number): Promise<GitAuthorConfiguration | null>;
+  saveGitAuthorConfiguration(userId: number, input: {
     authorName: string;
     authorEmail: string;
   }): Promise<GitAuthorConfiguration>;
-  getGitHubCredential(): Promise<GitCredential | null>;
-  saveGitHubCredential(token: string): Promise<GitCredential>;
-  deleteGitHubCredential(): Promise<DeleteGitCredentialResult>;
+  getGitHubCredential(userId: number): Promise<GitCredential | null>;
+  saveGitHubCredential(userId: number, token: string): Promise<GitCredential>;
+  deleteGitHubCredential(userId: number): Promise<DeleteGitCredentialResult>;
 }
 
 export function createGitConfigurationRepository(
@@ -48,16 +48,16 @@ export function createGitConfigurationRepository(
   masterKey: MasterKey,
 ): GitConfigurationRepository {
   return {
-    async getGitAuthorConfiguration() {
-      const row = await database.find(gitAuthorConfiguration, 1);
+    async getGitAuthorConfiguration(userId) {
+      const row = await database.find(gitAuthorConfiguration, userId);
       return row ? mapGitAuthorConfiguration(row) : null;
     },
 
-    async saveGitAuthorConfiguration(input) {
+    async saveGitAuthorConfiguration(userId, input) {
       const now = new Date().toISOString();
-      const existing = await database.find(gitAuthorConfiguration, 1);
+      const existing = await database.find(gitAuthorConfiguration, userId);
       const row = existing
-        ? await database.update(gitAuthorConfiguration, 1, {
+        ? await database.update(gitAuthorConfiguration, userId, {
           author_name: input.authorName,
           author_email: input.authorEmail,
           updated_at: now,
@@ -65,7 +65,7 @@ export function createGitConfigurationRepository(
         : await database.create(
           gitAuthorConfiguration,
           {
-            id: 1,
+            user_id: userId,
             author_name: input.authorName,
             author_email: input.authorEmail,
             updated_at: now,
@@ -76,16 +76,18 @@ export function createGitConfigurationRepository(
       return mapGitAuthorConfiguration(row);
     },
 
-    async getGitHubCredential() {
-      const row = await database.findOne(gitCredentials, { where: { host: GITHUB_HOST } });
+    async getGitHubCredential(userId) {
+      const row = await database.findOne(gitCredentials, {
+        where: { user_id: userId, host: GITHUB_HOST },
+      });
       return row ? mapGitCredential(row) : null;
     },
 
-    saveGitHubCredential(token) {
+    saveGitHubCredential(userId, token) {
       const now = new Date().toISOString();
       return database.transaction(async (transaction) => {
         const existing = await transaction.findOne(gitCredentials, {
-          where: { host: GITHUB_HOST },
+          where: { user_id: userId, host: GITHUB_HOST },
         });
 
         if (existing) {
@@ -96,7 +98,10 @@ export function createGitConfigurationRepository(
           if (secret.purpose !== encryptedSecretPurposes.gitCredential) {
             throw new Error("The GitHub credential secret has an invalid purpose.");
           }
-          const encrypted = await encryptSecret(masterKey, token, { key: secret.key });
+          if (secret.user_id !== userId) {
+            throw new Error("The GitHub credential secret has an invalid owner.");
+          }
+          const encrypted = await encryptSecret(masterKey, token, { userId, key: secret.key });
           await transaction.update(encryptedSecrets, secret.id, {
             key_version: encrypted.keyVersion,
             ciphertext: encrypted.ciphertext.toBase64(),
@@ -112,10 +117,11 @@ export function createGitConfigurationRepository(
         const secretKey = `${GITHUB_SECRET_KEY_PREFIX}${
           credentialId.replaceAll("-", "").toUpperCase()
         }`;
-        const metadata: SecretMetadata = { key: secretKey };
+        const metadata: SecretMetadata = { userId, key: secretKey };
         const encrypted = await encryptSecret(masterKey, token, metadata);
         const secret: EncryptedSecretRow = {
           id: crypto.randomUUID(),
+          user_id: userId,
           key: secretKey,
           purpose: encryptedSecretPurposes.gitCredential,
           key_version: encrypted.keyVersion,
@@ -125,6 +131,7 @@ export function createGitConfigurationRepository(
         };
         const credential: GitCredentialRow = {
           id: credentialId,
+          user_id: userId,
           host: GITHUB_HOST,
           encrypted_secret_id: secret.id,
           created_at: now,
@@ -137,10 +144,10 @@ export function createGitConfigurationRepository(
       });
     },
 
-    async deleteGitHubCredential() {
+    async deleteGitHubCredential(userId) {
       return await database.transaction(async (transaction) => {
         const credential = await transaction.findOne(gitCredentials, {
-          where: { host: GITHUB_HOST },
+          where: { user_id: userId, host: GITHUB_HOST },
         });
         if (!credential) return { status: "not-found" } as const;
 
