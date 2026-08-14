@@ -17,6 +17,7 @@
   "fmt": {
     "exclude": [
       ".amp/portals",
+      ".agents/skills/deno",
       "packages/control/.agents",
       "packages/control/public",
       "packages/control/AGENTS.md",
