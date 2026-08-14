@@ -100,8 +100,24 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
   try {
     const empty = await credentialsPage(client);
     assertMatch(empty, /<title>Settings<\/title>/);
-    assertMatch(empty, /aria-label="Settings navigation"/);
-    assertMatch(empty, /href="\/app\/settings#secrets" aria-current="page"/);
+    assertMatch(empty, /<script type="module" src="\/assets\/app\/assets\/client\.ts">/);
+    assertMatch(empty, /<div aria-label="Settings sections"[^>]+role="tablist"/);
+    const secretsTab = empty.match(
+      /<button[^>]+aria-controls="([^"]+)"[^>]+aria-selected="true"[^>]+data-state="active"[^>]+id="([^"]+)"[^>]+role="tab"[^>]*>Secrets<\/button>/,
+    );
+    assert(secretsTab, "expected an active Secrets tab");
+    const githubTab = empty.match(
+      /<button[^>]+aria-controls="([^"]+)"[^>]+aria-selected="false"[^>]+data-state="inactive"[^>]+id="([^"]+)"[^>]+role="tab"[^>]*>GitHub<\/button>/,
+    );
+    assert(githubTab, "expected an inactive GitHub tab");
+    assertMatch(
+      empty,
+      new RegExp(
+        `aria-labelledby="${githubTab[2]}" data-state="inactive" hidden id="${
+          githubTab[1]
+        }" inert role="tabpanel"`,
+      ),
+    );
     assertMatch(empty, /href="\/app" aria-label="Close settings"/);
     assertNotMatch(empty, /aria-label="Primary navigation"|>Overview<|>Settings<\/span>/);
     assertMatch(empty, /data-slot="table"/);
@@ -124,7 +140,10 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
         value,
       });
       assertEquals(saveResponse.status, 303);
-      assertEquals(saveResponse.headers.get("location"), "/app/settings");
+      assertEquals(
+        saveResponse.headers.get("location"),
+        "/app/settings?tab=secrets#secrets",
+      );
     }
 
     const saved = await credentialsPage(client);
@@ -142,7 +161,7 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
     assertNotMatch(saved, /sk-openai-secret/);
 
     const rows = await client.store.pool.query(
-      "select id, key, key_version, ciphertext from encrypted_secrets order by key",
+      "select id, key, purpose, key_version, ciphertext from encrypted_secrets order by key",
     );
     assertEquals(rows.rows.length, 2);
     // Ascending key order: "OPENAI_API_KEY" < "OPENCODE_API_KEY".
@@ -154,6 +173,8 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
     assertNotEquals(opencodeRow.id, openaiRow.id);
     assertEquals(opencodeRow.key, OPENCODE_KEY);
     assertEquals(openaiRow.key, "OPENAI_API_KEY");
+    assertEquals(opencodeRow.purpose, "provider-api-key");
+    assertEquals(openaiRow.purpose, "provider-api-key");
     assertEquals(opencodeRow.key_version, 1);
     for (
       const [key, value] of [

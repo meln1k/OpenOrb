@@ -21,7 +21,7 @@ export async function createTestStore(
   await migrate(store.pool);
   if (reset) {
     await store.pool.query(
-      "truncate table browser_sessions, password_credentials, users, encrypted_secrets",
+      "truncate table projects, git_credentials, git_author_configuration, browser_sessions, password_credentials, users, encrypted_secrets",
     );
   }
   return store;

@@ -20,11 +20,16 @@ import {
   DropdownMenuTrigger,
   Icon,
   Separator,
+  SidebarContent,
   SidebarDesktop,
   SidebarFooter,
+  SidebarGroup,
   SidebarHeader,
   SidebarInset,
   SidebarLayout,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
   SidebarMobile,
   SidebarTrigger,
 } from "./components/index.ts";
@@ -32,6 +37,7 @@ import { Document } from "./document.tsx";
 import { media } from "./responsive.ts";
 
 export interface AppShellProps {
+  activeSection: "overview" | "projects";
   children?: RemixNode;
   copy?: string;
   csrfToken: string;
@@ -47,10 +53,16 @@ export function AppShell(handle: Handle<AppShellProps>) {
     <Document title={handle.props.title}>
       <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
         <SidebarDesktop>
-          <AppNavigation csrfToken={handle.props.csrfToken} />
+          <AppNavigation
+            csrfToken={handle.props.csrfToken}
+            activeSection={handle.props.activeSection}
+          />
         </SidebarDesktop>
         <SidebarMobile id={MOBILE_SIDEBAR_ID}>
-          <AppNavigation csrfToken={handle.props.csrfToken} />
+          <AppNavigation
+            csrfToken={handle.props.csrfToken}
+            activeSection={handle.props.activeSection}
+          />
         </SidebarMobile>
         <SidebarInset aria-label="Authenticated control panel">
           <header mix={topBarStyle}>
@@ -84,7 +96,10 @@ export function AppShell(handle: Handle<AppShellProps>) {
 }
 
 function AppNavigation(
-  handle: Handle<{ csrfToken: string }>,
+  handle: Handle<{
+    csrfToken: string;
+    activeSection: AppShellProps["activeSection"];
+  }>,
 ) {
   return () => (
     <>
@@ -99,6 +114,30 @@ function AppNavigation(
           </span>
         </a>
       </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup aria-label="Control panel pages">
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                href={routes.app.index.href()}
+                active={handle.props.activeSection === "overview"}
+                icon={<Icon name="dashboard" />}
+              >
+                Overview
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                href={routes.app.projects.index.href()}
+                active={handle.props.activeSection === "projects"}
+                icon={<Icon name="folder" />}
+              >
+                Projects
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+      </SidebarContent>
       <SidebarFooter>
         <DropdownMenu>
           <DropdownMenuTrigger mix={sidebarAccountTriggerStyle}>

@@ -1,14 +1,15 @@
 import { css, type Handle, type RemixNode } from "remix/ui";
 
+import { routes } from "../routes.ts";
+
 export interface DocumentProps {
   children?: RemixNode;
-  head?: RemixNode;
   title?: string;
 }
 
 export function Document(handle: Handle<DocumentProps>) {
   return () => {
-    const { children, head, title = "OpenOrb" } = handle.props;
+    const { children, title = "OpenOrb" } = handle.props;
 
     return (
       <html lang="en">
@@ -18,9 +19,14 @@ export function Document(handle: Handle<DocumentProps>) {
           <meta name="color-scheme" content="dark light" />
           <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
           <title>{title}</title>
-          {head}
         </head>
-        <body mix={css({ margin: 0 })}>{children}</body>
+        <body mix={css({ margin: 0 })}>
+          {children}
+          <script
+            type="module"
+            src={routes.assets.href({ path: "app/assets/client.ts" })}
+          />
+        </body>
       </html>
     );
   };

@@ -11,6 +11,7 @@ export const routes = route({
   }),
   app: route("app", {
     index: get("/"),
+    projects: form("projects"),
     settings: form("settings"),
   }),
 });

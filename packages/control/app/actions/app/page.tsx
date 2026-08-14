@@ -13,6 +13,7 @@ export function DashboardPage(handle: Handle<DashboardPageProps>) {
       title="OpenOrb control"
       eyebrow="Overview"
       heading="Control panel"
+      activeSection="overview"
     />
   );
 }

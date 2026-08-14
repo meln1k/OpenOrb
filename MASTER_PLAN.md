@@ -289,7 +289,7 @@ Use envelope-style application encryption:
 - A control-panel master key is supplied through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection.
 - The control panel never generates or persists the master key to local disk or PostgreSQL and fails startup if it is missing or invalid.
 - Import the 256-bit master key with Web Crypto and encrypt with `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()`. Persist the returned nonce/ciphertext/tag bytes unchanged as one opaque value, store key version separately, and authenticate immutable metadata plus key version as AAD.
-- Store each secret as an `encrypted_secrets` row with a UUID primary key, a unique immutable credential key, and the opaque ciphertext. The credential key is the authenticated metadata.
+- Store each secret as an `encrypted_secrets` row with a UUID primary key, a unique immutable credential key, an explicit required purpose, and the opaque ciphertext. The credential key is the authenticated metadata. Provider keys use purpose `provider-api-key`; rows referenced by `git_credentials` use `git-credential`. Repositories select their own rows by purpose rather than key-prefix conventions or cross-repository lookups.
 - Never derive the server encryption key from the login password; the service must restart unattended.
 - Backups are incomplete without the PostgreSQL database and master key.
 - Secret values are never returned to the browser after creation; only metadata is returned.
@@ -1585,7 +1585,7 @@ Control-panel PostgreSQL is the control panel's only durable persistence. It sto
 - `password_credentials`
 - `webauthn_credentials`
 - `browser_sessions`
-- `encrypted_secrets`
+- `encrypted_secrets`, with explicit purpose classification for each encrypted value
 - `model_providers`
 - `git_credentials`
 - Global Git author configuration; confirm its exact relation/API shape before implementation

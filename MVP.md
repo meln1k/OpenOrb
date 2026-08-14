@@ -217,6 +217,8 @@ The control panel encrypts:
 
 Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The control panel never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Import the 256-bit key with Web Crypto and use `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()` directly. Persist their returned bytes unchanged as one opaque value, store key version separately, and authenticate immutable metadata plus key version as AAD. Secret values are never returned to the browser after creation.
 
+Every `encrypted_secrets` row has an explicit required purpose. Provider keys use `provider-api-key`; rows referenced by `git_credentials` use `git-credential`. Secret repositories select rows by purpose, not key-prefix conventions or lookups into another credential repository.
+
 ### Runner enrollment
 
 Use a simple bearer-token design:
@@ -439,7 +441,7 @@ This security rule remains mandatory even in the lean MVP:
 ### Model credentials
 
 - The control panel stores provider API keys as encrypted key-value credentials (credential key → encrypted value), each with a UUID row id and the unique credential key as authenticated metadata.
-- The MVP session run uses Pi's built-in `opencode-go/deepseek-v4-flash` model definition; project configuration selects it. Provider/model support beyond that remains deferred.
+- The MVP session run uses Pi's built-in `opencode-go/deepseek-v4-flash` model definition. Model selection is not part of project configuration, and provider/model support beyond the built-in session model remains deferred.
 - Control panel sends the selected credential only to the pinned trusted runner.
 - Runner supplies it through Pi runtime credential APIs.
 - Model credentials never enter Gondolin.
@@ -509,6 +511,7 @@ All of these run inside Gondolin:
 3. The real GitHub token remains in runner memory and never enters guest files, environment values, process arguments, logs, or tool output.
 4. Other hosts and repositories receive no substitution.
 5. Public repositories work without a credential; private clone/fetch/push use the same mediated token path.
+6. Projects use the singleton GitHub credential when one is configured; credentials are not selected or persisted per project.
 
 SSH repositories, private keys, and non-GitHub hosts are deferred.
 
@@ -649,7 +652,7 @@ Control-panel PostgreSQL is the control panel's only durable persistence. It sto
 - `users`
 - `password_credentials`
 - `browser_sessions` (the PostgreSQL backing store for Remix sessions)
-- `encrypted_secrets` (uuid id primary key, unique credential key, encrypted value)
+- `encrypted_secrets` (uuid id primary key, unique credential key, required purpose, encrypted value)
 - `models`
 - `git_credentials`
 - Global Git author configuration; confirm its exact relation/API shape before implementing OO-004

@@ -2,7 +2,7 @@ import type { Database } from "remix/data-table";
 
 import type { MasterKey } from "../utils/master-key.ts";
 import { encryptSecret, type SecretMetadata } from "../utils/secret-cipher.ts";
-import { type EncryptedSecretRow, encryptedSecrets } from "./schema.ts";
+import { encryptedSecretPurposes, type EncryptedSecretRow, encryptedSecrets } from "./schema.ts";
 
 export interface SecretEntry {
   key: string;
@@ -25,13 +25,16 @@ export function createSecretRepository(
   return {
     async listSecrets() {
       const rows = await database.findMany(encryptedSecrets, {
+        where: { purpose: encryptedSecretPurposes.providerApiKey },
         orderBy: ["key", "asc"],
       });
       return rows.map(mapRow);
     },
 
     async getSecret(key) {
-      const row = await database.findOne(encryptedSecrets, { where: { key } });
+      const row = await database.findOne(encryptedSecrets, {
+        where: { key, purpose: encryptedSecretPurposes.providerApiKey },
+      });
       return row ? mapRow(row) : null;
     },
 
@@ -42,6 +45,7 @@ export function createSecretRepository(
       const row: EncryptedSecretRow = {
         id: crypto.randomUUID(),
         key,
+        purpose: encryptedSecretPurposes.providerApiKey,
         key_version: encrypted.keyVersion,
         ciphertext: encrypted.ciphertext.toBase64(),
         created_at: now,
@@ -49,7 +53,9 @@ export function createSecretRepository(
       };
 
       await database.transaction(async (transaction) => {
-        const existing = await transaction.findOne(encryptedSecrets, { where: { key } });
+        const existing = await transaction.findOne(encryptedSecrets, {
+          where: { key, purpose: encryptedSecretPurposes.providerApiKey },
+        });
         if (existing) {
           await transaction.update(encryptedSecrets, existing.id, {
             key_version: row.key_version,
@@ -65,7 +71,9 @@ export function createSecretRepository(
     },
 
     async deleteSecret(key) {
-      const result = await database.deleteMany(encryptedSecrets, { where: { key } });
+      const result = await database.deleteMany(encryptedSecrets, {
+        where: { key, purpose: encryptedSecretPurposes.providerApiKey },
+      });
       return result.affectedRows > 0;
     },
   };

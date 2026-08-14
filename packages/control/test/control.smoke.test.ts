@@ -27,7 +27,9 @@ Deno.test("serves process health and the control shell over HTTP", async () => {
     const homeResponse = await fetch(new URL(routes.home.href(), server.baseUrl));
     assertEquals(homeResponse.status, 200);
     assertMatch(homeResponse.headers.get("content-type") ?? "", /^text\/html/);
-    assertMatch(await homeResponse.text(), /Create your administrator/);
+    const homeHtml = await homeResponse.text();
+    assertMatch(homeHtml, /Create your administrator/);
+    assertMatch(homeHtml, /<script type="module" src="\/assets\/app\/assets\/client\.ts">/);
   } finally {
     await server.close();
     await store.close();
