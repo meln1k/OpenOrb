@@ -1,7 +1,9 @@
 import { validateRunnerWorkingDirectory } from "./working-directory.ts";
 import { checkRunnerPrerequisites } from "./prerequisites.ts";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 export const RUNNER_VERSION = "0.0.0";
+const tracer = trace.getTracer("openorb-runner", RUNNER_VERSION);
 
 export async function main(args: string[] = Deno.args): Promise<number> {
   if (args.some((argument) => argument === "--data-dir" || argument.startsWith("--data-dir="))) {
@@ -38,7 +40,30 @@ export async function main(args: string[] = Deno.args): Promise<number> {
     return 1;
   }
 
-  const report = await checkRunnerPrerequisites();
+  const report = await tracer.startActiveSpan("runner.check_prerequisites", async (span) => {
+    try {
+      const report = await checkRunnerPrerequisites();
+      span.setAttributes({
+        "runner.prerequisites.ok": report.ok,
+        "runner.prerequisites.error_count": report.errors.length,
+        "runner.prerequisites.warning_count": report.warnings.length,
+      });
+      if (!report.ok) {
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: "One or more runner prerequisites failed",
+        });
+      }
+      return report;
+    } catch (error) {
+      const exception = error instanceof Error ? error : new Error(String(error));
+      span.recordException(exception);
+      span.setStatus({ code: SpanStatusCode.ERROR, message: exception.message });
+      throw error;
+    } finally {
+      span.end();
+    }
+  });
 
   console.log("[openorb-runner] checking development harness prerequisites");
   for (const warning of report.warnings) {

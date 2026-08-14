@@ -167,11 +167,31 @@ install_dependencies() {
   deno install --frozen
 }
 
+install_motel() {
+  local version=0.2.6
+  local package_json="$HOME/.bun/install/global/node_modules/@kitlangton/motel/package.json"
+  if command -v motel >/dev/null 2>&1 && [[ -f "$package_json" ]] &&
+    [[ "$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$package_json" | head -n 1)" == "$version" ]]; then
+    echo "Motel $version already installed."
+    return
+  fi
+
+  if ! command -v bun >/dev/null 2>&1; then
+    echo 'Bun is required only by the optional Motel development tool, but is unavailable.' >&2
+    return 1
+  fi
+
+  bun add --global "@kitlangton/motel@$version"
+  as_root ln -sfn "$HOME/.bun/bin/motel" /usr/local/bin/motel
+  motel --help >/dev/null
+}
+
 step 'Install system packages' install_system_packages
 step 'Install pinned Deno toolchain' install_deno
 step 'Configure PostgreSQL' configure_postgres
 step 'Create local control environment' create_local_environment
 step 'Install locked Deno dependencies' install_dependencies
+step 'Install Motel local observability tool' install_motel
 
 echo
 echo 'Orb setup complete.'

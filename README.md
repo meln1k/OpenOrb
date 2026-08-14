@@ -49,6 +49,35 @@ deno task dev:runner
 
 `deno task dev` runs both processes. A deployed control process uses `deno task --filter @openorb/control start`; production Linux runners use the standalone artifacts described below. Use the Deno version pinned in `.tool-versions`; individual tasks do not perform a separate runtime version check.
 
+## Local observability
+
+OpenOrb uses Deno's built-in OpenTelemetry integration. For local traces and trace-correlated
+`console` logs, install the pinned [Motel](https://github.com/kitlangton/motel) development tool and
+run the instrumented tasks:
+
+```sh
+bun add --global @kitlangton/motel@0.2.6
+motel start
+deno task dev:otel
+```
+
+Motel listens on `http://127.0.0.1:27686`; query its health and discovered OpenOrb services with:
+
+```sh
+curl http://127.0.0.1:27686/api/health
+curl http://127.0.0.1:27686/api/services
+```
+
+In an Amp orb, `amp orb services ensure` supervises Motel and the instrumented control process.
+The project-local `motel-debug` agent skill documents the evidence-driven debugging workflow and
+query API.
+
+The application processes remain Deno-only. Motel 0.2.6 itself requires Bun 1.3 or newer because
+its HTTP server uses `@effect/platform-bun`; it cannot currently be launched by Deno without
+porting Motel. Motel does not ingest metrics, so `dev:otel` disables Deno's metric signal while
+exporting traces and logs. Production can enable all Deno OpenTelemetry signals and select any
+OTLP collector through the standard `OTEL_*` environment variables.
+
 ## Required development database reset
 
 OO-001A replaces the unreleased Argon2 development schema with the fixed PBKDF2 profile. Existing development users, password credentials, and browser sessions are intentionally incompatible. Reset the development and test databases once before using this revision; startup never deletes them automatically:

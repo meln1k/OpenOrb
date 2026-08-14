@@ -2,10 +2,32 @@ import { createAppServices } from "./app/middleware/services.ts";
 import { createDefaultStore } from "./app/data/store.ts";
 import { createAppRouter } from "./app/router.ts";
 import { migrate } from "./db/migrate.ts";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 
-const store = await createDefaultStore();
-await migrate(store.pool);
-const router = createAppRouter(createAppServices(store));
+const tracer = trace.getTracer("openorb-control", "0.0.0");
+const { store, router } = await tracer.startActiveSpan("control.initialize", async (span) => {
+  try {
+    const store = await createDefaultStore();
+    await tracer.startActiveSpan("database.migrate", async (migrationSpan) => {
+      try {
+        await migrate(store.pool);
+      } catch (error) {
+        migrationSpan.recordException(toError(error));
+        migrationSpan.setStatus({ code: SpanStatusCode.ERROR, message: toError(error).message });
+        throw error;
+      } finally {
+        migrationSpan.end();
+      }
+    });
+    return { store, router: createAppRouter(createAppServices(store)) };
+  } catch (error) {
+    span.recordException(toError(error));
+    span.setStatus({ code: SpanStatusCode.ERROR, message: toError(error).message });
+    throw error;
+  } finally {
+    span.end();
+  }
+});
 
 const port = Number(Deno.env.get("PORT") ?? "44100");
 const abortController = new AbortController();
@@ -30,6 +52,10 @@ const server = Deno.serve(
     try {
       return await router.fetch(request);
     } catch (error) {
+      const exception = toError(error);
+      const span = trace.getActiveSpan();
+      span?.recordException(exception);
+      span?.setStatus({ code: SpanStatusCode.ERROR, message: exception.message });
       if (!(request.signal.aborted && error === request.signal.reason)) {
         console.error(error);
       }
@@ -55,4 +81,8 @@ try {
   await server.finished;
 } finally {
   await store.close();
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }

@@ -1735,6 +1735,12 @@ Project secrets are centrally encrypted. When a VM needs them:
 
 ## 28. Observability
 
+OpenOrb uses Deno's built-in OpenTelemetry integration and the OpenTelemetry API for explicit
+application spans. Runtime configuration remains environment-driven so production deployments can
+select any OTLP collector without application-owned exporter wiring. Motel is an optional local
+agent-debugging backend for traces and logs only; it is not a production dependency or metrics
+backend.
+
 ### 28.1 Structured logs
 
 Control and runner logs include:
