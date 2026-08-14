@@ -1,4 +1,5 @@
 import type { Database } from "remix/data-table";
+import { v7 } from "@std/uuid";
 
 import {
   hashPassword,
@@ -13,12 +14,12 @@ import {
 import { type PasswordCredential, passwordCredentials, users } from "./schema.ts";
 
 export interface Administrator {
-  id: number;
+  id: string;
 }
 
 export interface AdministratorRepository {
   hasAdministrator(): Promise<boolean>;
-  getAdministrator(id: number): Promise<Administrator | null>;
+  getAdministrator(id: string): Promise<Administrator | null>;
   createAdministrator(password: string): Promise<boolean>;
   verifyAdministratorPassword(password: string): Promise<Administrator | null>;
 }
@@ -42,6 +43,7 @@ export function createAdministratorRepository(database: Database): Administrator
           const user = await transaction.create(
             users,
             {
+              id: v7.generate(),
               is_administrator: true,
               created_at: new Date().toISOString(),
             },

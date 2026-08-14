@@ -1,4 +1,5 @@
 import { type Cookie, createCookie } from "remix/cookie";
+import { v7 } from "@std/uuid";
 import { auth, createSessionAuthScheme } from "remix/middleware/auth";
 import { formData } from "remix/middleware/form-data";
 import { session } from "remix/middleware/session";
@@ -50,7 +51,7 @@ export function createAppRouter(
       provideAppServices(services),
       auth({
         schemes: [
-          createSessionAuthScheme<Administrator, { userId: number }>({
+          createSessionAuthScheme<Administrator, { userId: string }>({
             read(currentSession) {
               const value = currentSession.get("auth");
               return isAuthSession(value) ? value : null;
@@ -83,13 +84,13 @@ export function createAppRouter(
   return appRouter;
 }
 
-function isAuthSession(value: unknown): value is { userId: number } {
+function isAuthSession(value: unknown): value is { userId: string } {
   return (
     typeof value === "object" &&
     value !== null &&
     "userId" in value &&
-    typeof value.userId === "number" &&
-    Number.isInteger(value.userId)
+    typeof value.userId === "string" &&
+    v7.validate(value.userId)
   );
 }
 

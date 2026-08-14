@@ -80,14 +80,14 @@ OTLP collector through the standard `OTEL_*` environment variables.
 
 ## Required development database reset
 
-OO-001A replaces the unreleased Argon2 development schema with the fixed PBKDF2 profile. Existing development users, password credentials, and browser sessions are intentionally incompatible. Reset the development and test databases once before using this revision; startup never deletes them automatically:
+OO-001A replaces the unreleased Argon2 development schema with the fixed PBKDF2 profile, and user IDs now use UUIDv7 instead of integers. Existing development users, password credentials, browser sessions, encrypted credentials, Git configuration, and projects are intentionally incompatible. Reset the development and test databases once before using this revision; startup never deletes them automatically:
 
 ```sh
 dropdb --if-exists openorb && createdb openorb
 dropdb --if-exists openorb-test && createdb openorb-test
 ```
 
-Then restart the control panel and create the administrator again. There is no legacy-password or dual-KDF verification path.
+Then restart the control panel and recreate the administrator and configuration. There is no legacy-password, dual-KDF, or integer-user-ID compatibility path.
 
 ## Checks
 

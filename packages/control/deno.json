@@ -11,6 +11,7 @@
     "@std/crypto/timing-safe-equal": "jsr:@std/crypto@1.1.0/timing-safe-equal",
     "@std/path": "jsr:@std/path@1.1.6",
     "@opentelemetry/api": "npm:@opentelemetry/api@1.9.0",
+    "@std/uuid": "jsr:@std/uuid@1.1.1",
     "pg": "npm:pg@8.16.3",
     "remix/": "npm:/remix@3.0.0-beta.5/"
   },

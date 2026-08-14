@@ -1,4 +1,5 @@
 import { assert, assertEquals, assertMatch, assertNotEquals } from "@std/assert";
+import { v7 } from "@std/uuid";
 
 import { createAppRouter } from "../app/router.ts";
 import { createAppServices } from "../app/middleware/services.ts";
@@ -52,6 +53,11 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     assertEquals(setupResponse.status, 303);
     assertEquals(setupResponse.headers.get("location"), "/auth/login");
     assertEquals(await store.hasAdministrator(), true);
+    const administrators = await store.pool.query<{ id: string }>(
+      "select id from users where is_administrator",
+    );
+    assertEquals(administrators.rows.length, 1);
+    assert(v7.validate(administrators.rows[0]!.id));
 
     const setupAgain = await fetch(setupUrl, { redirect: "manual" });
     assertEquals(setupAgain.status, 303);

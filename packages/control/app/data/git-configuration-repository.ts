@@ -33,14 +33,14 @@ export type DeleteGitCredentialResult =
   | { status: "not-found" };
 
 export interface GitConfigurationRepository {
-  getGitAuthorConfiguration(userId: number): Promise<GitAuthorConfiguration | null>;
-  saveGitAuthorConfiguration(userId: number, input: {
+  getGitAuthorConfiguration(userId: string): Promise<GitAuthorConfiguration | null>;
+  saveGitAuthorConfiguration(userId: string, input: {
     authorName: string;
     authorEmail: string;
   }): Promise<GitAuthorConfiguration>;
-  getGitHubCredential(userId: number): Promise<GitCredential | null>;
-  saveGitHubCredential(userId: number, token: string): Promise<GitCredential>;
-  deleteGitHubCredential(userId: number): Promise<DeleteGitCredentialResult>;
+  getGitHubCredential(userId: string): Promise<GitCredential | null>;
+  saveGitHubCredential(userId: string, token: string): Promise<GitCredential>;
+  deleteGitHubCredential(userId: string): Promise<DeleteGitCredentialResult>;
 }
 
 export function createGitConfigurationRepository(

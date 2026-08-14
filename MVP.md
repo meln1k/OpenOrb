@@ -200,6 +200,7 @@ Guest assets are separate from the executable. Runner release metadata pins one 
 ### User authentication
 
 - First-run setup creates one admin user.
+- User IDs are application-generated UUIDv7 values stored in PostgreSQL `uuid` columns.
 - Use Remix's credentials-auth primitives: `createCredentialsAuthProvider()`, `verifyCredentials()`, and `completeAuth()`.
 - Password creation and verification use asynchronous Web Crypto PBKDF2-HMAC-SHA-256 with exactly 600,000 iterations, a unique random 16-byte salt, and a 256-bit derived key. Accept only this fixed profile. The unreleased Argon2 development database is explicitly reset; no Argon2 or dual-KDF compatibility path exists.
 - Use Remix session middleware and `auth()`/`createSessionAuthScheme()` for request identity; protect authenticated routes with `requireAuth()`.
@@ -335,7 +336,7 @@ The control panel stores only this minimal session catalog record:
 
 ```ts
 interface SessionCatalogEntry {
-  userId: number
+  userId: string
   id: string
   projectId: string
   createdAt: string

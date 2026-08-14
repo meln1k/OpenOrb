@@ -1,7 +1,12 @@
 import type { Pool } from "pg";
 import { createSession, type Session, type SessionStorage } from "remix/session";
+import { v7 } from "@std/uuid";
 
 type SessionOrigin = { readonly kind: "new" } | { readonly kind: "persisted"; readonly id: string };
+type SessionIdentity =
+  | { readonly kind: "anonymous" }
+  | { readonly kind: "authenticated"; readonly userId: string }
+  | { readonly kind: "invalid" };
 
 /**
  * Owns the PostgreSQL lifecycle of browser sessions.
@@ -23,7 +28,7 @@ export class PostgresSessionStorage implements SessionStorage {
     }
 
     const result = await this.pool.query<{
-      user_id: number | null;
+      user_id: string | null;
       data: unknown;
       expires_at: Date | string;
     }>(
@@ -43,7 +48,14 @@ export class PostgresSessionStorage implements SessionStorage {
     }
 
     const data = parseSessionData(row.data);
-    if (!data || sessionUserId(data) !== row.user_id) {
+    if (!data) {
+      await this.deleteSessions([cookie]);
+      return this.createNewSession();
+    }
+
+    const identity = parseSessionIdentity(data);
+    const userId = identity.kind === "authenticated" ? identity.userId : null;
+    if (identity.kind === "invalid" || userId !== row.user_id) {
       await this.deleteSessions([cookie]);
       return this.createNewSession();
     }
@@ -179,15 +191,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function sessionUserId(data: unknown): number | null {
+function sessionUserId(data: unknown): string | null {
   const parsed = parseSessionData(data);
   if (!parsed) {
     throw new Error("Cannot persist malformed browser session data.");
   }
 
-  const auth = parsed[0].auth;
-  if (!isRecord(auth) || typeof auth.userId !== "number" || !Number.isInteger(auth.userId)) {
-    return null;
+  const identity = parseSessionIdentity(parsed);
+  if (identity.kind === "invalid") {
+    throw new Error("Cannot persist malformed browser session authentication.");
   }
-  return auth.userId;
+  return identity.kind === "authenticated" ? identity.userId : null;
+}
+
+function parseSessionIdentity(
+  data: [Record<string, unknown>, Record<string, unknown>],
+): SessionIdentity {
+  const values = data[0];
+  if (!("auth" in values)) {
+    return { kind: "anonymous" };
+  }
+
+  const auth = values.auth;
+  if (!isRecord(auth) || typeof auth.userId !== "string" || !v7.validate(auth.userId)) {
+    return { kind: "invalid" };
+  }
+  return { kind: "authenticated", userId: auth.userId };
 }

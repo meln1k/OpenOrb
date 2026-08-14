@@ -94,7 +94,7 @@ Deno.test("configuration persistence separates users across every repository ope
     );
     assertEquals(secondSecret.rows.length, 1);
 
-    const ownership = await store.pool.query<{ table_name: string; user_id: number }>(
+    const ownership = await store.pool.query<{ table_name: string; user_id: string }>(
       `select 'encrypted_secrets' as table_name, user_id from encrypted_secrets
        union all
        select 'git_author_configuration', user_id from git_author_configuration
@@ -104,7 +104,7 @@ Deno.test("configuration persistence separates users across every repository ope
        select 'projects', user_id from projects`,
     );
     assert(
-      ownership.rows.every((row: { user_id: number }) =>
+      ownership.rows.every((row: { user_id: string }) =>
         row.user_id === firstUserId || row.user_id === secondUserId
       ),
     );

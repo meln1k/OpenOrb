@@ -267,6 +267,7 @@ Guest preview content must never be served from the control panel’s origin.
 ### 8.3 Single-administrator authentication
 
 - First-run setup creates the single admin user.
+- User IDs are application-generated UUIDv7 values stored in PostgreSQL `uuid` columns.
 - The login and account-management UI remains single-administrator for MVP, but `users` supports multiple rows and every persisted resource is owned by one user.
 - Passwords use Web Crypto PBKDF2-HMAC-SHA-256 with exactly 600,000 iterations, a random 16-byte salt, and a 256-bit derived key. The fixed profile is runtime validated; there is no Argon2 compatibility path.
 - Passkeys use WebAuthn and require HTTPS except for local development.
@@ -417,7 +418,7 @@ It also persists one deliberately minimal catalog row per session:
 
 ```ts
 interface SessionCatalogEntry {
-  userId: number
+  userId: string
   id: string
   projectId: string
   createdAt: string

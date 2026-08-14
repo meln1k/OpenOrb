@@ -12,10 +12,10 @@ export interface SecretEntry {
 }
 
 export interface SecretRepository {
-  listSecrets(userId: number): Promise<SecretEntry[]>;
-  getSecret(userId: number, key: string): Promise<SecretEntry | null>;
-  saveSecret(userId: number, key: string, value: string): Promise<SecretEntry>;
-  deleteSecret(userId: number, key: string): Promise<boolean>;
+  listSecrets(userId: string): Promise<SecretEntry[]>;
+  getSecret(userId: string, key: string): Promise<SecretEntry | null>;
+  saveSecret(userId: string, key: string, value: string): Promise<SecretEntry>;
+  deleteSecret(userId: string, key: string): Promise<boolean>;
 }
 
 export function createSecretRepository(

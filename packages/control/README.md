@@ -18,6 +18,6 @@ deno task dev:control
 
 Open <http://localhost:44100>. On a fresh database, the root route redirects to first-run setup. The Deno-native migration loader applies committed `remix/data-table` migrations before the server starts.
 
-OO-001A changed password rows to PBKDF2-HMAC-SHA-256 with 600,000 iterations, a random 16-byte salt, and a 256-bit derived key. Before first use of this revision, intentionally reset the unreleased `openorb` and `openorb-test` databases as documented in the root README. No Argon2 compatibility path exists.
+OO-001A changed password rows to PBKDF2-HMAC-SHA-256 with 600,000 iterations, a random 16-byte salt, and a 256-bit derived key, and user IDs now use UUIDv7 instead of integers. Before first use of this revision, intentionally reset the unreleased `openorb` and `openorb-test` databases as documented in the root README. This discards existing users, sessions, encrypted credentials, Git configuration, and projects; no Argon2 or integer-user-ID compatibility path exists.
 
 Tests use PostgreSQL directly and default to `postgres://localhost/openorb-test`, regardless of the application `DATABASE_URL`; create that test database first. CI may set `OPENORB_TEST_DATABASE_URL` to an isolated test database. Test tables are truncated between tests.

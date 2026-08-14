@@ -5,7 +5,7 @@ import type { MasterKey } from "./master-key.ts";
 /** Immutable metadata authenticated (but not encrypted) with each secret. */
 export interface SecretMetadata {
   /** The immutable owner of the credential. */
-  userId: number;
+  userId: string;
   /** The credential key in environment-variable style, e.g. `OPENCODE_API_KEY`. */
   key: string;
 }

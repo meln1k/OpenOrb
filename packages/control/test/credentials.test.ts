@@ -28,7 +28,7 @@ interface AuthenticatedClient {
   router: ReturnType<typeof createAppRouter>;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
-  userId: number;
+  userId: string;
 }
 
 async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
@@ -66,7 +66,7 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
     });
     assertEquals(loginResponse.status, 303);
     assertEquals(loginResponse.headers.get("location"), "/app");
-    const user = await store.pool.query<{ id: number }>(
+    const user = await store.pool.query<{ id: string }>(
       "select id from users where is_administrator",
     );
     assertEquals(user.rows.length, 1);

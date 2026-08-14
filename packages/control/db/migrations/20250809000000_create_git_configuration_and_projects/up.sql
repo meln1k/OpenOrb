@@ -1,5 +1,5 @@
 create table git_author_configuration (
-  user_id integer primary key references users(id) on delete cascade,
+  user_id uuid primary key references users(id) on delete cascade,
   author_name text not null check (
     length(btrim(author_name)) between 1 and 200
   ),
@@ -11,7 +11,7 @@ create table git_author_configuration (
 
 create table git_credentials (
   id uuid primary key,
-  user_id integer not null references users(id) on delete cascade,
+  user_id uuid not null references users(id) on delete cascade,
   host text not null check (host = 'github.com'),
   encrypted_secret_id uuid not null unique,
   created_at text not null,
@@ -23,7 +23,7 @@ create table git_credentials (
 
 create table projects (
   id uuid primary key,
-  user_id integer not null references users(id) on delete cascade,
+  user_id uuid not null references users(id) on delete cascade,
   name text not null check (
     length(btrim(name)) between 1 and 100
   ),

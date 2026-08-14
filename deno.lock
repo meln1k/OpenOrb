@@ -2,11 +2,14 @@
   "version": "5",
   "specifiers": {
     "jsr:@std/assert@1.0.19": "1.0.19",
+    "jsr:@std/bytes@^1.0.6": "1.0.6",
     "jsr:@std/crypto@1.1.0": "1.1.0",
+    "jsr:@std/crypto@^1.1.0": "1.1.0",
     "jsr:@std/internal@^1.0.12": "1.0.14",
     "jsr:@std/internal@^1.0.14": "1.0.14",
     "jsr:@std/path@*": "1.1.6",
     "jsr:@std/path@1.1.6": "1.1.6",
+    "jsr:@std/uuid@1.1.1": "1.1.1",
     "npm:@earendil-works/gondolin@0.12.0": "0.12.0",
     "npm:@opentelemetry/api@1.9.0": "1.9.0",
     "npm:@remix-run/data-schema@0.3.0": "0.3.0",
@@ -20,6 +23,9 @@
         "jsr:@std/internal@^1.0.12"
       ]
     },
+    "@std/bytes@1.0.6": {
+      "integrity": "f6ac6adbd8ccd99314045f5703e23af0a68d7f7e58364b47d2c7f408aeb5820a"
+    },
     "@std/crypto@1.1.0": {
       "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
     },
@@ -30,6 +36,13 @@
       "integrity": "c68485c2a4dfbb5ae3cc74fae4e8c4e5d874cf8a8ed12927917235c758b46cbe",
       "dependencies": [
         "jsr:@std/internal@^1.0.14"
+      ]
+    },
+    "@std/uuid@1.1.1": {
+      "integrity": "7b49060282d90f72fec64952f8c7a2914cbe6fdba3eca665f8cedc90830154a7",
+      "dependencies": [
+        "jsr:@std/bytes",
+        "jsr:@std/crypto@^1.1.0"
       ]
     }
   },
@@ -1437,6 +1450,7 @@
           "jsr:@std/assert@1.0.19",
           "jsr:@std/crypto@1.1.0",
           "jsr:@std/path@1.1.6",
+          "jsr:@std/uuid@1.1.1",
           "npm:@opentelemetry/api@1.9.0",
           "npm:pg@8.16.3",
           "npm:remix@3.0.0-beta.5"

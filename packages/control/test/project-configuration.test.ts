@@ -30,7 +30,7 @@ interface AuthenticatedClient {
   store: Awaited<ReturnType<typeof createTestStore>>;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
-  userId: number;
+  userId: string;
 }
 
 async function createAuthenticatedClient(): Promise<AuthenticatedClient> {

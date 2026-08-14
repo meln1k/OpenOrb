@@ -86,7 +86,7 @@ Deno.test("binds authenticated session data to its persisted user owner", async 
     const sessionId = await store.sessionStorage.save(currentSession);
     assert(sessionId);
 
-    const persisted = await store.pool.query<{ user_id: number }>(
+    const persisted = await store.pool.query<{ user_id: string }>(
       "select user_id from browser_sessions where id = $1",
       [sessionId],
     );
@@ -101,6 +101,42 @@ Deno.test("binds authenticated session data to its persisted user owner", async 
     assertEquals(
       (await store.pool.query("select id from browser_sessions where id = $1", [sessionId]))
         .rowCount,
+      0,
+    );
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("rejects invalid authentication instead of treating it as anonymous", async () => {
+  const store = await createTestStore();
+
+  try {
+    const currentSession = await store.sessionStorage.read(null);
+    currentSession.set("auth", { userId: "1770199d-f6b8-4bd8-851f-7bcffc1bb7f8" });
+    await assertRejects(
+      () => store.sessionStorage.save(currentSession),
+      Error,
+      "Cannot persist malformed browser session authentication.",
+    );
+    assertEquals(
+      (await store.pool.query("select id from browser_sessions where id = $1", [currentSession.id]))
+        .rowCount,
+      0,
+    );
+
+    await store.pool.query(
+      `insert into browser_sessions (id, user_id, data, expires_at, created_at, updated_at)
+       values ('malformed-auth-session', null,
+         '[{"auth":{"userId":"not-a-uuid"}}, {}]'::jsonb,
+         now() + interval '1 hour', now(), now())`,
+    );
+    const rejected = await store.sessionStorage.read("malformed-auth-session");
+    assertEquals(rejected.get("auth"), undefined);
+    assertEquals(
+      (await store.pool.query(
+        "select id from browser_sessions where id = 'malformed-auth-session'",
+      )).rowCount,
       0,
     );
   } finally {
@@ -123,7 +159,7 @@ Deno.test("does not reassign an existing browser session to another user", async
     loaded.set("auth", { userId: secondUserId });
     assertEquals(await store.sessionStorage.save(loaded), "");
 
-    const persisted = await store.pool.query<{ user_id: number; data: unknown }>(
+    const persisted = await store.pool.query<{ user_id: string; data: unknown }>(
       "select user_id, data from browser_sessions where id = $1",
       [sessionId],
     );

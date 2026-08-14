@@ -29,10 +29,10 @@ export type SaveProjectResult =
 export type DeleteProjectResult = "deleted" | "not-found" | "in-use";
 
 export interface ProjectRepository {
-  listProjects(userId: number): Promise<Project[]>;
-  getProject(userId: number, id: string): Promise<Project | null>;
-  saveProject(userId: number, input: SaveProjectInput): Promise<SaveProjectResult>;
-  deleteProject(userId: number, id: string): Promise<DeleteProjectResult>;
+  listProjects(userId: string): Promise<Project[]>;
+  getProject(userId: string, id: string): Promise<Project | null>;
+  saveProject(userId: string, input: SaveProjectInput): Promise<SaveProjectResult>;
+  deleteProject(userId: string, id: string): Promise<DeleteProjectResult>;
 }
 
 export function createProjectRepository(database: Database): ProjectRepository {

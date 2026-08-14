@@ -1,3 +1,5 @@
+import { v7 } from "@std/uuid";
+
 import { importMasterKey, type MasterKey } from "../app/utils/master-key.ts";
 import { createPostgresStore, type PostgresStore } from "../app/data/store.ts";
 import { migrate } from "../db/migrate.ts";
@@ -27,10 +29,10 @@ export async function createTestStore(
   return store;
 }
 
-export async function createTestUser(store: PostgresStore): Promise<number> {
-  const result = await store.pool.query<{ id: number }>(
-    "insert into users (is_administrator, created_at) values (false, $1) returning id",
-    [new Date().toISOString()],
+export async function createTestUser(store: PostgresStore): Promise<string> {
+  const result = await store.pool.query<{ id: string }>(
+    "insert into users (id, is_administrator, created_at) values ($1, false, $2) returning id",
+    [v7.generate(), new Date().toISOString()],
   );
   return result.rows[0]!.id;
 }

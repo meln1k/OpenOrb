@@ -3,7 +3,7 @@ import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/asser
 import { importMasterKey } from "./master-key.ts";
 import { decryptSecret, encryptSecret, SecretDecryptionError } from "./secret-cipher.ts";
 
-const METADATA = { userId: 17, key: "opencode-go" };
+const METADATA = { userId: "0198a5f8-3029-7000-8000-000000000011", key: "opencode-go" };
 const SECRET = "oc-secret-api-key-7f3d9a";
 const KEY_BYTES = Uint8Array.from(Array.from({ length: 32 }, (_, index) => index));
 
@@ -40,7 +40,11 @@ Deno.test("tampered ciphertext, metadata, or key version fails authentication", 
     SecretDecryptionError,
   );
   await assertRejects(
-    () => decryptSecret(masterKey, encrypted, { ...METADATA, userId: 18 }),
+    () =>
+      decryptSecret(masterKey, encrypted, {
+        ...METADATA,
+        userId: "0198a5f8-3029-7000-8000-000000000012",
+      }),
     SecretDecryptionError,
   );
   await assertRejects(

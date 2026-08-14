@@ -1,6 +1,6 @@
 create table encrypted_secrets (
   id uuid primary key,
-  user_id integer not null references users(id) on delete cascade,
+  user_id uuid not null references users(id) on delete cascade,
   key text not null,
   key_version integer not null check (key_version >= 1),
   ciphertext text not null,
