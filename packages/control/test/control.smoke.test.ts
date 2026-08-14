@@ -29,6 +29,10 @@ Deno.test("serves process health and the control shell over HTTP", async () => {
     assertMatch(homeResponse.headers.get("content-type") ?? "", /^text\/html/);
     const homeHtml = await homeResponse.text();
     assertMatch(homeHtml, /Create your administrator/);
+    assertMatch(
+      homeHtml,
+      /<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no" \/>/,
+    );
     assertMatch(homeHtml, /<script type="module" src="\/assets\/app\/assets\/client\.ts">/);
   } finally {
     await server.close();
