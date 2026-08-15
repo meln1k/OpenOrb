@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "skills/deno/SKILL.md",
       "computedHash": "ac6e73271ee74ee92ee995bcd99661da6d8ad5280d90aee637b53267f6d3fbb7"
+    },
+    "show-me": {
+      "source": "humanlayer/skills",
+      "sourceType": "github",
+      "skillPath": "plugins/show-me/skills/show-me/SKILL.md",
+      "computedHash": "de32a72f802801f08a84641b467f2c6306d35a58ce5e59ea607ac3a993a18c91"
     }
   }
 }
