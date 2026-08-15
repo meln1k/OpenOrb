@@ -1,6 +1,5 @@
 import { Pool } from "pg";
-import { createDatabase } from "remix/data-table";
-import { createPostgresDatabaseAdapter } from "remix/data-table/postgres";
+import { createPostgresDatabase } from "remix/data-table/postgres";
 import type { SessionStorage } from "remix/session";
 
 import { BROWSER_SESSION_MAX_AGE_SECONDS } from "../utils/session-policy.ts";
@@ -35,7 +34,7 @@ export interface PostgresStore extends Store {
 
 export function createPostgresStore(databaseUrl: string, masterKey: MasterKey): PostgresStore {
   const pool = new Pool({ connectionString: databaseUrl });
-  const database = createDatabase(createPostgresDatabaseAdapter(pool));
+  const database = createPostgresDatabase(pool);
 
   return {
     pool,

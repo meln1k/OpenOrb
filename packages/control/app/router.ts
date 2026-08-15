@@ -1,10 +1,11 @@
 import { type Cookie, createCookie } from "remix/cookie";
+import { serveDir } from "@std/http/file-server";
+import { fromFileUrl } from "@std/path";
 import { v7 } from "@std/uuid";
 import { auth, createSessionAuthScheme } from "remix/middleware/auth";
 import { formData } from "remix/middleware/form-data";
 import { session } from "remix/middleware/session";
-import { staticFiles } from "remix/middleware/static";
-import { createRouter, type RouterContext } from "remix/router";
+import { createRouter, type Middleware, type RouterContext } from "remix/router";
 
 import authController from "./actions/auth/controller.tsx";
 import loginController from "./actions/auth/login/controller.tsx";
@@ -20,6 +21,8 @@ import { type AppServices, AppServicesKey, provideAppServices } from "./middlewa
 import { render } from "./middleware/render.tsx";
 import { routes } from "./routes.ts";
 import { BROWSER_SESSION_MAX_AGE_SECONDS } from "./utils/session-policy.ts";
+
+const PUBLIC_DIRECTORY = fromFileUrl(new URL("../public/", import.meta.url));
 
 export function createSessionCookie(options: { secure?: boolean; secret?: string } = {}): Cookie {
   const secret = options.secret ?? Deno.env.get("SESSION_SECRET");
@@ -47,7 +50,7 @@ export function createAppRouter(
 ) {
   const appRouter = createRouter({
     middleware: [
-      staticFiles("./public", { index: false }),
+      publicFiles(),
       formData(),
       session(sessionCookie, services.store.sessionStorage),
       provideAppServices(services),
@@ -86,6 +89,19 @@ export function createAppRouter(
   appRouter.map(routes.api.runners, apiRunnersController);
 
   return appRouter;
+}
+
+function publicFiles(): Middleware {
+  return async (context, next) => {
+    if (context.request.method !== "GET" && context.request.method !== "HEAD") return next();
+
+    const response = await serveDir(context.request, {
+      fsRoot: PUBLIC_DIRECTORY,
+      quiet: true,
+      showIndex: false,
+    });
+    return response.status === 404 ? next() : response;
+  };
 }
 
 function isAuthSession(value: unknown): value is { userId: string } {

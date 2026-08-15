@@ -7,11 +7,12 @@ How server-rendered UI becomes interactive in the browser, and how the page upda
 - Marking a component for client-side hydration with `clientEntry`
 - Booting the client runtime with `run`
 - Streaming server content into a region of the page with `<Frame>` and reloading those regions
+- Handling browser HMR updates for hydrated entries
 - Triggering Navigation API transitions with `navigate(...)` or `link(...)`
 - Server rendering with `renderToStream` or `renderToString`
 - Managing the document `<head>`
 
-For component-local state and updates, see `component-model.md`. For host-element behavior and events, see `mixins-styling-events.md`.
+For component-local state and updates, see `component-model.md`. For host-element behavior and events, see `mixins-styling-events.md`. For browser asset HMR setup, see `assets-and-browser-modules.md`.
 
 ## Server First, Then Hydrate
 
@@ -20,16 +21,16 @@ Make the server route correct before adding `clientEntry(...)`. A POST should al
 When server state changes after a mutation, prefer reloading a `<Frame>` when the UI region already maps cleanly to a server-rendered route. Frames re-fetch the same route, so the rendering logic stays in one place and the client does not need a parallel "state" API.
 
 ```tsx
-on("submit", async (event, signal) => {
-  event.preventDefault();
+on('submit', async (event, signal) => {
+  event.preventDefault()
   await fetch(routes.cart.add.href(), {
-    method: "POST",
+    method: 'POST',
     body: new FormData(event.currentTarget),
     signal,
-  });
-  if (signal.aborted) return;
-  await handle.frames.get("cart-summary")?.reload();
-});
+  })
+  if (signal.aborted) return
+  await handle.frames.get('cart-summary')?.reload()
+})
 ```
 
 Use polling or a small JSON state endpoint when the data changes outside this page, or when a tiny shared widget would be heavier to model as a frame. Pick the lightest sync mechanism that preserves clear ownership of rendering logic.
@@ -39,12 +40,12 @@ Use polling or a small JSON state endpoint when the data changes outside this pa
 Use `clientEntry` to mark a component for client-side hydration. In source-served apps, prefer the source module's `import.meta.url` as the entry ID and let server rendering map it to the public asset URL:
 
 ```tsx
-import { clientEntry, on, type Handle } from "remix/ui";
+import { clientEntry, on, type Handle } from 'remix/ui'
 
 export const Counter = clientEntry(
   import.meta.url,
   function Counter(handle: Handle<{ initialCount: number; label: string }>) {
-    let count = handle.props.initialCount;
+    let count = handle.props.initialCount
 
     return () => (
       <div>
@@ -52,17 +53,17 @@ export const Counter = clientEntry(
           {handle.props.label}: {count}
         </span>
         <button
-          mix={on("click", () => {
-            count++;
-            handle.update();
+          mix={on('click', () => {
+            count++
+            handle.update()
           })}
         >
           +
         </button>
       </div>
-    );
+    )
   },
-);
+)
 ```
 
 On the server, provide `resolveClientEntry` to `renderToStream(...)` so source file URLs become browser-loadable asset URLs. Keep this resolution in the render helper so component modules do not hard-code deployment-specific asset paths:
@@ -70,17 +71,17 @@ On the server, provide `resolveClientEntry` to `renderToStream(...)` so source f
 ```tsx
 let stream = renderToStream(<App />, {
   async resolveClientEntry(entryId, component) {
-    let exportName = entryId.split("#")[1] || component.name;
+    let exportName = entryId.split('#')[1] || component.name
     if (!exportName) {
-      throw new Error(`Unable to resolve client entry export for ${entryId}`);
+      throw new Error(`Unable to resolve client entry export for ${entryId}`)
     }
 
     return {
       href: await assetServer.getHref(entryId),
       exportName,
-    };
+    }
   },
-});
+})
 ```
 
 If the module export name differs from the component function name, include `#ExportName` in the entry ID or return the exact export name from `resolveClientEntry`. A render helper that only supports source-owned entries can also fail fast when `entryId` is not a `file://` URL.
@@ -94,32 +95,50 @@ Client entry props must be serializable: strings, numbers, booleans, `null`, `un
 Use `run` to start the client runtime. It scans the document for client entry markers, loads modules, and hydrates each one:
 
 ```tsx
-import { run } from "remix/ui";
+import type { ResolveFrameOptions } from 'remix/ui'
+import { run } from 'remix/ui'
 
-let app = run({
+const app = run({
   async loadModule(moduleUrl, exportName) {
-    let mod = await import(moduleUrl);
-    return mod[exportName];
+    let mod = await import(moduleUrl)
+    return mod[exportName]
   },
-  async resolveFrame(src, signal, target) {
-    let headers = new Headers({ accept: "text/html" });
-    if (target) headers.set("x-remix-target", target);
-    let response = await fetch(src, { headers, signal });
-    return response.body ?? (await response.text());
+  async resolveFrame(src, options) {
+    let headers = new Headers({ accept: 'text/html', 'x-remix-frame': 'true' })
+    if (options?.target) headers.set('x-remix-target', options.target)
+    let response = await fetch(src, {
+      body: getRequestBody(options),
+      headers,
+      method: options?.method,
+      signal: options?.signal,
+    })
+    return response.body ?? (await response.text())
   },
-});
+})
 
-app.addEventListener("error", (event) => {
-  console.error("Component error:", event.error);
-});
+function getRequestBody(options?: ResolveFrameOptions): BodyInit | undefined {
+  let formData = options?.formData
+  if (!formData) return
+  if (options.encType !== 'application/x-www-form-urlencoded') return formData
 
-await app.ready();
+  let body = new URLSearchParams()
+  for (let [name, value] of formData) {
+    body.append(name, typeof value === 'string' ? value : value.name)
+  }
+  return body
+}
+
+app.addEventListener('error', (event) => {
+  console.error('Component error:', event.error)
+})
+
+await app.ready()
 ```
 
 ### `run` options
 
 - **`loadModule(moduleUrl, exportName)`** (required) — return the component function for each client entry. Typically uses dynamic `import()`.
-- **`resolveFrame(src, signal, target)`** (optional) — called when a `<Frame>` loads or reloads content. `target` is available when frame targeting matters.
+- **`resolveFrame(src, options)`** (optional) — called when a `<Frame>` loads or reloads content and for intercepted link and form navigations. `options` may contain `signal` and `target`; non-GET forms also provide `formData`, `method`, and `encType`.
 
 ### `app` methods
 
@@ -129,12 +148,25 @@ await app.ready();
 
 `app` is an `EventTarget` that emits `error` events from any hydrated component.
 
+## Browser HMR Updates
+
+When `remix/node-hmr` reports a server update, reload the top frame to apply the latest server-rendered document while preserving browser state:
+
+```tsx
+if (import.meta.hot) {
+  import.meta.hot.on('server:update', async () => {
+    await app.ready()
+    await app.frames.top.reload()
+  })
+}
+```
+
 ## Frames
 
 A `<Frame>` renders server content into the page. Frames stream after the initial HTML, nest inside other frames, contain client entries, and can be reloaded without full page navigation.
 
 ```tsx
-import { Frame } from "remix/ui";
+import { Frame } from 'remix/ui'
 
 function App() {
   return () => (
@@ -142,7 +174,7 @@ function App() {
       <Frame src="/sidebar" fallback={<div>Loading...</div>} />
       <Frame name="main" src="/main-content" />
     </div>
-  );
+  )
 }
 ```
 
@@ -164,16 +196,30 @@ Client entries inside a frame can trigger a reload:
 
 ```tsx
 // Reload the containing frame
-handle.frame.reload();
+handle.frame.reload()
 
 // Reload an adjacent named frame
-await handle.frames.get("cart-summary")?.reload();
+await handle.frames.get('cart-summary')?.reload()
 
 // Reload the entire page/frame tree
-handle.frames.top.reload();
+handle.frames.top.reload()
 ```
 
 When a frame reloads, matching DOM nodes are updated in place. Client entries receive updated props while preserving their local component state.
+
+### Form navigation
+
+When `run({ resolveFrame })` is active, eligible same-origin forms progressively enhance into frame navigations. Native validation and the form's `submit` event still run first.
+
+- Forms target `handle.frames.top` by default.
+- `rmx-target` selects a named frame.
+- `rmx-src` selects a different frame request URL while preserving the form action as the navigation destination.
+- `rmx-history="push|replace"` overrides how the navigation updates history.
+- `rmx-reset-scroll="false"` preserves scroll position.
+- `rmx-document` opts back into a document submission.
+- Cross-origin forms, `method="dialog"`, and `target="_blank"` remain browser-owned.
+
+GET controls are already encoded in `src`, so GET forms reach the resolver like links. Non-GET forms provide their native `FormData`, effective method, and encoding. The resolver owns body encoding and method-override conventions. Non-GET submissions to the current URL replace its history entry; GET submissions and submissions to a different URL push one. The `rmx-history` attribute overrides those defaults.
 
 ### Nested frames
 
@@ -186,22 +232,22 @@ Frames can nest. Each frame owns its own DOM region and hydrates client entries 
 Renders a component tree to a `ReadableStream<Uint8Array>`. Sends initial HTML immediately and streams frame content as it resolves:
 
 ```tsx
-import { renderToStream } from "remix/ui/server";
+import { renderToStream } from 'remix/ui/server'
 
 let stream = renderToStream(<App />, {
   frameSrc: request.url,
   resolveFrame(src, target, context) {
-    let frameUrl = new URL(src, context?.currentFrameSrc ?? request.url);
-    return fetchHtml(frameUrl);
+    let frameUrl = new URL(src, context?.currentFrameSrc ?? request.url)
+    return fetchHtml(frameUrl)
   },
   onError(error) {
-    console.error(error);
+    console.error(error)
   },
-});
+})
 
 return new Response(stream, {
-  headers: { "Content-Type": "text/html; charset=utf-8" },
-});
+  headers: { 'Content-Type': 'text/html; charset=utf-8' },
+})
 ```
 
 Options:
@@ -216,8 +262,8 @@ Options:
 Renders a component tree to a complete HTML string. Use for static pages or embedding HTML:
 
 ```tsx
-import { renderToString } from "remix/ui/server";
-let html = await renderToString(<App />);
+import { renderToString } from 'remix/ui/server'
+let html = await renderToString(<App />)
 ```
 
 ### CSS in SSR
@@ -232,13 +278,13 @@ Use real anchors for normal document navigation. For app-driven navigation:
 - `link(href, options?)` mixin — makes any element behave like a navigation link
 
 ```tsx
-import { navigate } from "remix/ui";
-navigate("/dashboard", { history: "replace" });
+import { navigate } from 'remix/ui'
+navigate('/dashboard', { history: 'replace' })
 ```
 
 Options: `src`, `target`, `history` (`'push' | 'replace'`), `resetScroll`.
 
-Attributes understood by the runtime: `rmx-target`, `rmx-src`, `rmx-document`.
+Attributes understood by the runtime: `rmx-target`, `rmx-src`, `rmx-history`, `rmx-reset-scroll`, `rmx-document`.
 
 ## Head Management
 
@@ -257,7 +303,7 @@ function App() {
         <main>...</main>
       </body>
     </html>
-  );
+  )
 }
 ```
 

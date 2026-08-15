@@ -10,12 +10,13 @@
     "@std/crypto/aes-gcm": "jsr:@std/crypto@1.1.0/aes-gcm",
     "@std/crypto/timing-safe-equal": "jsr:@std/crypto@1.1.0/timing-safe-equal",
     "@std/encoding/base64url": "jsr:@std/encoding@1.0.11/base64url",
+    "@std/http/file-server": "jsr:@std/http@1.1.3/file-server",
     "@std/path": "jsr:@std/path@1.1.6",
     "@std/streams/limited-bytes-transform-stream": "jsr:@std/streams@1.1.2/limited-bytes-transform-stream",
     "@opentelemetry/api": "npm:@opentelemetry/api@1.9.0",
     "@std/uuid": "jsr:@std/uuid@1.1.1",
     "pg": "npm:pg@8.16.3",
-    "remix/": "npm:/remix@3.0.0-beta.5/"
+    "remix/": "npm:/remix@3.0.0-beta.6/"
   },
   "publish": false,
   "tasks": {

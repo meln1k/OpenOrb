@@ -24,6 +24,12 @@ Deno.test("serves process health and the control shell over HTTP", async () => {
     );
     assertEquals(sessionCount.rows[0]?.count, 0);
 
+    const faviconResponse = await fetch(new URL("/favicon.svg", server.baseUrl));
+    assertEquals(faviconResponse.status, 200);
+    assertEquals(faviconResponse.headers.get("content-type"), "image/svg+xml");
+    assertEquals(faviconResponse.headers.get("set-cookie"), null);
+    assertMatch(await faviconResponse.text(), /^<svg/);
+
     const homeResponse = await fetch(new URL(routes.home.href(), server.baseUrl));
     assertEquals(homeResponse.status, 200);
     assertMatch(homeResponse.headers.get("content-type") ?? "", /^text\/html/);

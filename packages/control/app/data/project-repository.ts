@@ -1,4 +1,4 @@
-import { type Database, DataTableAdapterError } from "remix/data-table";
+import { type Database, DataTableDatabaseError } from "remix/data-table";
 
 import { type ProjectRow, projects } from "./schema.ts";
 
@@ -103,7 +103,7 @@ export function createProjectRepository(database: Database): ProjectRepository {
 }
 
 function isPostgresForeignKeyViolation(error: unknown): boolean {
-  if (!(error instanceof DataTableAdapterError)) return false;
+  if (!(error instanceof DataTableDatabaseError)) return false;
   const cause = error.cause;
   return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "23503";
 }

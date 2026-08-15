@@ -11,17 +11,17 @@ export const assetServer = createAssetServer({
     "app/*path": "packages/control/app/*path",
     "npm/*path": "node_modules/*path",
   },
-  allow: [
+  allowFiles: [
     "packages/control/app/assets/**",
     "packages/control/app/actions/runners/enrollment-psk.tsx",
     "packages/control/app/ui/components/**",
     "packages/control/app/ui/responsive.ts",
-    "node_modules/.deno/remix@3.0.0-beta.5/node_modules/remix/dist/{ui.js,ui/*.js}",
-    "node_modules/.deno/@remix-run+ui@0.4.0/node_modules/@remix-run/ui/dist/**/*.js",
+    "node_modules/.deno/remix@3.0.0-beta.6/node_modules/remix/dist/{ui.js,ui/*.js}",
+    "node_modules/.deno/@remix-run+ui@0.5.0/node_modules/@remix-run/ui/dist/**/*.js",
   ],
-  deny: [
-    "node_modules/.deno/remix@3.0.0-beta.5/node_modules/remix/dist/ui/{server,test}.js",
-    "node_modules/.deno/@remix-run+ui@0.4.0/node_modules/@remix-run/ui/dist/{server/**,test.js}",
+  denyFiles: [
+    "node_modules/.deno/remix@3.0.0-beta.6/node_modules/remix/dist/ui/{server,test}.js",
+    "node_modules/.deno/@remix-run+ui@0.5.0/node_modules/@remix-run/ui/dist/{server/**,test.js}",
   ],
   sourceMaps: isDevelopment ? "external" : undefined,
   minify: !isDevelopment,
