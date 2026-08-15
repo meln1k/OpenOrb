@@ -109,6 +109,7 @@ export const runnerEnrollmentTokens = table({
       .notNull()
       .references("users", "id", "runner_enrollment_tokens_user_fk")
       .onDelete("cascade"),
+    token: c.text().nullable(),
     token_hash: c.text().notNull(),
     created_at: c.text().notNull(),
     revoked_at: c.text().nullable(),

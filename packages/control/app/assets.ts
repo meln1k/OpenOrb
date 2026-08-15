@@ -13,6 +13,7 @@ export const assetServer = createAssetServer({
   },
   allow: [
     "packages/control/app/assets/**",
+    "packages/control/app/actions/runners/enrollment-psk.tsx",
     "packages/control/app/ui/components/**",
     "packages/control/app/ui/responsive.ts",
     "node_modules/.deno/remix@3.0.0-beta.5/node_modules/remix/dist/{ui.js,ui/*.js}",

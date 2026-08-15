@@ -33,7 +33,11 @@ export default createController(routes.app.runners, {
         context.auth.identity.id,
       );
       return context.render(
-        <RunnersPage csrfToken={getCsrfToken(context)} enrollmentTokens={tokens} />,
+        <RunnersPage
+          csrfToken={getCsrfToken(context)}
+          enrollmentTokens={tokens}
+        />,
+        { headers: { "cache-control": "no-store" } },
       );
     },
 
@@ -48,22 +52,15 @@ export default createController(routes.app.runners, {
             enrollmentTokens={await store.listRunnerEnrollmentTokens(userId)}
             error={error}
           />,
-          { status },
+          { status, headers: { "cache-control": "no-store" } },
         );
 
       if (intent === "create-enrollment-token") {
         const parsed = s.parseSafe(createSchema, context.formData);
         if (!parsed.success) return renderError("Invalid enrollment token request.", 400);
 
-        const created = await store.createRunnerEnrollmentToken(userId);
-        return context.render(
-          <RunnersPage
-            csrfToken={getCsrfToken(context)}
-            enrollmentTokens={await store.listRunnerEnrollmentTokens(userId)}
-            newEnrollmentPsk={created.token}
-          />,
-          { status: 201, headers: { "cache-control": "no-store" } },
-        );
+        await store.createRunnerEnrollmentToken(userId);
+        return redirect(routes.app.runners.index.href(), 303);
       }
 
       if (intent === "revoke-enrollment-token") {

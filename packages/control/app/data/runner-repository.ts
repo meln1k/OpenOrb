@@ -13,6 +13,7 @@ import {
 
 export interface RunnerEnrollmentToken {
   id: string;
+  token: string | null;
   createdAt: Temporal.Instant;
   revokedAt: Temporal.Instant | null;
 }
@@ -59,6 +60,7 @@ export function createRunnerRepository(database: Database): RunnerRepository {
       const row: RunnerEnrollmentTokenRow = {
         id: v7.generate(),
         user_id: userId,
+        token,
         token_hash: await hashRunnerSecret(token),
         created_at: Temporal.Now.instant().toString(),
         revoked_at: null,
@@ -141,6 +143,7 @@ export function createRunnerRepository(database: Database): RunnerRepository {
 function mapEnrollmentToken(row: RunnerEnrollmentTokenRow): RunnerEnrollmentToken {
   return {
     id: row.id,
+    token: row.token,
     createdAt: Temporal.Instant.from(row.created_at),
     revokedAt: row.revoked_at === null ? null : Temporal.Instant.from(row.revoked_at),
   };

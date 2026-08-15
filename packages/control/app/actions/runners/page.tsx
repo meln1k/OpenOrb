@@ -19,16 +19,16 @@ import {
   TableRow,
 } from "../../ui/components/index.ts";
 import { AppShell } from "../../ui/shell.tsx";
+import { EnrollmentPsk } from "./enrollment-psk.tsx";
 
 export interface RunnersPageProps {
   csrfToken: string;
   enrollmentTokens: RunnerEnrollmentToken[];
   error?: string;
-  newEnrollmentPsk?: string;
 }
 
 export function RunnersPage(handle: Handle<RunnersPageProps>) {
-  const { csrfToken, enrollmentTokens, error, newEnrollmentPsk } = handle.props;
+  const { csrfToken, enrollmentTokens, error } = handle.props;
 
   return () => (
     <AppShell
@@ -40,23 +40,12 @@ export function RunnersPage(handle: Handle<RunnersPageProps>) {
       copy="Create a reusable PSK to enroll outbound-only OpenOrb runners."
     >
       {error ? <p role="alert" mix={errorStyle}>{error}</p> : null}
-      {newEnrollmentPsk
-        ? (
-          <section aria-labelledby="new-enrollment-psk" mix={tokenRevealStyle}>
-            <h2 id="new-enrollment-psk" mix={tokenHeadingStyle}>Copy this enrollment PSK now</h2>
-            <p mix={tokenCopyStyle}>
-              OpenOrb stores only its hash. This clear value will not be shown again.
-            </p>
-            <code mix={tokenValueStyle}>{newEnrollmentPsk}</code>
-          </section>
-        )
-        : null}
       <Card>
         <CardHeader>
           <CardTitle>Enrollment PSKs</CardTitle>
           <CardDescription>
-            A PSK can enroll multiple runners until you revoke it. Enrolled runners use a separate
-            bearer token afterward.
+            PSKs are stored unencrypted and remain visible here after revocation. A valid PSK can
+            enroll multiple runners; enrolled runners use a separate bearer token afterward.
           </CardDescription>
           <CardAction>
             <form method="post" action={routes.app.runners.action.href()}>
@@ -73,6 +62,7 @@ export function RunnersPage(handle: Handle<RunnersPageProps>) {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Enrollment PSK</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead mix={actionsHeadStyle}>Action</TableHead>
@@ -82,13 +72,18 @@ export function RunnersPage(handle: Handle<RunnersPageProps>) {
               {enrollmentTokens.length === 0
                 ? (
                   <TableRow>
-                    <TableCell colSpan={3} mix={emptyCellStyle}>
+                    <TableCell colSpan={4} mix={emptyCellStyle}>
                       No enrollment PSKs created.
                     </TableCell>
                   </TableRow>
                 )
                 : enrollmentTokens.map((token) => (
                   <TableRow key={token.id}>
+                    <TableCell mix={pskCellStyle}>
+                      {token.token
+                        ? <EnrollmentPsk enrollmentPsk={token.token} />
+                        : <span mix={unavailableStyle}>Unavailable for an existing PSK</span>}
+                    </TableCell>
                     <TableCell>
                       <time dateTime={token.createdAt.toString()}>
                         {token.createdAt.toString()}
@@ -122,6 +117,8 @@ export function RunnersPage(handle: Handle<RunnersPageProps>) {
 }
 
 const cardContentStyle = css({ overflowX: "auto" });
+const pskCellStyle = css({ minWidth: "480px" });
+const unavailableStyle = css({ color: "var(--muted-foreground)", fontSize: "13px" });
 const emptyCellStyle = css({
   height: "96px",
   color: "var(--muted-foreground)",
@@ -129,24 +126,6 @@ const emptyCellStyle = css({
 });
 const actionsHeadStyle = css({ width: "110px", textAlign: "right" });
 const actionsCellStyle = css({ textAlign: "right" });
-const tokenRevealStyle = css({
-  display: "grid",
-  gap: "8px",
-  padding: "16px",
-  background: "color-mix(in oklab, var(--primary) 8%, var(--background))",
-  border: "1px solid color-mix(in oklab, var(--primary) 30%, var(--border))",
-  borderRadius: "var(--radius-lg)",
-});
-const tokenHeadingStyle = css({ margin: 0, fontSize: "16px", fontWeight: 600 });
-const tokenCopyStyle = css({ margin: 0, color: "var(--muted-foreground)", fontSize: "14px" });
-const tokenValueStyle = css({
-  display: "block",
-  padding: "12px",
-  overflowWrap: "anywhere",
-  background: "var(--muted)",
-  borderRadius: "var(--radius-md)",
-  userSelect: "all",
-});
 const errorStyle = css({
   margin: 0,
   padding: "12px 14px",

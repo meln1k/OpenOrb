@@ -10,6 +10,7 @@ The administrator creates an enrollment PSK in the browser, and the temporary ma
 ## Scope
 
 - Add user-owned reusable enrollment-PSK creation and revocation through authenticated Remix controllers/actions. Validate browser input with `remix/data-schema` and use OO-002's session/CSRF middleware. A PSK remains valid for multiple enrollments by its owning user until revoked.
+- Store each enrollment PSK unencrypted in PostgreSQL and keep it visible and copyable on the authenticated runners page, including after revocation.
 - Implement runner enrollment using control-panel URL, PSK, runner name, architecture, and capabilities.
 - Derive immutable runner `user_id` from the enrollment PSK record, never runner input. Return and persist a random revocable runner bearer token with file mode `0600`; subsequent connections inherit the same owner from the authenticated runner record.
 - Establish the one outbound authenticated JSON WebSocket defined by `MVP.md`.
