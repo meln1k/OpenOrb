@@ -1,7 +1,7 @@
 import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 
-import { importMasterKey } from "./master-key.ts";
-import { decryptSecret, encryptSecret, SecretDecryptionError } from "./secret-cipher.ts";
+import { importMasterKey } from "@/app/utils/master-key.ts";
+import { decryptSecret, encryptSecret, SecretDecryptionError } from "@/app/utils/secret-cipher.ts";
 
 const METADATA = { userId: "0198a5f8-3029-7000-8000-000000000011", key: "opencode-go" };
 const SECRET = "oc-secret-api-key-7f3d9a";

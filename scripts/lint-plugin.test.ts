@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 
-import plugin from "./lint-plugin.ts";
+import plugin from "@/scripts/lint-plugin.ts";
 
 const RULE_ID = "openorb/no-record-string-unknown";
 

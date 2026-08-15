@@ -6,7 +6,7 @@ import {
   parseRunnerServerMessage,
   runnerEnrollmentRequestSchema,
   runnerEnrollmentResponseSchema,
-} from "../src/index.ts";
+} from "@/src/index.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const ENROLLMENT_PSK = `openorb_enroll_${"a".repeat(43)}`;

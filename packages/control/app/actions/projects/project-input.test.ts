@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 
-import { canonicalizeGitHubRepository } from "./project-input.ts";
+import { canonicalizeGitHubRepository } from "@/app/actions/projects/project-input.ts";
 
 Deno.test("canonicalizes only supported GitHub repository forms", () => {
   for (

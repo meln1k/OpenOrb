@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 
-import { createTestStore, createTestUser } from "./postgres-test.ts";
+import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
 const REJECT_REPLACEMENT_CONSTRAINT = "browser_sessions_reject_test_replacement";
 

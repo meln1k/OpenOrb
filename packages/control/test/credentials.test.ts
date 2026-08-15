@@ -1,11 +1,15 @@
 import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
 
-import { createAppServices } from "../app/middleware/services.ts";
-import { createAppRouter } from "../app/router.ts";
-import { importMasterKey } from "../app/utils/master-key.ts";
-import { decryptSecret, SecretDecryptionError } from "../app/utils/secret-cipher.ts";
-import { createTestServer } from "./http-test-server.ts";
-import { createTestStore, TEST_MASTER_KEY_BYTES, TEST_MASTER_KEY_HEX } from "./postgres-test.ts";
+import { createAppServices } from "@/app/middleware/services.ts";
+import { createAppRouter } from "@/app/router.ts";
+import { importMasterKey } from "@/app/utils/master-key.ts";
+import { decryptSecret, SecretDecryptionError } from "@/app/utils/secret-cipher.ts";
+import { createTestServer } from "@/test/http-test-server.ts";
+import {
+  createTestStore,
+  TEST_MASTER_KEY_BYTES,
+  TEST_MASTER_KEY_HEX,
+} from "@/test/postgres-test.ts";
 
 const OPENCODE_KEY = "OPENCODE_API_KEY";
 const OPENCODE_VALUE = "oc-go-secret-7f3d9a";

@@ -1,10 +1,10 @@
 import { assert, assertEquals, assertMatch, assertNotEquals } from "@std/assert";
 import { v7 } from "@std/uuid";
 
-import { createAppRouter } from "../app/router.ts";
-import { createAppServices } from "../app/middleware/services.ts";
-import { createTestServer } from "./http-test-server.ts";
-import { createTestStore } from "./postgres-test.ts";
+import { createAppRouter } from "@/app/router.ts";
+import { createAppServices } from "@/app/middleware/services.ts";
+import { createTestServer } from "@/test/http-test-server.ts";
+import { createTestStore } from "@/test/postgres-test.ts";
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");

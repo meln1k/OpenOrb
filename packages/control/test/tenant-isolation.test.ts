@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 
-import { createTestStore, createTestUser } from "./postgres-test.ts";
+import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
 Deno.test("configuration persistence separates users across every repository operation", async () => {
   const store = await createTestStore();

@@ -2,20 +2,20 @@ import { Pool } from "pg";
 import { createPostgresDatabase } from "remix/data-table/postgres";
 import type { SessionStorage } from "remix/session";
 
-import { BROWSER_SESSION_MAX_AGE_SECONDS } from "../utils/session-policy.ts";
+import { BROWSER_SESSION_MAX_AGE_SECONDS } from "@/app/utils/session-policy.ts";
 import {
   type AdministratorRepository,
   createAdministratorRepository,
-} from "./administrator-repository.ts";
+} from "@/app/data/administrator-repository.ts";
 import {
   createGitConfigurationRepository,
   type GitConfigurationRepository,
-} from "./git-configuration-repository.ts";
-import { loadMasterKey, type MasterKey } from "../utils/master-key.ts";
-import { createProjectRepository, type ProjectRepository } from "./project-repository.ts";
-import { createRunnerRepository, type RunnerRepository } from "./runner-repository.ts";
-import { createSecretRepository, type SecretRepository } from "./secret-repository.ts";
-import { PostgresSessionStorage } from "./postgres-session-storage.ts";
+} from "@/app/data/git-configuration-repository.ts";
+import { loadMasterKey, type MasterKey } from "@/app/utils/master-key.ts";
+import { createProjectRepository, type ProjectRepository } from "@/app/data/project-repository.ts";
+import { createRunnerRepository, type RunnerRepository } from "@/app/data/runner-repository.ts";
+import { createSecretRepository, type SecretRepository } from "@/app/data/secret-repository.ts";
+import { PostgresSessionStorage } from "@/app/data/postgres-session-storage.ts";
 
 export interface Store
   extends

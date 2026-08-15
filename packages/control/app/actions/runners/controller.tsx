@@ -6,10 +6,10 @@ import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 import { validate as validateUuid } from "@std/uuid";
 
-import type { Administrator } from "../../data/administrator-repository.ts";
-import { csrf } from "../../middleware/csrf.ts";
-import { routes } from "../../routes.ts";
-import { RunnersPage } from "./page.tsx";
+import type { Administrator } from "@/app/data/administrator-repository.ts";
+import { csrf } from "@/app/middleware/csrf.ts";
+import { routes } from "@/app/routes.ts";
+import { RunnersPage } from "@/app/actions/runners/page.tsx";
 
 const uuidSchema = s.string().refine(
   validateUuid,

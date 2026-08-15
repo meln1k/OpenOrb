@@ -1,6 +1,6 @@
 import { css, type Handle, type RemixNode } from "remix/ui";
 
-import { routes } from "../routes.ts";
+import { routes } from "@/app/routes.ts";
 
 export interface DocumentProps {
   children?: RemixNode;

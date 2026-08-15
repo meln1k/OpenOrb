@@ -3,12 +3,12 @@ import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } fr
 import {
   DEFAULT_PROJECT_BRANCH_PATTERN,
   DEFAULT_PROJECT_REF,
-} from "../app/data/project-repository.ts";
-import { createAppServices } from "../app/middleware/services.ts";
-import { createAppRouter } from "../app/router.ts";
-import { routes } from "../app/routes.ts";
-import { createTestServer } from "./http-test-server.ts";
-import { createTestStore } from "./postgres-test.ts";
+} from "@/app/data/project-repository.ts";
+import { createAppServices } from "@/app/middleware/services.ts";
+import { createAppRouter } from "@/app/router.ts";
+import { routes } from "@/app/routes.ts";
+import { createTestServer } from "@/test/http-test-server.ts";
+import { createTestStore } from "@/test/postgres-test.ts";
 
 const PASSWORD = "correct horse battery staple";
 const FIRST_TOKEN = "github-test-token-f35b2611";

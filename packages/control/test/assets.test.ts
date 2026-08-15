@@ -1,6 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 
-import { assetServer } from "../app/assets.ts";
+import { assetServer } from "@/app/assets.ts";
 
 const clientEntries = [
   "packages/control/app/assets/client.ts",

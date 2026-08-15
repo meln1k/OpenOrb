@@ -1,6 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 
-import { parseRunnerMessage } from "../src/index.ts";
+import { parseRunnerMessage } from "@/src/index.ts";
 
 Deno.test("validates the minimal runner envelope at runtime", () => {
   const message = parseRunnerMessage({

@@ -1,7 +1,7 @@
 import type { Database } from "remix/data-table";
 
-import type { MasterKey } from "../utils/master-key.ts";
-import { encryptSecret, type SecretMetadata } from "../utils/secret-cipher.ts";
+import type { MasterKey } from "@/app/utils/master-key.ts";
+import { encryptSecret, type SecretMetadata } from "@/app/utils/secret-cipher.ts";
 import {
   encryptedSecretPurposes,
   type EncryptedSecretRow,
@@ -10,7 +10,7 @@ import {
   type GitAuthorConfigurationRow,
   type GitCredentialRow,
   gitCredentials,
-} from "./schema.ts";
+} from "@/app/data/schema.ts";
 
 const GITHUB_HOST = "github.com";
 const GITHUB_SECRET_KEY_PREFIX = "OPENORB_GITHUB_TOKEN_";

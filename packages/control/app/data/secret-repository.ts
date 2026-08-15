@@ -1,8 +1,12 @@
 import type { Database } from "remix/data-table";
 
-import type { MasterKey } from "../utils/master-key.ts";
-import { encryptSecret, type SecretMetadata } from "../utils/secret-cipher.ts";
-import { encryptedSecretPurposes, type EncryptedSecretRow, encryptedSecrets } from "./schema.ts";
+import type { MasterKey } from "@/app/utils/master-key.ts";
+import { encryptSecret, type SecretMetadata } from "@/app/utils/secret-cipher.ts";
+import {
+  encryptedSecretPurposes,
+  type EncryptedSecretRow,
+  encryptedSecrets,
+} from "@/app/data/schema.ts";
 
 export interface SecretEntry {
   key: string;

@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 
-import { TokenBucketRateLimiter } from "./token-bucket-rate-limiter.ts";
+import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
 
 Deno.test("allows an initial burst and then refills continuously", () => {
   let now = 0;

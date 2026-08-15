@@ -3,14 +3,14 @@ import { css, type Handle } from "remix/ui";
 import type {
   GitAuthorConfiguration,
   GitCredential,
-} from "../../data/git-configuration-repository.ts";
-import type { SecretEntry } from "../../data/secret-repository.ts";
-import { routes } from "../../routes.ts";
-import { Icon } from "../../ui/components/icons.tsx";
-import { type SettingsTab, SettingsTabs } from "../../ui/components/settings-tabs.tsx";
-import { designSystemStyle } from "../../ui/components/theme.ts";
-import { Document } from "../../ui/document.tsx";
-import { media } from "../../ui/responsive.ts";
+} from "@/app/data/git-configuration-repository.ts";
+import type { SecretEntry } from "@/app/data/secret-repository.ts";
+import { routes } from "@/app/routes.ts";
+import { Icon } from "@/app/ui/components/icons.tsx";
+import { type SettingsTab, SettingsTabs } from "@/app/ui/components/settings-tabs.tsx";
+import { designSystemStyle } from "@/app/ui/components/theme.ts";
+import { Document } from "@/app/ui/document.tsx";
+import { media } from "@/app/ui/responsive.ts";
 
 export type { SettingsTab };
 

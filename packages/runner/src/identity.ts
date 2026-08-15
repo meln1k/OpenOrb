@@ -1,7 +1,7 @@
 import { runnerEnrollmentResponseSchema } from "@openorb/protocol";
 import { object, parse, string } from "@remix-run/data-schema";
 
-import { normalizeControlPanelUrl } from "./options.ts";
+import { normalizeControlPanelUrl } from "@/src/options.ts";
 
 const METADATA_FILE = "runner.json";
 const TOKEN_FILE = "token";

@@ -5,11 +5,11 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import type { Administrator } from "../../data/administrator-repository.ts";
-import { isReservedGitCredentialSecretKey } from "../../data/git-configuration-repository.ts";
-import { csrf } from "../../middleware/csrf.ts";
-import { routes } from "../../routes.ts";
-import { SettingsPage, type SettingsTab, settingsTabHref } from "./page.tsx";
+import type { Administrator } from "@/app/data/administrator-repository.ts";
+import { isReservedGitCredentialSecretKey } from "@/app/data/git-configuration-repository.ts";
+import { csrf } from "@/app/middleware/csrf.ts";
+import { routes } from "@/app/routes.ts";
+import { SettingsPage, type SettingsTab, settingsTabHref } from "@/app/actions/settings/page.tsx";
 
 const secretKeySchema = s.string().refine(
   (value) => {

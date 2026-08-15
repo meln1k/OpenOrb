@@ -1,6 +1,6 @@
 import { assertEquals, assertMatch } from "@std/assert";
 
-import { checkRunnerPrerequisites } from "../src/prerequisites.ts";
+import { checkRunnerPrerequisites } from "@/src/prerequisites.ts";
 
 Deno.test("checks QEMU without starting a VM", async () => {
   const probes: Array<{ executable: string; args: string[] }> = [];

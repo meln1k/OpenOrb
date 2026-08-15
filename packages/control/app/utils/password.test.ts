@@ -7,7 +7,7 @@ import {
   PASSWORD_ITERATIONS,
   PASSWORD_KEY_LENGTH_BITS,
   verifyPassword,
-} from "./password.ts";
+} from "@/app/utils/password.ts";
 
 Deno.test("hashes and verifies passwords with the fixed PBKDF2 profile", async () => {
   const stored = await hashPassword("correct horse battery staple");

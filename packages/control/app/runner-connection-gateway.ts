@@ -6,7 +6,7 @@ import {
   type RunnerServerMessage,
 } from "@openorb/protocol";
 
-import type { AuthenticatedRunner, RunnerRepository } from "./data/runner-repository.ts";
+import type { AuthenticatedRunner, RunnerRepository } from "@/app/data/runner-repository.ts";
 
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
 const MAX_MESSAGE_BYTES = 16 * 1024;

@@ -1,7 +1,7 @@
 import { createContextKey, type Middleware } from "remix/router";
 
-import type { Store } from "../data/store.ts";
-import { TokenBucketRateLimiter } from "../utils/token-bucket-rate-limiter.ts";
+import type { Store } from "@/app/data/store.ts";
+import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
 
 export interface LoginRateLimiter {
   allow(key: string): boolean;

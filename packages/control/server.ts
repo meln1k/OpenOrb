@@ -1,9 +1,9 @@
-import { createAppServices } from "./app/middleware/services.ts";
-import { createDefaultStore } from "./app/data/store.ts";
-import { createAppRouter } from "./app/router.ts";
-import { routes } from "./app/routes.ts";
-import { RunnerConnectionGateway } from "./app/runner-connection-gateway.ts";
-import { migrate } from "./db/migrate.ts";
+import { createAppServices } from "@/app/middleware/services.ts";
+import { createDefaultStore } from "@/app/data/store.ts";
+import { createAppRouter } from "@/app/router.ts";
+import { routes } from "@/app/routes.ts";
+import { RunnerConnectionGateway } from "@/app/runner-connection-gateway.ts";
+import { migrate } from "@/db/migrate.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 const tracer = trace.getTracer("openorb-control", "0.0.0");

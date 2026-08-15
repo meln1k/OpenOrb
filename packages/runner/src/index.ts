@@ -1,9 +1,9 @@
-import { validateRunnerWorkingDirectory } from "./working-directory.ts";
-import { checkRunnerPrerequisites } from "./prerequisites.ts";
-import { maintainRunnerConnection } from "./connection.ts";
-import { enrollRunner } from "./enrollment.ts";
-import { readRunnerIdentity, writeRunnerIdentity } from "./identity.ts";
-import { parseRunnerCommand } from "./options.ts";
+import { validateRunnerWorkingDirectory } from "@/src/working-directory.ts";
+import { checkRunnerPrerequisites } from "@/src/prerequisites.ts";
+import { maintainRunnerConnection } from "@/src/connection.ts";
+import { enrollRunner } from "@/src/enrollment.ts";
+import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
+import { parseRunnerCommand } from "@/src/options.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 export const RUNNER_VERSION = "0.0.0";

@@ -1,6 +1,6 @@
 import { clientEntry, css, type Handle, on } from "remix/ui";
 
-import { Button } from "../../ui/components/button.tsx";
+import { Button } from "@/app/ui/components/button.tsx";
 
 export type EnrollmentPskProps = {
   enrollmentPsk: string;

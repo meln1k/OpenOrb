@@ -1,4 +1,8 @@
-export { parseRunnerMessage, type RunnerMessage, runnerMessageSchema } from "./runner-message.ts";
+export {
+  parseRunnerMessage,
+  type RunnerMessage,
+  runnerMessageSchema,
+} from "@/src/runner-message.ts";
 export {
   parseRunnerClientMessage,
   parseRunnerServerMessage,
@@ -10,7 +14,7 @@ export {
   type RunnerHeartbeatPayload,
   type RunnerHelloPayload,
   type RunnerServerMessage,
-} from "./runner-connection.ts";
+} from "@/src/runner-connection.ts";
 export {
   ENROLLMENT_PSK_PREFIX,
   enrollmentPskSchema,
@@ -22,4 +26,4 @@ export {
   runnerEnrollmentResponseSchema,
   runnerIdSchema,
   runnerTokenSchema,
-} from "./runner-enrollment.ts";
+} from "@/src/runner-enrollment.ts";

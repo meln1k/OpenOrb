@@ -15,8 +15,8 @@ import {
   FieldGroup,
   FieldLabel,
   Input,
-} from "../../ui/components/index.ts";
-import { Document } from "../../ui/document.tsx";
+} from "@/app/ui/components/index.ts";
+import { Document } from "@/app/ui/document.tsx";
 
 export interface AuthPageProps {
   csrfToken: string;

@@ -1,6 +1,6 @@
 import { type Database, DataTableDatabaseError } from "remix/data-table";
 
-import { type ProjectRow, projects } from "./schema.ts";
+import { type ProjectRow, projects } from "@/app/data/schema.ts";
 
 export const DEFAULT_PROJECT_REF = "main";
 export const DEFAULT_PROJECT_BRANCH_PATTERN = "openorb/{session-name}-{short-session-id}";

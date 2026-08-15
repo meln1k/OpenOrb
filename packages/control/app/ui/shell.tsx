@@ -1,6 +1,6 @@
 import { css, type Handle, type RemixNode } from "remix/ui";
 
-import { routes } from "../routes.ts";
+import { routes } from "@/app/routes.ts";
 import {
   Avatar,
   AvatarFallback,
@@ -32,9 +32,9 @@ import {
   SidebarMenuItem,
   SidebarMobile,
   SidebarTrigger,
-} from "./components/index.ts";
-import { Document } from "./document.tsx";
-import { media } from "./responsive.ts";
+} from "@/app/ui/components/index.ts";
+import { Document } from "@/app/ui/document.tsx";
+import { media } from "@/app/ui/responsive.ts";
 
 export interface AppShellProps {
   activeSection: "overview" | "projects" | "runners";

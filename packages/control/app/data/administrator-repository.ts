@@ -10,8 +10,8 @@ import {
   PASSWORD_SALT_LENGTH,
   type PasswordHash,
   verifyPassword,
-} from "../utils/password.ts";
-import { type PasswordCredential, passwordCredentials, users } from "./schema.ts";
+} from "@/app/utils/password.ts";
+import { type PasswordCredential, passwordCredentials, users } from "@/app/data/schema.ts";
 
 export interface Administrator {
   id: string;

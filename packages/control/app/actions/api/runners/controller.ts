@@ -4,8 +4,8 @@ import { ContentType } from "remix/headers/content-type";
 import { parse } from "remix/data-schema";
 import { createController } from "remix/router";
 
-import { requestRateLimitKey } from "../../../middleware/services.ts";
-import { routes } from "../../../routes.ts";
+import { requestRateLimitKey } from "@/app/middleware/services.ts";
+import { routes } from "@/app/routes.ts";
 
 const MAX_ENROLLMENT_BODY_BYTES = 16 * 1024;
 

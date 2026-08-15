@@ -1,8 +1,8 @@
 import { v7 } from "@std/uuid";
 
-import { importMasterKey, type MasterKey } from "../app/utils/master-key.ts";
-import { createPostgresStore, type PostgresStore } from "../app/data/store.ts";
-import { migrate } from "../db/migrate.ts";
+import { importMasterKey, type MasterKey } from "@/app/utils/master-key.ts";
+import { createPostgresStore, type PostgresStore } from "@/app/data/store.ts";
+import { migrate } from "@/db/migrate.ts";
 
 export const testDatabaseUrl = Deno.env.get("OPENORB_TEST_DATABASE_URL") ??
   "postgres://localhost/openorb-test";

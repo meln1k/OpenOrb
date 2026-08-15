@@ -1,13 +1,13 @@
 import { assert, assertEquals, assertMatch, assertNotEquals } from "@std/assert";
 
 import { parseRunnerServerMessage, RUNNER_HELLO_MESSAGE_TYPE } from "@openorb/protocol";
-import { createAppServices } from "../app/middleware/services.ts";
-import { createAppRouter } from "../app/router.ts";
-import { routes } from "../app/routes.ts";
-import { RunnerConnectionGateway } from "../app/runner-connection-gateway.ts";
-import { maintainRunnerConnection } from "../../runner/src/connection.ts";
-import { createTestServer } from "./http-test-server.ts";
-import { createTestStore, createTestUser } from "./postgres-test.ts";
+import { createAppServices } from "@/app/middleware/services.ts";
+import { createAppRouter } from "@/app/router.ts";
+import { routes } from "@/app/routes.ts";
+import { RunnerConnectionGateway } from "@/app/runner-connection-gateway.ts";
+import { maintainRunnerConnection } from "@openorb/runner/connection";
+import { createTestServer } from "@/test/http-test-server.ts";
+import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
 const PASSWORD = "[REDACTED:password] horse battery staple";
 

@@ -1,7 +1,7 @@
 import { number, object, parse } from "@remix-run/data-schema";
 
-import { runnerIdSchema, runnerTokenSchema } from "./runner-enrollment.ts";
-import { parseRunnerMessage, type RunnerMessage } from "./runner-message.ts";
+import { runnerIdSchema, runnerTokenSchema } from "@/src/runner-enrollment.ts";
+import { parseRunnerMessage, type RunnerMessage } from "@/src/runner-message.ts";
 
 export const RUNNER_HELLO_MESSAGE_TYPE = "runner.hello";
 export const RUNNER_HEARTBEAT_MESSAGE_TYPE = "runner.heartbeat";

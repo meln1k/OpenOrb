@@ -5,11 +5,11 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import type { Administrator } from "../../data/administrator-repository.ts";
-import { csrf } from "../../middleware/csrf.ts";
-import { routes } from "../../routes.ts";
-import { ProjectsPage } from "./page.tsx";
-import { canonicalizeGitHubRepository } from "./project-input.ts";
+import type { Administrator } from "@/app/data/administrator-repository.ts";
+import { csrf } from "@/app/middleware/csrf.ts";
+import { routes } from "@/app/routes.ts";
+import { ProjectsPage } from "@/app/actions/projects/page.tsx";
+import { canonicalizeGitHubRepository } from "@/app/actions/projects/project-input.ts";
 
 const uuidSchema = s.string().refine(
   (value) =>

@@ -6,7 +6,7 @@ import {
   loadMasterKey,
   MASTER_KEY_BYTE_LENGTH,
   MasterKeyError,
-} from "./master-key.ts";
+} from "@/app/utils/master-key.ts";
 
 const HEX = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 const BASE64 = Uint8Array.fromHex(HEX).toBase64();

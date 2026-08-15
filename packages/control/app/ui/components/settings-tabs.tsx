@@ -7,20 +7,27 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "./alert-dialog.tsx";
-import { Button } from "./button.tsx";
+} from "@/app/ui/components/alert-dialog.tsx";
+import { Button } from "@/app/ui/components/button.tsx";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "./dropdown-menu.tsx";
-import { Field, FieldDescription, FieldLabel } from "./field.tsx";
-import { Icon } from "./icons.tsx";
-import { Input } from "./input.tsx";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./table.tsx";
-import { media } from "../responsive.ts";
+} from "@/app/ui/components/dropdown-menu.tsx";
+import { Field, FieldDescription, FieldLabel } from "@/app/ui/components/field.tsx";
+import { Icon } from "@/app/ui/components/icons.tsx";
+import { Input } from "@/app/ui/components/input.tsx";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/app/ui/components/table.tsx";
+import { media } from "@/app/ui/responsive.ts";
 
 export type SettingsTab = "secrets" | "github" | "git-author";
 

@@ -4,9 +4,9 @@ import { createController } from "remix/router";
 import { getCsrfToken } from "remix/middleware/csrf";
 import { redirect } from "remix/response/redirect";
 
-import { routes } from "../../../routes.ts";
-import { csrf } from "../../../middleware/csrf.ts";
-import { SetupPage } from "./page.tsx";
+import { routes } from "@/app/routes.ts";
+import { csrf } from "@/app/middleware/csrf.ts";
+import { SetupPage } from "@/app/actions/auth/setup/page.tsx";
 
 const setupSchema = f.object({
   password: f.field(s.string().refine((value) => value.length > 0, "Password is required.")),

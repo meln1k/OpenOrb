@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from "@std/assert";
 
-import { validateRunnerWorkingDirectory } from "../src/working-directory.ts";
+import { validateRunnerWorkingDirectory } from "@/src/working-directory.ts";
 
 Deno.test("accepts a canonical runner working directory", async () => {
   const result = await validateRunnerWorkingDirectory({

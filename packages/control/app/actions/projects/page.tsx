@@ -1,7 +1,7 @@
 import { css, type Handle } from "remix/ui";
 
-import type { Project } from "../../data/project-repository.ts";
-import { routes } from "../../routes.ts";
+import type { Project } from "@/app/data/project-repository.ts";
+import { routes } from "@/app/routes.ts";
 import {
   AlertDialog,
   AlertDialogDescription,
@@ -25,9 +25,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "../../ui/components/index.ts";
-import { AppShell } from "../../ui/shell.tsx";
-import { media } from "../../ui/responsive.ts";
+} from "@/app/ui/components/index.ts";
+import { AppShell } from "@/app/ui/shell.tsx";
+import { media } from "@/app/ui/responsive.ts";
 
 export interface ProjectsPageProps {
   csrfToken: string;

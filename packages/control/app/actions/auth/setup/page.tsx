@@ -1,7 +1,12 @@
 import type { Handle } from "remix/ui";
 
-import { routes } from "../../../routes.ts";
-import { AuthDocument, AuthForm, type AuthPageProps, AuthPasswordField } from "../ui.tsx";
+import { routes } from "@/app/routes.ts";
+import {
+  AuthDocument,
+  AuthForm,
+  type AuthPageProps,
+  AuthPasswordField,
+} from "@/app/actions/auth/ui.tsx";
 
 export function SetupPage(handle: Handle<AuthPageProps>) {
   return () => (

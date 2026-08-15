@@ -1,8 +1,12 @@
 import { css, type Handle, type Props, type RemixNode } from "remix/ui";
 
-import { media } from "../responsive.ts";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible.tsx";
-import { Icon } from "./icons.tsx";
+import { media } from "@/app/ui/responsive.ts";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/app/ui/components/collapsible.tsx";
+import { Icon } from "@/app/ui/components/icons.tsx";
 
 export function SidebarLayout(handle: Handle<Props<"div">>) {
   return () => {

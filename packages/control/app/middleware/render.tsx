@@ -6,7 +6,7 @@ import { createHtmlResponse } from "remix/response/html";
 import type { RemixNode } from "remix/ui";
 import { renderToStream } from "remix/ui/server";
 
-import { assetServer } from "../assets.ts";
+import { assetServer } from "@/app/assets.ts";
 
 export function render() {
   return renderWith(

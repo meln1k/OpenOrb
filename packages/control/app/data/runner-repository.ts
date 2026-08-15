@@ -3,13 +3,13 @@ import type { RunnerArchitecture, RunnerEnrollmentRequest } from "@openorb/proto
 import type { Database } from "remix/data-table";
 import { v7 } from "@std/uuid";
 
-import { generateRunnerSecret, hashRunnerSecret } from "../utils/runner-token.ts";
+import { generateRunnerSecret, hashRunnerSecret } from "@/app/utils/runner-token.ts";
 import {
   type RunnerEnrollmentTokenRow,
   runnerEnrollmentTokens,
   type RunnerRow,
   runners,
-} from "./schema.ts";
+} from "@/app/data/schema.ts";
 
 export interface RunnerEnrollmentToken {
   id: string;

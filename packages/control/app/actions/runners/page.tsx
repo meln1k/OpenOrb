@@ -1,7 +1,7 @@
 import { css, type Handle } from "remix/ui";
 
-import type { RunnerEnrollmentToken } from "../../data/runner-repository.ts";
-import { routes } from "../../routes.ts";
+import type { RunnerEnrollmentToken } from "@/app/data/runner-repository.ts";
+import { routes } from "@/app/routes.ts";
 import {
   Button,
   Card,
@@ -17,9 +17,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "../../ui/components/index.ts";
-import { AppShell } from "../../ui/shell.tsx";
-import { EnrollmentPsk } from "./enrollment-psk.tsx";
+} from "@/app/ui/components/index.ts";
+import { AppShell } from "@/app/ui/shell.tsx";
+import { EnrollmentPsk } from "@/app/actions/runners/enrollment-psk.tsx";
 
 export interface RunnersPageProps {
   csrfToken: string;

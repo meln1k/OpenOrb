@@ -7,20 +7,20 @@ import { formData } from "remix/middleware/form-data";
 import { session } from "remix/middleware/session";
 import { createRouter, type Middleware, type RouterContext } from "remix/router";
 
-import authController from "./actions/auth/controller.tsx";
-import loginController from "./actions/auth/login/controller.tsx";
-import setupController from "./actions/auth/setup/controller.tsx";
-import appController from "./actions/app/controller.tsx";
-import controller from "./actions/controller.tsx";
-import projectsController from "./actions/projects/controller.tsx";
-import runnersController from "./actions/runners/controller.tsx";
-import settingsController from "./actions/settings/controller.tsx";
-import apiRunnersController from "./actions/api/runners/controller.ts";
-import type { Administrator } from "./data/administrator-repository.ts";
-import { type AppServices, AppServicesKey, provideAppServices } from "./middleware/services.ts";
-import { render } from "./middleware/render.tsx";
-import { routes } from "./routes.ts";
-import { BROWSER_SESSION_MAX_AGE_SECONDS } from "./utils/session-policy.ts";
+import authController from "@/app/actions/auth/controller.tsx";
+import loginController from "@/app/actions/auth/login/controller.tsx";
+import setupController from "@/app/actions/auth/setup/controller.tsx";
+import appController from "@/app/actions/app/controller.tsx";
+import controller from "@/app/actions/controller.tsx";
+import projectsController from "@/app/actions/projects/controller.tsx";
+import runnersController from "@/app/actions/runners/controller.tsx";
+import settingsController from "@/app/actions/settings/controller.tsx";
+import apiRunnersController from "@/app/actions/api/runners/controller.ts";
+import type { Administrator } from "@/app/data/administrator-repository.ts";
+import { type AppServices, AppServicesKey, provideAppServices } from "@/app/middleware/services.ts";
+import { render } from "@/app/middleware/render.tsx";
+import { routes } from "@/app/routes.ts";
+import { BROWSER_SESSION_MAX_AGE_SECONDS } from "@/app/utils/session-policy.ts";
 
 const PUBLIC_DIRECTORY = fromFileUrl(new URL("../public/", import.meta.url));
 

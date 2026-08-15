@@ -4,10 +4,10 @@ import { completeAuth, createCredentialsAuthProvider, verifyCredentials } from "
 import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
-import { AppServicesKey, requestRateLimitKey } from "../../../middleware/services.ts";
-import { routes } from "../../../routes.ts";
-import { csrf } from "../../../middleware/csrf.ts";
-import { LoginPage } from "./page.tsx";
+import { AppServicesKey, requestRateLimitKey } from "@/app/middleware/services.ts";
+import { routes } from "@/app/routes.ts";
+import { csrf } from "@/app/middleware/csrf.ts";
+import { LoginPage } from "@/app/actions/auth/login/page.tsx";
 
 const loginSchema = f.object({
   password: f.field(s.string().refine((value) => value.length > 0, "Password is required.")),

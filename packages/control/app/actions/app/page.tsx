@@ -1,6 +1,6 @@
 import type { Handle } from "remix/ui";
 
-import { AppShell } from "../../ui/shell.tsx";
+import { AppShell } from "@/app/ui/shell.tsx";
 
 export interface DashboardPageProps {
   csrfToken: string;

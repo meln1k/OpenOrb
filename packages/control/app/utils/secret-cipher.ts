@@ -1,6 +1,6 @@
 import { decryptAesGcm, encryptAesGcm } from "@std/crypto/aes-gcm";
 
-import type { MasterKey } from "./master-key.ts";
+import type { MasterKey } from "@/app/utils/master-key.ts";
 
 /** Immutable metadata authenticated (but not encrypted) with each secret. */
 export interface SecretMetadata {

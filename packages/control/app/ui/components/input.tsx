@@ -1,6 +1,6 @@
 import { css, type Handle, type Props } from "remix/ui";
 
-import { media } from "../responsive.ts";
+import { media } from "@/app/ui/responsive.ts";
 
 export type InputProps = Props<"input">;
 
