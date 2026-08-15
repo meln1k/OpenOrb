@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { createSession, type Session, type SessionStorage } from "remix/session";
 import { v7 } from "@std/uuid";
 
+type BrowserSessionData = Session["data"];
 type SessionOrigin = { readonly kind: "new" } | { readonly kind: "persisted"; readonly id: string };
 type SessionIdentity =
   | { readonly kind: "anonymous" }
@@ -172,22 +173,20 @@ export class PostgresSessionStorage implements SessionStorage {
   }
 }
 
-function parseSessionData(
-  value: unknown,
-): [Record<string, unknown>, Record<string, unknown>] | null {
+function parseSessionData(value: unknown): BrowserSessionData | null {
   if (!Array.isArray(value) || value.length !== 2) {
     return null;
   }
 
   const [values, flashes] = value;
-  if (!isRecord(values) || !isRecord(flashes)) {
+  if (!isSessionDataMap(values) || !isSessionDataMap(flashes)) {
     return null;
   }
 
   return [values, flashes];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isSessionDataMap(value: unknown): value is BrowserSessionData[number] {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -204,16 +203,21 @@ function sessionUserId(data: unknown): string | null {
   return identity.kind === "authenticated" ? identity.userId : null;
 }
 
-function parseSessionIdentity(
-  data: [Record<string, unknown>, Record<string, unknown>],
-): SessionIdentity {
+function parseSessionIdentity(data: BrowserSessionData): SessionIdentity {
   const values = data[0];
   if (!("auth" in values)) {
     return { kind: "anonymous" };
   }
 
   const auth = values.auth;
-  if (!isRecord(auth) || typeof auth.userId !== "string" || !v7.validate(auth.userId)) {
+  if (
+    typeof auth !== "object" ||
+    auth === null ||
+    Array.isArray(auth) ||
+    !("userId" in auth) ||
+    typeof auth.userId !== "string" ||
+    !v7.validate(auth.userId)
+  ) {
     return { kind: "invalid" };
   }
   return { kind: "authenticated", userId: auth.userId };
