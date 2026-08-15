@@ -2,13 +2,17 @@
   "version": "5",
   "specifiers": {
     "jsr:@std/assert@1.0.19": "1.0.19",
+    "jsr:@std/async@1.0.14": "1.0.14",
     "jsr:@std/bytes@^1.0.6": "1.0.6",
+    "jsr:@std/cli@1.0.32": "1.0.32",
     "jsr:@std/crypto@1.1.0": "1.1.0",
     "jsr:@std/crypto@^1.1.0": "1.1.0",
+    "jsr:@std/encoding@1.0.11": "1.0.11",
     "jsr:@std/internal@^1.0.12": "1.0.14",
     "jsr:@std/internal@^1.0.14": "1.0.14",
     "jsr:@std/path@*": "1.1.6",
     "jsr:@std/path@1.1.6": "1.1.6",
+    "jsr:@std/streams@1.1.2": "1.1.2",
     "jsr:@std/uuid@1.1.1": "1.1.1",
     "npm:@earendil-works/gondolin@0.12.0": "0.12.0",
     "npm:@opentelemetry/api@1.9.0": "1.9.0",
@@ -23,11 +27,23 @@
         "jsr:@std/internal@^1.0.12"
       ]
     },
+    "@std/async@1.0.14": {
+      "integrity": "62e954a418652c704d37563a3e54a37d4cf0268a9dcaeac1660cc652880b5326"
+    },
     "@std/bytes@1.0.6": {
       "integrity": "f6ac6adbd8ccd99314045f5703e23af0a68d7f7e58364b47d2c7f408aeb5820a"
     },
+    "@std/cli@1.0.32": {
+      "integrity": "188b3a100d6202d64e3f5bd3d799c7fa4f6d77f92cc65eb7f641c1fa0aa92a66",
+      "dependencies": [
+        "jsr:@std/internal@^1.0.14"
+      ]
+    },
     "@std/crypto@1.1.0": {
       "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
+    },
+    "@std/encoding@1.0.11": {
+      "integrity": "e7cef2f0b3153bccc17431e7c864a1de03a4b6d9647389c43e08aaa775d37385"
     },
     "@std/internal@1.0.14": {
       "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
@@ -37,6 +53,9 @@
       "dependencies": [
         "jsr:@std/internal@^1.0.14"
       ]
+    },
+    "@std/streams@1.1.2": {
+      "integrity": "0249bf9b78a999f57032ca4d8e7ccaa57579090242640b35ddc948fbb745d3af"
     },
     "@std/uuid@1.1.1": {
       "integrity": "7b49060282d90f72fec64952f8c7a2914cbe6fdba3eca665f8cedc90830154a7",
@@ -1452,7 +1471,9 @@
         "dependencies": [
           "jsr:@std/assert@1.0.19",
           "jsr:@std/crypto@1.1.0",
+          "jsr:@std/encoding@1.0.11",
           "jsr:@std/path@1.1.6",
+          "jsr:@std/streams@1.1.2",
           "jsr:@std/uuid@1.1.1",
           "npm:@opentelemetry/api@1.9.0",
           "npm:pg@8.16.3",
@@ -1462,14 +1483,18 @@
       "packages/protocol": {
         "dependencies": [
           "jsr:@std/assert@1.0.19",
+          "jsr:@std/uuid@1.1.1",
           "npm:@remix-run/data-schema@0.3.0"
         ]
       },
       "packages/runner": {
         "dependencies": [
           "jsr:@std/assert@1.0.19",
+          "jsr:@std/async@1.0.14",
+          "jsr:@std/cli@1.0.32",
           "npm:@earendil-works/gondolin@0.12.0",
-          "npm:@opentelemetry/api@1.9.0"
+          "npm:@opentelemetry/api@1.9.0",
+          "npm:@remix-run/data-schema@0.3.0"
         ]
       }
     }

@@ -1,19 +1,27 @@
 import { validateRunnerWorkingDirectory } from "./working-directory.ts";
 import { checkRunnerPrerequisites } from "./prerequisites.ts";
+import { maintainRunnerConnection } from "./connection.ts";
+import { enrollRunner } from "./enrollment.ts";
+import { readRunnerIdentity, writeRunnerIdentity } from "./identity.ts";
+import { parseRunnerCommand } from "./options.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 export const RUNNER_VERSION = "0.0.0";
 const tracer = trace.getTracer("openorb-runner", RUNNER_VERSION);
 
 export async function main(args: string[] = Deno.args): Promise<number> {
-  if (args.some((argument) => argument === "--data-dir" || argument.startsWith("--data-dir="))) {
+  let command;
+  try {
+    command = parseRunnerCommand(args);
+  } catch (error) {
+    console.error(`[openorb-runner] error: ${error instanceof Error ? error.message : error}`);
     console.error(
-      "[openorb-runner] error: --data-dir is not supported. Start the runner from its canonical working directory.",
+      "Usage: openorb-runner [doctor|--version] [--control-panel URL --enrollment-token PSK] [--name NAME]",
     );
     return 2;
   }
 
-  if (args.length === 1 && (args[0] === "--version" || args[0] === "version")) {
+  if (command.type === "version") {
     console.log(
       JSON.stringify({
         component: "openorb-runner",
@@ -25,11 +33,6 @@ export async function main(args: string[] = Deno.args): Promise<number> {
       }),
     );
     return 0;
-  }
-
-  if (args.length > 1 || (args.length === 1 && args[0] !== "doctor")) {
-    console.error("Usage: openorb-runner [doctor|--version]");
-    return 2;
   }
 
   let workingDirectory: string;
@@ -91,33 +94,83 @@ export async function main(args: string[] = Deno.args): Promise<number> {
     }),
   );
 
-  if (args[0] === "doctor") return 0;
+  if (command.type === "doctor") return 0;
 
-  console.log("[openorb-runner] enrollment and sessions are not implemented in OO-001A");
-  await waitForShutdown();
-  return 0;
+  try {
+    let identity = await readRunnerIdentity(workingDirectory);
+    if (!identity) {
+      if (!command.options.controlPanel || !command.options.enrollmentToken) {
+        console.error(
+          "[openorb-runner] error: first start requires --control-panel and --enrollment-token.",
+        );
+        return 2;
+      }
+      const enrolled = await enrollRunner({
+        controlPanelUrl: command.options.controlPanel,
+        enrollmentPsk: command.options.enrollmentToken,
+        name: command.options.name,
+        architecture: normalizeArchitecture(Deno.build.arch),
+        capabilities: ["heartbeat"],
+      });
+      identity = {
+        runnerId: enrolled.runnerId,
+        runnerToken: enrolled.runnerToken,
+        controlPanelUrl: command.options.controlPanel,
+      };
+      await writeRunnerIdentity(workingDirectory, identity);
+      console.log(`[openorb-runner] enrolled runner ${identity.runnerId}`);
+    } else if (
+      command.options.controlPanel && command.options.controlPanel !== identity.controlPanelUrl
+    ) {
+      console.error("[openorb-runner] error: --control-panel does not match the enrolled runner.");
+      return 2;
+    }
+
+    const shutdownController = new AbortController();
+    const removeSignalListeners = installShutdownListeners(shutdownController);
+    try {
+      await maintainRunnerConnection({
+        controlPanelUrl: identity.controlPanelUrl,
+        runnerId: identity.runnerId,
+        runnerToken: identity.runnerToken,
+        signal: shutdownController.signal,
+        onConnected() {
+          console.log(`[openorb-runner] connected runner ${identity.runnerId}`);
+        },
+        onReconnectScheduled(delay) {
+          console.warn(`[openorb-runner] disconnected; reconnecting in ${delay}ms`);
+        },
+      });
+    } finally {
+      removeSignalListeners();
+    }
+    return 0;
+  } catch (error) {
+    console.error(`[openorb-runner] error: ${error instanceof Error ? error.message : error}`);
+    return 1;
+  }
 }
 
-function normalizeArchitecture(value: string): string {
+function normalizeArchitecture(value: string): "x64" | "arm64" {
   if (value === "aarch64") return "arm64";
   if (value === "x86_64") return "x64";
-  return value;
+  if (value === "arm64" || value === "x64") return value;
+  throw new Error(`Unsupported runner architecture: ${value}`);
 }
 
-function waitForShutdown(): Promise<void> {
-  return new Promise((resolve) => {
-    const shutdown = (signal: Deno.Signal) => {
-      console.log(`[openorb-runner] received ${signal}; stopping development harness`);
-      Deno.removeSignalListener("SIGINT", onSigint);
-      Deno.removeSignalListener("SIGTERM", onSigterm);
-      resolve();
-    };
-    const onSigint = () => shutdown("SIGINT");
-    const onSigterm = () => shutdown("SIGTERM");
-
-    Deno.addSignalListener("SIGINT", onSigint);
-    Deno.addSignalListener("SIGTERM", onSigterm);
-  });
+function installShutdownListeners(controller: AbortController): () => void {
+  const shutdown = (signal: Deno.Signal) => {
+    console.log(`[openorb-runner] received ${signal}; stopping development harness`);
+    controller.abort();
+  };
+  const onSigint = () => shutdown("SIGINT");
+  const onSigterm = () => shutdown("SIGTERM");
+  Deno.addSignalListener("SIGINT", onSigint);
+  Deno.addSignalListener("SIGTERM", onSigterm);
+  return () => {
+    Deno.removeSignalListener("SIGINT", onSigint);
+    Deno.removeSignalListener("SIGTERM", onSigterm);
+  };
 }
 
 if (import.meta.main) {

@@ -12,7 +12,9 @@ import setupController from "./actions/auth/setup/controller.tsx";
 import appController from "./actions/app/controller.tsx";
 import controller from "./actions/controller.tsx";
 import projectsController from "./actions/projects/controller.tsx";
+import runnersController from "./actions/runners/controller.tsx";
 import settingsController from "./actions/settings/controller.tsx";
+import apiRunnersController from "./actions/api/runners/controller.ts";
 import type { Administrator } from "./data/administrator-repository.ts";
 import { type AppServices, AppServicesKey, provideAppServices } from "./middleware/services.ts";
 import { render } from "./middleware/render.tsx";
@@ -79,7 +81,9 @@ export function createAppRouter(
   appRouter.map(routes.auth.setup, setupController);
   appRouter.map(routes.app, appController);
   appRouter.map(routes.app.projects, projectsController);
+  appRouter.map(routes.app.runners, runnersController);
   appRouter.map(routes.app.settings, settingsController);
+  appRouter.map(routes.api.runners, apiRunnersController);
 
   return appRouter;
 }

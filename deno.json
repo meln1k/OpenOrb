@@ -49,7 +49,7 @@
     "dev:otel:control": "deno task --filter @openorb/control dev:otel",
     "dev:otel:runner": "deno task --filter @openorb/runner dev:otel",
     "check": "deno fmt --check && deno lint && deno check",
-    "test": "NODE_ENV=test deno test --allow-env --allow-ffi --allow-net=127.0.0.1,localhost --allow-read",
+    "test": "NODE_ENV=test deno test --allow-env --allow-ffi --allow-net=127.0.0.1,localhost --allow-read --allow-write",
     "compile:runner:linux-x64": "deno compile --frozen --target x86_64-unknown-linux-gnu --output dist/openorb-runner-linux-x64 --allow-read=. --allow-write=. --allow-net --allow-env=PATH,PWD --allow-run=qemu-system-x86_64,qemu-img packages/runner/src/index.ts",
     "compile:runner:linux-arm64": "deno compile --frozen --target aarch64-unknown-linux-gnu --output dist/openorb-runner-linux-arm64 --allow-read=. --allow-write=. --allow-net --allow-env=PATH,PWD --allow-run=qemu-system-aarch64,qemu-img packages/runner/src/index.ts",
     "release:runner": {

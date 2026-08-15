@@ -14,11 +14,17 @@ import {
 } from "./git-configuration-repository.ts";
 import { loadMasterKey, type MasterKey } from "../utils/master-key.ts";
 import { createProjectRepository, type ProjectRepository } from "./project-repository.ts";
+import { createRunnerRepository, type RunnerRepository } from "./runner-repository.ts";
 import { createSecretRepository, type SecretRepository } from "./secret-repository.ts";
 import { PostgresSessionStorage } from "./postgres-session-storage.ts";
 
 export interface Store
-  extends AdministratorRepository, SecretRepository, GitConfigurationRepository, ProjectRepository {
+  extends
+    AdministratorRepository,
+    SecretRepository,
+    GitConfigurationRepository,
+    ProjectRepository,
+    RunnerRepository {
   readonly sessionStorage: SessionStorage;
   close(): Promise<void>;
 }
@@ -37,6 +43,7 @@ export function createPostgresStore(databaseUrl: string, masterKey: MasterKey): 
     ...createSecretRepository(database, masterKey),
     ...createGitConfigurationRepository(database, masterKey),
     ...createProjectRepository(database),
+    ...createRunnerRepository(database),
     sessionStorage: new PostgresSessionStorage(pool, BROWSER_SESSION_MAX_AGE_SECONDS),
     async close() {
       await pool.end();

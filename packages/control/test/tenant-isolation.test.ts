@@ -78,6 +78,34 @@ Deno.test("configuration persistence separates users across every repository ope
       "OpenOrb",
     );
 
+    const firstEnrollmentToken = await store.createRunnerEnrollmentToken(firstUserId);
+    const secondEnrollmentToken = await store.createRunnerEnrollmentToken(secondUserId);
+    assertEquals(
+      (await store.listRunnerEnrollmentTokens(firstUserId)).map((token) => token.id),
+      [firstEnrollmentToken.id],
+    );
+    assertEquals(
+      (await store.listRunnerEnrollmentTokens(secondUserId)).map((token) => token.id),
+      [secondEnrollmentToken.id],
+    );
+    const firstRunner = await store.enrollRunner({
+      enrollmentPsk: firstEnrollmentToken.token,
+      name: "First runner",
+      architecture: "x64",
+      capabilities: ["heartbeat"],
+    });
+    assert(firstRunner);
+    assertEquals(await store.listRunners(secondUserId), []);
+    assertEquals(await store.revokeRunner(secondUserId, firstRunner.runnerId), "not-found");
+    assertEquals(
+      await store.revokeRunnerEnrollmentToken(secondUserId, firstEnrollmentToken.id),
+      "not-found",
+    );
+    assertEquals(
+      (await store.authenticateRunner(firstRunner.runnerToken))?.userId,
+      firstUserId,
+    );
+
     const secondSecret = await store.pool.query<{ id: string }>(
       `select encrypted_secret_id as id
          from git_credentials
@@ -101,7 +129,11 @@ Deno.test("configuration persistence separates users across every repository ope
        union all
        select 'git_credentials', user_id from git_credentials
        union all
-       select 'projects', user_id from projects`,
+       select 'projects', user_id from projects
+       union all
+       select 'runner_enrollment_tokens', user_id from runner_enrollment_tokens
+       union all
+       select 'runners', user_id from runners`,
     );
     assert(
       ownership.rows.every((row: { user_id: string }) =>

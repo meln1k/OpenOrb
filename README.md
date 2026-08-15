@@ -2,7 +2,7 @@
 
 ![OpenOrb logo](logo.png)
 
-OpenOrb is an open-source, self-hostable control panel and runner for Pi coding-agent sessions on user-owned compute. The control panel currently includes the OO-002 single-admin setup and password-authenticated browser shell; runner enrollment and coding sessions arrive in later tickets.
+OpenOrb is an open-source, self-hostable control panel and runner for Pi coding-agent sessions on user-owned compute. The control panel currently includes password authentication, credential/project configuration, and reusable-PSK runner enrollment over one authenticated outbound WebSocket. Coding sessions arrive in later tickets.
 
 ## Tooling and prerequisites
 
@@ -29,18 +29,26 @@ The macOS runner entry point is a temporary development harness. Release runners
 
 ## Install and run
 
-From a clean checkout, resolve the frozen Deno graph, provide PostgreSQL and a session-cookie signing secret, and start both processes:
+From a clean checkout, resolve the frozen Deno graph, provide PostgreSQL and a session-cookie signing secret, and start the control panel:
 
 ```sh
 deno install --frozen
 export DATABASE_URL=postgres://localhost/openorb
 export SESSION_SECRET="replace-with-a-long-random-secret"
-deno task dev
+deno task dev:control
 ```
 
-The control page is available at <http://localhost:44100>, with process health at <http://localhost:44100/healthz>. On a fresh database, open the control page to complete administrator setup. The runner harness uses the ignored `.openorb-runner-dev/` directory as its working directory and only checks prerequisites; it does not fake enrollment or session behavior.
+The control page is available at <http://localhost:44100>, with process health at <http://localhost:44100/healthz>. On a fresh database, open the control page to complete administrator setup. Open **Runners**, create an enrollment PSK, and start the temporary development harness:
 
-Run either development process separately when needed:
+```sh
+deno task dev:runner --control-panel http://localhost:44100 \
+  --enrollment-token "$OPENORB_ENROLLMENT_PSK" \
+  --name "Development runner"
+```
+
+The runner stores `runner.json` and a mode-`0600` bearer-token file in the ignored `.openorb-runner-dev/` working directory. The PSK is not retained or reused as runner identity. After first enrollment, `deno task dev:runner` reconnects with the stored bearer token. The harness opens one outbound WebSocket and no inbound listener.
+
+After enrollment, run both development processes together or separately:
 
 ```sh
 deno task dev:control

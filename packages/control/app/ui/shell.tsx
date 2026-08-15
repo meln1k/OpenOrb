@@ -37,7 +37,7 @@ import { Document } from "./document.tsx";
 import { media } from "./responsive.ts";
 
 export interface AppShellProps {
-  activeSection: "overview" | "projects";
+  activeSection: "overview" | "projects" | "runners";
   children?: RemixNode;
   copy?: string;
   csrfToken: string;
@@ -133,6 +133,15 @@ function AppNavigation(
                 icon={<Icon name="folder" />}
               >
                 Projects
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                href={routes.app.runners.index.href()}
+                active={handle.props.activeSection === "runners"}
+                icon={<Icon name="server" />}
+              >
+                Runners
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

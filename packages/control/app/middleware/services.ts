@@ -11,6 +11,7 @@ export interface LoginRateLimiter {
 export interface AppServices {
   readonly store: Store;
   readonly loginRateLimiter: LoginRateLimiter;
+  readonly runnerEnrollmentRateLimiter: LoginRateLimiter;
 }
 
 export const AppServicesKey = createContextKey<AppServices>();
@@ -31,6 +32,11 @@ export function createAppServices(store: Store): AppServices {
     store,
     loginRateLimiter: new TokenBucketRateLimiter({
       tokensPerSecond: 1 / (3 * 60),
+      burst: 5,
+      maxBuckets: 4096,
+    }),
+    runnerEnrollmentRateLimiter: new TokenBucketRateLimiter({
+      tokensPerSecond: 1 / 60,
       burst: 5,
       maxBuckets: 4096,
     }),

@@ -100,9 +100,45 @@ export const projects = table({
   },
 });
 
+export const runnerEnrollmentTokens = table({
+  name: "runner_enrollment_tokens",
+  columns: {
+    id: c.uuid().primaryKey(),
+    user_id: c
+      .uuid()
+      .notNull()
+      .references("users", "id", "runner_enrollment_tokens_user_fk")
+      .onDelete("cascade"),
+    token_hash: c.text().notNull(),
+    created_at: c.text().notNull(),
+    revoked_at: c.text().nullable(),
+  },
+});
+
+export const runners = table({
+  name: "runners",
+  columns: {
+    id: c.uuid().primaryKey(),
+    user_id: c
+      .uuid()
+      .notNull()
+      .references("users", "id", "runners_user_fk")
+      .onDelete("cascade"),
+    enrollment_token_id: c.uuid().notNull(),
+    name: c.text().notNull(),
+    architecture: c.text().notNull(),
+    capabilities: c.text().notNull(),
+    token_hash: c.text().notNull(),
+    created_at: c.text().notNull(),
+    revoked_at: c.text().nullable(),
+  },
+});
+
 export type User = TableRow<typeof users>;
 export type PasswordCredential = TableRow<typeof passwordCredentials>;
 export type EncryptedSecretRow = TableRow<typeof encryptedSecrets>;
 export type GitAuthorConfigurationRow = TableRow<typeof gitAuthorConfiguration>;
 export type GitCredentialRow = TableRow<typeof gitCredentials>;
 export type ProjectRow = TableRow<typeof projects>;
+export type RunnerEnrollmentTokenRow = TableRow<typeof runnerEnrollmentTokens>;
+export type RunnerRow = TableRow<typeof runners>;
