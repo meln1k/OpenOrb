@@ -1,0 +1,7 @@
+{
+  "name": "hostile-global-pi-package",
+  "version": "1.0.0",
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}

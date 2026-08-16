@@ -1,0 +1,7 @@
+{
+  "packages": ["./packages/hostile-package"],
+  "extensions": ["./extensions/hostile-extension.ts"],
+  "skills": ["./skills"],
+  "prompts": ["./prompts"],
+  "themes": ["./themes"]
+}

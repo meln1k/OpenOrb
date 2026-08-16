@@ -1,0 +1,10 @@
+{
+  "name": "hostile-pi-package",
+  "version": "1.0.0",
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"],
+    "themes": ["./themes"]
+  }
+}
