@@ -12,7 +12,6 @@ export const routes = route({
   app: route("app", {
     index: get("/"),
     projects: form("projects"),
-    runners: form("runners"),
     settings: form("settings"),
   }),
   api: route("api", {

@@ -9,6 +9,7 @@ export * from "@/app/ui/components/dropdown-menu.tsx";
 export * from "@/app/ui/components/field.tsx";
 export * from "@/app/ui/components/icons.tsx";
 export * from "@/app/ui/components/input.tsx";
+export * from "@/app/ui/components/item.tsx";
 export * from "@/app/ui/components/separator.tsx";
 export * from "@/app/ui/components/sidebar.tsx";
 export * from "@/app/ui/components/table.tsx";

@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertMatch, assertNotEquals } from "@std/assert";
+import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
 
 import { parseRunnerServerMessage, RUNNER_HELLO_MESSAGE_TYPE } from "@openorb/protocol";
 import { createAppServices } from "@/app/middleware/services.ts";
@@ -10,6 +10,7 @@ import { createTestServer } from "@/test/http-test-server.ts";
 import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
 const PASSWORD = "[REDACTED:password] horse battery staple";
+const PUBLIC_CONTROL_PANEL_URL = "https://openorb.example.com";
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -96,7 +97,44 @@ Deno.test("allows only one in-flight runner authentication per socket", async ()
   }
 });
 
-Deno.test("creates reusable PSKs and enrolls an authenticated outbound runner", async () => {
+Deno.test("always provides one PSK and serializes concurrent regeneration", async () => {
+  const store = await createTestStore();
+
+  try {
+    const userId = await createTestUser(store);
+    const provisioned = await Promise.all(
+      Array.from({ length: 8 }, () => store.getRunnerEnrollmentToken(userId)),
+    );
+    assertEquals(new Set(provisioned.map((token) => token.id)).size, 1);
+    assertEquals(new Set(provisioned.map((token) => token.token)).size, 1);
+
+    const regenerated = await Promise.all(
+      Array.from({ length: 8 }, () => store.regenerateRunnerEnrollmentToken(userId)),
+    );
+    assertEquals(new Set(regenerated.map((token) => token.id)).size, 8);
+    const current = await store.getRunnerEnrollmentToken(userId);
+    assert(regenerated.some((token) => token.id === current.id));
+    assertNotEquals(current.id, provisioned[0]!.id);
+
+    const stored = await store.pool.query<{ id: string; revoked_at: string | null }>(
+      "select id, revoked_at from runner_enrollment_tokens where user_id = $1",
+      [userId],
+    );
+    assertEquals(stored.rows.length, 9);
+    assertEquals(
+      stored.rows
+        .filter((token: { revoked_at: string | null }) => token.revoked_at === null)
+        .map((token: { id: string }) => token.id),
+      [
+        current.id,
+      ],
+    );
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner", async () => {
   const store = await createTestStore();
   const gateway = new RunnerConnectionGateway(store);
   const router = createAppRouter(createAppServices(store));
@@ -136,28 +174,43 @@ Deno.test("creates reusable PSKs and enrolls an authenticated outbound runner", 
     const administrator = await store.verifyAdministratorPassword(PASSWORD);
     assert(administrator);
 
-    const runnersUrl = new URL(routes.app.runners.index.href(), server.baseUrl);
-    assertEquals((await fetch(runnersUrl)).status, 401);
-    const runnersPage = await fetch(runnersUrl, { headers: { Cookie: cookie } });
-    const createResponse = await fetch(runnersUrl, {
-      method: "POST",
-      redirect: "manual",
-      headers: { Cookie: cookie },
-      body: new URLSearchParams({
-        _csrf: csrfFrom(await runnersPage.text()),
-        intent: "create-enrollment-token",
-      }),
-    });
-    assertEquals(createResponse.status, 303);
-    assertEquals(createResponse.headers.get("location"), routes.app.runners.index.href());
-
-    const createdPage = await fetch(runnersUrl, { headers: { Cookie: cookie } });
+    const runnersSettingsPath = `${routes.app.settings.index.href()}?tab=runners#runners`;
+    const runnersSettingsUrl = new URL(runnersSettingsPath, server.baseUrl);
+    assertEquals((await fetch(runnersSettingsUrl)).status, 401);
+    const previousPublicUrl = Deno.env.get("PUBLIC_URL");
+    Deno.env.set("PUBLIC_URL", `${PUBLIC_CONTROL_PANEL_URL}/proxy-path`);
+    let createdPage: Response;
+    try {
+      createdPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    } finally {
+      if (previousPublicUrl === undefined) Deno.env.delete("PUBLIC_URL");
+      else Deno.env.set("PUBLIC_URL", previousPublicUrl);
+    }
     assertEquals(createdPage.headers.get("cache-control"), "no-store");
     const createdHtml = await createdPage.text();
     const enrollmentPsk = enrollmentPskFrom(createdHtml);
-    assertMatch(createdHtml, /stored unencrypted and remain visible/);
-    assertMatch(createdHtml, />Copy PSK</);
-    assertEquals((await store.listRunnerEnrollmentTokens(administrator.id)).length, 1);
+    assertMatch(
+      createdHtml,
+      /<button[^>]+aria-selected="true"[^>]+data-state="active"[^>]*>[\s\S]*?Runners<\/button>/,
+    );
+    assertMatch(createdHtml, /Runner enrollment/);
+    assertMatch(createdHtml, /Run from your OpenOrb checkout to enroll a runner\./);
+    assertNotMatch(createdHtml, />Enrollment PSKs</);
+    assertNotMatch(createdHtml, />Create PSK<\/button>/);
+    assertNotMatch(createdHtml, />Revoke<\/button>/);
+    assertMatch(
+      createdHtml,
+      /<div(?=[^>]*data-slot="item")(?=[^>]*aria-label="Runner enrollment command")[^>]*>/,
+    );
+    assertMatch(createdHtml, /data-slot="item-content"/);
+    assertMatch(createdHtml, /data-slot="item-title"/);
+    assertMatch(createdHtml, /data-slot="item-actions"/);
+    assertMatch(createdHtml, /deno task dev:runner/);
+    assert(createdHtml.includes(`--control-panel ${PUBLIC_CONTROL_PANEL_URL}`));
+    assertNotMatch(createdHtml, /proxy-path/);
+    assert(createdHtml.includes(`--enrollment-token ${enrollmentPsk}`));
+    assertMatch(createdHtml, />Copy command</);
+    assertMatch(createdHtml, />Regenerate<\/button>/);
 
     const storedPsk = await store.pool.query<{ token: string; token_hash: string }>(
       "select token, token_hash from runner_enrollment_tokens",
@@ -166,8 +219,10 @@ Deno.test("creates reusable PSKs and enrolls an authenticated outbound runner", 
     assertEquals(storedPsk.rows[0]!.token, enrollmentPsk);
     assertEquals(storedPsk.rows[0]!.token_hash.length, 64);
     assertNotEquals(storedPsk.rows[0]!.token_hash, enrollmentPsk);
-    const laterPage = await fetch(runnersUrl, { headers: { Cookie: cookie } });
-    assertMatch(await laterPage.text(), new RegExp(enrollmentPsk));
+    const laterPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    const laterHtml = await laterPage.text();
+    assertMatch(laterHtml, new RegExp(enrollmentPsk));
+    assert(laterHtml.includes(`--control-panel ${server.baseUrl.origin}`));
 
     const enrollUrl = new URL(routes.api.runners.enroll.href(), server.baseUrl);
     const enrollmentBody = {
@@ -277,26 +332,46 @@ Deno.test("creates reusable PSKs and enrolls an authenticated outbound runner", 
     }));
     assertEquals((await malformedClose).code, 4400);
 
-    const enrollmentToken = (await store.listRunnerEnrollmentTokens(administrator.id))[0]!;
+    const enrollmentToken = await store.getRunnerEnrollmentToken(administrator.id);
     assert(enrollmentToken.createdAt instanceof Temporal.Instant);
-    const revocationPage = await fetch(runnersUrl, { headers: { Cookie: cookie } });
-    const revokeResponse = await fetch(runnersUrl, {
+    const regenerationPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    const regenerationHtml = await regenerationPage.text();
+    const regenerateResponse = await fetch(runnersSettingsUrl, {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: cookie },
       body: new URLSearchParams({
-        _csrf: csrfFrom(await revocationPage.text()),
-        intent: "revoke-enrollment-token",
-        tokenId: enrollmentToken.id,
+        _csrf: csrfFrom(regenerationHtml),
+        intent: "regenerate-enrollment-token",
       }),
     });
-    assertEquals(revokeResponse.status, 303);
-    assert(
-      (await store.listRunnerEnrollmentTokens(administrator.id))[0]!.revokedAt instanceof
-        Temporal.Instant,
+    assertEquals(regenerateResponse.status, 303);
+    assertEquals(regenerateResponse.headers.get("location"), runnersSettingsPath);
+
+    const regeneratedPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    const regeneratedHtml = await regeneratedPage.text();
+    const replacementPsk = enrollmentPskFrom(regeneratedHtml);
+    assertNotEquals(replacementPsk, enrollmentPsk);
+    assertNotMatch(regeneratedHtml, new RegExp(enrollmentPsk));
+    assertMatch(regeneratedHtml, />Copy command<\/button>/);
+    assertMatch(regeneratedHtml, />Regenerate<\/button>/);
+    assertNotMatch(regeneratedHtml, />Revoke<\/button>/);
+
+    const enrollmentTokens = await store.pool.query<{ token: string; revoked_at: string | null }>(
+      "select token, revoked_at from runner_enrollment_tokens where user_id = $1",
+      [administrator.id],
     );
-    const revokedPage = await fetch(runnersUrl, { headers: { Cookie: cookie } });
-    assertMatch(await revokedPage.text(), new RegExp(enrollmentPsk));
+    assertEquals(enrollmentTokens.rows.length, 2);
+    assertEquals(
+      enrollmentTokens.rows
+        .filter((token: { revoked_at: string | null }) => token.revoked_at === null)
+        .map((token: { token: string }) => token.token),
+      [replacementPsk],
+    );
+    assert(
+      enrollmentTokens.rows.find((token: { token: string }) => token.token === enrollmentPsk)
+        ?.revoked_at,
+    );
     assertEquals(
       (await store.authenticateRunner(firstRunner.runnerToken))?.id,
       firstRunner.runnerId,
@@ -308,6 +383,18 @@ Deno.test("creates reusable PSKs and enrolls an authenticated outbound runner", 
         body: JSON.stringify(enrollmentBody),
       })).status,
       401,
+    );
+    assertEquals(
+      (await fetch(enrollUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...enrollmentBody,
+          enrollmentPsk: replacementPsk,
+          name: "Replacement runner",
+        }),
+      })).status,
+      201,
     );
 
     assertEquals(await store.revokeRunner(administrator.id, firstRunner.runnerId), "revoked");
@@ -323,11 +410,9 @@ Deno.test("creates reusable PSKs and enrolls an authenticated outbound runner", 
     assertEquals((await revokedClose).code, 4401);
 
     const secondUserId = await createTestUser(store);
-    assertEquals(await store.listRunnerEnrollmentTokens(secondUserId), []);
-    assertEquals(
-      await store.revokeRunnerEnrollmentToken(secondUserId, enrollmentToken.id),
-      "not-found",
-    );
+    const secondUserEnrollmentToken = await store.getRunnerEnrollmentToken(secondUserId);
+    assertNotEquals(secondUserEnrollmentToken.token, replacementPsk);
+    assertEquals((await store.getRunnerEnrollmentToken(administrator.id)).token, replacementPsk);
     assertEquals(await store.listRunners(secondUserId), []);
     assertEquals(await store.revokeRunner(secondUserId, secondRunner.runnerId), "not-found");
     await assertRejectsCrossTenantRunnerOwner(store, secondUserId, secondRunner.runnerId);

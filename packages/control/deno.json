@@ -16,6 +16,7 @@
     "@std/streams/limited-bytes-transform-stream": "jsr:@std/streams@1.1.2/limited-bytes-transform-stream",
     "@opentelemetry/api": "npm:@opentelemetry/api@1.9.0",
     "@std/uuid": "jsr:@std/uuid@1.1.1",
+    "lucide": "npm:lucide@^1.31.0",
     "pg": "npm:pg@8.16.3",
     "remix/": "npm:/remix@3.0.0-beta.6/"
   },

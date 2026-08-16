@@ -13,14 +13,9 @@ import {
 
 export interface RunnerEnrollmentToken {
   id: string;
-  token: string | null;
-  createdAt: Temporal.Instant;
-  revokedAt: Temporal.Instant | null;
-}
-
-export type CreatedRunnerEnrollmentToken = RunnerEnrollmentToken & {
   token: string;
-};
+  createdAt: Temporal.Instant;
+}
 
 export interface RunnerRecord {
   id: string;
@@ -44,9 +39,8 @@ export interface EnrolledRunner {
 export type RevokeResult = "revoked" | "not-found";
 
 export interface RunnerRepository {
-  createRunnerEnrollmentToken(userId: string): Promise<CreatedRunnerEnrollmentToken>;
-  listRunnerEnrollmentTokens(userId: string): Promise<RunnerEnrollmentToken[]>;
-  revokeRunnerEnrollmentToken(userId: string, id: string): Promise<RevokeResult>;
+  getRunnerEnrollmentToken(userId: string): Promise<RunnerEnrollmentToken>;
+  regenerateRunnerEnrollmentToken(userId: string): Promise<RunnerEnrollmentToken>;
   enrollRunner(input: RunnerEnrollmentRequest): Promise<EnrolledRunner | null>;
   authenticateRunner(token: string): Promise<AuthenticatedRunner | null>;
   listRunners(userId: string): Promise<RunnerRecord[]>;
@@ -55,61 +49,55 @@ export interface RunnerRepository {
 
 export function createRunnerRepository(database: Database): RunnerRepository {
   return {
-    async createRunnerEnrollmentToken(userId) {
-      const token = generateRunnerSecret(ENROLLMENT_PSK_PREFIX);
-      const row: RunnerEnrollmentTokenRow = {
-        id: v7.generate(),
-        user_id: userId,
-        token,
-        token_hash: await hashRunnerSecret(token),
-        created_at: Temporal.Now.instant().toString(),
-        revoked_at: null,
-      };
-      await database.create(runnerEnrollmentTokens, row);
-      return { ...mapEnrollmentToken(row), token };
+    async getRunnerEnrollmentToken(userId) {
+      return await database.transaction(async (transaction) => {
+        await lockEnrollmentTokenOwner(transaction, userId);
+        const active = await findActiveEnrollmentToken(transaction, userId);
+        if (active?.token) return mapEnrollmentToken(active);
+
+        if (active) await revokeEnrollmentToken(transaction, active);
+        return await createEnrollmentToken(transaction, userId);
+      });
     },
 
-    async listRunnerEnrollmentTokens(userId) {
-      const rows = await database.findMany(runnerEnrollmentTokens, {
-        where: { user_id: userId },
-        orderBy: ["created_at", "desc"],
+    async regenerateRunnerEnrollmentToken(userId) {
+      return await database.transaction(async (transaction) => {
+        await lockEnrollmentTokenOwner(transaction, userId);
+        const active = await findActiveEnrollmentToken(transaction, userId);
+        if (active) await revokeEnrollmentToken(transaction, active);
+        return await createEnrollmentToken(transaction, userId);
       });
-      return rows.map(mapEnrollmentToken);
-    },
-
-    async revokeRunnerEnrollmentToken(userId, id) {
-      const row = await database.findOne(runnerEnrollmentTokens, {
-        where: { id, user_id: userId },
-      });
-      if (!row) return "not-found";
-      if (row.revoked_at === null) {
-        await database.update(runnerEnrollmentTokens, row.id, {
-          revoked_at: Temporal.Now.instant().toString(),
-        });
-      }
-      return "revoked";
     },
 
     async enrollRunner(input) {
-      const enrollmentToken = await database.findOne(runnerEnrollmentTokens, {
-        where: { token_hash: await hashRunnerSecret(input.enrollmentPsk) },
+      const tokenHash = await hashRunnerSecret(input.enrollmentPsk);
+      const candidate = await database.findOne(runnerEnrollmentTokens, {
+        where: { token_hash: tokenHash },
       });
-      if (!enrollmentToken || enrollmentToken.revoked_at !== null) return null;
+      if (!candidate || candidate.revoked_at !== null) return null;
 
-      const runnerToken = generateRunnerSecret(RUNNER_TOKEN_PREFIX);
-      const row: RunnerRow = {
-        id: v7.generate(),
-        user_id: enrollmentToken.user_id,
-        enrollment_token_id: enrollmentToken.id,
-        name: input.name.trim(),
-        architecture: input.architecture,
-        capabilities: JSON.stringify(input.capabilities),
-        token_hash: await hashRunnerSecret(runnerToken),
-        created_at: Temporal.Now.instant().toString(),
-        revoked_at: null,
-      };
-      await database.create(runners, row);
-      return { runnerId: row.id, runnerToken };
+      return await database.transaction(async (transaction) => {
+        await lockEnrollmentTokenOwner(transaction, candidate.user_id);
+        const enrollmentToken = await transaction.findOne(runnerEnrollmentTokens, {
+          where: { id: candidate.id, user_id: candidate.user_id, token_hash: tokenHash },
+        });
+        if (!enrollmentToken || enrollmentToken.revoked_at !== null) return null;
+
+        const runnerToken = generateRunnerSecret(RUNNER_TOKEN_PREFIX);
+        const row: RunnerRow = {
+          id: v7.generate(),
+          user_id: enrollmentToken.user_id,
+          enrollment_token_id: enrollmentToken.id,
+          name: input.name.trim(),
+          architecture: input.architecture,
+          capabilities: JSON.stringify(input.capabilities),
+          token_hash: await hashRunnerSecret(runnerToken),
+          created_at: Temporal.Now.instant().toString(),
+          revoked_at: null,
+        };
+        await transaction.create(runners, row);
+        return { runnerId: row.id, runnerToken };
+      });
     },
 
     async authenticateRunner(token) {
@@ -140,12 +128,50 @@ export function createRunnerRepository(database: Database): RunnerRepository {
   };
 }
 
+async function lockEnrollmentTokenOwner(database: Database, userId: string): Promise<void> {
+  await database.exec("select id from users where id = $1 for update", [userId]);
+}
+
+async function findActiveEnrollmentToken(
+  database: Database,
+  userId: string,
+): Promise<RunnerEnrollmentTokenRow | undefined> {
+  const rows = await database.findMany(runnerEnrollmentTokens, { where: { user_id: userId } });
+  return rows.find((row) => row.revoked_at === null);
+}
+
+async function createEnrollmentToken(
+  database: Database,
+  userId: string,
+): Promise<RunnerEnrollmentToken> {
+  const token = generateRunnerSecret(ENROLLMENT_PSK_PREFIX);
+  const row: RunnerEnrollmentTokenRow = {
+    id: v7.generate(),
+    user_id: userId,
+    token,
+    token_hash: await hashRunnerSecret(token),
+    created_at: Temporal.Now.instant().toString(),
+    revoked_at: null,
+  };
+  await database.create(runnerEnrollmentTokens, row);
+  return mapEnrollmentToken(row);
+}
+
+async function revokeEnrollmentToken(
+  database: Database,
+  row: RunnerEnrollmentTokenRow,
+): Promise<void> {
+  await database.update(runnerEnrollmentTokens, row.id, {
+    revoked_at: Temporal.Now.instant().toString(),
+  });
+}
+
 function mapEnrollmentToken(row: RunnerEnrollmentTokenRow): RunnerEnrollmentToken {
+  if (!row.token) throw new Error(`Enrollment token ${row.id} does not have a stored PSK.`);
   return {
     id: row.id,
     token: row.token,
     createdAt: Temporal.Instant.from(row.created_at),
-    revokedAt: row.revoked_at === null ? null : Temporal.Instant.from(row.revoked_at),
   };
 }
 

@@ -4,7 +4,6 @@ import { assetServer } from "@/app/assets.ts";
 
 const clientEntries = [
   "packages/control/app/assets/client.ts",
-  "packages/control/app/actions/runners/enrollment-psk.tsx",
   "packages/control/app/ui/components/settings-tabs.tsx",
   "node_modules/.deno/remix@3.0.0-beta.6/node_modules/remix/dist/ui/button.js",
 ];

@@ -13,7 +13,6 @@ import setupController from "@/app/actions/auth/setup/controller.tsx";
 import appController from "@/app/actions/app/controller.tsx";
 import controller from "@/app/actions/controller.tsx";
 import projectsController from "@/app/actions/projects/controller.tsx";
-import runnersController from "@/app/actions/runners/controller.tsx";
 import settingsController from "@/app/actions/settings/controller.tsx";
 import apiRunnersController from "@/app/actions/api/runners/controller.ts";
 import type { Administrator } from "@/app/data/administrator-repository.ts";
@@ -84,7 +83,6 @@ export function createAppRouter(
   appRouter.map(routes.auth.setup, setupController);
   appRouter.map(routes.app, appController);
   appRouter.map(routes.app.projects, projectsController);
-  appRouter.map(routes.app.runners, runnersController);
   appRouter.map(routes.app.settings, settingsController);
   appRouter.map(routes.api.runners, apiRunnersController);
 

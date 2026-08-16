@@ -336,9 +336,12 @@ The runner package must include a `doctor` command that checks:
 4. Private key remains in the runner data directory with mode `0600`.
 5. Subsequent control connections authenticate with nonce signing.
 6. The shared enrollment PSK is not used as the runner’s ongoing identity.
-7. The control panel can revoke one runner without rotating all enrollment tokens.
+7. The control panel can revoke one runner without regenerating the enrollment PSK.
 
-Support reusable enrollment tokens for homelab convenience and one-time tokens for safer automation.
+The current reusable enrollment token is always available per user. Regeneration atomically revokes
+the previous token and creates its replacement, while PostgreSQL enforces at most one active token
+per user. Support reusable enrollment tokens for homelab convenience and one-time tokens for safer
+automation.
 
 ### 9.3 Outbound connections
 

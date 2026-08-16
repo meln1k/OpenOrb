@@ -4,6 +4,7 @@ import type {
   GitAuthorConfiguration,
   GitCredential,
 } from "@/app/data/git-configuration-repository.ts";
+import type { RunnerEnrollmentToken } from "@/app/data/runner-repository.ts";
 import type { SecretEntry } from "@/app/data/secret-repository.ts";
 import { routes } from "@/app/routes.ts";
 import { Icon } from "@/app/ui/components/icons.tsx";
@@ -20,7 +21,9 @@ export function settingsTabHref(tab: SettingsTab): string {
 
 export interface SettingsPageProps {
   activeTab: SettingsTab;
+  controlPanelUrl: string;
   csrfToken: string;
+  enrollmentToken: RunnerEnrollmentToken;
   error?: string;
   gitAuthor: GitAuthorConfiguration | null;
   githubCredential: GitCredential | null;
@@ -28,7 +31,16 @@ export interface SettingsPageProps {
 }
 
 export function SettingsPage(handle: Handle<SettingsPageProps>) {
-  const { activeTab, csrfToken, error, gitAuthor, githubCredential, secrets } = handle.props;
+  const {
+    activeTab,
+    controlPanelUrl,
+    csrfToken,
+    enrollmentToken,
+    error,
+    gitAuthor,
+    githubCredential,
+    secrets,
+  } = handle.props;
 
   return () => (
     <Document title="Settings">
@@ -46,6 +58,9 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
           <SettingsTabs
             activeTab={activeTab}
             csrfToken={csrfToken}
+            enrollmentCommand={{
+              command: runnerEnrollmentCommand(controlPanelUrl, enrollmentToken.token),
+            }}
             error={error}
             gitAuthor={gitAuthor
               ? {
@@ -59,6 +74,7 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
               secrets: settingsTabHref("secrets"),
               github: settingsTabHref("github"),
               "git-author": settingsTabHref("git-author"),
+              runners: settingsTabHref("runners"),
             }}
             secrets={secrets.map((secret) => ({
               key: secret.key,
@@ -69,6 +85,14 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
       </div>
     </Document>
   );
+}
+
+function runnerEnrollmentCommand(controlPanelUrl: string, enrollmentToken: string): string {
+  return [
+    "deno task dev:runner \\",
+    `  --control-panel ${controlPanelUrl} \\`,
+    `  --enrollment-token ${enrollmentToken}`,
+  ].join("\n");
 }
 
 const settingsPageStyle = css({
@@ -86,6 +110,7 @@ const settingsDialogStyle = css({
   display: "flex",
   flexDirection: "column",
   width: "min(1120px, 100%)",
+  minWidth: 0,
   background: "var(--background)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-xl)",
@@ -96,10 +121,11 @@ const dialogHeaderStyle = css({
   alignItems: "flex-start",
   justifyContent: "space-between",
   gap: "24px",
+  minWidth: 0,
   padding: "24px",
   borderBottom: "1px solid var(--border)",
 });
-const dialogTitleStyle = css({ display: "grid", gap: "6px" });
+const dialogTitleStyle = css({ display: "grid", gap: "6px", minWidth: 0 });
 const pageHeadingStyle = css({
   margin: 0,
   fontSize: "24px",

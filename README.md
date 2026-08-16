@@ -38,7 +38,7 @@ export SESSION_SECRET="replace-with-a-long-random-secret"
 deno task dev:control
 ```
 
-The control page is available at <http://localhost:44100>, with process health at <http://localhost:44100/healthz>. On a fresh database, open the control page to complete administrator setup. Open **Runners**, create an enrollment PSK, and start the temporary development harness:
+The control page is available at <http://localhost:44100>, with process health at <http://localhost:44100/healthz>. On a fresh database, open the control page to complete administrator setup. Open **Settings → Runners** and copy the always-present runner-enrollment command, which includes the control URL and current PSK. The equivalent command is:
 
 ```sh
 deno task dev:runner --control-panel http://localhost:44100 \

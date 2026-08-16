@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 
 import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
@@ -78,16 +78,14 @@ Deno.test("configuration persistence separates users across every repository ope
       "OpenOrb",
     );
 
-    const firstEnrollmentToken = await store.createRunnerEnrollmentToken(firstUserId);
-    const secondEnrollmentToken = await store.createRunnerEnrollmentToken(secondUserId);
-    assertEquals(
-      (await store.listRunnerEnrollmentTokens(firstUserId)).map((token) => token.id),
-      [firstEnrollmentToken.id],
+    const firstEnrollmentToken = await store.getRunnerEnrollmentToken(firstUserId);
+    const secondEnrollmentToken = await store.getRunnerEnrollmentToken(secondUserId);
+    assertNotEquals(firstEnrollmentToken.id, secondEnrollmentToken.id);
+    const regeneratedSecondEnrollmentToken = await store.regenerateRunnerEnrollmentToken(
+      secondUserId,
     );
-    assertEquals(
-      (await store.listRunnerEnrollmentTokens(secondUserId)).map((token) => token.id),
-      [secondEnrollmentToken.id],
-    );
+    assertNotEquals(regeneratedSecondEnrollmentToken.id, secondEnrollmentToken.id);
+    assertEquals((await store.getRunnerEnrollmentToken(firstUserId)).id, firstEnrollmentToken.id);
     const firstRunner = await store.enrollRunner({
       enrollmentPsk: firstEnrollmentToken.token,
       name: "First runner",
@@ -97,10 +95,6 @@ Deno.test("configuration persistence separates users across every repository ope
     assert(firstRunner);
     assertEquals(await store.listRunners(secondUserId), []);
     assertEquals(await store.revokeRunner(secondUserId, firstRunner.runnerId), "not-found");
-    assertEquals(
-      await store.revokeRunnerEnrollmentToken(secondUserId, firstEnrollmentToken.id),
-      "not-found",
-    );
     assertEquals(
       (await store.authenticateRunner(firstRunner.runnerToken))?.userId,
       firstUserId,

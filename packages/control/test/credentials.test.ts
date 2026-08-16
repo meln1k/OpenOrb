@@ -118,11 +118,11 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
     assertMatch(empty, /<script type="module" src="\/assets\/app\/assets\/client\.ts">/);
     assertMatch(empty, /<div aria-label="Settings sections"[^>]+role="tablist"/);
     const secretsTab = empty.match(
-      /<button[^>]+aria-controls="([^"]+)"[^>]+aria-selected="true"[^>]+data-state="active"[^>]+id="([^"]+)"[^>]+role="tab"[^>]*>Secrets<\/button>/,
+      /<button[^>]+aria-controls="([^"]+)"[^>]+aria-selected="true"[^>]+data-state="active"[^>]+id="([^"]+)"[^>]+role="tab"[^>]*>[\s\S]*?Secrets<\/button>/,
     );
     assert(secretsTab, "expected an active Secrets tab");
     const githubTab = empty.match(
-      /<button[^>]+aria-controls="([^"]+)"[^>]+aria-selected="false"[^>]+data-state="inactive"[^>]+id="([^"]+)"[^>]+role="tab"[^>]*>GitHub<\/button>/,
+      /<button[^>]+aria-controls="([^"]+)"[^>]+aria-selected="false"[^>]+data-state="inactive"[^>]+id="([^"]+)"[^>]+role="tab"[^>]*>[\s\S]*?GitHub<\/button>/,
     );
     assert(githubTab, "expected an inactive GitHub tab");
     assertMatch(

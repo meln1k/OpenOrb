@@ -1,5 +1,10 @@
-import { clientEntry, css, type Handle } from "remix/ui";
-import { Tab, TabList, TabPanel, Tabs } from "remix/ui/tabs";
+import { clientEntry, css, type Handle, on } from "remix/ui";
+import {
+  Tab as TabsTrigger,
+  TabList as TabsList,
+  TabPanel as TabsContent,
+  Tabs,
+} from "remix/ui/tabs";
 
 import {
   AlertDialog,
@@ -20,6 +25,13 @@ import { Field, FieldDescription, FieldLabel } from "@/app/ui/components/field.t
 import { Icon } from "@/app/ui/components/icons.tsx";
 import { Input } from "@/app/ui/components/input.tsx";
 import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemFooter,
+  ItemTitle,
+} from "@/app/ui/components/item.tsx";
+import {
   Table,
   TableBody,
   TableCell,
@@ -29,7 +41,7 @@ import {
 } from "@/app/ui/components/table.tsx";
 import { media } from "@/app/ui/responsive.ts";
 
-export type SettingsTab = "secrets" | "github" | "git-author";
+export type SettingsTab = "secrets" | "github" | "git-author" | "runners";
 
 export type SettingsSecret = {
   key: string;
@@ -46,11 +58,16 @@ export type SettingsGitAuthor = {
   updatedAt: string;
 };
 
+export type SettingsEnrollmentCommand = {
+  command: string;
+};
+
 export type SettingsTabHrefs = Record<SettingsTab, string>;
 
 export type SettingsTabsProps = {
   activeTab: SettingsTab;
   csrfToken: string;
+  enrollmentCommand: SettingsEnrollmentCommand;
   error?: string;
   gitAuthor: SettingsGitAuthor | null;
   githubCredential: SettingsGitHubCredential | null;
@@ -96,7 +113,15 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
     });
 
     return () => {
-      const { csrfToken, error, gitAuthor, githubCredential, hrefs, secrets } = handle.props;
+      const {
+        csrfToken,
+        enrollmentCommand,
+        error,
+        gitAuthor,
+        githubCredential,
+        hrefs,
+        secrets,
+      } = handle.props;
 
       return (
         <Tabs
@@ -111,22 +136,49 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
             void handle.update();
           }}
         >
-          <TabList
+          <TabsList
             aria-label="Settings sections"
             data-slot="tabs-list"
-            data-variant="line"
+            data-variant="default"
             mix={tabsListStyle}
           >
-            <Tab name="secrets" data-slot="tabs-trigger" mix={tabsTriggerStyle}>
+            <TabsTrigger
+              name="secrets"
+              draggable={false}
+              data-slot="tabs-trigger"
+              mix={tabsTriggerStyle}
+            >
+              <Icon name="secrets" size={14} />
               Secrets
-            </Tab>
-            <Tab name="github" data-slot="tabs-trigger" mix={tabsTriggerStyle}>
+            </TabsTrigger>
+            <TabsTrigger
+              name="github"
+              draggable={false}
+              data-slot="tabs-trigger"
+              mix={tabsTriggerStyle}
+            >
+              <Icon name="github" size={14} />
               GitHub
-            </Tab>
-            <Tab name="git-author" data-slot="tabs-trigger" mix={tabsTriggerStyle}>
+            </TabsTrigger>
+            <TabsTrigger
+              name="git-author"
+              draggable={false}
+              data-slot="tabs-trigger"
+              mix={tabsTriggerStyle}
+            >
+              <Icon name="user" size={14} />
               Git author
-            </Tab>
-          </TabList>
+            </TabsTrigger>
+            <TabsTrigger
+              name="runners"
+              draggable={false}
+              data-slot="tabs-trigger"
+              mix={tabsTriggerStyle}
+            >
+              <Icon name="server" size={14} />
+              Runners
+            </TabsTrigger>
+          </TabsList>
 
           {error
             ? (
@@ -136,7 +188,7 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
             )
             : null}
 
-          <TabPanel
+          <TabsContent
             name="secrets"
             data-slot="tabs-content"
             mix={tabsPanelStyle}
@@ -199,9 +251,9 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
                 />
               </section>
             </section>
-          </TabPanel>
+          </TabsContent>
 
-          <TabPanel
+          <TabsContent
             name="github"
             data-slot="tabs-content"
             mix={tabsPanelStyle}
@@ -265,9 +317,9 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
                 )
                 : null}
             </section>
-          </TabPanel>
+          </TabsContent>
 
-          <TabPanel
+          <TabsContent
             name="git-author"
             data-slot="tabs-content"
             mix={tabsPanelStyle}
@@ -326,7 +378,32 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
                 </div>
               </form>
             </section>
-          </TabPanel>
+          </TabsContent>
+
+          <TabsContent
+            name="runners"
+            data-slot="tabs-content"
+            mix={tabsPanelStyle}
+          >
+            <section
+              aria-labelledby="runners-heading"
+              mix={settingsSectionStyle}
+            >
+              <header mix={sectionHeaderStyle}>
+                <h2 id="runners-heading" mix={sectionHeadingStyle}>Runner enrollment</h2>
+                <p mix={sectionCopyStyle}>
+                  Run from your OpenOrb checkout to enroll a runner.
+                </p>
+              </header>
+              <section aria-label="Runner enrollment command">
+                <EnrollmentCommand
+                  actionHref={hrefs.runners}
+                  csrfToken={csrfToken}
+                  enrollmentCommand={enrollmentCommand.command}
+                />
+              </section>
+            </section>
+          </TabsContent>
         </Tabs>
       );
     };
@@ -335,7 +412,7 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
 
 function tabForCurrentUrl(hrefs: SettingsTabHrefs): SettingsTab | undefined {
   const currentUrl = new URL(globalThis.location.href);
-  for (const name of ["secrets", "github", "git-author"] as const) {
+  for (const name of ["secrets", "github", "git-author", "runners"] as const) {
     const tabUrl = new URL(hrefs[name], currentUrl);
     if (
       tabUrl.pathname === currentUrl.pathname &&
@@ -345,6 +422,66 @@ function tabForCurrentUrl(hrefs: SettingsTabHrefs): SettingsTab | undefined {
       return name;
     }
   }
+}
+
+function EnrollmentCommand(
+  handle: Handle<{ actionHref: string; csrfToken: string; enrollmentCommand: string }>,
+) {
+  let copyStatus: "copied" | "failed" | undefined;
+
+  return () => (
+    <Item
+      variant="outline"
+      size="sm"
+      aria-label="Runner enrollment command"
+      mix={enrollmentCommandItemStyle}
+    >
+      <ItemContent mix={enrollmentCommandContentStyle}>
+        <ItemTitle mix={commandTitleStyle}>
+          <code mix={commandValueStyle}>
+            <span aria-hidden="true" mix={commandPromptStyle}>$</span>
+            {handle.props.enrollmentCommand}
+          </code>
+        </ItemTitle>
+      </ItemContent>
+      <ItemActions mix={enrollmentCommandActionsStyle}>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          mix={on("click", async (_event, signal) => {
+            try {
+              await globalThis.navigator.clipboard.writeText(handle.props.enrollmentCommand);
+              copyStatus = "copied";
+            } catch {
+              copyStatus = "failed";
+            }
+            if (!signal.aborted) await handle.update();
+          })}
+        >
+          Copy command
+        </Button>
+        <form method="post" action={handle.props.actionHref}>
+          <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+          <input type="hidden" name="intent" value="regenerate-enrollment-token" />
+          <Button type="submit" size="sm" variant="outline">
+            Regenerate
+          </Button>
+        </form>
+      </ItemActions>
+      {copyStatus
+        ? (
+          <ItemFooter>
+            <p role="status" aria-live="polite" mix={copyStatusStyle}>
+              {copyStatus === "copied"
+                ? "Enrollment command copied."
+                : "Could not copy automatically. Select and copy the command manually."}
+            </p>
+          </ItemFooter>
+        )
+        : null}
+    </Item>
+  );
 }
 
 function GitHubCredentialDialog(
@@ -654,38 +791,51 @@ const tabsRootStyle = css({
   padding: "24px",
 });
 const tabsListStyle = css({
+  display: "inline-flex",
+  alignItems: "center",
   justifyContent: "flex-start",
-  gap: "4px",
-  width: "fit-content",
-  minHeight: "32px",
-  padding: 0,
-  color: "var(--muted-foreground)",
-  background: "transparent",
-  borderRadius: 0,
-  boxShadow: "none",
+  flexShrink: 0,
+  width: "100%",
   maxWidth: "100%",
+  minHeight: "32px",
+  padding: "3px",
+  color: "var(--muted-foreground)",
+  background: "var(--muted)",
+  border: 0,
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "none",
   overflowX: "auto",
+  overflowY: "hidden",
   overscrollBehaviorX: "contain",
+  overscrollBehaviorY: "none",
+  touchAction: "pan-x",
+  userSelect: "none",
+  WebkitOverflowScrolling: "touch",
+  scrollbarWidth: "none",
+  "&::-webkit-scrollbar": { display: "none" },
 });
 const tabsTriggerStyle = css({
-  flex: "1",
-  width: "auto",
-  minWidth: 0,
-  height: "auto",
-  minHeight: "26px",
+  flex: "0 0 auto",
+  gap: "6px",
+  minHeight: "25px",
   padding: "2px 6px",
   color: "color-mix(in oklab, var(--foreground) 60%, transparent)",
   background: "transparent",
   border: "1px solid transparent",
   borderRadius: "var(--radius-md)",
   boxShadow: "none",
-  outline: "none",
   font: "inherit",
   fontSize: "14px",
   fontWeight: 500,
   lineHeight: 1,
   textShadow: "none",
-  transition: "color 150ms ease, background-color 150ms ease, box-shadow 150ms ease",
+  WebkitUserDrag: "none",
+  "& svg": {
+    width: "16px",
+    height: "16px",
+    flexShrink: 0,
+    pointerEvents: "none",
+  },
   "&[data-state='inactive']:hover:not(:disabled):not([aria-disabled='true'])": {
     color: "var(--foreground)",
     background: "transparent",
@@ -696,31 +846,20 @@ const tabsTriggerStyle = css({
   "&[data-state='active']": {
     "--rmx-tabs-tab-shadow": "none",
     color: "var(--foreground)",
-    background: "transparent",
-    boxShadow: "none",
+    background: "var(--background)",
+    boxShadow: "0 1px 2px rgb(0 0 0 / 0.08)",
     textShadow: "none",
   },
   "&[data-state='active']:hover:not(:disabled):not([aria-disabled='true'])": {
-    background: "transparent",
+    background: "var(--background)",
   },
   "&[data-state='active']:active:not(:disabled):not([aria-disabled='true'])": {
-    background: "transparent",
+    background: "var(--background)",
   },
   "&:focus-visible": {
     borderColor: "var(--ring)",
     boxShadow: "0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent)",
   },
-  "&::after": {
-    position: "absolute",
-    insetInline: 0,
-    bottom: "-5px",
-    height: "2px",
-    background: "var(--foreground)",
-    opacity: 0,
-    transition: "opacity 150ms ease",
-    content: "''",
-  },
-  "&[data-state='active']::after": { opacity: 1 },
 });
 const tabsPanelStyle = css({
   flex: "1",
@@ -841,6 +980,36 @@ const screenReaderOnlyStyle = css({
   clip: "rect(0, 0, 0, 0)",
   whiteSpace: "nowrap",
   border: 0,
+});
+const enrollmentCommandItemStyle = css({ flexDirection: "column", alignItems: "stretch" });
+const enrollmentCommandContentStyle = css({ flexBasis: "100%" });
+const enrollmentCommandActionsStyle = css({
+  justifyContent: "flex-end",
+  width: "100%",
+  flexWrap: "wrap",
+});
+const commandTitleStyle = css({
+  display: "block",
+  width: "100%",
+  overflow: "visible",
+  whiteSpace: "normal",
+});
+const commandValueStyle = css({
+  display: "block",
+  width: "100%",
+  overflowWrap: "anywhere",
+  userSelect: "all",
+  whiteSpace: "pre-wrap",
+});
+const commandPromptStyle = css({
+  marginRight: "0.5ch",
+  color: "var(--muted-foreground)",
+  userSelect: "none",
+});
+const copyStatusStyle = css({
+  margin: 0,
+  color: "var(--muted-foreground)",
+  fontSize: "12px",
 });
 const errorStyle = css({
   margin: 0,

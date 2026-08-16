@@ -225,8 +225,8 @@ Every `encrypted_secrets` row has an immutable `user_id` and explicit required p
 
 Use a simple bearer-token design:
 
-1. Administrator creates a reusable enrollment PSK. It remains valid for additional enrollments until the administrator revokes it.
-   The control panel stores the PSK unencrypted in PostgreSQL and keeps it visible and copyable on the authenticated runners page, including after revocation. PostgreSQL read access therefore grants access to active enrollment PSKs.
+1. The control panel always provides the administrator's reusable enrollment PSK under **Settings → Runners**. It remains valid for additional enrollments until the administrator regenerates it. Regeneration atomically revokes the previous PSK and creates its replacement, and PostgreSQL enforces at most one active PSK per user. The current PSK is embedded in a visible, copyable runner-enrollment command with a regenerate action and no revoke or delete action.
+   The control panel stores each PSK unencrypted in PostgreSQL. PostgreSQL read access therefore grants access to active enrollment PSKs.
 2. Runner submits the PSK, name, architecture, and capabilities.
 3. Control panel derives immutable runner ownership from the enrollment PSK's authenticated user, stores `user_id` on both enrollment and runner rows, and returns a random revocable runner token. Runner input cannot choose a tenant.
 4. Runner stores the token with filesystem mode `0600`.

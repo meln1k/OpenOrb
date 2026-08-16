@@ -68,25 +68,33 @@ const saveGitAuthorSchema = f.object({
   ),
 });
 
+const regenerateEnrollmentTokenSchema = f.object({
+  intent: f.field(s.literal("regenerate-enrollment-token")),
+});
+
 export default createController(routes.app.settings, {
   middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
     async index(context) {
       const userId = context.auth.identity.id;
       const activeTab = settingsTabFromRequest(context.request);
-      const [secrets, githubCredential, gitAuthor] = await Promise.all([
+      const [secrets, githubCredential, gitAuthor, enrollmentToken] = await Promise.all([
         context.services.store.listSecrets(userId),
         context.services.store.getGitHubCredential(userId),
         context.services.store.getGitAuthorConfiguration(userId),
+        context.services.store.getRunnerEnrollmentToken(userId),
       ]);
       return context.render(
         <SettingsPage
           csrfToken={getCsrfToken(context)}
+          controlPanelUrl={runnerControlPanelUrl(context.request)}
           secrets={secrets}
           githubCredential={githubCredential}
           gitAuthor={gitAuthor}
+          enrollmentToken={enrollmentToken}
           activeTab={activeTab}
         />,
+        { headers: { "cache-control": "no-store" } },
       );
     },
 
@@ -96,21 +104,24 @@ export default createController(routes.app.settings, {
       const intent = context.formData.get("intent");
       const activeTab = settingsTabFromRequest(context.request, intent);
       const renderError = async (error: string, status: number) => {
-        const [secrets, githubCredential, gitAuthor] = await Promise.all([
+        const [secrets, githubCredential, gitAuthor, enrollmentToken] = await Promise.all([
           store.listSecrets(userId),
           store.getGitHubCredential(userId),
           store.getGitAuthorConfiguration(userId),
+          store.getRunnerEnrollmentToken(userId),
         ]);
         return context.render(
           <SettingsPage
             csrfToken={getCsrfToken(context)}
+            controlPanelUrl={runnerControlPanelUrl(context.request)}
             secrets={secrets}
             githubCredential={githubCredential}
             gitAuthor={gitAuthor}
+            enrollmentToken={enrollmentToken}
             activeTab={activeTab}
             error={error}
           />,
-          { status },
+          { status, headers: { "cache-control": "no-store" } },
         );
       };
 
@@ -177,6 +188,13 @@ export default createController(routes.app.settings, {
         return redirect(settingsTabHref("git-author"), 303);
       }
 
+      if (intent === "regenerate-enrollment-token") {
+        const parsed = s.parseSafe(regenerateEnrollmentTokenSchema, context.formData);
+        if (!parsed.success) return renderError("Invalid enrollment token request.", 400);
+        await store.regenerateRunnerEnrollmentToken(userId);
+        return redirect(settingsTabHref("runners"), 303);
+      }
+
       return renderError("Invalid settings form submission.", 400);
     },
   },
@@ -184,8 +202,16 @@ export default createController(routes.app.settings, {
 
 function settingsTabFromRequest(request: Request, intent?: FormDataEntryValue | null): SettingsTab {
   const tab = new URL(request.url).searchParams.get("tab");
-  if (tab === "github" || tab === "git-author" || tab === "secrets") return tab;
+  if (tab === "github" || tab === "git-author" || tab === "runners" || tab === "secrets") {
+    return tab;
+  }
   if (intent === "save-github-credential" || intent === "delete-github-credential") return "github";
   if (intent === "save-git-author") return "git-author";
+  if (intent === "regenerate-enrollment-token") return "runners";
   return "secrets";
+}
+
+function runnerControlPanelUrl(request: Request): string {
+  const publicUrl = Deno.env.get("PUBLIC_URL");
+  return new URL(publicUrl ?? request.url).origin;
 }
