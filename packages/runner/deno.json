@@ -5,6 +5,7 @@
     ".": "./src/index.ts",
     "./connection": "./src/connection.ts",
     "./enrollment": "./src/enrollment.ts",
+    "./gondolin-tools": "./src/gondolin-tools.ts",
     "./identity": "./src/identity.ts",
     "./pi-session-factory": "./src/pi-session-factory.ts",
     "./prerequisites": "./src/prerequisites.ts"
