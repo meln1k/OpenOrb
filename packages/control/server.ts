@@ -23,10 +23,11 @@ const { store, router, runnerConnectionGateway } = await tracer.startActiveSpan(
           migrationSpan.end();
         }
       });
+      const runnerConnectionGateway = new RunnerConnectionGateway(store);
       return {
         store,
-        router: createAppRouter(createAppServices(store)),
-        runnerConnectionGateway: new RunnerConnectionGateway(store),
+        router: createAppRouter(createAppServices(store, runnerConnectionGateway)),
+        runnerConnectionGateway,
       };
     } catch (error) {
       span.recordException(toError(error));

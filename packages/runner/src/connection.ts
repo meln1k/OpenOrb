@@ -2,12 +2,13 @@ import {
   parseRunnerServerMessage,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
   RUNNER_HELLO_MESSAGE_TYPE,
+  type RunnerCapacity,
   type RunnerClientMessage,
   type RunnerServerMessage,
 } from "@openorb/protocol";
 import { delay } from "@std/async/delay";
 
-const HEARTBEAT_INTERVAL_MS = 20_000;
+export const RUNNER_HEARTBEAT_INTERVAL_MS = 10_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
@@ -16,6 +17,7 @@ export interface MaintainRunnerConnectionOptions {
   runnerId: string;
   runnerToken: string;
   signal: AbortSignal;
+  getCapacity: () => Promise<RunnerCapacity>;
   handshakeTimeoutMs?: number;
   random?: () => number;
   sleep?: typeof delay;
@@ -68,6 +70,7 @@ async function connectOnce(
     );
     let connected = false;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let heartbeatInFlight = false;
     let settled = false;
 
     const finish = (outcome: "connected" | "disconnected" | "unauthorized") => {
@@ -120,12 +123,24 @@ async function connectOnce(
       }
       connected = true;
       handshakeDeadline.removeEventListener("abort", handshakeTimedOut);
-      socket.send(JSON.stringify(heartbeatMessage()));
-      heartbeat = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify(heartbeatMessage()));
+      const sendHeartbeat = async () => {
+        if (settled || heartbeatInFlight || socket.readyState !== WebSocket.OPEN) return;
+        heartbeatInFlight = true;
+        try {
+          const capacity = await options.getCapacity();
+          if (!settled && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify(heartbeatMessage(capacity)));
+          }
+        } catch {
+          closeSocket(socket, 1011, "Runner capacity report failed");
+        } finally {
+          heartbeatInFlight = false;
         }
-      }, HEARTBEAT_INTERVAL_MS);
+      };
+      void sendHeartbeat();
+      heartbeat = setInterval(() => {
+        void sendHeartbeat();
+      }, RUNNER_HEARTBEAT_INTERVAL_MS);
       options.onConnected?.();
     });
     socket.addEventListener("close", (event) => {
@@ -147,12 +162,12 @@ function helloMessage(token: string): RunnerClientMessage {
   };
 }
 
-function heartbeatMessage(): RunnerClientMessage {
+function heartbeatMessage(capacity: RunnerCapacity): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
     type: RUNNER_HEARTBEAT_MESSAGE_TYPE,
-    payload: { observedAt: Date.now() },
+    payload: { observedAt: Date.now(), capacity },
   };
 }
 

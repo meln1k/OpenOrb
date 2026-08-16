@@ -4,6 +4,7 @@ import { maintainRunnerConnection } from "@/src/connection.ts";
 import { enrollRunner } from "@/src/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
 import { parseRunnerCommand } from "@/src/options.ts";
+import { createRunnerCapacityReporter } from "@/src/capacity.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 export const RUNNER_VERSION = "0.0.0";
@@ -16,7 +17,7 @@ export async function main(args: string[] = Deno.args): Promise<number> {
   } catch (error) {
     console.error(`[openorb-runner] error: ${error instanceof Error ? error.message : error}`);
     console.error(
-      "Usage: openorb-runner [doctor|--version] [--control-panel URL --enrollment-token PSK] [--name NAME]",
+      "Usage: openorb-runner [doctor|--version] [--control-panel URL --enrollment-token PSK] [--name NAME] [--max-concurrent-sessions COUNT] [--vm-cpu-count COUNT] [--vm-memory-mib MIB]",
     );
     return 2;
   }
@@ -129,11 +130,19 @@ export async function main(args: string[] = Deno.args): Promise<number> {
     const shutdownController = new AbortController();
     const removeSignalListeners = installShutdownListeners(shutdownController);
     try {
+      const getCapacity = createRunnerCapacityReporter({
+        path: workingDirectory,
+        maxConcurrentSessions: command.options.maxConcurrentSessions,
+        vmCpuCount: command.options.vmCpuCount,
+        vmMemoryMiB: command.options.vmMemoryMiB,
+      });
+      await getCapacity();
       await maintainRunnerConnection({
         controlPanelUrl: identity.controlPanelUrl,
         runnerId: identity.runnerId,
         runnerToken: identity.runnerToken,
         signal: shutdownController.signal,
+        getCapacity,
         onConnected() {
           console.log(`[openorb-runner] connected runner ${identity.runnerId}`);
         },

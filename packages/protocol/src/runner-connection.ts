@@ -1,4 +1,4 @@
-import { number, object, parse } from "@remix-run/data-schema";
+import { number, object, optional, parse } from "@remix-run/data-schema";
 
 import { runnerIdSchema, runnerTokenSchema } from "@/src/runner-enrollment.ts";
 import { parseRunnerMessage, type RunnerMessage } from "@/src/runner-message.ts";
@@ -11,9 +11,19 @@ export interface RunnerHelloPayload {
   token: string;
 }
 
+export interface RunnerCapacity {
+  /** Omission means the runner does not impose a concurrent-session limit. */
+  maxConcurrentSessions?: number;
+  activeSessions: number;
+  vmCpuCount: number;
+  vmMemoryMiB: number;
+  diskFreeMiB: number;
+}
+
 export interface RunnerHeartbeatPayload {
   /** Unix epoch time in milliseconds. */
   observedAt: number;
+  capacity: RunnerCapacity;
 }
 
 export interface RunnerConnectedPayload {
@@ -33,12 +43,34 @@ const helloPayloadSchema = object(
   { unknownKeys: "error" },
 );
 
+const nonNegativeIntegerSchema = number().refine(
+  (value) => Number.isSafeInteger(value) && value >= 0,
+  "Expected a non-negative safe integer.",
+);
+
+const positiveIntegerSchema = number().refine(
+  (value) => Number.isSafeInteger(value) && value > 0,
+  "Expected a positive safe integer.",
+);
+
+const runnerCapacitySchema = object(
+  {
+    maxConcurrentSessions: optional(positiveIntegerSchema),
+    activeSessions: nonNegativeIntegerSchema,
+    vmCpuCount: positiveIntegerSchema,
+    vmMemoryMiB: positiveIntegerSchema,
+    diskFreeMiB: nonNegativeIntegerSchema,
+  },
+  { unknownKeys: "error" },
+);
+
 const heartbeatPayloadSchema = object(
   {
     observedAt: number().refine(
       (value) => Number.isSafeInteger(value) && value >= 0,
       "Heartbeat time must be a non-negative Unix timestamp in milliseconds.",
     ),
+    capacity: runnerCapacitySchema,
   },
   { unknownKeys: "error" },
 );

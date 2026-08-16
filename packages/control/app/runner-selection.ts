@@ -1,0 +1,69 @@
+import type { RunnerRecord, RunnerRepository } from "@/app/data/runner-repository.ts";
+import type { RunnerConnectionRegistry, RunnerLiveState } from "@/app/runner-connection-gateway.ts";
+
+export const MIN_RUNNER_DISK_FREE_MIB = 10 * 1024;
+
+export type RunnerSelectionResult =
+  | {
+    status: "selected";
+    runner: RunnerRecord;
+    liveState: RunnerLiveState;
+  }
+  | {
+    status: "rejected";
+    message: string;
+  };
+
+export async function selectRunnerForUser(
+  userId: string,
+  manualRunnerId: string | undefined,
+  repository: Pick<RunnerRepository, "listRunners">,
+  connections: Pick<RunnerConnectionRegistry, "getRunnerLiveState">,
+): Promise<RunnerSelectionResult> {
+  const runners = await repository.listRunners(userId);
+
+  if (manualRunnerId !== undefined) {
+    const runner = runners.find((candidate) => candidate.id === manualRunnerId);
+    if (!runner) return rejected("Runner is unavailable or does not exist.");
+    return assessRunner(userId, runner, connections);
+  }
+
+  const available: Array<Extract<RunnerSelectionResult, { status: "selected" }>> = [];
+  for (const runner of runners) {
+    const assessed = assessRunner(userId, runner, connections);
+    if (assessed.status === "selected") available.push(assessed);
+  }
+  available.sort((left, right) =>
+    left.liveState.capacity.activeSessions - right.liveState.capacity.activeSessions ||
+    left.runner.id.localeCompare(right.runner.id)
+  );
+
+  return available[0] ?? rejected(
+    `No connected runner has available capacity and at least ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,
+  );
+}
+
+function assessRunner(
+  userId: string,
+  runner: RunnerRecord,
+  connections: Pick<RunnerConnectionRegistry, "getRunnerLiveState">,
+): RunnerSelectionResult {
+  if (runner.revokedAt !== null) return rejected("Runner has been revoked.");
+  const liveState = connections.getRunnerLiveState(userId, runner.id);
+  if (!liveState) return rejected("Runner is offline.");
+
+  const { activeSessions, diskFreeMiB, maxConcurrentSessions } = liveState.capacity;
+  if (maxConcurrentSessions !== undefined && activeSessions >= maxConcurrentSessions) {
+    return rejected("Runner has reached its concurrent session limit.");
+  }
+  if (diskFreeMiB < MIN_RUNNER_DISK_FREE_MIB) {
+    return rejected(
+      `Runner has less than ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,
+    );
+  }
+  return { status: "selected", runner, liveState };
+}
+
+function rejected(message: string): RunnerSelectionResult {
+  return { status: "rejected", message };
+}

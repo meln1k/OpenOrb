@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 
+import { selectRunnerForUser } from "@/app/runner-selection.ts";
 import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
 Deno.test("configuration persistence separates users across every repository operation", async () => {
@@ -94,11 +95,27 @@ Deno.test("configuration persistence separates users across every repository ope
     });
     assert(firstRunner);
     assertEquals(await store.listRunners(secondUserId), []);
+    assertEquals(
+      await selectRunnerForUser(secondUserId, firstRunner.runnerId, store, {
+        getRunnerLiveState() {
+          throw new Error("Foreign-user runner must not reach live-state lookup.");
+        },
+      }),
+      {
+        status: "rejected",
+        message: "Runner is unavailable or does not exist.",
+      },
+    );
     assertEquals(await store.revokeRunner(secondUserId, firstRunner.runnerId), "not-found");
+    assertEquals(await store.deleteRunner(secondUserId, firstRunner.runnerId), "not-found");
+    assertEquals(await store.deleteRunner(firstUserId, firstRunner.runnerId), "not-revoked");
     assertEquals(
       (await store.authenticateRunner(firstRunner.runnerToken))?.userId,
       firstUserId,
     );
+    assertEquals(await store.revokeRunner(firstUserId, firstRunner.runnerId), "revoked");
+    assertEquals(await store.deleteRunner(firstUserId, firstRunner.runnerId), "deleted");
+    assertEquals(await store.listRunners(firstUserId), []);
 
     const secondSecret = await store.pool.query<{ id: string }>(
       `select encrypted_secret_id as id

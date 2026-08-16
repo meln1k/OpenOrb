@@ -4,6 +4,9 @@ export interface RunnerStartOptions {
   controlPanel?: string;
   enrollmentToken?: string;
   name: string;
+  maxConcurrentSessions?: number;
+  vmCpuCount?: number;
+  vmMemoryMiB?: number;
 }
 
 export type RunnerCommand =
@@ -18,7 +21,14 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
   if (args.length === 1 && args[0] === "doctor") return { type: "doctor" };
 
   const parsed = parseArgs(args, {
-    string: ["control-panel", "enrollment-token", "name"],
+    string: [
+      "control-panel",
+      "enrollment-token",
+      "name",
+      "max-concurrent-sessions",
+      "vm-cpu-count",
+      "vm-memory-mib",
+    ],
     unknown(_argument, key) {
       if (key === "data-dir") {
         throw new Error(
@@ -46,8 +56,28 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
     }
     options.name = name;
   }
+  if (parsed["max-concurrent-sessions"] !== undefined) {
+    options.maxConcurrentSessions = parsePositiveInteger(
+      parsed["max-concurrent-sessions"],
+      "--max-concurrent-sessions",
+    );
+  }
+  if (parsed["vm-cpu-count"] !== undefined) {
+    options.vmCpuCount = parsePositiveInteger(parsed["vm-cpu-count"], "--vm-cpu-count");
+  }
+  if (parsed["vm-memory-mib"] !== undefined) {
+    options.vmMemoryMiB = parsePositiveInteger(parsed["vm-memory-mib"], "--vm-memory-mib");
+  }
 
   return { type: "start", options };
+}
+
+function parsePositiveInteger(input: string, flag: string): number {
+  const value = Number(input);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${flag} must be a positive integer.`);
+  }
+  return value;
 }
 
 export function normalizeControlPanelUrl(input: string): string {

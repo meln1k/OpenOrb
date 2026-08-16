@@ -3,11 +3,19 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { enrollRunner } from "@/src/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
 import { parseRunnerCommand } from "@/src/options.ts";
-import { maintainRunnerConnection, reconnectDelayMs } from "@/src/connection.ts";
+import {
+  maintainRunnerConnection,
+  reconnectDelayMs,
+  RUNNER_HEARTBEAT_INTERVAL_MS,
+} from "@/src/connection.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const ENROLLMENT_PSK = `openorb_enroll_${"a".repeat(43)}`;
 const RUNNER_TOKEN = `openorb_runner_${"b".repeat(43)}`;
+
+Deno.test("uses a ten-second runner heartbeat interval", () => {
+  assertEquals(RUNNER_HEARTBEAT_INTERVAL_MS, 10_000);
+});
 
 Deno.test("parses first-start enrollment options without accepting a data directory", () => {
   const expected = {
@@ -26,8 +34,22 @@ Deno.test("parses first-start enrollment options without accepting a data direct
       ENROLLMENT_PSK,
       "--name",
       "Home runner",
+      "--vm-cpu-count",
+      "8",
+      "--vm-memory-mib",
+      "16384",
+      "--max-concurrent-sessions",
+      "3",
     ]),
-    expected,
+    {
+      ...expected,
+      options: {
+        ...expected.options,
+        maxConcurrentSessions: 3,
+        vmCpuCount: 8,
+        vmMemoryMiB: 16_384,
+      },
+    },
   );
   assertEquals(
     parseRunnerCommand([
@@ -50,6 +72,16 @@ Deno.test("parses first-start enrollment options without accepting a data direct
     () => parseRunnerCommand(["--control-panel"]),
     Error,
     "--control-panel requires a value",
+  );
+  assertThrows(
+    () => parseRunnerCommand(["--max-concurrent-sessions", "0"]),
+    Error,
+    "--max-concurrent-sessions must be a positive integer",
+  );
+  assertThrows(
+    () => parseRunnerCommand(["--vm-memory-mib", "4.5"]),
+    Error,
+    "--vm-memory-mib must be a positive integer",
   );
 });
 
@@ -161,6 +193,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
       runnerId: RUNNER_ID,
       runnerToken: RUNNER_TOKEN,
       signal: abortController.signal,
+      getCapacity: () => Promise.reject(new Error("Connection never authenticates")),
       random: () => 0,
       sleep(milliseconds) {
         delays.push(milliseconds);
@@ -177,6 +210,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
       runnerId: RUNNER_ID,
       runnerToken: RUNNER_TOKEN,
       signal: delayAbortController.signal,
+      getCapacity: () => Promise.reject(new Error("Connection never authenticates")),
       handshakeTimeoutMs: 20,
       onReconnectScheduled() {
         delayAbortController.abort();

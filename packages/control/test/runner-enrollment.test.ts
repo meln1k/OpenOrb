@@ -137,7 +137,7 @@ Deno.test("always provides one PSK and serializes concurrent regeneration", asyn
 Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner", async () => {
   const store = await createTestStore();
   const gateway = new RunnerConnectionGateway(store);
-  const router = createAppRouter(createAppServices(store));
+  const router = createAppRouter(createAppServices(store, gateway));
   const server = await createTestServer((request) =>
     new URL(request.url).pathname === routes.api.runners.connect.href()
       ? gateway.handleUpgrade(request)
@@ -289,11 +289,50 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
       version: 1,
       id: crypto.randomUUID(),
       type: "runner.heartbeat",
-      payload: { observedAt: Date.now() },
+      payload: {
+        observedAt: Date.now(),
+        capacity: {
+          activeSessions: 0,
+          vmCpuCount: 4,
+          vmMemoryMiB: 8192,
+          diskFreeMiB: 20_480,
+        },
+      },
     }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const onlinePage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    const onlineHtml = await onlinePage.text();
+    assertMatch(onlineHtml, /Home runner/);
+    assertMatch(onlineHtml, />Online</);
+    assertMatch(onlineHtml, /data-slot="card"/);
+    assertMatch(onlineHtml, /data-status="online"/);
+    assertMatch(onlineHtml, /0 active sessions · No session limit/);
+    assertMatch(onlineHtml, /CPU allocated/);
+    assertMatch(onlineHtml, /Memory allocated/);
+    assertMatch(onlineHtml, /role="progressbar"/);
+    assertMatch(onlineHtml, /aria-label="CPU allocated: 1 of 4 CPUs"/);
+    assertMatch(onlineHtml, /8 GiB memory/);
+    assertMatch(onlineHtml, /20 GiB disk free/);
     const successfulClose = closed(socket);
     socket.close(1000);
     assertEquals((await successfulClose).code, 1000);
+    const offlinePage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    const offlineHtml = await offlinePage.text();
+    assertMatch(offlineHtml, /Home runner/);
+    assertMatch(offlineHtml, />Offline</);
+    assertMatch(offlineHtml, /data-status="offline"/);
+    assertMatch(offlineHtml, /Allocation unavailable/);
+    const activeDeletionResponse = await fetch(runnersSettingsUrl, {
+      method: "POST",
+      headers: { Cookie: cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(offlineHtml),
+        intent: "delete-runner",
+        runnerId: firstRunner.runnerId,
+      }),
+    });
+    assertEquals(activeDeletionResponse.status, 409);
+    assertMatch(await activeDeletionResponse.text(), /Revoke the runner before deleting it\./);
 
     const harnessShutdown = new AbortController();
     let harnessConnections = 0;
@@ -302,6 +341,13 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
       runnerId: firstRunner.runnerId,
       runnerToken: firstRunner.runnerToken,
       signal: harnessShutdown.signal,
+      getCapacity: () =>
+        Promise.resolve({
+          activeSessions: 0,
+          vmCpuCount: 4,
+          vmMemoryMiB: 8192,
+          diskFreeMiB: 20_480,
+        }),
       onConnected() {
         harnessConnections++;
         harnessShutdown.abort();
@@ -355,7 +401,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
     assertNotMatch(regeneratedHtml, new RegExp(enrollmentPsk));
     assertMatch(regeneratedHtml, />Copy command<\/button>/);
     assertMatch(regeneratedHtml, />Regenerate<\/button>/);
-    assertNotMatch(regeneratedHtml, />Revoke<\/button>/);
+    assertMatch(regeneratedHtml, />Revoke<\/button>/);
 
     const enrollmentTokens = await store.pool.query<{ token: string; revoked_at: string | null }>(
       "select token, revoked_at from runner_enrollment_tokens where user_id = $1",
@@ -397,8 +443,48 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
       201,
     );
 
-    assertEquals(await store.revokeRunner(administrator.id, firstRunner.runnerId), "revoked");
+    const connectedForRevocation = await openWebSocket(connectUrl);
+    connectedForRevocation.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "runner.hello",
+      payload: { token: firstRunner.runnerToken },
+    }));
+    await nextMessage(connectedForRevocation);
+    connectedForRevocation.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "runner.heartbeat",
+      payload: {
+        observedAt: Date.now(),
+        capacity: {
+          activeSessions: 0,
+          vmCpuCount: 4,
+          vmMemoryMiB: 8192,
+          diskFreeMiB: 20_480,
+        },
+      },
+    }));
+    const connectedRevocationClose = closed(connectedForRevocation);
+    const runnerRevocationPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    const runnerRevocationResponse = await fetch(runnersSettingsUrl, {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(await runnerRevocationPage.text()),
+        intent: "revoke-runner",
+        runnerId: firstRunner.runnerId,
+      }),
+    });
+    assertEquals(runnerRevocationResponse.status, 303);
+    assertEquals((await connectedRevocationClose).code, 4401);
     assertEquals(await store.authenticateRunner(firstRunner.runnerToken), null);
+    const revokedPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    const revokedHtml = await revokedPage.text();
+    assertMatch(revokedHtml, />Revoked</);
+    assertMatch(revokedHtml, />Delete<\/button>/);
+    assertMatch(revokedHtml, /Delete Home runner\?/);
     const revokedSocket = await openWebSocket(connectUrl);
     const revokedClose = closed(revokedSocket);
     revokedSocket.send(JSON.stringify({
@@ -408,6 +494,43 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
       payload: { token: firstRunner.runnerToken },
     }));
     assertEquals((await revokedClose).code, 4401);
+
+    const runnerDeletionResponse = await fetch(runnersSettingsUrl, {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(revokedHtml),
+        intent: "delete-runner",
+        runnerId: firstRunner.runnerId,
+      }),
+    });
+    assertEquals(runnerDeletionResponse.status, 303);
+    assertEquals(runnerDeletionResponse.headers.get("location"), runnersSettingsPath);
+    assertEquals(
+      (await store.listRunners(administrator.id)).some((runner) =>
+        runner.id === firstRunner.runnerId
+      ),
+      false,
+    );
+    const deletedRunnerPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
+    assertNotMatch(await deletedRunnerPage.text(), /Home runner/);
+
+    const disconnectedRevocationPage = await fetch(runnersSettingsUrl, {
+      headers: { Cookie: cookie },
+    });
+    const disconnectedRevocationResponse = await fetch(runnersSettingsUrl, {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(await disconnectedRevocationPage.text()),
+        intent: "revoke-runner",
+        runnerId: secondRunner.runnerId,
+      }),
+    });
+    assertEquals(disconnectedRevocationResponse.status, 303);
+    assertEquals(await store.authenticateRunner(secondRunner.runnerToken), null);
 
     const secondUserId = await createTestUser(store);
     const secondUserEnrollmentToken = await store.getRunnerEnrollmentToken(secondUserId);

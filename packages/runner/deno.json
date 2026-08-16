@@ -19,8 +19,8 @@
   },
   "publish": false,
   "tasks": {
-    "dev": "deno run --watch --allow-read=../.. --allow-write=../../.openorb-runner-dev --allow-net --allow-env=PATH,PWD --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img ../../scripts/run-development-runner.ts",
+    "dev": "deno run --watch --allow-read=../.. --allow-write=../../.openorb-runner-dev --allow-net --allow-env=PATH,PWD --allow-sys=statfs,systemMemoryInfo --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img ../../scripts/run-development-runner.ts",
     "dev:otel": "OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_SERVICE_NAME=openorb-runner OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno task dev",
-    "start": "deno run --allow-read=../.. --allow-write=../../.openorb-runner-dev --allow-net --allow-env=PATH,PWD --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img ../../scripts/run-development-runner.ts"
+    "start": "deno run --allow-read=../.. --allow-write=../../.openorb-runner-dev --allow-net --allow-env=PATH,PWD --allow-sys=statfs,systemMemoryInfo --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img ../../scripts/run-development-runner.ts"
   }
 }

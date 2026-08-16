@@ -8,12 +8,16 @@ import type { RunnerEnrollmentToken } from "@/app/data/runner-repository.ts";
 import type { SecretEntry } from "@/app/data/secret-repository.ts";
 import { routes } from "@/app/routes.ts";
 import { Icon } from "@/app/ui/components/icons.tsx";
-import { type SettingsTab, SettingsTabs } from "@/app/ui/components/settings-tabs.tsx";
+import {
+  type SettingsRunner,
+  type SettingsTab,
+  SettingsTabs,
+} from "@/app/ui/components/settings-tabs.tsx";
 import { designSystemStyle } from "@/app/ui/components/theme.ts";
 import { Document } from "@/app/ui/document.tsx";
 import { media } from "@/app/ui/responsive.ts";
 
-export type { SettingsTab };
+export type { SettingsRunner, SettingsTab };
 
 export function settingsTabHref(tab: SettingsTab): string {
   return `${routes.app.settings.index.href()}?tab=${tab}#${tab}`;
@@ -27,6 +31,7 @@ export interface SettingsPageProps {
   error?: string;
   gitAuthor: GitAuthorConfiguration | null;
   githubCredential: GitCredential | null;
+  runners: SettingsRunner[];
   secrets: SecretEntry[];
 }
 
@@ -39,6 +44,7 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
     error,
     gitAuthor,
     githubCredential,
+    runners,
     secrets,
   } = handle.props;
 
@@ -70,6 +76,7 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
               }
               : null}
             githubCredential={githubCredential ? { updatedAt: githubCredential.updatedAt } : null}
+            runners={runners}
             hrefs={{
               secrets: settingsTabHref("secrets"),
               github: settingsTabHref("github"),

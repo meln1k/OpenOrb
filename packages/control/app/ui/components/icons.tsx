@@ -4,6 +4,7 @@ import BadgeCheck from "lucide/dist/esm/icons/badge-check.mjs";
 import Bell from "lucide/dist/esm/icons/bell.mjs";
 import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
 import ChevronsUpDown from "lucide/dist/esm/icons/chevrons-up-down.mjs";
+import Cpu from "lucide/dist/esm/icons/cpu.mjs";
 import CreditCard from "lucide/dist/esm/icons/credit-card.mjs";
 import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
 import Folder from "lucide/dist/esm/icons/folder.mjs";
@@ -12,6 +13,7 @@ import KeyRound from "lucide/dist/esm/icons/key-round.mjs";
 import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
 import LogOut from "lucide/dist/esm/icons/log-out.mjs";
 import MessageSquare from "lucide/dist/esm/icons/message-square.mjs";
+import MemoryStick from "lucide/dist/esm/icons/memory-stick.mjs";
 import PanelLeft from "lucide/dist/esm/icons/panel-left.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
 import Server from "lucide/dist/esm/icons/server.mjs";
@@ -25,6 +27,7 @@ export type IconName =
   | "bell"
   | "chevron-down"
   | "chevrons-up-down"
+  | "cpu"
   | "credit-card"
   | "secrets"
   | "dashboard"
@@ -32,6 +35,7 @@ export type IconName =
   | "github"
   | "logout"
   | "message"
+  | "memory"
   | "more-horizontal"
   | "panel-left"
   | "plus"
@@ -86,6 +90,7 @@ const iconNodes: Record<IconName, IconNode> = {
   bell: Bell,
   "chevron-down": ChevronDown,
   "chevrons-up-down": ChevronsUpDown,
+  cpu: Cpu,
   "credit-card": CreditCard,
   secrets: KeyRound,
   dashboard: LayoutDashboard,
@@ -93,6 +98,7 @@ const iconNodes: Record<IconName, IconNode> = {
   github: GitBranch,
   logout: LogOut,
   message: MessageSquare,
+  memory: MemoryStick,
   "more-horizontal": Ellipsis,
   "panel-left": PanelLeft,
   plus: Plus,

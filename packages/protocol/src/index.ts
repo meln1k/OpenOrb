@@ -9,6 +9,7 @@ export {
   RUNNER_CONNECTED_MESSAGE_TYPE,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
   RUNNER_HELLO_MESSAGE_TYPE,
+  type RunnerCapacity,
   type RunnerClientMessage,
   type RunnerConnectedPayload,
   type RunnerHeartbeatPayload,

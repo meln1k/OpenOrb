@@ -1,5 +1,6 @@
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
+import { runnerIdSchema } from "@openorb/protocol";
 import { requireAuth } from "remix/middleware/auth";
 import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
@@ -7,9 +8,16 @@ import { redirect } from "remix/response/redirect";
 
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { isReservedGitCredentialSecretKey } from "@/app/data/git-configuration-repository.ts";
+import type { RunnerRecord } from "@/app/data/runner-repository.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
+import type { RunnerConnectionRegistry } from "@/app/runner-connection-gateway.ts";
 import { routes } from "@/app/routes.ts";
-import { SettingsPage, type SettingsTab, settingsTabHref } from "@/app/actions/settings/page.tsx";
+import {
+  SettingsPage,
+  type SettingsRunner,
+  type SettingsTab,
+  settingsTabHref,
+} from "@/app/actions/settings/page.tsx";
 
 const secretKeySchema = s.string().refine(
   (value) => {
@@ -72,17 +80,28 @@ const regenerateEnrollmentTokenSchema = f.object({
   intent: f.field(s.literal("regenerate-enrollment-token")),
 });
 
+const revokeRunnerSchema = f.object({
+  intent: f.field(s.literal("revoke-runner")),
+  runnerId: f.field(runnerIdSchema),
+});
+
+const deleteRunnerSchema = f.object({
+  intent: f.field(s.literal("delete-runner")),
+  runnerId: f.field(runnerIdSchema),
+});
+
 export default createController(routes.app.settings, {
   middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
     async index(context) {
       const userId = context.auth.identity.id;
       const activeTab = settingsTabFromRequest(context.request);
-      const [secrets, githubCredential, gitAuthor, enrollmentToken] = await Promise.all([
+      const [secrets, githubCredential, gitAuthor, enrollmentToken, runners] = await Promise.all([
         context.services.store.listSecrets(userId),
         context.services.store.getGitHubCredential(userId),
         context.services.store.getGitAuthorConfiguration(userId),
         context.services.store.getRunnerEnrollmentToken(userId),
+        context.services.store.listRunners(userId),
       ]);
       return context.render(
         <SettingsPage
@@ -92,6 +111,7 @@ export default createController(routes.app.settings, {
           githubCredential={githubCredential}
           gitAuthor={gitAuthor}
           enrollmentToken={enrollmentToken}
+          runners={settingsRunners(userId, runners, context.services.runnerConnections)}
           activeTab={activeTab}
         />,
         { headers: { "cache-control": "no-store" } },
@@ -104,11 +124,12 @@ export default createController(routes.app.settings, {
       const intent = context.formData.get("intent");
       const activeTab = settingsTabFromRequest(context.request, intent);
       const renderError = async (error: string, status: number) => {
-        const [secrets, githubCredential, gitAuthor, enrollmentToken] = await Promise.all([
+        const [secrets, githubCredential, gitAuthor, enrollmentToken, runners] = await Promise.all([
           store.listSecrets(userId),
           store.getGitHubCredential(userId),
           store.getGitAuthorConfiguration(userId),
           store.getRunnerEnrollmentToken(userId),
+          store.listRunners(userId),
         ]);
         return context.render(
           <SettingsPage
@@ -118,6 +139,7 @@ export default createController(routes.app.settings, {
             githubCredential={githubCredential}
             gitAuthor={gitAuthor}
             enrollmentToken={enrollmentToken}
+            runners={settingsRunners(userId, runners, context.services.runnerConnections)}
             activeTab={activeTab}
             error={error}
           />,
@@ -195,6 +217,26 @@ export default createController(routes.app.settings, {
         return redirect(settingsTabHref("runners"), 303);
       }
 
+      if (intent === "revoke-runner") {
+        const parsed = s.parseSafe(revokeRunnerSchema, context.formData);
+        if (!parsed.success) return renderError("Invalid runner revocation request.", 400);
+        const result = await store.revokeRunner(userId, parsed.value.runnerId);
+        if (result === "not-found") return renderError("Runner not found.", 404);
+        context.services.runnerConnections.disconnectRunner(userId, parsed.value.runnerId);
+        return redirect(settingsTabHref("runners"), 303);
+      }
+
+      if (intent === "delete-runner") {
+        const parsed = s.parseSafe(deleteRunnerSchema, context.formData);
+        if (!parsed.success) return renderError("Invalid runner deletion request.", 400);
+        const result = await store.deleteRunner(userId, parsed.value.runnerId);
+        if (result === "not-found") return renderError("Runner not found.", 404);
+        if (result === "not-revoked") {
+          return renderError("Revoke the runner before deleting it.", 409);
+        }
+        return redirect(settingsTabHref("runners"), 303);
+      }
+
       return renderError("Invalid settings form submission.", 400);
     },
   },
@@ -207,11 +249,33 @@ function settingsTabFromRequest(request: Request, intent?: FormDataEntryValue | 
   }
   if (intent === "save-github-credential" || intent === "delete-github-credential") return "github";
   if (intent === "save-git-author") return "git-author";
-  if (intent === "regenerate-enrollment-token") return "runners";
+  if (
+    intent === "regenerate-enrollment-token" || intent === "revoke-runner" ||
+    intent === "delete-runner"
+  ) return "runners";
   return "secrets";
 }
 
 function runnerControlPanelUrl(request: Request): string {
   const publicUrl = Deno.env.get("PUBLIC_URL");
   return new URL(publicUrl ?? request.url).origin;
+}
+
+function settingsRunners(
+  userId: string,
+  runners: RunnerRecord[],
+  connections: RunnerConnectionRegistry,
+): SettingsRunner[] {
+  return runners.map((runner) => {
+    const liveState = runner.revokedAt === null
+      ? connections.getRunnerLiveState(userId, runner.id)
+      : null;
+    return {
+      id: runner.id,
+      name: runner.name,
+      architecture: runner.architecture,
+      status: runner.revokedAt !== null ? "revoked" : liveState ? "online" : "offline",
+      capacity: liveState?.capacity ?? null,
+    };
+  });
 }

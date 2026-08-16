@@ -1,6 +1,7 @@
 import { createContextKey, type Middleware } from "remix/router";
 
 import type { Store } from "@/app/data/store.ts";
+import type { RunnerConnectionRegistry } from "@/app/runner-connection-gateway.ts";
 import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
 
 export interface LoginRateLimiter {
@@ -10,6 +11,7 @@ export interface LoginRateLimiter {
 
 export interface AppServices {
   readonly store: Store;
+  readonly runnerConnections: RunnerConnectionRegistry;
   readonly loginRateLimiter: LoginRateLimiter;
   readonly runnerEnrollmentRateLimiter: LoginRateLimiter;
 }
@@ -27,9 +29,13 @@ export function provideAppServices(services: AppServices): Middleware<{
   };
 }
 
-export function createAppServices(store: Store): AppServices {
+export function createAppServices(
+  store: Store,
+  runnerConnections: RunnerConnectionRegistry = disconnectedRunnerRegistry,
+): AppServices {
   return {
     store,
+    runnerConnections,
     loginRateLimiter: new TokenBucketRateLimiter({
       tokensPerSecond: 1 / (3 * 60),
       burst: 5,
@@ -42,6 +48,11 @@ export function createAppServices(store: Store): AppServices {
     }),
   };
 }
+
+const disconnectedRunnerRegistry: RunnerConnectionRegistry = {
+  getRunnerLiveState: () => null,
+  disconnectRunner: () => false,
+};
 
 export function requestRateLimitKey(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim();

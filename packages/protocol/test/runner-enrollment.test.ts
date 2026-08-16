@@ -65,7 +65,15 @@ Deno.test("validates only the connection messages used by runner enrollment", ()
       version: 1,
       id: "heartbeat-1",
       type: "runner.heartbeat",
-      payload: { observedAt: 1234 },
+      payload: {
+        observedAt: 1234,
+        capacity: {
+          activeSessions: 0,
+          vmCpuCount: 8,
+          vmMemoryMiB: 16_384,
+          diskFreeMiB: 100_000,
+        },
+      },
     }).type,
     "runner.heartbeat",
   );
@@ -93,6 +101,62 @@ Deno.test("validates only the connection messages used by runner enrollment", ()
       id: "future-1",
       type: "session.provision",
       payload: {},
+    })
+  );
+});
+
+Deno.test("validates runner heartbeat capacity", () => {
+  const heartbeat = {
+    version: 1,
+    id: "heartbeat-1",
+    type: "runner.heartbeat",
+    payload: {
+      observedAt: 1234,
+      capacity: {
+        maxConcurrentSessions: 2,
+        activeSessions: 1,
+        vmCpuCount: 4,
+        vmMemoryMiB: 8192,
+        diskFreeMiB: 20_480,
+      },
+    },
+  };
+
+  assertEquals(parseRunnerClientMessage(heartbeat).payload, heartbeat.payload);
+  assertThrows(() =>
+    parseRunnerClientMessage({
+      ...heartbeat,
+      payload: {
+        ...heartbeat.payload,
+        capacity: { ...heartbeat.payload.capacity, maxConcurrentSessions: 0 },
+      },
+    })
+  );
+  assertThrows(() =>
+    parseRunnerClientMessage({
+      ...heartbeat,
+      payload: {
+        ...heartbeat.payload,
+        capacity: { ...heartbeat.payload.capacity, maxConcurrentSessions: null },
+      },
+    })
+  );
+  assertThrows(() =>
+    parseRunnerClientMessage({
+      ...heartbeat,
+      payload: {
+        ...heartbeat.payload,
+        capacity: { ...heartbeat.payload.capacity, activeSessions: -1 },
+      },
+    })
+  );
+  assertThrows(() =>
+    parseRunnerClientMessage({
+      ...heartbeat,
+      payload: {
+        ...heartbeat.payload,
+        capacity: { ...heartbeat.payload.capacity, unexpected: true },
+      },
     })
   );
 });

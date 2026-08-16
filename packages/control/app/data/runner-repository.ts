@@ -37,6 +37,7 @@ export interface EnrolledRunner {
 }
 
 export type RevokeResult = "revoked" | "not-found";
+export type DeleteRunnerResult = "deleted" | "not-found" | "not-revoked";
 
 export interface RunnerRepository {
   getRunnerEnrollmentToken(userId: string): Promise<RunnerEnrollmentToken>;
@@ -45,6 +46,7 @@ export interface RunnerRepository {
   authenticateRunner(token: string): Promise<AuthenticatedRunner | null>;
   listRunners(userId: string): Promise<RunnerRecord[]>;
   revokeRunner(userId: string, id: string): Promise<RevokeResult>;
+  deleteRunner(userId: string, id: string): Promise<DeleteRunnerResult>;
 }
 
 export function createRunnerRepository(database: Database): RunnerRepository {
@@ -124,6 +126,13 @@ export function createRunnerRepository(database: Database): RunnerRepository {
         });
       }
       return "revoked";
+    },
+
+    async deleteRunner(userId, id) {
+      const row = await database.findOne(runners, { where: { id, user_id: userId } });
+      if (!row) return "not-found";
+      if (row.revoked_at === null) return "not-revoked";
+      return (await database.delete(runners, row.id)) ? "deleted" : "not-found";
     },
   };
 }
