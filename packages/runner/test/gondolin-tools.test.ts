@@ -11,9 +11,8 @@ import {
   OPENORB_GUEST_MARKER,
   resolveGuestWorkspacePath,
 } from "@/src/gondolin-tools.ts";
-import { currentDeveloperImageArchitecture, ensureDeveloperImage } from "@/src/developer-image.ts";
-import { DEVELOPER_IMAGE_RELEASE } from "@/src/developer-image-release.ts";
 import { OpenOrbPiSessionFactory } from "@/src/pi-session-factory.ts";
+import { installLocalDeveloperImage } from "@/test/local-developer-image.ts";
 
 Deno.test("workspace path mapping rejects lexical escapes", () => {
   assertEquals(resolveGuestWorkspacePath("file.txt"), "/workspace/file.txt");
@@ -66,23 +65,7 @@ Deno.test({
     await Deno.symlink("../host-secret", `${workspacePath}/relative-escape`);
     Deno.env.set("OPENORB_HOST_PROCESS_MARKER", hostProcessMarker);
 
-    const architecture = currentDeveloperImageArchitecture();
-    const gondolinArchitecture = DEVELOPER_IMAGE_RELEASE.assets[architecture]
-      .gondolinArchitecture;
-    const archivePath =
-      `${Deno.cwd()}/dist/developer-image/gondolin-image-openorb-developer-mvp-1-${gondolinArchitecture}.tar.gz`;
-    const archiveInfo = await Deno.lstat(archivePath);
-    const developerImage = await ensureDeveloperImage({
-      workingDirectory: temporaryDirectory,
-      architecture,
-      async fetch() {
-        const archive = await Deno.open(archivePath, { read: true });
-        return new Response(archive.readable, {
-          status: 200,
-          headers: { "content-length": String(archiveInfo.size) },
-        });
-      },
-    });
+    const developerImage = await installLocalDeveloperImage(temporaryDirectory);
     const runtime = await createOpenOrbGondolinToolRuntime({
       workspacePath,
       developerImage,
@@ -106,10 +89,6 @@ Deno.test({
       const bash = tools.get("bash");
       assert(read && write && edit && bash);
       assertEquals(runtime.tools.find((tool) => tool.name === "edit")?.renderCall, undefined);
-      assertEquals(
-        developerImage.gondolinBuildId,
-        DEVELOPER_IMAGE_RELEASE.assets[architecture].gondolinBuildId,
-      );
 
       const imageProbe = await bash.execute("developer-image", {
         command: [

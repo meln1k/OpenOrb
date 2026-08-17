@@ -23,6 +23,11 @@ import {
 
 import { OPENORB_GUEST_WORKSPACE } from "@/src/pi-session-factory.ts";
 import { type DeveloperImage, prepareDeveloperImageForVm } from "@/src/developer-image.ts";
+import {
+  createOpenOrbGitHubVmOptions,
+  type OpenOrbGitHubMediationOptions,
+} from "@/src/github-mediation.ts";
+import { installGondolinTlsCompatibility } from "@/src/gondolin-tls-compatibility.ts";
 
 export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
 
@@ -32,6 +37,7 @@ export interface OpenOrbGondolinToolRuntimeOptions {
   workspacePath: string;
   developerImage: DeveloperImage;
   sessionLabel?: string;
+  github?: OpenOrbGitHubMediationOptions;
 }
 
 interface RunningVm {
@@ -56,6 +62,7 @@ export async function createOpenOrbGondolinToolRuntime(
     await Deno.realPath(options.workspacePath),
     options.developerImage,
     options.sessionLabel,
+    options.github,
   );
   await runtime.start();
   return runtime;
@@ -92,6 +99,7 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
   readonly #workspacePath: string;
   readonly #developerImage: DeveloperImage;
   readonly #sessionLabel: string;
+  readonly #github?: OpenOrbGitHubMediationOptions;
   #running?: RunningVm;
   #starting?: Promise<RunningVm>;
   #cleanup?: Promise<void>;
@@ -102,10 +110,12 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
     workspacePath: string,
     developerImage: DeveloperImage,
     sessionLabel?: string,
+    github?: OpenOrbGitHubMediationOptions,
   ) {
     this.#workspacePath = workspacePath;
     this.#developerImage = developerImage;
     this.#sessionLabel = sessionLabel ?? `openorb ${basename(workspacePath)}`;
+    this.#github = github;
     this.tools = createTools(this);
   }
 
@@ -163,9 +173,12 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
 
   async #startVm(): Promise<RunningVm> {
     const imagePath = await prepareDeveloperImageForVm(this.#developerImage);
+    const githubOptions = this.#github ? createOpenOrbGitHubVmOptions(this.#github) : undefined;
+    if (githubOptions) installGondolinTlsCompatibility();
     const vm = await VM.create({
       sessionLabel: this.#sessionLabel,
       rootfs: { mode: "cow" },
+      ...githubOptions,
       sandbox: {
         imagePath,
       },

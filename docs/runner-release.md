@@ -20,6 +20,48 @@ deno task release:runner
 No command invokes Node.js, npm, or pnpm. The compile tasks use Deno's managed npm graph and local
 links, not experimental bundling and not npm lifecycle scripts.
 
+### Deno/Gondolin TLS compatibility gate
+
+GitHub mediation depends on Gondolin 0.12.0 terminating guest HTTPS over its custom
+`GuestTlsStream`. Gondolin constructs a server `node:tls` `TLSSocket` and asynchronously supplies
+the per-host `SecureContext` through `SNICallback`. Node resumes the paused handshake after the
+callback. In the reduced OpenOrb reproduction, Deno 2.9.5 left that custom-`Duplex` handshake
+paused, so the decrypted request never reached Gondolin's HTTP hooks until `TLSSocket._start()` was
+called.
+
+`packages/runner/src/gondolin-tls-compatibility.ts` contains the narrowly scoped workaround. It
+replaces `tls.TLSSocket` once, immediately before the first GitHub-mediated VM starts, and calls the
+private `_start()` method only after a successful asynchronous SNI callback. It does not disable
+certificate validation or broaden the HTTP allowlist. The replacement is process-wide after it is
+installed, relies on a private Deno API, and is validated only for Deno 2.9.5 with Gondolin 0.12.0.
+
+There is no Deno flag that supplies the missing handshake continuation. `--cert` changes trusted
+certificate authorities, while `--unsafely-ignore-certificate-errors` weakens outbound certificate
+validation; neither is a substitute. Related Deno fixes cover the initial server-side TLS start
+([#33303](https://github.com/denoland/deno/pull/33303)), SNI callbacks
+([#33360](https://github.com/denoland/deno/pull/33360)), and custom-`Duplex` TLS write cycles
+([#33914](https://github.com/denoland/deno/pull/33914)), but not the reproduced asynchronous-SNI
+stall.
+
+The unit test `Gondolin TLS compatibility requires review when Deno or Gondolin changes` ties the
+workaround to both dependency pins. The runtime also rejects an unreviewed Deno version before
+installing the shim. When upgrading Deno or Gondolin:
+
+1. Expect the version-gate test to fail; do not update its validated versions mechanically.
+2. On the target versions, temporarily bypass the `installGondolinTlsCompatibility()` call in
+   `GondolinToolRuntime.#startVm()` (never commit that bypass) and run `deno task test:gondolin`.
+   The public GitHub clone is the checked-in async-SNI/custom-`Duplex` regression path: if it stalls
+   before the HTTP hook, native Deno behavior still needs a compatibility fix.
+3. If native TLS now completes, delete the workaround and its version gate, then run the public and
+   credential-enabled private GitHub clone/push tests. Confirm that HTTP hooks execute and the real
+   token remains absent from every guest-visible surface.
+4. If native TLS still stalls, verify that `_start()` still has the required semantics before
+   updating the validated versions. Run multiple uncached and cached SNI handshakes, callback-error
+   cases, VM restarts, and the full Gondolin suite.
+5. Recheck whether Gondolin can instead pre-create the `SecureContext` before constructing
+   `TLSSocket`, or use `tls.createServer()` with the custom stream. Prefer an upstream fix over
+   retaining the monkey patch.
+
 ## Artifacts
 
 `deno task release:runner` creates:
