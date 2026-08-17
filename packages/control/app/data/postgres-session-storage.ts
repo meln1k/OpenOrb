@@ -1,6 +1,8 @@
 import type { Pool } from "pg";
+import { any, array, parseSafe, record, string } from "remix/data-schema";
 import { createSession, type Session, type SessionStorage } from "remix/session";
-import { v7 } from "@std/uuid";
+
+import { parseBrowserSessionAuth } from "@/app/utils/session-policy.ts";
 
 type BrowserSessionData = Session["data"];
 type SessionOrigin = { readonly kind: "new" } | { readonly kind: "persisted"; readonly id: string };
@@ -8,6 +10,8 @@ type SessionIdentity =
   | { readonly kind: "anonymous" }
   | { readonly kind: "authenticated"; readonly userId: string }
   | { readonly kind: "invalid" };
+const sessionDataMapSchema = record(string(), any());
+const browserSessionDataSchema = array(sessionDataMapSchema);
 
 /**
  * Owns the PostgreSQL lifecycle of browser sessions.
@@ -174,20 +178,11 @@ export class PostgresSessionStorage implements SessionStorage {
 }
 
 function parseSessionData(value: unknown): BrowserSessionData | null {
-  if (!Array.isArray(value) || value.length !== 2) {
-    return null;
-  }
-
-  const [values, flashes] = value;
-  if (!isSessionDataMap(values) || !isSessionDataMap(flashes)) {
-    return null;
-  }
-
-  return [values, flashes];
-}
-
-function isSessionDataMap(value: unknown): value is BrowserSessionData[number] {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  const parsed = parseSafe(browserSessionDataSchema, value);
+  if (!parsed.success || parsed.value.length !== 2) return null;
+  const values = parsed.value[0];
+  const flashes = parsed.value[1];
+  return values === undefined || flashes === undefined ? null : [values, flashes];
 }
 
 function sessionUserId(data: unknown): string | null {
@@ -209,16 +204,6 @@ function parseSessionIdentity(data: BrowserSessionData): SessionIdentity {
     return { kind: "anonymous" };
   }
 
-  const auth = values.auth;
-  if (
-    typeof auth !== "object" ||
-    auth === null ||
-    Array.isArray(auth) ||
-    !("userId" in auth) ||
-    typeof auth.userId !== "string" ||
-    !v7.validate(auth.userId)
-  ) {
-    return { kind: "invalid" };
-  }
-  return { kind: "authenticated", userId: auth.userId };
+  const auth = parseBrowserSessionAuth(values.auth);
+  return auth ? { kind: "authenticated", userId: auth.userId } : { kind: "invalid" };
 }

@@ -1,5 +1,6 @@
 import { ENROLLMENT_PSK_PREFIX, RUNNER_TOKEN_PREFIX } from "@openorb/protocol";
 import type { RunnerArchitecture, RunnerEnrollmentRequest } from "@openorb/protocol";
+import { array, parseSafe, string } from "remix/data-schema";
 import type { Database } from "remix/data-table";
 import { v7 } from "@std/uuid";
 
@@ -10,6 +11,8 @@ import {
   type RunnerRow,
   runners,
 } from "@/app/data/schema.ts";
+
+const runnerCapabilitiesSchema = array(string());
 
 export interface RunnerEnrollmentToken {
   id: string;
@@ -185,8 +188,8 @@ function mapEnrollmentToken(row: RunnerEnrollmentTokenRow): RunnerEnrollmentToke
 }
 
 function mapRunner(row: RunnerRow): RunnerRecord {
-  const capabilities: unknown = JSON.parse(row.capabilities);
-  if (!Array.isArray(capabilities) || !capabilities.every((value) => typeof value === "string")) {
+  const capabilities = parseSafe(runnerCapabilitiesSchema, JSON.parse(row.capabilities));
+  if (!capabilities.success) {
     throw new Error(`Runner ${row.id} has invalid stored capabilities.`);
   }
   if (row.architecture !== "x64" && row.architecture !== "arm64") {
@@ -196,7 +199,7 @@ function mapRunner(row: RunnerRow): RunnerRecord {
     id: row.id,
     name: row.name,
     architecture: row.architecture,
-    capabilities,
+    capabilities: capabilities.value,
     createdAt: Temporal.Instant.from(row.created_at),
     revokedAt: row.revoked_at === null ? null : Temporal.Instant.from(row.revoked_at),
   };

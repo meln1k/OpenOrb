@@ -54,7 +54,7 @@ async function derive(password: string, salt: Uint8Array): Promise<Uint8Array> {
     {
       name: "PBKDF2",
       hash: PASSWORD_HASH,
-      salt: salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer,
+      salt: Uint8Array.from(salt).buffer,
       iterations: PASSWORD_ITERATIONS,
     },
     passwordKey,

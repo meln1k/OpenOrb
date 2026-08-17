@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 
-import type { AssetManifest } from "@earendil-works/gondolin";
 import { UntarStream } from "@std/tar";
 
 import {
@@ -10,6 +9,10 @@ import {
   type DeveloperImageAssetRelease,
   type DeveloperImageRelease,
 } from "@/src/developer-image-release.ts";
+import {
+  type DeveloperImageManifest,
+  parseDeveloperImageManifest,
+} from "@/src/developer-image-manifest.ts";
 
 const VERIFIED_DEVELOPER_IMAGE = Symbol("verified OpenOrb developer image");
 const IMAGE_FILES = new Set([
@@ -24,6 +27,20 @@ const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_UNCOMPRESSED_IMAGE_BYTES = 2 * 1024 * 1024 * 1024;
 const RELEASE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const MANIFEST_ASSETS = {
+  kernel: "vmlinuz-virt",
+  initramfs: "initramfs.cpio.lz4",
+  rootfs: "rootfs.ext4",
+  krunKernel: "krun-kernel",
+  krunInitrd: "krun-empty-initrd",
+} as const;
+const MANIFEST_ASSET_NAMES = [
+  "kernel",
+  "initramfs",
+  "rootfs",
+  "krunKernel",
+  "krunInitrd",
+] as const;
 
 export interface DeveloperImage {
   readonly path: string;
@@ -330,20 +347,20 @@ async function extractArchive(archivePath: string, destination: string): Promise
   }
 }
 
-function parseManifest(text: string, imagePath: string, releaseId: string): AssetManifest {
+function parseManifest(
+  text: string,
+  imagePath: string,
+  releaseId: string,
+): DeveloperImageManifest {
   try {
-    const manifest: unknown = JSON.parse(text);
-    if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
-      throw new TypeError("manifest is not an object");
-    }
-    return manifest as AssetManifest;
+    return parseDeveloperImageManifest(JSON.parse(text));
   } catch {
     throw invalidImageError(releaseId, imagePath, "manifest.json is not valid JSON");
   }
 }
 
 function validateManifest(
-  manifest: AssetManifest,
+  manifest: DeveloperImageManifest,
   asset: DeveloperImageAssetRelease,
   imagePath: string,
   releaseId: string,
@@ -359,18 +376,11 @@ function validateManifest(
       `manifest identity is incompatible with ${asset.gondolinBuildId} (${asset.gondolinArchitecture})`,
     );
   }
-  const expectedAssets = {
-    kernel: "vmlinuz-virt",
-    initramfs: "initramfs.cpio.lz4",
-    rootfs: "rootfs.ext4",
-    krunKernel: "krun-kernel",
-    krunInitrd: "krun-empty-initrd",
-  } as const;
-  for (const [name, file] of Object.entries(expectedAssets)) {
-    if (manifest.assets?.[name as keyof typeof expectedAssets] !== file) {
+  for (const name of MANIFEST_ASSET_NAMES) {
+    if (manifest.assets[name] !== MANIFEST_ASSETS[name]) {
       throw invalidImageError(releaseId, imagePath, `manifest has an invalid ${name} asset`);
     }
-    if (!SHA256_PATTERN.test(manifest.checksums?.[name as keyof typeof expectedAssets] ?? "")) {
+    if (!SHA256_PATTERN.test(manifest.checksums[name] ?? "")) {
       throw invalidImageError(releaseId, imagePath, `manifest has an invalid ${name} checksum`);
     }
   }
@@ -378,18 +388,12 @@ function validateManifest(
 
 async function verifyManifestChecksums(
   imagePath: string,
-  manifest: AssetManifest,
+  manifest: DeveloperImageManifest,
 ): Promise<boolean> {
-  const assets = {
-    kernel: "vmlinuz-virt",
-    initramfs: "initramfs.cpio.lz4",
-    rootfs: "rootfs.ext4",
-    krunKernel: "krun-kernel",
-    krunInitrd: "krun-empty-initrd",
-  } as const;
-  for (const [name, file] of Object.entries(assets)) {
-    const checksum = manifest.checksums[name as keyof typeof assets];
-    if (await fileSha256(join(imagePath, file)) !== checksum) return false;
+  for (const name of MANIFEST_ASSET_NAMES) {
+    if (await fileSha256(join(imagePath, MANIFEST_ASSETS[name])) !== manifest.checksums[name]) {
+      return false;
+    }
   }
   return true;
 }

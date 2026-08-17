@@ -8,9 +8,9 @@ export function canonicalizeGitHubRepository(value: string): string | null {
   let repository: string;
 
   if (!input.includes("://")) {
-    const parts = input.split("/");
-    if (parts.length !== 2) return null;
-    [owner, repository] = parts as [string, string];
+    const parts = splitRepositoryPath(input);
+    if (!parts) return null;
+    [owner, repository] = parts;
   } else {
     let url: URL;
     try {
@@ -31,9 +31,9 @@ export function canonicalizeGitHubRepository(value: string): string | null {
     }
 
     const pathname = url.pathname.endsWith("/") ? url.pathname.slice(0, -1) : url.pathname;
-    const parts = pathname.replace(/^\//, "").split("/");
-    if (parts.length !== 2) return null;
-    [owner, repository] = parts as [string, string];
+    const parts = splitRepositoryPath(pathname.replace(/^\//, ""));
+    if (!parts) return null;
+    [owner, repository] = parts;
   }
 
   if (repository.endsWith(".git")) repository = repository.slice(0, -4);
@@ -47,4 +47,13 @@ export function canonicalizeGitHubRepository(value: string): string | null {
   }
 
   return `https://github.com/${owner}/${repository}.git`;
+}
+
+function splitRepositoryPath(path: string): [string, string] | null {
+  const parts = path.split("/");
+  const owner = parts[0];
+  const repository = parts[1];
+  return parts.length === 2 && owner !== undefined && repository !== undefined
+    ? [owner, repository]
+    : null;
 }

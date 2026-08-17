@@ -50,7 +50,9 @@ import {
 } from "@/app/ui/components/table.tsx";
 import { media } from "@/app/ui/responsive.ts";
 
-export type SettingsTab = "secrets" | "github" | "git-author" | "runners";
+const SETTINGS_TABS = ["secrets", "github", "git-author", "runners"] as const;
+
+export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export type SettingsSecret = {
   key: string;
@@ -156,8 +158,10 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
           data-slot="tabs"
           mix={tabsRootStyle}
           onActiveTabChange={(nextTab) => {
+            const selectedTab = SETTINGS_TABS.find((tab) => tab === nextTab);
+            if (!selectedTab) return;
             captureGitAuthorDraft();
-            activeTab = nextTab as SettingsTab;
+            activeTab = selectedTab;
             const href = hrefs[activeTab];
             if (href) globalThis.history.pushState(null, "", href);
             void handle.update();
@@ -691,10 +695,7 @@ function formatRunnerSessions(capacity: SettingsRunnerCapacity): string {
   return `${activeSessions} · ${sessionLimit}`;
 }
 
-function placeholderRunnerAllocation(capacity: SettingsRunnerCapacity): {
-  cpuCount: number;
-  memoryMiB: number;
-} {
+function placeholderRunnerAllocation(capacity: SettingsRunnerCapacity) {
   // TODO: Replace these deterministic placeholders with allocations from the Gondolin VM inventory.
   return {
     cpuCount: Math.min(capacity.vmCpuCount, Math.max(1, Math.round(capacity.vmCpuCount * 0.35))),
@@ -709,7 +710,7 @@ function formatMiB(value: number): string {
 
 function tabForCurrentUrl(hrefs: SettingsTabHrefs): SettingsTab | undefined {
   const currentUrl = new URL(globalThis.location.href);
-  for (const name of ["secrets", "github", "git-author", "runners"] as const) {
+  for (const name of SETTINGS_TABS) {
     const tabUrl = new URL(hrefs[name], currentUrl);
     if (
       tabUrl.pathname === currentUrl.pathname &&

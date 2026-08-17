@@ -4,12 +4,16 @@ import { fileURLToPath } from "node:url";
 
 import {
   type Architecture,
-  type AssetManifest,
   buildAssets,
   parseBuildConfig,
   verifyAssets,
 } from "@earendil-works/gondolin";
 import { TarStream, type TarStreamInput } from "@std/tar";
+
+import {
+  type DeveloperImageManifest,
+  parseDeveloperImageManifest,
+} from "@/packages/runner/src/developer-image-manifest.ts";
 
 export const DEVELOPER_IMAGE_RELEASE_ID = "mvp-1";
 export const DEVELOPER_IMAGE_FILES = [
@@ -81,15 +85,17 @@ function parseArchitecture(input: string | undefined): Architecture {
   throw new Error("Usage: deno task build:image <aarch64|x86_64>");
 }
 
-async function normalizeManifest(path: string): Promise<AssetManifest> {
-  const manifest = JSON.parse(await Deno.readTextFile(path)) as AssetManifest;
+async function normalizeManifest(path: string): Promise<DeveloperImageManifest> {
+  const manifest = parseDeveloperImageManifest(
+    JSON.parse(await Deno.readTextFile(path)),
+  );
   requiredBuildId(manifest);
   manifest.buildTime = REPRODUCIBLE_BUILD_TIME;
   await Deno.writeTextFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }
 
-function requiredBuildId(manifest: AssetManifest): string {
+function requiredBuildId(manifest: DeveloperImageManifest): string {
   if (!manifest.buildId) throw new Error("Built developer image manifest has no build ID.");
   return manifest.buildId;
 }

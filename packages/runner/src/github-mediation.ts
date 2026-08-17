@@ -51,7 +51,7 @@ export function createOpenOrbGitHubVmOptions(
     isRequestAllowed: (request) => isAllowedGitHubRequest(request, repository),
   });
 
-  const env: Record<string, string> = {
+  const env = {
     ...secretEnvironment,
     GH_HOST: GITHUB_HOST,
     GH_PROMPT_DISABLED: "1",
@@ -59,13 +59,13 @@ export function createOpenOrbGitHubVmOptions(
     GIT_CONFIG_KEY_0: "safe.directory",
     GIT_CONFIG_VALUE_0: OPENORB_WORKSPACE_REPOSITORIES,
     GIT_TERMINAL_PROMPT: "0",
-  };
-  if (token !== undefined) {
-    env.GIT_CONFIG_KEY_1 = `credential.https://${GITHUB_HOST}.helper`;
-    env.GIT_CONFIG_VALUE_1 = "!gh auth git-credential";
-    env.GIT_CONFIG_KEY_2 = `credential.https://${GITHUB_HOST}.useHttpPath`;
-    env.GIT_CONFIG_VALUE_2 = "true";
-  }
+    ...(token === undefined ? {} : {
+      GIT_CONFIG_KEY_1: `credential.https://${GITHUB_HOST}.helper`,
+      GIT_CONFIG_VALUE_1: "!gh auth git-credential",
+      GIT_CONFIG_KEY_2: `credential.https://${GITHUB_HOST}.useHttpPath`,
+      GIT_CONFIG_VALUE_2: "true",
+    }),
+  } satisfies Record<string, string>;
 
   return {
     allowWebSockets: false,

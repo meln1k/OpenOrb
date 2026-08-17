@@ -1,11 +1,13 @@
 import { assertEquals } from "@std/assert";
+import { object, optional, parse, record, string } from "@remix-run/data-schema";
 
 import { GONDOLIN_TLS_COMPATIBILITY } from "@/src/gondolin-tls-compatibility.ts";
 import { REQUIRED_DENO_VERSION } from "@/src/prerequisites.ts";
 
-interface RunnerConfig {
-  imports?: Record<string, string>;
-}
+const runnerConfigSchema = object(
+  { imports: optional(record(string(), string())) },
+  { unknownKeys: "passthrough" },
+);
 
 Deno.test("Gondolin TLS compatibility requires review when Deno or Gondolin changes", async () => {
   assertEquals(
@@ -19,9 +21,10 @@ Deno.test("Gondolin TLS compatibility requires review when Deno or Gondolin chan
     "Run the repository with the Deno version validated by the TLS compatibility shim.",
   );
 
-  const config = JSON.parse(
-    await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
-  ) as RunnerConfig;
+  const config = parse(
+    runnerConfigSchema,
+    JSON.parse(await Deno.readTextFile(new URL("../deno.json", import.meta.url))),
+  );
   assertEquals(
     config.imports?.["@earendil-works/gondolin"],
     `npm:@earendil-works/gondolin@${GONDOLIN_TLS_COMPATIBILITY.gondolinVersion}`,

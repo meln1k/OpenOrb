@@ -25,7 +25,7 @@ function getRequestBody(options?: ResolveFrameOptions): BodyInit | undefined {
 
   const body = new URLSearchParams();
   for (const [name, value] of formData) {
-    body.append(name, typeof value === "string" ? value : value.name);
+    body.append(name, value instanceof File ? value.name : value);
   }
   return body;
 }

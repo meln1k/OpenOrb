@@ -1,8 +1,13 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { object, parse, string } from "remix/data-schema";
 
 import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
 const REJECT_REPLACEMENT_CONSTRAINT = "browser_sessions_reject_test_replacement";
+const postgresConstraintErrorSchema = object({
+  code: string(),
+  constraint: string(),
+});
 
 Deno.test("keeps the old session when session rotation cannot persist its replacement", async () => {
   const store = await createTestStore();
@@ -24,12 +29,12 @@ Deno.test("keeps the old session when session rotation cannot persist its replac
        check ((data -> 0 ->> 'rejectTestReplacement') is null)`,
     );
 
-    const error = await assertRejects(() => store.sessionStorage.save(replacement));
-    assertEquals((error as { code?: unknown }).code, "23514");
-    assertEquals(
-      (error as { constraint?: unknown }).constraint,
-      REJECT_REPLACEMENT_CONSTRAINT,
+    const error = parse(
+      postgresConstraintErrorSchema,
+      await assertRejects(() => store.sessionStorage.save(replacement)),
     );
+    assertEquals(error.code, "23514");
+    assertEquals(error.constraint, REJECT_REPLACEMENT_CONSTRAINT);
 
     const result = await store.pool.query<{ id: string }>(
       "select id from browser_sessions where id = any($1::text[]) order by id",

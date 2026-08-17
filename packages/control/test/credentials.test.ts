@@ -1,4 +1,5 @@
 import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
+import { array, number, object, parse, string } from "remix/data-schema";
 
 import { createAppServices } from "@/app/middleware/services.ts";
 import { createAppRouter } from "@/app/router.ts";
@@ -14,6 +15,27 @@ import {
 const OPENCODE_KEY = "OPENCODE_API_KEY";
 const OPENCODE_VALUE = "oc-go-secret-7f3d9a";
 const OPENAI_VALUE = "sk-openai-secret-91e4b0";
+
+const secretCiphertextRowSchema = object({
+  key: string(),
+  key_version: number(),
+  ciphertext: string(),
+});
+const encryptedSecretRowSchema = object({
+  id: string(),
+  key: string(),
+  purpose: string(),
+  key_version: number(),
+  ciphertext: string(),
+});
+const persistedSecretRowSchema = object({
+  key: string(),
+  key_version: number(),
+  ciphertext: string(),
+  created_at: string(),
+  updated_at: string(),
+});
+const replacedSecretRowSchema = object({ id: string(), ciphertext: string() });
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -175,16 +197,21 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
     assertNotMatch(saved, /oc-go-secret/);
     assertNotMatch(saved, /sk-openai-secret/);
 
-    const rows = await client.store.pool.query(
-      "select id, key, purpose, key_version, ciphertext from encrypted_secrets order by key",
+    const rows = parse(
+      array(encryptedSecretRowSchema),
+      (await client.store.pool.query(
+        "select id, key, purpose, key_version, ciphertext from encrypted_secrets order by key",
+      )).rows,
     );
-    assertEquals(rows.rows.length, 2);
+    assertEquals(rows.length, 2);
     // Ascending key order: "OPENAI_API_KEY" < "OPENCODE_API_KEY".
-    const openaiRow = rows.rows[0]! as Record<string, string | number>;
-    const opencodeRow = rows.rows[1]! as Record<string, string | number>;
+    const openaiRow = rows[0];
+    const opencodeRow = rows[1];
+    assert(openaiRow);
+    assert(opencodeRow);
     const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-    assertMatch(opencodeRow.id as string, UUID_PATTERN);
-    assertMatch(openaiRow.id as string, UUID_PATTERN);
+    assertMatch(opencodeRow.id, UUID_PATTERN);
+    assertMatch(openaiRow.id, UUID_PATTERN);
     assertNotEquals(opencodeRow.id, openaiRow.id);
     assertEquals(opencodeRow.key, OPENCODE_KEY);
     assertEquals(openaiRow.key, "OPENAI_API_KEY");
@@ -197,14 +224,14 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
         [openaiRow, OPENAI_VALUE],
       ] as const
     ) {
-      const ciphertext = key.ciphertext as string;
+      const ciphertext = key.ciphertext;
       assert(!ciphertext.includes(value), "ciphertext contains the plaintext value");
       assert(
         Uint8Array.fromBase64(ciphertext).byteLength >= value.length + 28,
         "ciphertext is not encrypted",
       );
     }
-    const opencodeCiphertextBefore = opencodeRow.ciphertext as string;
+    const opencodeCiphertextBefore = opencodeRow.ciphertext;
 
     const replacement = "oc-go-replacement-secret-5c7e12";
     const replaceResponse = await submitCredentialsForm(client, {
@@ -217,14 +244,19 @@ Deno.test("saves, replaces, and deletes provider credentials without exposing va
     const replaced = await credentialsPage(client);
     assertNotMatch(replaced, /oc-go-secret-7f3d9a/);
     assertNotMatch(replaced, /oc-go-replacement-secret/);
-    const replacedRows = await client.store.pool.query(
-      "select id, ciphertext from encrypted_secrets where key = $1",
-      [OPENCODE_KEY],
+    const replacedRows = parse(
+      array(replacedSecretRowSchema),
+      (await client.store.pool.query(
+        "select id, ciphertext from encrypted_secrets where key = $1",
+        [OPENCODE_KEY],
+      )).rows,
     );
-    const replacedCiphertext = replacedRows.rows[0]!.ciphertext as string;
+    const replacedRow = replacedRows[0];
+    assert(replacedRow);
+    const replacedCiphertext = replacedRow.ciphertext;
     assertNotEquals(replacedCiphertext, opencodeCiphertextBefore);
     // Replacing a value keeps the row identity; only the ciphertext rotates.
-    assertEquals(replacedRows.rows[0]!.id, opencodeRow.id);
+    assertEquals(replacedRow.id, opencodeRow.id);
     assert(
       !replacedCiphertext.includes(replacement),
       "replaced ciphertext contains the plaintext value",
@@ -269,15 +301,12 @@ Deno.test("restarting with the same master key preserves decryptability", async 
   const userId = user.id;
   await first.saveSecret(userId, OPENCODE_KEY, OPENCODE_VALUE);
   await first.saveSecret(userId, "OPENAI_API_KEY", OPENAI_VALUE);
-  const rows = (await first.pool.query(
-    "select key, key_version, ciphertext, created_at, updated_at from encrypted_secrets order by key",
-  )).rows as Array<{
-    key: string;
-    key_version: number;
-    ciphertext: string;
-    created_at: string;
-    updated_at: string;
-  }>;
+  const rows = parse(
+    array(persistedSecretRowSchema),
+    (await first.pool.query(
+      "select key, key_version, ciphertext, created_at, updated_at from encrypted_secrets order by key",
+    )).rows,
+  );
   await first.close();
 
   // A fresh store over the same database simulates a control-panel restart;
@@ -339,9 +368,12 @@ Deno.test("a wrong master key fails visibly without destroying the stored data",
   // survive and remain decryptable after the wrong-key attempt.
   const wrongKeyStore = await createTestStore(wrongKey, false);
   try {
-    const row = (await wrongKeyStore.pool.query(
-      "select key, key_version, ciphertext from encrypted_secrets",
-    )).rows[0]! as { key: string; key_version: number; ciphertext: string };
+    const row = parse(
+      secretCiphertextRowSchema,
+      (await wrongKeyStore.pool.query(
+        "select key, key_version, ciphertext from encrypted_secrets",
+      )).rows[0],
+    );
     let message = "";
     try {
       await decryptSecret(

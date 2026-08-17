@@ -1,5 +1,6 @@
 import { type Database, DataTableDatabaseError } from "remix/data-table";
 
+import { hasPostgresErrorCode } from "@/app/data/postgres-error.ts";
 import { type ProjectRow, projects } from "@/app/data/schema.ts";
 
 export const DEFAULT_PROJECT_REF = "main";
@@ -104,8 +105,7 @@ export function createProjectRepository(database: Database): ProjectRepository {
 
 function isPostgresForeignKeyViolation(error: unknown): boolean {
   if (!(error instanceof DataTableDatabaseError)) return false;
-  const cause = error.cause;
-  return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "23503";
+  return hasPostgresErrorCode(error.cause, "23503");
 }
 
 function mapProject(row: ProjectRow): Project {

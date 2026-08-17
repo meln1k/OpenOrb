@@ -1,6 +1,11 @@
 import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
+import { parse } from "remix/data-schema";
 
-import { parseRunnerServerMessage, RUNNER_HELLO_MESSAGE_TYPE } from "@openorb/protocol";
+import {
+  parseRunnerServerMessage,
+  RUNNER_HELLO_MESSAGE_TYPE,
+  runnerEnrollmentResponseSchema,
+} from "@openorb/protocol";
 import { createAppServices } from "@/app/middleware/services.ts";
 import { createAppRouter } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
@@ -238,10 +243,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
     });
     assertEquals(firstEnrollment.status, 201);
     assertEquals(firstEnrollment.headers.get("cache-control"), "no-store");
-    const firstRunner = await firstEnrollment.json() as {
-      runnerId: string;
-      runnerToken: string;
-    };
+    const firstRunner = parse(runnerEnrollmentResponseSchema, await firstEnrollment.json());
     assertMatch(firstRunner.runnerToken, /^openorb_runner_/);
 
     const secondEnrollment = await fetch(enrollUrl, {
@@ -250,10 +252,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
       body: JSON.stringify({ ...enrollmentBody, name: "Second runner" }),
     });
     assertEquals(secondEnrollment.status, 201);
-    const secondRunner = await secondEnrollment.json() as {
-      runnerId: string;
-      runnerToken: string;
-    };
+    const secondRunner = parse(runnerEnrollmentResponseSchema, await secondEnrollment.json());
     assertNotEquals(secondRunner.runnerId, firstRunner.runnerId);
     assertNotEquals(secondRunner.runnerToken, firstRunner.runnerToken);
     assertEquals((await store.listRunners(administrator.id)).length, 2);

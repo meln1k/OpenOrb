@@ -6,6 +6,7 @@ import {
   type RunnerCapacity,
   type RunnerServerMessage,
 } from "@openorb/protocol";
+import { parseSafe, string } from "remix/data-schema";
 
 import type { AuthenticatedRunner, RunnerRepository } from "@/app/data/runner-repository.ts";
 
@@ -77,14 +78,15 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
           closeSocket(socket, 4400, "Authentication already in progress");
           return;
         }
-        if (typeof event.data !== "string" || byteLength(event.data) > MAX_MESSAGE_BYTES) {
+        const frame = parseSafe(string(), event.data);
+        if (!frame.success || byteLength(frame.value) > MAX_MESSAGE_BYTES) {
           closeSocket(socket, 4400, "Invalid message");
           return;
         }
 
         let input: unknown;
         try {
-          input = JSON.parse(event.data);
+          input = JSON.parse(frame.value);
         } catch {
           closeSocket(socket, 4400, "Invalid message");
           return;

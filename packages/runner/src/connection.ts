@@ -6,6 +6,7 @@ import {
   type RunnerClientMessage,
   type RunnerServerMessage,
 } from "@openorb/protocol";
+import { parseSafe, string } from "@remix-run/data-schema";
 import { delay } from "@std/async/delay";
 
 export const RUNNER_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -102,13 +103,14 @@ async function connectOnce(
     });
     socket.addEventListener("message", (event) => {
       if (settled) return;
-      if (typeof event.data !== "string") {
+      const frame = parseSafe(string(), event.data);
+      if (!frame.success) {
         socket.close(4400, "Invalid server message");
         return;
       }
       let message: RunnerServerMessage;
       try {
-        message = parseRunnerServerMessage(JSON.parse(event.data));
+        message = parseRunnerServerMessage(JSON.parse(frame.value));
       } catch {
         socket.close(4400, "Invalid server message");
         return;

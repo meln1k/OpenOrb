@@ -12,6 +12,7 @@ import {
   verifyPassword,
 } from "@/app/utils/password.ts";
 import { type PasswordCredential, passwordCredentials, users } from "@/app/data/schema.ts";
+import { hasPostgresErrorCode } from "@/app/data/postgres-error.ts";
 
 export interface Administrator {
   id: string;
@@ -123,13 +124,5 @@ function decodePasswordHash(credential: PasswordCredential): PasswordHash | null
 }
 
 function isConstraintViolation(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) {
-    return false;
-  }
-
-  if ("code" in error && (error.code === "23505" || error.code === "23514")) {
-    return true;
-  }
-
-  return "cause" in error && isConstraintViolation(error.cause);
+  return hasPostgresErrorCode(error, "23505", "23514");
 }

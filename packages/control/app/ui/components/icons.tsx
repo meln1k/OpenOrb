@@ -61,7 +61,12 @@ export function Icon(handle: Handle<{ name: IconName; size?: number }>) {
         strokeLinecap="round"
         strokeLinejoin="round"
       >
-        {iconNodes[handle.props.name].map((node, index) => <LucideNode key={index} node={node} />)}
+        {getIconNodes(handle.props.name).map((node, index) => (
+          <LucideNode
+            key={index}
+            node={node}
+          />
+        ))}
       </svg>
     );
   };
@@ -85,7 +90,7 @@ function LucideNode(handle: Handle<{ node: IconNode[number] }>) {
   };
 }
 
-const iconNodes: Record<IconName, IconNode> = {
+const iconNodes = {
   account: BadgeCheck,
   bell: Bell,
   "chevron-down": ChevronDown,
@@ -107,4 +112,8 @@ const iconNodes: Record<IconName, IconNode> = {
   sparkles: Sparkles,
   user: User,
   x: X,
-};
+} satisfies Record<IconName, IconNode>;
+
+function getIconNodes(name: IconName): IconNode {
+  return iconNodes[name];
+}

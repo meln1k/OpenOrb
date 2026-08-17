@@ -237,7 +237,7 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function parseRepositoryIdentity(repositoryUrl: string): { owner: string; name: string } {
+function parseRepositoryIdentity(repositoryUrl: string) {
   const parts = new URL(repositoryUrl).pathname.slice(1, -4).split("/");
   const [owner, name] = parts;
   assert(owner && name && parts.length === 2);

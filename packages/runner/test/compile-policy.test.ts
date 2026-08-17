@@ -1,14 +1,34 @@
 import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
+import {
+  array,
+  object,
+  optional,
+  parse,
+  parseSafe,
+  record,
+  string,
+  union,
+} from "@remix-run/data-schema";
 
-interface TaskDefinition {
-  command?: string;
-  dependencies?: string[];
-}
+const taskDefinitionSchema = object(
+  {
+    command: optional(string()),
+    dependencies: optional(array(string())),
+  },
+  { unknownKeys: "error" },
+);
+const denoConfigSchema = object(
+  {
+    tasks: optional(record(string(), union([string(), taskDefinitionSchema]))),
+  },
+  { unknownKeys: "passthrough" },
+);
 
 Deno.test("standalone compile tasks bake the approved least-privilege permissions", async () => {
-  const rootConfig = JSON.parse(
-    await Deno.readTextFile(new URL("../../../deno.json", import.meta.url)),
-  ) as { tasks?: Record<string, string | TaskDefinition> };
+  const rootConfig = parse(
+    denoConfigSchema,
+    JSON.parse(await Deno.readTextFile(new URL("../../../deno.json", import.meta.url))),
+  );
 
   const targets = [
     {
@@ -27,8 +47,11 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
 
   for (const expected of targets) {
     const task = rootConfig.tasks?.[expected.task];
-    const command = typeof task === "string" ? task : task?.command;
-    assert(typeof command === "string");
+    const directCommand = parseSafe(string(), task);
+    const command = directCommand.success
+      ? directCommand.value
+      : parse(taskDefinitionSchema, task).command;
+    assert(command);
     assertMatch(command, new RegExp(`--target ${expected.target}`));
     assertMatch(command, new RegExp(`--output ${expected.output}`));
     assertMatch(command, /--allow-read=\./);
@@ -42,8 +65,7 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
     assertNotMatch(command, /--allow-all|-A(?:\s|$)|--allow-ffi/);
   }
 
-  const releaseTask = rootConfig.tasks?.["release:runner"];
-  assert(typeof releaseTask === "object");
+  const releaseTask = parse(taskDefinitionSchema, rootConfig.tasks?.["release:runner"]);
   assertEquals(releaseTask.dependencies, [
     "compile:runner:linux-x64",
     "compile:runner:linux-arm64",

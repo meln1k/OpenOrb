@@ -8,8 +8,8 @@ export const GONDOLIN_TLS_COMPATIBILITY = {
 
 let installed = false;
 
-interface RestartableTlsSocket {
-  _start(): void;
+interface TlsSocketReference {
+  current?: tls.TLSSocket;
 }
 
 /**
@@ -39,7 +39,7 @@ export function installGondolinTlsCompatibility(): void {
   class DenoCompatibleTlsSocket extends NativeTlsSocket {
     constructor(socket: Duplex, options: tls.TLSSocketOptions = {}) {
       const sniCallback = options.SNICallback;
-      const instance: { current?: DenoCompatibleTlsSocket } = {};
+      const instance: TlsSocketReference = {};
       super(
         socket,
         sniCallback
@@ -50,7 +50,7 @@ export function installGondolinTlsCompatibility(): void {
               sniCallback(servername, (error, context) => {
                 callback(error, context);
                 if (returned && !error) {
-                  (instance.current as unknown as RestartableTlsSocket)._start();
+                  restartTlsSocket(instance.current);
                 }
               });
               returned = true;
@@ -68,4 +68,11 @@ export function installGondolinTlsCompatibility(): void {
     value: DenoCompatibleTlsSocket,
   });
   installed = true;
+}
+
+function restartTlsSocket(socket: tls.TLSSocket | undefined): void {
+  if (!socket || !("_start" in socket) || !(socket._start instanceof Function)) {
+    throw new Error("Deno's private TLS handshake restart method is unavailable.");
+  }
+  socket._start.call(socket);
 }

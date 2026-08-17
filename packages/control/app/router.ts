@@ -1,7 +1,6 @@
 import { type Cookie, createCookie } from "remix/cookie";
 import { serveDir } from "@std/http/file-server";
 import { fromFileUrl } from "@std/path";
-import { v7 } from "@std/uuid";
 import { auth, createSessionAuthScheme } from "remix/middleware/auth";
 import { formData } from "remix/middleware/form-data";
 import { session } from "remix/middleware/session";
@@ -19,7 +18,10 @@ import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { type AppServices, AppServicesKey, provideAppServices } from "@/app/middleware/services.ts";
 import { render } from "@/app/middleware/render.tsx";
 import { routes } from "@/app/routes.ts";
-import { BROWSER_SESSION_MAX_AGE_SECONDS } from "@/app/utils/session-policy.ts";
+import {
+  BROWSER_SESSION_MAX_AGE_SECONDS,
+  parseBrowserSessionAuth,
+} from "@/app/utils/session-policy.ts";
 
 const PUBLIC_DIRECTORY = fromFileUrl(new URL("../public/", import.meta.url));
 
@@ -58,7 +60,7 @@ export function createAppRouter(
           createSessionAuthScheme<Administrator, { userId: string }>({
             read(currentSession) {
               const value = currentSession.get("auth");
-              return isAuthSession(value) ? value : null;
+              return parseBrowserSessionAuth(value);
             },
             verify(value, context) {
               const currentServices = context.get(AppServicesKey);
@@ -100,16 +102,6 @@ function publicFiles(): Middleware {
     });
     return response.status === 404 ? next() : response;
   };
-}
-
-function isAuthSession(value: unknown): value is { userId: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "userId" in value &&
-    typeof value.userId === "string" &&
-    v7.validate(value.userId)
-  );
 }
 
 export type AppRouter = ReturnType<typeof createAppRouter>;
