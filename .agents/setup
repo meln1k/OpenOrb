@@ -40,7 +40,18 @@ install_system_packages() {
       ;;
   esac
 
-  local packages=(ca-certificates curl openssl postgresql qemu-utils unzip "$qemu_package")
+  local packages=(
+    ca-certificates
+    cpio
+    curl
+    e2fsprogs
+    lz4
+    openssl
+    postgresql
+    qemu-utils
+    unzip
+    "$qemu_package"
+  )
   local missing=()
   local package
   for package in "${packages[@]}"; do

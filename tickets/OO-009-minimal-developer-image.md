@@ -9,7 +9,7 @@ OpenOrb can boot a pinned, reproducible Gondolin image containing only the tools
 
 ## Scope
 
-- Add Gondolin image build configuration compatible with the current macOS harness and future supported Linux runners.
+- Add Gondolin image build configuration compatible with the current Linux orb harness and the supported Linux x86-64 and ARM64 runners.
 - Include the commands required now: Bash/coreutils, Git, GitHub CLI, CA certificates, and utilities used by setup and controlled reports.
 - Add guest language/package tooling only if required by the chosen real acceptance repository; ask before expanding the image. Such guest tooling does not add a Node.js requirement to the Deno runner host.
 - Pin the Gondolin package and one exact image build ID with architecture-specific asset URLs, sizes, and SHA-256 hashes in runner release metadata. Never use `latest` in production.

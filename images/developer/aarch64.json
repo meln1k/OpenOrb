@@ -1,0 +1,43 @@
+{
+  "arch": "aarch64",
+  "distro": "alpine",
+  "alpine": {
+    "version": "3.23.0",
+    "branch": "v3.23",
+    "kernelPackage": "linux-virt",
+    "kernelImage": "vmlinuz-virt",
+    "rootfsPackages": [
+      "linux-virt",
+      "rng-tools",
+      "bash",
+      "coreutils",
+      "git",
+      "github-cli",
+      "ca-certificates",
+      "curl",
+      "jq",
+      "ripgrep",
+      "file",
+      "tar",
+      "unzip",
+      "zstd"
+    ],
+    "initramfsPackages": [],
+    "krunfwVersion": "v5.2.1"
+  },
+  "rootfs": {
+    "label": "gondolin-root",
+    "sizeMb": 512
+  },
+  "postBuild": {
+    "copy": [
+      {
+        "src": "./openorb-image-release",
+        "dest": "/etc/openorb-image-release"
+      }
+    ]
+  },
+  "runtimeDefaults": {
+    "rootfsMode": "cow"
+  }
+}

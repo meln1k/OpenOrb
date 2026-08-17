@@ -4,6 +4,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./connection": "./src/connection.ts",
+    "./developer-image": "./src/developer-image.ts",
+    "./developer-image-release": "./src/developer-image-release.ts",
     "./enrollment": "./src/enrollment.ts",
     "./gondolin-tools": "./src/gondolin-tools.ts",
     "./identity": "./src/identity.ts",
@@ -19,12 +21,13 @@
     "@remix-run/data-schema": "npm:@remix-run/data-schema@0.3.0",
     "@std/assert": "jsr:@std/assert@1.0.19",
     "@std/async/delay": "jsr:@std/async@1.0.14/delay",
-    "@std/cli/parse-args": "jsr:@std/cli@1.0.32/parse-args"
+    "@std/cli/parse-args": "jsr:@std/cli@1.0.32/parse-args",
+    "@std/tar": "jsr:@std/tar@0.1.10"
   },
   "publish": false,
   "tasks": {
-    "dev": "deno run --watch --allow-read=../.. --allow-write=../../.openorb-runner-dev --allow-net --allow-env=PATH,PWD --allow-sys=statfs,systemMemoryInfo --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img ../../scripts/run-development-runner.ts",
+    "dev": "deno run --watch --allow-read=../.. --allow-write=../../.openorb-runner-dev --allow-net --allow-env=PATH,PWD --allow-sys=gid,homedir,networkInterfaces,statfs,systemMemoryInfo,uid --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img ../../scripts/run-development-runner.ts",
     "dev:otel": "OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_SERVICE_NAME=openorb-runner OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno task dev",
-    "start": "deno run --allow-read=../.. --allow-write=../../.openorb-runner-dev --allow-net --allow-env=PATH,PWD --allow-sys=statfs,systemMemoryInfo --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img ../../scripts/run-development-runner.ts"
+    "start": "deno run --allow-read=../.. --allow-write=../../.openorb-runner-dev --allow-net --allow-env=PATH,PWD --allow-sys=gid,homedir,networkInterfaces,statfs,systemMemoryInfo,uid --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img ../../scripts/run-development-runner.ts"
   }
 }

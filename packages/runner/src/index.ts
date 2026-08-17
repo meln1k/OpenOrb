@@ -5,6 +5,7 @@ import { enrollRunner } from "@/src/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
 import { parseRunnerCommand } from "@/src/options.ts";
 import { createRunnerCapacityReporter } from "@/src/capacity.ts";
+import { ensureDeveloperImage } from "@/src/developer-image.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 export const RUNNER_VERSION = "0.0.0";
@@ -81,6 +82,15 @@ export async function main(args: string[] = Deno.args): Promise<number> {
     return 1;
   }
 
+  console.log("[openorb-runner] checking pinned developer image");
+  let developerImage;
+  try {
+    developerImage = await ensureDeveloperImage({ workingDirectory });
+  } catch (error) {
+    console.error(`[openorb-runner] error: ${error instanceof Error ? error.message : error}`);
+    return 1;
+  }
+
   console.log(
     JSON.stringify({
       component: "openorb-runner",
@@ -92,6 +102,11 @@ export async function main(args: string[] = Deno.args): Promise<number> {
       denoVersion: report.denoVersion,
       runtime: Deno.build.standalone ? "denort" : "deno",
       qemu: report.qemu,
+      developerImage: {
+        releaseId: developerImage.releaseId,
+        gondolinBuildId: developerImage.gondolinBuildId,
+        path: developerImage.path,
+      },
     }),
   );
 

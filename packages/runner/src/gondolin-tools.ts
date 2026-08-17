@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { OPENORB_GUEST_WORKSPACE } from "@/src/pi-session-factory.ts";
+import { type DeveloperImage, prepareDeveloperImageForVm } from "@/src/developer-image.ts";
 
 export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
 
@@ -29,6 +30,7 @@ const PI_UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 export interface OpenOrbGondolinToolRuntimeOptions {
   workspacePath: string;
+  developerImage: DeveloperImage;
   sessionLabel?: string;
 }
 
@@ -52,6 +54,7 @@ export async function createOpenOrbGondolinToolRuntime(
 
   const runtime = new GondolinToolRuntime(
     await Deno.realPath(options.workspacePath),
+    options.developerImage,
     options.sessionLabel,
   );
   await runtime.start();
@@ -87,6 +90,7 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
   readonly tools: readonly ToolDefinition[];
 
   readonly #workspacePath: string;
+  readonly #developerImage: DeveloperImage;
   readonly #sessionLabel: string;
   #running?: RunningVm;
   #starting?: Promise<RunningVm>;
@@ -94,8 +98,13 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
   #closePromise?: Promise<void>;
   #closed = false;
 
-  constructor(workspacePath: string, sessionLabel?: string) {
+  constructor(
+    workspacePath: string,
+    developerImage: DeveloperImage,
+    sessionLabel?: string,
+  ) {
     this.#workspacePath = workspacePath;
+    this.#developerImage = developerImage;
     this.#sessionLabel = sessionLabel ?? `openorb ${basename(workspacePath)}`;
     this.tools = createTools(this);
   }
@@ -153,8 +162,13 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
   }
 
   async #startVm(): Promise<RunningVm> {
+    const imagePath = await prepareDeveloperImageForVm(this.#developerImage);
     const vm = await VM.create({
       sessionLabel: this.#sessionLabel,
+      rootfs: { mode: "cow" },
+      sandbox: {
+        imagePath,
+      },
       vfs: {
         mounts: {
           [OPENORB_GUEST_WORKSPACE]: new RealFSProvider(this.#workspacePath),

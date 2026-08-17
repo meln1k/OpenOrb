@@ -11,6 +11,8 @@ import {
   OPENORB_GUEST_MARKER,
   resolveGuestWorkspacePath,
 } from "@/src/gondolin-tools.ts";
+import { currentDeveloperImageArchitecture, ensureDeveloperImage } from "@/src/developer-image.ts";
+import { DEVELOPER_IMAGE_RELEASE } from "@/src/developer-image-release.ts";
 import { OpenOrbPiSessionFactory } from "@/src/pi-session-factory.ts";
 
 Deno.test("workspace path mapping rejects lexical escapes", () => {
@@ -64,8 +66,26 @@ Deno.test({
     await Deno.symlink("../host-secret", `${workspacePath}/relative-escape`);
     Deno.env.set("OPENORB_HOST_PROCESS_MARKER", hostProcessMarker);
 
+    const architecture = currentDeveloperImageArchitecture();
+    const gondolinArchitecture = DEVELOPER_IMAGE_RELEASE.assets[architecture]
+      .gondolinArchitecture;
+    const archivePath =
+      `${Deno.cwd()}/dist/developer-image/gondolin-image-openorb-developer-mvp-1-${gondolinArchitecture}.tar.gz`;
+    const archiveInfo = await Deno.lstat(archivePath);
+    const developerImage = await ensureDeveloperImage({
+      workingDirectory: temporaryDirectory,
+      architecture,
+      async fetch() {
+        const archive = await Deno.open(archivePath, { read: true });
+        return new Response(archive.readable, {
+          status: 200,
+          headers: { "content-length": String(archiveInfo.size) },
+        });
+      },
+    });
     const runtime = await createOpenOrbGondolinToolRuntime({
       workspacePath,
+      developerImage,
       sessionLabel: "openorb OO-008 integration test",
     });
     const pi = await OpenOrbPiSessionFactory.create({
@@ -86,6 +106,43 @@ Deno.test({
       const bash = tools.get("bash");
       assert(read && write && edit && bash);
       assertEquals(runtime.tools.find((tool) => tool.name === "edit")?.renderCall, undefined);
+      assertEquals(
+        developerImage.gondolinBuildId,
+        DEVELOPER_IMAGE_RELEASE.assets[architecture].gondolinBuildId,
+      );
+
+      const imageProbe = await bash.execute("developer-image", {
+        command: [
+          "set -eu",
+          'test "$(cat /etc/openorb-image-release)" = mvp-1',
+          'for command in bash git gh curl jq rg file tar unzip zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
+          "test -s /etc/ssl/certs/ca-certificates.crt",
+          "git --version",
+          "gh --version",
+          "set +e",
+          "timeout 10s gh auth status </dev/null >/tmp/gh-auth-status 2>&1",
+          "gh_status=$?",
+          "set -e",
+          'test "$gh_status" -ne 0 && test "$gh_status" -ne 124',
+          'for command in deno node python python3 go cargo rustc; do ! command -v "$command" >/dev/null; done',
+          'test -z "$(find /var/cache/apk -type f -print -quit 2>/dev/null)"',
+          "test ! -e /sbin/openrc",
+          "test ! -e /usr/sbin/sshd",
+          "printf image-ok",
+        ].join("\n"),
+      });
+      assertStringIncludes(
+        imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
+        "git version",
+      );
+      assertStringIncludes(
+        imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
+        "gh version",
+      );
+      assertStringIncludes(
+        imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
+        "image-ok",
+      );
 
       await write.execute("write", { path: "nested/message.txt", content: "before\n" });
       assertEquals(await Deno.readTextFile(`${workspacePath}/nested/message.txt`), "before\n");

@@ -34,7 +34,10 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
     assertMatch(command, /--allow-read=\./);
     assertMatch(command, /--allow-write=\./);
     assertMatch(command, /--allow-net(?:\s|$)/);
-    assertMatch(command, /--allow-sys=statfs,systemMemoryInfo/);
+    assertMatch(
+      command,
+      /--allow-sys=gid,homedir,networkInterfaces,statfs,systemMemoryInfo,uid/,
+    );
     assertMatch(command, new RegExp(`--allow-run=${expected.qemu}`));
     assertNotMatch(command, /--allow-all|-A(?:\s|$)|--allow-ffi/);
   }

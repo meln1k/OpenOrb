@@ -1,6 +1,6 @@
 # Runner release process
 
-OO-001A establishes the standalone runner build path. OO-009 will supply the first real guest-image
+OO-001A establishes the standalone runner build path. OO-009 supplies the first real guest-image
 build metadata and OO-023 will complete supported-host/service validation.
 
 ## Pinned toolchain
@@ -28,15 +28,16 @@ links, not experimental bundling and not npm lifecycle scripts.
 - `dist/openorb-runner-linux-arm64` from `aarch64-unknown-linux-gnu`
 - `dist/SHA256SUMS`
 
-`scripts/runner-artifact-metadata.ts` verifies the ELF architecture, computes SHA-256, and rejects a
-glibc symbol requirement newer than 2.27. Rebuilding an unchanged source/lock graph with Deno 2.9.5
-must produce identical bytes and checksums.
+`scripts/runner-artifact-metadata.ts` verifies the ELF architecture, computes SHA-256, and checks
+the ELF dynamic string table to reject a glibc symbol requirement newer than 2.27. Rebuilding an
+unchanged source/lock graph with Deno 2.9.5 must produce identical bytes and checksums.
 
 The executables embed denort. Smoke-test each on its native architecture in a glibc 2.27+
 environment that has neither a `node` nor a `deno` executable. `--version` must report the matching
-architecture, Deno 2.9.5, and `standalone: true`. `doctor` must fail actionably when QEMU/KVM is
-absent and reject musl hosts. CI automation is intentionally deferred for now; perform this release
-validation manually on native x86-64 and ARM64 hosts before publishing artifacts.
+architecture, Deno 2.9.5, and `standalone: true`. `doctor` must install and verify the pinned
+developer image, fail actionably when QEMU/KVM is absent, and reject musl hosts. CI automation is
+intentionally deferred for now; perform this release validation manually on native x86-64 and ARM64
+hosts before publishing artifacts.
 
 ## Permission boundary
 
@@ -46,6 +47,8 @@ The compile command bakes in:
 - unrestricted network access for approved public web access;
 - only `qemu-system-x86_64,qemu-img` or `qemu-system-aarch64,qemu-img` subprocess access;
 - only `PATH` and `PWD` environment access;
+- host UID/GID, home-directory, network-interface, filesystem-capacity, and system-memory
+  inspection;
 - no FFI and no `--allow-all`.
 
 Production systemd sets `WorkingDirectory=/var/lib/openorb-runner`. The executable does not accept
@@ -60,9 +63,11 @@ approved web tools are enabled.
 
 ## Guest assets
 
-VM images are never embedded in the executable. OO-009 owns their release metadata, acquisition,
-integrity verification, and Gondolin integration; none of that is implemented by OO-001A.
+VM images are never embedded in the executable. The runner downloads OO-009's architecture-specific
+pinned asset into its working directory, verifies it, and gives Gondolin explicit local asset paths.
+See [Developer image release process](developer-image.md) for the build, publication, installation,
+and recovery procedure.
 
-Do not publish placeholder image IDs, URLs, or hashes. Do not sign a runner release until native
-QEMU/KVM integration has exercised the exact executable and image assets. Release/checksum signing
-belongs to the release ticket once signing identity and format are approved.
+Do not sign a runner release until native QEMU/KVM integration has exercised the exact executable
+and image assets. Release/checksum signing belongs to the release ticket once signing identity and
+format are approved.

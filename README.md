@@ -12,20 +12,24 @@ OpenOrb is an open-source, self-hostable control panel and runner for Pi coding-
 
 Node.js, npm, and pnpm are not used by OpenOrb. Dependencies published to npm are resolved and installed by Deno from exact `npm:` imports. Deno owns the generated local `node_modules` tree required by Remix's browser-asset compiler; OpenOrb retains no `package.json`, and no npm tooling or Node.js runtime is required.
 
-Install QEMU for the host architecture:
+The repository's orb setup installs QEMU for the orb architecture. Outside an orb, install QEMU for
+the host architecture:
 
 ```sh
-# macOS development harness
-brew install qemu
+# Debian/Ubuntu x86-64
+sudo apt install qemu-system-x86
 
 # Debian/Ubuntu ARM64
 sudo apt install qemu-system-arm
 
-# Debian/Ubuntu x86-64
-sudo apt install qemu-system-x86
+# Optional macOS local harness
+brew install qemu
 ```
 
-The macOS runner entry point is a temporary development harness. Release runners target glibc Linux x86-64 and ARM64; musl hosts are not supported. The current Deno 2.9.5 artifacts require glibc 2.27 or newer. `gh` belongs in the guest developer image introduced by OO-009, not on the runner host.
+Development primarily uses Linux Amp orbs. The macOS runner entry point remains an optional temporary
+local harness, not a supported release target. Release runners target glibc Linux x86-64 and ARM64;
+musl hosts are not supported. The current Deno 2.9.5 artifacts require glibc 2.27 or newer. `gh`
+belongs in the guest developer image introduced by OO-009, not on the runner host.
 
 ## Install and run
 
@@ -124,7 +128,7 @@ Outputs:
 
 The executables contain denort and do not need an installed Deno or Node executable. They must start from the canonical runner working directory; `--data-dir` is intentionally unsupported. Production compilation bakes in runner-directory read/write access, unrestricted network access, `PATH`/`PWD` environment access, and only the architecture-appropriate `qemu-system-*` plus `qemu-img` subprocess permission. It does not grant `--allow-all` or FFI.
 
-Guest VM assets are not embedded in the standalone executables. Their release metadata, acquisition, verification, and Gondolin integration are deferred to OO-009.
+Guest VM assets are not embedded in the standalone executables. The runner installs the architecture-specific pinned developer image under its canonical working directory, verifies its byte count, SHA-256, Gondolin build ID, architecture, and internal asset checksums, and passes only those explicit local paths to Gondolin. See [the developer image release process](docs/developer-image.md).
 
 ## Pinned Remix scaffold
 
