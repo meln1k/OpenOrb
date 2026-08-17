@@ -1,5 +1,10 @@
 /// <reference lib="deno.unstable" />
 
+import { callAntiSlopRules } from "./anti-slop/call-rules.ts";
+import { flowAntiSlopRules } from "./anti-slop/flow-rules.ts";
+import { syntaxAntiSlopRules } from "./anti-slop/syntax-rules.ts";
+import { typeAntiSlopRules } from "./anti-slop/type-rules.ts";
+
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 const PI_SESSION_FACTORY_PATH = "packages/runner/src/pi-session-factory.ts";
 const PI_SESSION_CONSTRUCTORS = new Set([
@@ -29,29 +34,10 @@ function isPiCodingAgentSpecifier(value: unknown): boolean {
 const plugin = {
   name: "openorb",
   rules: {
-    "no-record-string-unknown": {
-      create(context) {
-        return {
-          TSTypeReference(node) {
-            const [keyType, valueType] = node.typeArguments?.params ?? [];
-            if (
-              node.typeName.type !== "Identifier" ||
-              node.typeName.name !== "Record" ||
-              node.typeArguments?.params.length !== 2 ||
-              keyType?.type !== "TSStringKeyword" ||
-              valueType?.type !== "TSUnknownKeyword"
-            ) {
-              return;
-            }
-
-            context.report({
-              node,
-              message: "Do not use `Record<string, unknown>`; use a named or concrete type.",
-            });
-          },
-        };
-      },
-    },
+    ...callAntiSlopRules,
+    ...flowAntiSlopRules,
+    ...syntaxAntiSlopRules,
+    ...typeAntiSlopRules,
     "no-default-pi-resource-loader": {
       create(context) {
         if (!isRunnerFile(context.filename)) return {};

@@ -40,6 +40,10 @@
     "lineWidth": 100
   },
   "lint": {
+    "exclude": [
+      "scripts/anti-slop",
+      "scripts/lint-plugin.ts"
+    ],
     "plugins": ["./scripts/lint-plugin.ts"]
   },
   "tasks": {
