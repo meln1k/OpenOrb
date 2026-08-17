@@ -26,6 +26,7 @@ Deno.test("heartbeat capacity is tenant scoped and times out the connection", as
   const gateway = new RunnerConnectionGateway(
     {
       authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
+      reconcileSessionSnapshotEntries: emptyReconciliation,
     },
     { heartbeatTimeoutMs: 50 },
   );
@@ -65,6 +66,7 @@ Deno.test("heartbeat capacity is tenant scoped and times out the connection", as
 Deno.test("invalid heartbeat capacity is rejected", async () => {
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
+    reconcileSessionSnapshotEntries: emptyReconciliation,
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;
@@ -222,4 +224,12 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     assert(Date.now() < deadline, "timed out waiting for runner state");
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
+}
+
+function emptyReconciliation() {
+  return Promise.resolve({
+    acceptedSessionIds: [],
+    tombstonedSessionIds: [],
+    rejected: [],
+  });
 }

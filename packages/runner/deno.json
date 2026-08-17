@@ -10,7 +10,8 @@
     "./gondolin-tools": "./src/gondolin-tools.ts",
     "./identity": "./src/identity.ts",
     "./pi-session-factory": "./src/pi-session-factory.ts",
-    "./prerequisites": "./src/prerequisites.ts"
+    "./prerequisites": "./src/prerequisites.ts",
+    "./session-store": "./src/session-store.ts"
   },
   "imports": {
     "@/": "./",

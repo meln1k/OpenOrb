@@ -74,6 +74,7 @@ Deno.test("allows only one in-flight runner authentication per socket", async ()
       await authenticationPending;
       return null;
     },
+    reconcileSessionSnapshotEntries: emptyReconciliation,
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;
@@ -347,6 +348,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
           vmMemoryMiB: 8192,
           diskFreeMiB: 20_480,
         }),
+      getSessionSnapshot: () => Promise.resolve([]),
       onConnected() {
         harnessConnections++;
         harnessShutdown.abort();
@@ -557,4 +559,12 @@ async function assertRejectsCrossTenantRunnerOwner(
     rejected = true;
   }
   assert(rejected, "expected the composite enrollment-token owner constraint to reject the update");
+}
+
+function emptyReconciliation() {
+  return Promise.resolve({
+    acceptedSessionIds: [],
+    tombstonedSessionIds: [],
+    rejected: [],
+  });
 }

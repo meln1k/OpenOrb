@@ -1,4 +1,5 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { parseRunnerClientMessage } from "@openorb/protocol";
 
 import { enrollRunner } from "@/src/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
@@ -194,6 +195,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
       runnerToken: RUNNER_TOKEN,
       signal: abortController.signal,
       getCapacity: () => Promise.reject(new Error("Connection never authenticates")),
+      getSessionSnapshot: () => Promise.resolve([]),
       random: () => 0,
       sleep(milliseconds) {
         delays.push(milliseconds);
@@ -211,6 +213,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
       runnerToken: RUNNER_TOKEN,
       signal: delayAbortController.signal,
       getCapacity: () => Promise.reject(new Error("Connection never authenticates")),
+      getSessionSnapshot: () => Promise.resolve([]),
       handshakeTimeoutMs: 20,
       onReconnectScheduled() {
         delayAbortController.abort();
@@ -219,6 +222,96 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
   } finally {
     abortController.abort();
     for (const socket of sockets) socket.close(1001, "Test shutting down");
+    await server.shutdown();
+    await server.finished;
+  }
+});
+
+Deno.test("sends a complete session inventory in bounded reconciliation chunks", async () => {
+  let resolveAddress: (address: Deno.NetAddr) => void;
+  let resolveComplete: () => void;
+  const listening = new Promise<Deno.NetAddr>((resolve) => {
+    resolveAddress = resolve;
+  });
+  const reconciliationComplete = new Promise<void>((resolve) => {
+    resolveComplete = resolve;
+  });
+  const received: unknown[] = [];
+  const server = Deno.serve(
+    { hostname: "127.0.0.1", port: 0, onListen: resolveAddress! },
+    (request) => {
+      const { socket, response } = Deno.upgradeWebSocket(request);
+      socket.onmessage = (event) => {
+        const input: unknown = JSON.parse(String(event.data));
+        const message = parseRunnerClientMessage(input);
+        if (message.type === "runner.hello") {
+          socket.send(JSON.stringify({
+            version: 1,
+            id: crypto.randomUUID(),
+            type: "runner.connected",
+            payload: { runnerId: RUNNER_ID },
+          }));
+          return;
+        }
+        received.push(input);
+        if (message.type === "runner.reconcile.complete") resolveComplete();
+      };
+      return response;
+    },
+  );
+  const address = await listening;
+  const abortController = new AbortController();
+  const sessions = Array.from({ length: 26 }, (_, index) => ({
+    id: crypto.randomUUID(),
+    projectId: "01989d78-65ee-7f6a-a97e-0f16ad134c11",
+    createdAt: "2026-08-17T12:00:00Z",
+    initialPromptPreview: `Session ${index}`,
+    state: "created" as const,
+    lastEventCursor: index,
+  }));
+
+  try {
+    const connection = maintainRunnerConnection({
+      controlPanelUrl: `http://${address.hostname}:${address.port}`,
+      runnerId: RUNNER_ID,
+      runnerToken: RUNNER_TOKEN,
+      signal: abortController.signal,
+      getCapacity: () =>
+        Promise.resolve({
+          activeSessions: 0,
+          vmCpuCount: 4,
+          vmMemoryMiB: 8192,
+          diskFreeMiB: 20_480,
+        }),
+      getSessionSnapshot: () => Promise.resolve(sessions),
+      onConnected() {
+        abortController.abort();
+      },
+    });
+    await reconciliationComplete;
+    await connection;
+
+    const messages = received.map(parseRunnerClientMessage);
+    assertEquals(messages.map((message) => message.type), [
+      "runner.reconcile.start",
+      "runner.reconcile.chunk",
+      "runner.reconcile.chunk",
+      "runner.reconcile.complete",
+    ]);
+    const [start, firstChunk, secondChunk, complete] = messages;
+    assert(start?.type === "runner.reconcile.start");
+    assert(firstChunk?.type === "runner.reconcile.chunk");
+    assert(secondChunk?.type === "runner.reconcile.chunk");
+    assert(complete?.type === "runner.reconcile.complete");
+    assertEquals([firstChunk.payload.sequence, firstChunk.payload.sessions.length], [0, 25]);
+    assertEquals([secondChunk.payload.sequence, secondChunk.payload.sessions.length], [1, 1]);
+    assertEquals(complete.payload, {
+      snapshotId: start.payload.snapshotId,
+      chunkCount: 2,
+      sessionCount: 26,
+    });
+  } finally {
+    abortController.abort();
     await server.shutdown();
     await server.finished;
   }

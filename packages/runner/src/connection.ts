@@ -2,9 +2,14 @@ import {
   parseRunnerServerMessage,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
   RUNNER_HELLO_MESSAGE_TYPE,
+  RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
+  RUNNER_RECONCILE_CHUNK_SESSION_LIMIT,
+  RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
+  RUNNER_RECONCILE_START_MESSAGE_TYPE,
   type RunnerCapacity,
   type RunnerClientMessage,
   type RunnerServerMessage,
+  type RunnerSessionSnapshot,
 } from "@openorb/protocol";
 import { parseSafe, string } from "@remix-run/data-schema";
 import { delay } from "@std/async/delay";
@@ -19,6 +24,7 @@ export interface MaintainRunnerConnectionOptions {
   runnerToken: string;
   signal: AbortSignal;
   getCapacity: () => Promise<RunnerCapacity>;
+  getSessionSnapshot: () => Promise<RunnerSessionSnapshot[]>;
   handshakeTimeoutMs?: number;
   random?: () => number;
   sleep?: typeof delay;
@@ -125,6 +131,26 @@ async function connectOnce(
       }
       connected = true;
       handshakeDeadline.removeEventListener("abort", handshakeTimedOut);
+      const sendSnapshot = async () => {
+        const sessions = await options.getSessionSnapshot();
+        if (settled || socket.readyState !== WebSocket.OPEN) return false;
+
+        const snapshotId = crypto.randomUUID();
+        socket.send(JSON.stringify(reconcileStartMessage(snapshotId)));
+        let sequence = 0;
+        for (
+          let index = 0;
+          index < sessions.length;
+          index += RUNNER_RECONCILE_CHUNK_SESSION_LIMIT
+        ) {
+          const chunk = sessions.slice(index, index + RUNNER_RECONCILE_CHUNK_SESSION_LIMIT);
+          socket.send(JSON.stringify(reconcileChunkMessage(snapshotId, sequence++, chunk)));
+        }
+        socket.send(
+          JSON.stringify(reconcileCompleteMessage(snapshotId, sequence, sessions.length)),
+        );
+        return true;
+      };
       const sendHeartbeat = async () => {
         if (settled || heartbeatInFlight || socket.readyState !== WebSocket.OPEN) return;
         heartbeatInFlight = true;
@@ -139,11 +165,16 @@ async function connectOnce(
           heartbeatInFlight = false;
         }
       };
-      void sendHeartbeat();
-      heartbeat = setInterval(() => {
+      void sendSnapshot().then((sent) => {
+        if (!sent || settled || socket.readyState !== WebSocket.OPEN) return;
         void sendHeartbeat();
-      }, RUNNER_HEARTBEAT_INTERVAL_MS);
-      options.onConnected?.();
+        heartbeat = setInterval(() => {
+          void sendHeartbeat();
+        }, RUNNER_HEARTBEAT_INTERVAL_MS);
+        options.onConnected?.();
+      }).catch(() => {
+        closeSocket(socket, 1011, "Runner session inventory failed");
+      });
     });
     socket.addEventListener("close", (event) => {
       finish(event.code === 4401 ? "unauthorized" : connected ? "connected" : "disconnected");
@@ -170,6 +201,41 @@ function heartbeatMessage(capacity: RunnerCapacity): RunnerClientMessage {
     id: crypto.randomUUID(),
     type: RUNNER_HEARTBEAT_MESSAGE_TYPE,
     payload: { observedAt: Date.now(), capacity },
+  };
+}
+
+function reconcileStartMessage(snapshotId: string): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: RUNNER_RECONCILE_START_MESSAGE_TYPE,
+    payload: { snapshotId },
+  };
+}
+
+function reconcileChunkMessage(
+  snapshotId: string,
+  sequence: number,
+  sessions: RunnerSessionSnapshot[],
+): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
+    payload: { snapshotId, sequence, sessions },
+  };
+}
+
+function reconcileCompleteMessage(
+  snapshotId: string,
+  chunkCount: number,
+  sessionCount: number,
+): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
+    payload: { snapshotId, chunkCount, sessionCount },
   };
 }
 

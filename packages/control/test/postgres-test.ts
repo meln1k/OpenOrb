@@ -23,7 +23,7 @@ export async function createTestStore(
   await migrate(store.pool);
   if (reset) {
     await store.pool.query(
-      "truncate table runners, runner_enrollment_tokens, projects, git_credentials, git_author_configuration, browser_sessions, password_credentials, users, encrypted_secrets restart identity",
+      "truncate table deleted_sessions, sessions, runners, runner_enrollment_tokens, projects, git_credentials, git_author_configuration, browser_sessions, password_credentials, users, encrypted_secrets restart identity",
     );
   }
   return store;

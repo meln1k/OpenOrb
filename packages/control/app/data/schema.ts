@@ -135,6 +135,36 @@ export const runners = table({
   },
 });
 
+export const sessions = table({
+  name: "sessions",
+  primaryKey: ["user_id", "id"],
+  columns: {
+    user_id: c
+      .uuid()
+      .notNull()
+      .references("users", "id", "sessions_user_fk")
+      .onDelete("cascade"),
+    id: c.uuid().notNull(),
+    project_id: c.uuid().notNull(),
+    created_at: c.text().notNull(),
+    initial_prompt_preview: c.text().notNull(),
+  },
+});
+
+export const deletedSessions = table({
+  name: "deleted_sessions",
+  primaryKey: ["user_id", "session_id"],
+  columns: {
+    user_id: c
+      .uuid()
+      .notNull()
+      .references("users", "id", "deleted_sessions_user_fk")
+      .onDelete("cascade"),
+    session_id: c.uuid().notNull(),
+    deleted_at: c.text().notNull(),
+  },
+});
+
 export type User = TableRow<typeof users>;
 export type PasswordCredential = TableRow<typeof passwordCredentials>;
 export type EncryptedSecretRow = TableRow<typeof encryptedSecrets>;
@@ -143,3 +173,5 @@ export type GitCredentialRow = TableRow<typeof gitCredentials>;
 export type ProjectRow = TableRow<typeof projects>;
 export type RunnerEnrollmentTokenRow = TableRow<typeof runnerEnrollmentTokens>;
 export type RunnerRow = TableRow<typeof runners>;
+export type SessionRow = TableRow<typeof sessions>;
+export type DeletedSessionRow = TableRow<typeof deletedSessions>;

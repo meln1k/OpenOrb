@@ -321,8 +321,15 @@ Deno.test("the ticket down migration removes the encrypted GitHub token", async 
         import.meta.url,
       ),
     );
+    const sessionCatalogDownSql = await Deno.readTextFile(
+      new URL(
+        "../db/migrations/20250814000000_create_session_catalog/down.sql",
+        import.meta.url,
+      ),
+    );
 
     await connection.query("begin");
+    await connection.query(sessionCatalogDownSql);
     await connection.query(downSql);
     assertEquals(
       (await connection.query(

@@ -6,6 +6,7 @@ import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
 import { parseRunnerCommand } from "@/src/options.ts";
 import { createRunnerCapacityReporter } from "@/src/capacity.ts";
 import { ensureDeveloperImage } from "@/src/developer-image.ts";
+import { RunnerSessionStore } from "@/src/session-store.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 export const RUNNER_VERSION = "0.0.0";
@@ -145,6 +146,11 @@ export async function main(args: string[] = Deno.args): Promise<number> {
     const shutdownController = new AbortController();
     const removeSignalListeners = installShutdownListeners(shutdownController);
     try {
+      const sessionStore = new RunnerSessionStore({
+        workingDirectory,
+        runnerId: identity.runnerId,
+      });
+      await sessionStore.initialize();
       const getCapacity = createRunnerCapacityReporter({
         path: workingDirectory,
         maxConcurrentSessions: command.options.maxConcurrentSessions,
@@ -158,6 +164,15 @@ export async function main(args: string[] = Deno.args): Promise<number> {
         runnerToken: identity.runnerToken,
         signal: shutdownController.signal,
         getCapacity,
+        async getSessionSnapshot() {
+          const inventory = await sessionStore.loadInventory();
+          for (const error of inventory.errors) {
+            console.error(
+              `[openorb-runner] session ${error.sessionDirectory}: ${error.message}`,
+            );
+          }
+          return inventory.sessions;
+        },
         onConnected() {
           console.log(`[openorb-runner] connected runner ${identity.runnerId}`);
         },

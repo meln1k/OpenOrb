@@ -51,6 +51,7 @@ export function createAppServices(
 
 const disconnectedRunnerRegistry: RunnerConnectionRegistry = {
   getRunnerLiveState: () => null,
+  getSessionRunner: () => null,
   disconnectRunner: () => false,
 };
 

@@ -15,6 +15,10 @@ import { loadMasterKey, type MasterKey } from "@/app/utils/master-key.ts";
 import { createProjectRepository, type ProjectRepository } from "@/app/data/project-repository.ts";
 import { createRunnerRepository, type RunnerRepository } from "@/app/data/runner-repository.ts";
 import { createSecretRepository, type SecretRepository } from "@/app/data/secret-repository.ts";
+import {
+  createSessionCatalogRepository,
+  type SessionCatalogRepository,
+} from "@/app/data/session-catalog-repository.ts";
 import { PostgresSessionStorage } from "@/app/data/postgres-session-storage.ts";
 
 export interface Store
@@ -23,7 +27,8 @@ export interface Store
     SecretRepository,
     GitConfigurationRepository,
     ProjectRepository,
-    RunnerRepository {
+    RunnerRepository,
+    SessionCatalogRepository {
   readonly sessionStorage: SessionStorage;
   close(): Promise<void>;
 }
@@ -43,6 +48,7 @@ export function createPostgresStore(databaseUrl: string, masterKey: MasterKey): 
     ...createGitConfigurationRepository(database, masterKey),
     ...createProjectRepository(database),
     ...createRunnerRepository(database),
+    ...createSessionCatalogRepository(database),
     sessionStorage: new PostgresSessionStorage(pool, BROWSER_SESSION_MAX_AGE_SECONDS),
     async close() {
       await pool.end();

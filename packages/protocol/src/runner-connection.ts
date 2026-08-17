@@ -2,6 +2,17 @@ import { number, object, optional, parse } from "@remix-run/data-schema";
 
 import { runnerIdSchema, runnerTokenSchema } from "@/src/runner-enrollment.ts";
 import { parseRunnerMessage, type RunnerMessage } from "@/src/runner-message.ts";
+import {
+  RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
+  RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
+  RUNNER_RECONCILE_START_MESSAGE_TYPE,
+  type RunnerReconcileChunkPayload,
+  runnerReconcileChunkPayloadSchema,
+  type RunnerReconcileCompletePayload,
+  runnerReconcileCompletePayloadSchema,
+  type RunnerReconcileStartPayload,
+  runnerReconcileStartPayloadSchema,
+} from "@/src/runner-session-inventory.ts";
 
 export const RUNNER_HELLO_MESSAGE_TYPE = "runner.hello";
 export const RUNNER_HEARTBEAT_MESSAGE_TYPE = "runner.heartbeat";
@@ -32,7 +43,16 @@ export interface RunnerConnectedPayload {
 
 export type RunnerClientMessage =
   | (RunnerMessage<RunnerHelloPayload> & { type: typeof RUNNER_HELLO_MESSAGE_TYPE })
-  | (RunnerMessage<RunnerHeartbeatPayload> & { type: typeof RUNNER_HEARTBEAT_MESSAGE_TYPE });
+  | (RunnerMessage<RunnerHeartbeatPayload> & { type: typeof RUNNER_HEARTBEAT_MESSAGE_TYPE })
+  | (RunnerMessage<RunnerReconcileStartPayload> & {
+    type: typeof RUNNER_RECONCILE_START_MESSAGE_TYPE;
+  })
+  | (RunnerMessage<RunnerReconcileChunkPayload> & {
+    type: typeof RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE;
+  })
+  | (RunnerMessage<RunnerReconcileCompletePayload> & {
+    type: typeof RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE;
+  });
 
 export type RunnerServerMessage = RunnerMessage<RunnerConnectedPayload> & {
   type: typeof RUNNER_CONNECTED_MESSAGE_TYPE;
@@ -94,6 +114,27 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
       ...message,
       type: message.type,
       payload: parse(heartbeatPayloadSchema, message.payload),
+    };
+  }
+  if (message.type === RUNNER_RECONCILE_START_MESSAGE_TYPE) {
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(runnerReconcileStartPayloadSchema, message.payload),
+    };
+  }
+  if (message.type === RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE) {
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(runnerReconcileChunkPayloadSchema, message.payload),
+    };
+  }
+  if (message.type === RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE) {
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(runnerReconcileCompletePayloadSchema, message.payload),
     };
   }
   throw new TypeError(`Unsupported runner client message type: ${message.type}`);
