@@ -40,6 +40,17 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     });
     assertEquals(missingCsrf.status, 403);
 
+    const opaqueOrigin = await fetch(setupUrl, {
+      method: "POST",
+      headers: { Cookie: setupCookie, Origin: "null" },
+      body: new URLSearchParams({
+        _csrf: setupToken,
+        password: "correct horse battery staple",
+        confirmPassword: "correct horse battery staple",
+      }),
+    });
+    assertEquals(opaqueOrigin.status, 403);
+
     const setupResponse = await fetch(setupUrl, {
       method: "POST",
       redirect: "manual",
