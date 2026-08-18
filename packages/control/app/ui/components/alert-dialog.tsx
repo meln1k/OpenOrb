@@ -1,20 +1,43 @@
-import { css, type Handle, type Props } from "remix/ui";
+import { clientEntry, css, type Handle, type Props } from "remix/ui";
 
 import { media } from "@/app/ui/responsive.ts";
 
 export function AlertDialog(handle: Handle<Props<"dialog">>) {
   return () => {
-    const { mix, role = "alertdialog", ...props } = handle.props;
+    const { children, id = handle.id, mix, role = "alertdialog", ...props } = handle.props;
     return (
       <dialog
         {...props}
+        id={id}
         role={role}
         data-slot="alert-dialog-content"
         mix={[contentStyle, mix]}
-      />
+      >
+        {children}
+        <AlertDialogBehavior dialogId={id} />
+      </dialog>
     );
   };
 }
+
+export const AlertDialogBehavior = clientEntry<{ dialogId: string }>(
+  import.meta.url,
+  function AlertDialogBehavior(handle: Handle<{ dialogId: string }>) {
+    handle.queueTask(() => {
+      const dialog = document.getElementById(handle.props.dialogId);
+      if (!(dialog instanceof HTMLDialogElement)) return;
+      const signal = handle.signal;
+
+      dialog.addEventListener("submit", (event) => {
+        setTimeout(() => {
+          if (!signal.aborted && !event.defaultPrevented && dialog.open) dialog.close();
+        }, 0);
+      }, { signal });
+    });
+
+    return () => null;
+  },
+);
 
 export function AlertDialogHeader(handle: Handle<Props<"div">>) {
   return () => {
