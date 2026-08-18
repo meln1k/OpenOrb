@@ -7,6 +7,9 @@ const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c10";
 const PROJECT_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c11";
 const CREATED_AT = "2026-08-17T12:00:00Z";
+const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
+const REF = "main";
+const BRANCH_NAME = "openorb/session-test";
 
 Deno.test("creates private runner session files and atomically reloads metadata", async () => {
   const workingDirectory = await Deno.makeTempDir();
@@ -16,6 +19,9 @@ Deno.test("creates private runner session files and atomically reloads metadata"
     const metadata = await store.createSession({
       id: SESSION_ID,
       projectId: PROJECT_ID,
+      repositoryUrl: REPOSITORY_URL,
+      ref: REF,
+      branchName: BRANCH_NAME,
       initialPrompt: prompt,
       createdAt: CREATED_AT,
     });
@@ -65,21 +71,38 @@ Deno.test("appends monotonic events and exposes a corrupt final append without g
     await store.createSession({
       id: SESSION_ID,
       projectId: PROJECT_ID,
+      repositoryUrl: REPOSITORY_URL,
+      ref: REF,
+      branchName: BRANCH_NAME,
       initialPrompt: "Inspect the repository",
       createdAt: CREATED_AT,
     });
 
     assertEquals(
       await Promise.all([
-        store.appendEvent(SESSION_ID, { type: "session.state", state: "created" }),
-        store.appendEvent(SESSION_ID, { type: "provisioning.log", text: "starting" }),
+        store.appendEvent(SESSION_ID, {
+          type: "session.state",
+          stage: "created",
+          checkoutState: "pending",
+        }),
+        store.appendEvent(SESSION_ID, {
+          type: "provisioning.log",
+          stream: "stdout",
+          text: "starting",
+        }),
       ]),
       [1, 2],
     );
     const restarted = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
     assertEquals(await restarted.readEvents(SESSION_ID), [
-      { cursor: 1, event: { type: "session.state", state: "created" } },
-      { cursor: 2, event: { type: "provisioning.log", text: "starting" } },
+      {
+        cursor: 1,
+        event: { type: "session.state", stage: "created", checkoutState: "pending" },
+      },
+      {
+        cursor: 2,
+        event: { type: "provisioning.log", stream: "stdout", text: "starting" },
+      },
     ]);
 
     await Deno.writeTextFile(
@@ -93,7 +116,12 @@ Deno.test("appends monotonic events and exposes a corrupt final append without g
     assertEquals(inventory.errors.length, 1);
     assertStringIncludes(inventory.errors[0]!.message, "final append is incomplete");
     await assertRejects(
-      () => restarted.appendEvent(SESSION_ID, { type: "session.state", state: "ready" }),
+      () =>
+        restarted.appendEvent(SESSION_ID, {
+          type: "session.state",
+          stage: "ready",
+          checkoutState: "available",
+        }),
       Error,
       "event log is corrupt",
     );

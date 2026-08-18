@@ -6,7 +6,7 @@ export const RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE = "runner.reconcile.chunk";
 export const RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE = "runner.reconcile.complete";
 export const RUNNER_RECONCILE_CHUNK_SESSION_LIMIT = 25;
 
-export type RunnerSessionState = "created" | "error";
+export type RunnerSessionState = "created" | "provisioning" | "ready" | "error";
 
 export interface RunnerSessionSnapshot {
   id: string;
@@ -37,6 +37,8 @@ export const sessionIdSchema = string().refine(validateUuid, "Expected a session
 export const projectIdSchema = string().refine(validateUuid, "Expected a project UUID.");
 export const runnerSessionStateSchema = union([
   literal("created" as const),
+  literal("provisioning" as const),
+  literal("ready" as const),
   literal("error" as const),
 ]);
 export const runnerSessionCreatedAtSchema = string().refine(

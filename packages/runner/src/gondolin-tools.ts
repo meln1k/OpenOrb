@@ -38,6 +38,8 @@ export interface OpenOrbGondolinToolRuntimeOptions {
   developerImage: DeveloperImage;
   sessionLabel?: string;
   github?: OpenOrbGitHubMediationOptions;
+  cpuCount?: number;
+  memoryMiB?: number;
 }
 
 interface RunningVm {
@@ -47,7 +49,21 @@ interface RunningVm {
 
 export interface OpenOrbGondolinToolRuntime {
   readonly tools: readonly ToolDefinition[];
+  run(
+    command: string[],
+    options?: OpenOrbGuestCommandOptions,
+  ): Promise<OpenOrbGuestCommandResult>;
   close(): Promise<void>;
+}
+
+export interface OpenOrbGuestCommandOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  onOutput?: (output: { stream: "stdout" | "stderr"; text: string }) => void | Promise<void>;
+}
+
+export interface OpenOrbGuestCommandResult {
+  exitCode: number;
 }
 
 export async function createOpenOrbGondolinToolRuntime(
@@ -63,6 +79,8 @@ export async function createOpenOrbGondolinToolRuntime(
     options.developerImage,
     options.sessionLabel,
     options.github,
+    options.cpuCount,
+    options.memoryMiB,
   );
   await runtime.start();
   return runtime;
@@ -100,6 +118,8 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
   readonly #developerImage: DeveloperImage;
   readonly #sessionLabel: string;
   readonly #github?: OpenOrbGitHubMediationOptions;
+  readonly #cpuCount?: number;
+  readonly #memoryMiB?: number;
   #running?: RunningVm;
   #starting?: Promise<RunningVm>;
   #cleanup?: Promise<void>;
@@ -111,11 +131,15 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
     developerImage: DeveloperImage,
     sessionLabel?: string,
     github?: OpenOrbGitHubMediationOptions,
+    cpuCount?: number,
+    memoryMiB?: number,
   ) {
     this.#workspacePath = workspacePath;
     this.#developerImage = developerImage;
     this.#sessionLabel = sessionLabel ?? `openorb ${basename(workspacePath)}`;
     this.#github = github;
+    this.#cpuCount = cpuCount;
+    this.#memoryMiB = memoryMiB;
     this.tools = createTools(this);
   }
 
@@ -150,6 +174,39 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
     }
   }
 
+  async run(
+    command: string[],
+    options: OpenOrbGuestCommandOptions = {},
+  ): Promise<OpenOrbGuestCommandResult> {
+    if (command.length === 0 || !command[0]?.startsWith("/")) {
+      throw new Error("Guest commands require an absolute executable path.");
+    }
+    if (options.signal?.aborted) throw new Error("Command aborted.");
+    const running = await this.getVm();
+    if (options.signal?.aborted) throw new Error("Command aborted.");
+
+    try {
+      const process = running.vm.exec(command, {
+        cwd: options.cwd === undefined
+          ? OPENORB_GUEST_WORKSPACE
+          : resolveGuestWorkspacePath(options.cwd),
+        env: { [OPENORB_GUEST_MARKER]: "1" },
+        signal: options.signal,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      for await (const chunk of process.output()) {
+        await options.onOutput?.({ stream: chunk.stream, text: chunk.text });
+      }
+      const result = await process;
+      return { exitCode: result.exitCode };
+    } catch (error) {
+      await this.discard(running);
+      if (options.signal?.aborted) throw new Error("Command aborted.");
+      throw error;
+    }
+  }
+
   close(): Promise<void> {
     this.#closePromise ??= this.#close();
     return this.#closePromise;
@@ -177,6 +234,8 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
     if (githubOptions) installGondolinTlsCompatibility();
     const vm = await VM.create({
       sessionLabel: this.#sessionLabel,
+      ...(this.#cpuCount === undefined ? {} : { cpus: this.#cpuCount }),
+      ...(this.#memoryMiB === undefined ? {} : { memory: `${this.#memoryMiB}M` }),
       rootfs: { mode: "cow" },
       ...githubOptions,
       sandbox: {

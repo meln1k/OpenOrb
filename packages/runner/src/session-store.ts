@@ -1,14 +1,29 @@
 import {
   initialPromptPreview,
   projectIdSchema,
+  type RunnerCheckoutState,
+  runnerCheckoutStateSchema,
   runnerIdSchema,
   runnerSessionCreatedAtSchema,
   type RunnerSessionSnapshot,
   type RunnerSessionState,
   runnerSessionStateSchema,
+  sessionBranchNameSchema,
+  sessionGitRefSchema,
   sessionIdSchema,
+  type SessionProvisioningEvent,
+  sessionProvisioningEventSchema,
+  sessionRepositoryUrlSchema,
 } from "@openorb/protocol";
-import { type InferOutput, literal, number, object, parse, string } from "@remix-run/data-schema";
+import {
+  type InferOutput,
+  literal,
+  number,
+  object,
+  optional,
+  parse,
+  string,
+} from "@remix-run/data-schema";
 import { dirname, join } from "node:path";
 
 const SESSIONS_DIRECTORY = "sessions";
@@ -23,11 +38,21 @@ const metadataSchema = object(
     projectId: projectIdSchema,
     runnerId: runnerIdSchema,
     createdAt: runnerSessionCreatedAtSchema,
+    repositoryUrl: sessionRepositoryUrlSchema,
+    ref: sessionGitRefSchema,
+    branchName: sessionBranchNameSchema,
     initialPrompt: string().refine(
       (value) => initialPromptPreview(value).length > 0,
       "The initial prompt must contain non-whitespace text.",
     ),
     state: runnerSessionStateSchema,
+    checkoutState: runnerCheckoutStateSchema,
+    baseCommit: optional(
+      string().refine(
+        (value) => /^[0-9a-f]{40,64}$/.test(value),
+        "Base commits must be hexadecimal object identifiers.",
+      ),
+    ),
   },
   { unknownKeys: "error" },
 );
@@ -37,35 +62,18 @@ export type RunnerSessionMetadata = InferOutput<typeof metadataSchema>;
 export interface CreateRunnerSessionInput {
   id: string;
   projectId: string;
+  repositoryUrl: string;
+  ref: string;
+  branchName: string;
   initialPrompt: string;
   createdAt?: string;
 }
 
-export type RunnerSessionEventValue =
-  | null
-  | boolean
-  | number
-  | string
-  | RunnerSessionEventValue[]
-  | RunnerSessionEventObject;
-
-export interface RunnerSessionEventObject {
-  [key: string]: RunnerSessionEventValue;
+export interface UpdateRunnerSessionProvisioningInput {
+  state: RunnerSessionState;
+  checkoutState: RunnerCheckoutState;
+  baseCommit?: string;
 }
-
-export interface RunnerSessionEvent extends RunnerSessionEventObject {
-  type: string;
-}
-
-const sessionEventSchema = object(
-  {
-    type: string().refine(
-      (value) => value.trim().length > 0 && value.length <= 128,
-      "Session event types must contain between 1 and 128 characters.",
-    ),
-  },
-  { unknownKeys: "passthrough" },
-).transform((event): RunnerSessionEvent => event);
 
 const storedSessionEventSchema = object(
   {
@@ -73,7 +81,7 @@ const storedSessionEventSchema = object(
       (value) => Number.isSafeInteger(value) && value > 0,
       "Session event cursors must be positive safe integers.",
     ),
-    event: sessionEventSchema,
+    event: sessionProvisioningEventSchema,
   },
   { unknownKeys: "error" },
 );
@@ -116,8 +124,12 @@ export class RunnerSessionStore {
       projectId: input.projectId,
       runnerId: this.#runnerId,
       createdAt: input.createdAt ?? Temporal.Now.instant().toString(),
+      repositoryUrl: input.repositoryUrl,
+      ref: input.ref,
+      branchName: input.branchName,
       initialPrompt: input.initialPrompt,
       state: "created",
+      checkoutState: "pending",
     });
 
     await this.initialize();
@@ -130,6 +142,7 @@ export class RunnerSessionStore {
       await writeNewPrivateFile(join(sessionPath, EVENTS_FILE), new Uint8Array());
       await writeNewPrivateFile(join(sessionPath, PI_SESSION_FILE), new Uint8Array());
       await writeAtomicMetadata(join(sessionPath, METADATA_FILE), metadata);
+      await syncDirectory(this.sessionsPath());
       return metadata;
     } catch (error) {
       await Deno.remove(sessionPath, { recursive: true }).catch(() => undefined);
@@ -164,6 +177,35 @@ export class RunnerSessionStore {
     return updated;
   }
 
+  async updateProvisioning(
+    sessionId: string,
+    input: UpdateRunnerSessionProvisioningInput,
+  ): Promise<RunnerSessionMetadata> {
+    const metadata = await this.readMetadata(sessionId);
+    const updated = parseMetadata({
+      ...metadata,
+      state: parse(runnerSessionStateSchema, input.state),
+      checkoutState: parse(runnerCheckoutStateSchema, input.checkoutState),
+      ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
+    });
+    await writeAtomicMetadata(join(this.sessionPath(metadata.id), METADATA_FILE), updated);
+    return updated;
+  }
+
+  async getSessionWorkspacePath(sessionId: string): Promise<string> {
+    const metadata = await this.readMetadata(sessionId);
+    const workspacePath = join(this.sessionPath(metadata.id), "workspace");
+    await assertRealDirectory(workspacePath, "Runner session workspace");
+    return await Deno.realPath(workspacePath);
+  }
+
+  async getSessionSnapshot(sessionId: string): Promise<RunnerSessionSnapshot> {
+    const metadata = await this.readMetadata(sessionId);
+    const eventLog = await inspectEventLog(join(this.sessionPath(metadata.id), EVENTS_FILE));
+    if (eventLog.error) throw eventLog.error;
+    return snapshotFrom(metadata, eventLog.records.at(-1)?.cursor ?? 0);
+  }
+
   async loadInventory(): Promise<RunnerSessionInventory> {
     await this.initialize();
     const sessions: RunnerSessionSnapshot[] = [];
@@ -195,14 +237,7 @@ export class RunnerSessionStore {
       if (eventLog.error) {
         errors.push({ sessionDirectory: entry.name, message: eventLog.error.message });
       }
-      sessions.push({
-        id: metadata.id,
-        projectId: metadata.projectId,
-        createdAt: metadata.createdAt,
-        initialPromptPreview: initialPromptPreview(metadata.initialPrompt),
-        state: eventLog.error ? "error" : metadata.state,
-        lastEventCursor,
-      });
+      sessions.push(snapshotFrom(metadata, lastEventCursor, eventLog.error ? "error" : undefined));
     }
 
     return { sessions, errors };
@@ -215,7 +250,7 @@ export class RunnerSessionStore {
     return inspection.records;
   }
 
-  appendEvent(sessionId: string, event: RunnerSessionEvent): Promise<number> {
+  appendEvent(sessionId: string, event: SessionProvisioningEvent): Promise<number> {
     const id = parse(sessionIdSchema, sessionId);
     const parsedEvent = parseSessionEvent(event);
     const previous = this.#eventWrites.get(id) ?? Promise.resolve(0);
@@ -254,6 +289,21 @@ export class RunnerSessionStore {
 
 function parseMetadata(input: unknown): RunnerSessionMetadata {
   return parse(metadataSchema, input);
+}
+
+function snapshotFrom(
+  metadata: RunnerSessionMetadata,
+  lastEventCursor: number,
+  state: RunnerSessionState = metadata.state,
+): RunnerSessionSnapshot {
+  return {
+    id: metadata.id,
+    projectId: metadata.projectId,
+    createdAt: metadata.createdAt,
+    initialPromptPreview: initialPromptPreview(metadata.initialPrompt),
+    state,
+    lastEventCursor,
+  };
 }
 
 async function readMetadataFile(path: string): Promise<RunnerSessionMetadata> {
@@ -317,8 +367,8 @@ function parseStoredEvent(input: unknown): StoredRunnerSessionEvent {
   return parse(storedSessionEventSchema, input);
 }
 
-function parseSessionEvent(input: unknown): RunnerSessionEvent {
-  return parse(sessionEventSchema, input);
+function parseSessionEvent(input: unknown): SessionProvisioningEvent {
+  return parse(sessionProvisioningEventSchema, input);
 }
 
 function corruptEventLog(message: string): Error {

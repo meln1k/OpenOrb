@@ -12,7 +12,25 @@ import {
   runnerReconcileCompletePayloadSchema,
   type RunnerReconcileStartPayload,
   runnerReconcileStartPayloadSchema,
+  sessionIdSchema,
 } from "@/src/runner-session-inventory.ts";
+import {
+  SESSION_EVENT_MESSAGE_TYPE,
+  type SessionEventMessage,
+  sessionEventPayloadSchema,
+} from "@/src/runner-session-events.ts";
+import {
+  SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
+  SESSION_PROVISION_MESSAGE_TYPE,
+  SESSION_PROVISION_REJECTED_MESSAGE_TYPE,
+  type SessionProvisionAcceptedMessage,
+  sessionProvisionAcceptedPayloadSchema,
+  type SessionProvisionCommand,
+  type SessionProvisionCommandPayload,
+  sessionProvisionCommandPayloadSchema,
+  type SessionProvisionRejectedMessage,
+  sessionProvisionRejectedPayloadSchema,
+} from "@/src/runner-session-provisioning.ts";
 
 export const RUNNER_HELLO_MESSAGE_TYPE = "runner.hello";
 export const RUNNER_HEARTBEAT_MESSAGE_TYPE = "runner.heartbeat";
@@ -52,11 +70,16 @@ export type RunnerClientMessage =
   })
   | (RunnerMessage<RunnerReconcileCompletePayload> & {
     type: typeof RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE;
-  });
+  })
+  | SessionProvisionAcceptedMessage
+  | SessionProvisionRejectedMessage
+  | SessionEventMessage;
 
-export type RunnerServerMessage = RunnerMessage<RunnerConnectedPayload> & {
-  type: typeof RUNNER_CONNECTED_MESSAGE_TYPE;
-};
+export type RunnerServerMessage =
+  | (RunnerMessage<RunnerConnectedPayload> & {
+    type: typeof RUNNER_CONNECTED_MESSAGE_TYPE;
+  })
+  | SessionProvisionCommand;
 
 const helloPayloadSchema = object(
   { token: runnerTokenSchema },
@@ -104,12 +127,13 @@ const connectedPayloadSchema = object(
 
 export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
   const message = parseRunnerMessage(input);
-  assertConnectionEnvelope(message);
 
   if (message.type === RUNNER_HELLO_MESSAGE_TYPE) {
+    assertConnectionEnvelope(message);
     return { ...message, type: message.type, payload: parse(helloPayloadSchema, message.payload) };
   }
   if (message.type === RUNNER_HEARTBEAT_MESSAGE_TYPE) {
+    assertConnectionEnvelope(message);
     return {
       ...message,
       type: message.type,
@@ -117,6 +141,7 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
     };
   }
   if (message.type === RUNNER_RECONCILE_START_MESSAGE_TYPE) {
+    assertConnectionEnvelope(message);
     return {
       ...message,
       type: message.type,
@@ -124,6 +149,7 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
     };
   }
   if (message.type === RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE) {
+    assertConnectionEnvelope(message);
     return {
       ...message,
       type: message.type,
@@ -131,10 +157,35 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
     };
   }
   if (message.type === RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE) {
+    assertConnectionEnvelope(message);
     return {
       ...message,
       type: message.type,
       payload: parse(runnerReconcileCompletePayloadSchema, message.payload),
+    };
+  }
+  if (message.type === SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE) {
+    assertSessionResponseEnvelope(message);
+    const payload = parse(sessionProvisionAcceptedPayloadSchema, message.payload);
+    if (payload.session.id !== message.sessionId) {
+      throw new TypeError("Provisioning acceptance session identifiers must match.");
+    }
+    return { ...message, type: message.type, payload };
+  }
+  if (message.type === SESSION_PROVISION_REJECTED_MESSAGE_TYPE) {
+    assertSessionResponseEnvelope(message);
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(sessionProvisionRejectedPayloadSchema, message.payload),
+    };
+  }
+  if (message.type === SESSION_EVENT_MESSAGE_TYPE) {
+    assertSessionResponseEnvelope(message);
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(sessionEventPayloadSchema, message.payload),
     };
   }
   throw new TypeError(`Unsupported runner client message type: ${message.type}`);
@@ -142,16 +193,50 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
 
 export function parseRunnerServerMessage(input: unknown): RunnerServerMessage {
   const message = parseRunnerMessage(input);
-  assertConnectionEnvelope(message);
-  if (message.type !== RUNNER_CONNECTED_MESSAGE_TYPE) {
-    throw new TypeError(`Unsupported runner server message type: ${message.type}`);
+  if (message.type === RUNNER_CONNECTED_MESSAGE_TYPE) {
+    assertConnectionEnvelope(message);
+    const payload = parse(connectedPayloadSchema, message.payload);
+    return { ...message, type: message.type, payload };
   }
-  const payload = parse(connectedPayloadSchema, message.payload);
-  return { ...message, type: message.type, payload };
+  if (message.type === SESSION_PROVISION_MESSAGE_TYPE) {
+    assertSessionCommandEnvelope(message);
+    const payload: SessionProvisionCommandPayload = parse(
+      sessionProvisionCommandPayloadSchema,
+      message.payload,
+    );
+    return {
+      ...message,
+      type: message.type,
+      sessionId: message.sessionId,
+      payload,
+    };
+  }
+  throw new TypeError(`Unsupported runner server message type: ${message.type}`);
 }
 
 function assertConnectionEnvelope(message: RunnerMessage): void {
   if (message.sessionId !== undefined || message.correlationId !== undefined) {
     throw new TypeError("Runner connection messages must not identify a session or correlation.");
+  }
+}
+
+function assertSessionCommandEnvelope(
+  message: RunnerMessage,
+): asserts message is RunnerMessage & { sessionId: string } {
+  if (message.sessionId === undefined || message.correlationId !== undefined) {
+    throw new TypeError("Runner session commands require a session ID and no correlation ID.");
+  }
+  parse(sessionIdSchema, message.sessionId);
+}
+
+function assertSessionResponseEnvelope(
+  message: RunnerMessage,
+): asserts message is RunnerMessage & { sessionId: string; correlationId: string } {
+  if (message.sessionId === undefined || message.correlationId === undefined) {
+    throw new TypeError("Runner session responses require session and correlation IDs.");
+  }
+  parse(sessionIdSchema, message.sessionId);
+  if (message.correlationId.length === 0) {
+    throw new TypeError("Runner session response correlation IDs must not be empty.");
   }
 }

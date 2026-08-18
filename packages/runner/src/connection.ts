@@ -10,9 +10,15 @@ import {
   type RunnerClientMessage,
   type RunnerServerMessage,
   type RunnerSessionSnapshot,
+  SESSION_EVENT_MESSAGE_TYPE,
+  SESSION_PROVISION_MESSAGE_TYPE,
+  type SessionEventPayload,
+  type SessionProvisionCommand,
 } from "@openorb/protocol";
 import { parseSafe, string } from "@remix-run/data-schema";
 import { delay } from "@std/async/delay";
+
+import type { SessionEventRelay } from "@/src/session-event-relay.ts";
 
 export const RUNNER_HEARTBEAT_INTERVAL_MS = 10_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -25,11 +31,16 @@ export interface MaintainRunnerConnectionOptions {
   signal: AbortSignal;
   getCapacity: () => Promise<RunnerCapacity>;
   getSessionSnapshot: () => Promise<RunnerSessionSnapshot[]>;
+  sessionEventRelay?: SessionEventRelay;
   handshakeTimeoutMs?: number;
   random?: () => number;
   sleep?: typeof delay;
   onConnected?: () => void;
   onReconnectScheduled?: (milliseconds: number) => void;
+  onProvisionCommand?: (
+    command: SessionProvisionCommand,
+    send: (message: RunnerClientMessage) => void,
+  ) => Promise<void>;
 }
 
 export async function maintainRunnerConnection(
@@ -79,10 +90,19 @@ async function connectOnce(
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     let heartbeatInFlight = false;
     let settled = false;
+    let detachSessionEvents: (() => void) | undefined;
+
+    const send = (message: RunnerClientMessage) => {
+      if (!settled && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(message));
+      }
+    };
 
     const finish = (outcome: "connected" | "disconnected" | "unauthorized") => {
       if (settled) return;
       settled = true;
+      detachSessionEvents?.();
+      detachSessionEvents = undefined;
       if (heartbeat !== undefined) clearInterval(heartbeat);
       handshakeDeadline.removeEventListener("abort", handshakeTimedOut);
       options.signal.removeEventListener("abort", shutDown);
@@ -122,7 +142,20 @@ async function connectOnce(
         return;
       }
       if (connected) {
-        socket.close(4400, "Unexpected server message");
+        if (
+          message.type !== SESSION_PROVISION_MESSAGE_TYPE ||
+          options.onProvisionCommand === undefined
+        ) {
+          socket.close(4400, "Unexpected server message");
+          return;
+        }
+        void options.onProvisionCommand(message, send).catch(() => {
+          closeSocket(socket, 1011, "Runner provisioning command failed");
+        });
+        return;
+      }
+      if (message.type === SESSION_PROVISION_MESSAGE_TYPE) {
+        socket.close(4400, "Runner handshake is incomplete");
         return;
       }
       if (message.payload.runnerId !== options.runnerId) {
@@ -149,6 +182,17 @@ async function connectOnce(
         socket.send(
           JSON.stringify(reconcileCompleteMessage(snapshotId, sequence, sessions.length)),
         );
+        if (options.sessionEventRelay) {
+          for (const session of sessions) {
+            const events = await options.sessionEventRelay.readEvents(session.id);
+            if (settled || socket.readyState !== WebSocket.OPEN) return false;
+            for (const event of events) {
+              socket.send(
+                JSON.stringify(replayedSessionEventMessage(session.id, snapshotId, event)),
+              );
+            }
+          }
+        }
         return true;
       };
       const sendHeartbeat = async () => {
@@ -165,14 +209,21 @@ async function connectOnce(
           heartbeatInFlight = false;
         }
       };
-      void sendSnapshot().then((sent) => {
-        if (!sent || settled || socket.readyState !== WebSocket.OPEN) return;
+      void (async () => {
+        const detach = options.sessionEventRelay
+          ? await options.sessionEventRelay.attach(send, sendSnapshot)
+          : await sendSnapshot().then((sent) => sent ? () => {} : undefined);
+        if (!detach || settled || socket.readyState !== WebSocket.OPEN) {
+          detach?.();
+          return;
+        }
+        detachSessionEvents = detach;
         void sendHeartbeat();
         heartbeat = setInterval(() => {
           void sendHeartbeat();
         }, RUNNER_HEARTBEAT_INTERVAL_MS);
         options.onConnected?.();
-      }).catch(() => {
+      })().catch(() => {
         closeSocket(socket, 1011, "Runner session inventory failed");
       });
     });
@@ -236,6 +287,21 @@ function reconcileCompleteMessage(
     id: crypto.randomUUID(),
     type: RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
     payload: { snapshotId, chunkCount, sessionCount },
+  };
+}
+
+function replayedSessionEventMessage(
+  sessionId: string,
+  snapshotId: string,
+  payload: SessionEventPayload,
+): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: SESSION_EVENT_MESSAGE_TYPE,
+    sessionId,
+    correlationId: snapshotId,
+    payload,
   };
 }
 

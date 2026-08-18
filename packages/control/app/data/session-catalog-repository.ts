@@ -16,7 +16,16 @@ export interface ReconciledSessionSnapshots {
   rejected: RejectedSessionSnapshot[];
 }
 
+export interface SessionCatalogEntry {
+  id: string;
+  projectId: string;
+  createdAt: string;
+  initialPromptPreview: string;
+}
+
 export interface SessionCatalogRepository {
+  listSessionCatalogEntries(userId: string): Promise<SessionCatalogEntry[]>;
+  getSessionCatalogEntry(userId: string, sessionId: string): Promise<SessionCatalogEntry | null>;
   reconcileSessionSnapshotEntries(
     userId: string,
     entries: RunnerSessionSnapshot[],
@@ -31,6 +40,21 @@ class SessionSnapshotReconciliationRejected extends Error {
 
 export function createSessionCatalogRepository(database: Database): SessionCatalogRepository {
   return {
+    async listSessionCatalogEntries(userId) {
+      const rows = await database.findMany(sessions, {
+        where: { user_id: userId },
+        orderBy: ["created_at", "desc"],
+      });
+      return rows.map(mapSessionCatalogEntry);
+    },
+
+    async getSessionCatalogEntry(userId, sessionId) {
+      const row = await database.findOne(sessions, {
+        where: { user_id: userId, id: sessionId },
+      });
+      return row ? mapSessionCatalogEntry(row) : null;
+    },
+
     async reconcileSessionSnapshotEntries(userId, entries) {
       try {
         return await database.transaction(async (transaction) => {
@@ -109,6 +133,15 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
         throw error;
       }
     },
+  };
+}
+
+function mapSessionCatalogEntry(row: SessionRow): SessionCatalogEntry {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    createdAt: row.created_at,
+    initialPromptPreview: row.initial_prompt_preview,
   };
 }
 

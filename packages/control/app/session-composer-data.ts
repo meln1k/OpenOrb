@@ -1,0 +1,38 @@
+import type { Project } from "@/app/data/project-repository.ts";
+import type { AppServices } from "@/app/middleware/services.ts";
+
+export interface SessionComposerRunner {
+  id: string;
+  name: string;
+  vmCpuCount: number;
+  vmMemoryMiB: number;
+}
+
+export interface SessionComposerData {
+  projects: Project[];
+  runners: SessionComposerRunner[];
+}
+
+export async function loadSessionComposerData(
+  userId: string,
+  services: AppServices,
+): Promise<SessionComposerData> {
+  const [projects, runners] = await Promise.all([
+    services.store.listProjects(userId),
+    services.store.listRunners(userId),
+  ]);
+  return {
+    projects,
+    runners: runners.flatMap((runner) => {
+      const live = services.runnerConnections.getRunnerLiveState(userId, runner.id);
+      return live && runner.revokedAt === null
+        ? [{
+          id: runner.id,
+          name: runner.name,
+          vmCpuCount: live.capacity.vmCpuCount,
+          vmMemoryMiB: live.capacity.vmMemoryMiB,
+        }]
+        : [];
+    }),
+  };
+}

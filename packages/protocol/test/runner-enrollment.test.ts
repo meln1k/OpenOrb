@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { parse } from "@remix-run/data-schema";
 
 import {
@@ -77,15 +77,14 @@ Deno.test("validates only the connection messages used by runner enrollment", ()
     }).type,
     "runner.heartbeat",
   );
-  assertEquals(
-    parseRunnerServerMessage({
-      version: 1,
-      id: "connected-1",
-      type: "runner.connected",
-      payload: { runnerId: RUNNER_ID },
-    }).payload.runnerId,
-    RUNNER_ID,
-  );
+  const connected = parseRunnerServerMessage({
+    version: 1,
+    id: "connected-1",
+    type: "runner.connected",
+    payload: { runnerId: RUNNER_ID },
+  });
+  assert(connected.type === "runner.connected");
+  assertEquals(connected.payload.runnerId, RUNNER_ID);
 
   assertThrows(() =>
     parseRunnerClientMessage({

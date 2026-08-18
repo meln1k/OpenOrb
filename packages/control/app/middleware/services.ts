@@ -52,6 +52,10 @@ export function createAppServices(
 const disconnectedRunnerRegistry: RunnerConnectionRegistry = {
   getRunnerLiveState: () => null,
   getSessionRunner: () => null,
+  getSessionSnapshot: () => null,
+  provisionSession: () =>
+    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
+  subscribeToSessionEvents: () => ({ events: [], unsubscribe() {} }),
   disconnectRunner: () => false,
 };
 

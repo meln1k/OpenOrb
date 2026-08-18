@@ -12,12 +12,20 @@ export const routes = route({
   app: route("app", {
     index: get("/"),
     projects: form("projects"),
+    sessions: route("sessions", {
+      create: post("/"),
+      detail: get(":sessionId"),
+      retry: post(":sessionId/retry"),
+    }),
     settings: form("settings"),
   }),
   api: route("api", {
     runners: route("runners", {
       enroll: post("enroll"),
       connect: get("connect"),
+    }),
+    sessions: route("sessions", {
+      events: get(":sessionId/events"),
     }),
   }),
 });

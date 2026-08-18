@@ -22,13 +22,15 @@ Deno.test("creates a fresh guest placeholder and a scoped Git credential helper"
   assertEquals(firstEnvironment.GH_HOST, "github.com");
   assertEquals(firstEnvironment.GH_PROMPT_DISABLED, "1");
   assertEquals(firstEnvironment.GIT_TERMINAL_PROMPT, "0");
-  assertEquals(firstEnvironment.GIT_CONFIG_COUNT, "3");
+  assertEquals(firstEnvironment.GIT_CONFIG_COUNT, "4");
   assertEquals(firstEnvironment.GIT_CONFIG_KEY_0, "safe.directory");
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_0, "/workspace/*");
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_1, "credential.https://github.com.helper");
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_1, "!gh auth git-credential");
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_2, "credential.https://github.com.useHttpPath");
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_2, "true");
+  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_0, "/workspace");
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_1, "safe.directory");
+  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_1, "/workspace/*");
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_2, "credential.https://github.com.helper");
+  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_2, "!gh auth git-credential");
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_3, "credential.https://github.com.useHttpPath");
+  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_3, "true");
   assertEquals(first.allowWebSockets, false);
   assertEquals(first.dns, { mode: "synthetic" });
 });
@@ -121,10 +123,12 @@ Deno.test("supports an unauthenticated public policy without exposing GH_TOKEN",
   const options = createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL });
   const environment = environmentOf(options.env);
   assertEquals(environment.GH_TOKEN, undefined);
-  assertEquals(environment.GIT_CONFIG_COUNT, "1");
+  assertEquals(environment.GIT_CONFIG_COUNT, "2");
   assertEquals(environment.GIT_CONFIG_KEY_0, "safe.directory");
-  assertEquals(environment.GIT_CONFIG_VALUE_0, "/workspace/*");
-  assertEquals(environment.GIT_CONFIG_KEY_1, undefined);
+  assertEquals(environment.GIT_CONFIG_VALUE_0, "/workspace");
+  assertEquals(environment.GIT_CONFIG_KEY_1, "safe.directory");
+  assertEquals(environment.GIT_CONFIG_VALUE_1, "/workspace/*");
+  assertEquals(environment.GIT_CONFIG_KEY_2, undefined);
 });
 
 Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {

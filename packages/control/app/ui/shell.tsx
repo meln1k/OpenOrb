@@ -1,5 +1,6 @@
 import { css, type Handle, type RemixNode } from "remix/ui";
 
+import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
 import { routes } from "@/app/routes.ts";
 import {
   Avatar,
@@ -24,6 +25,7 @@ import {
   SidebarDesktop,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarLayout,
@@ -35,18 +37,23 @@ import {
 } from "@/app/ui/components/index.ts";
 import { Document } from "@/app/ui/document.tsx";
 import { media } from "@/app/ui/responsive.ts";
+import { SessionComposer, type SessionComposerProps } from "@/app/ui/session-composer.tsx";
 
 export interface AppShellProps {
-  activeSection: "overview" | "projects";
+  activeSection?: "projects";
+  activeSessionId?: string;
   children?: RemixNode;
+  composer: Omit<SessionComposerProps, "csrfToken" | "dialogId">;
   copy?: string;
   csrfToken: string;
-  eyebrow: string;
-  heading: string;
+  eyebrow?: string;
+  heading?: string;
+  sessions: SessionCatalogEntry[];
   title: string;
 }
 
 const MOBILE_SIDEBAR_ID = "openorb-mobile-sidebar";
+const NEW_SESSION_DIALOG_ID = "openorb-new-session";
 
 export function AppShell(handle: Handle<AppShellProps>) {
   return () => (
@@ -56,40 +63,61 @@ export function AppShell(handle: Handle<AppShellProps>) {
           <AppNavigation
             csrfToken={handle.props.csrfToken}
             activeSection={handle.props.activeSection}
+            activeSessionId={handle.props.activeSessionId}
+            sessions={handle.props.sessions}
           />
         </SidebarDesktop>
         <SidebarMobile id={MOBILE_SIDEBAR_ID}>
           <AppNavigation
             csrfToken={handle.props.csrfToken}
             activeSection={handle.props.activeSection}
+            activeSessionId={handle.props.activeSessionId}
+            sessions={handle.props.sessions}
           />
         </SidebarMobile>
         <SidebarInset aria-label="Authenticated control panel">
           <header mix={topBarStyle}>
             <div mix={topBarContentStyle}>
               <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
-              <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-              <Breadcrumb>
-                <BreadcrumbList>
-                  <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
-                    <BreadcrumbLink href={routes.app.index.href()}>Control panel</BreadcrumbLink>
-                  </BreadcrumbItem>
-                  <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
-                  <BreadcrumbItem>
-                    <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
-                  </BreadcrumbItem>
-                </BreadcrumbList>
-              </Breadcrumb>
+              {handle.props.eyebrow
+                ? (
+                  <>
+                    <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                    <Breadcrumb>
+                      <BreadcrumbList>
+                        <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
+                          <BreadcrumbLink href={routes.app.index.href()}>
+                            Control panel
+                          </BreadcrumbLink>
+                        </BreadcrumbItem>
+                        <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
+                        <BreadcrumbItem>
+                          <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
+                        </BreadcrumbItem>
+                      </BreadcrumbList>
+                    </Breadcrumb>
+                  </>
+                )
+                : null}
             </div>
           </header>
           <div mix={contentStyle}>
-            <header mix={pageHeaderStyle}>
-              <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
-              {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
-            </header>
+            {handle.props.heading
+              ? (
+                <header mix={pageHeaderStyle}>
+                  <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
+                  {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
+                </header>
+              )
+              : null}
             {handle.props.children}
           </div>
         </SidebarInset>
+        <SessionComposer
+          {...handle.props.composer}
+          csrfToken={handle.props.csrfToken}
+          dialogId={NEW_SESSION_DIALOG_ID}
+        />
       </SidebarLayout>
     </Document>
   );
@@ -99,12 +127,18 @@ function AppNavigation(
   handle: Handle<{
     csrfToken: string;
     activeSection: AppShellProps["activeSection"];
+    activeSessionId: string | undefined;
+    sessions: SessionCatalogEntry[];
   }>,
 ) {
   return () => (
     <>
       <SidebarHeader>
-        <a href={routes.app.index.href()} aria-label="OpenOrb overview" mix={sidebarBrandStyle}>
+        <a
+          href={routes.app.index.href()}
+          aria-label="OpenOrb control panel"
+          mix={sidebarBrandStyle}
+        >
           <span mix={sidebarBrandMarkStyle}>
             <img src="/favicon.svg" alt="" width="20" height="20" />
           </span>
@@ -113,32 +147,51 @@ function AppNavigation(
             <span>Control panel</span>
           </span>
         </a>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              commandFor={NEW_SESSION_DIALOG_ID}
+              command="show-modal"
+              icon={<Icon name="plus" />}
+            >
+              New session
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup aria-label="Control panel pages">
+        <SidebarGroup aria-label="Session history">
+          <SidebarGroupLabel>Sessions</SidebarGroupLabel>
           <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                href={routes.app.index.href()}
-                active={handle.props.activeSection === "overview"}
-                icon={<Icon name="dashboard" />}
-              >
-                Overview
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                href={routes.app.projects.index.href()}
-                active={handle.props.activeSection === "projects"}
-                icon={<Icon name="folder" />}
-              >
-                Projects
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            {handle.props.sessions.map((session) => (
+              <SidebarMenuItem key={session.id}>
+                <SidebarMenuButton
+                  href={routes.app.sessions.detail.href({ sessionId: session.id })}
+                  active={handle.props.activeSessionId === session.id}
+                  icon={<Icon name="message" />}
+                >
+                  {session.initialPromptPreview || "Untitled session"}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
           </SidebarMenu>
+          {handle.props.sessions.length === 0
+            ? <p mix={emptySessionsStyle}>No sessions yet.</p>
+            : null}
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              href={routes.app.projects.index.href()}
+              active={handle.props.activeSection === "projects"}
+              icon={<Icon name="folder" />}
+            >
+              Projects
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
         <DropdownMenu>
           <DropdownMenuTrigger mix={sidebarAccountTriggerStyle}>
             <Avatar>
@@ -227,6 +280,12 @@ const sidebarBrandTextStyle = css({
   "& strong, & span": { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   "& strong": { fontWeight: 600 },
   "& span": { fontSize: "12px" },
+});
+const emptySessionsStyle = css({
+  margin: "4px 8px",
+  color: "var(--sidebar-foreground)",
+  fontSize: "12px",
+  opacity: 0.7,
 });
 const sidebarAccountTriggerStyle = css({
   display: "flex",

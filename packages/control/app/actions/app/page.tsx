@@ -1,19 +1,24 @@
 import type { Handle } from "remix/ui";
 
-import { AppShell } from "@/app/ui/shell.tsx";
+import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
+import { AppShell, type AppShellProps } from "@/app/ui/shell.tsx";
 
-export interface DashboardPageProps {
+interface AppPageProps {
+  composer: AppShellProps["composer"];
   csrfToken: string;
+  sidebarSessions: SessionCatalogEntry[];
+  title?: string;
 }
 
-export function DashboardPage(handle: Handle<DashboardPageProps>) {
+export function AppPage(handle: Handle<AppPageProps>) {
+  const { composer, csrfToken, sidebarSessions, title = "OpenOrb" } = handle.props;
+
   return () => (
     <AppShell
-      csrfToken={handle.props.csrfToken}
-      title="OpenOrb control"
-      eyebrow="Overview"
-      heading="Control panel"
-      activeSection="overview"
+      composer={composer}
+      csrfToken={csrfToken}
+      sessions={sidebarSessions}
+      title={title}
     />
   );
 }

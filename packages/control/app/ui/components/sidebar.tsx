@@ -135,6 +135,8 @@ export interface SidebarMenuButtonProps {
   active?: boolean;
   badge?: string;
   children?: RemixNode;
+  command?: string;
+  commandFor?: string;
   disabled?: boolean;
   href?: string;
   icon?: RemixNode;
@@ -142,7 +144,7 @@ export interface SidebarMenuButtonProps {
 
 export function SidebarMenuButton(handle: Handle<SidebarMenuButtonProps>) {
   return () => {
-    const { active, badge, children, disabled, href, icon } = handle.props;
+    const { active, badge, children, command, commandFor, disabled, href, icon } = handle.props;
     const content = (
       <>
         {icon}
@@ -162,6 +164,20 @@ export function SidebarMenuButton(handle: Handle<SidebarMenuButtonProps>) {
         >
           {content}
         </a>
+      )
+      : commandFor && !disabled
+      ? (
+        <button
+          type="button"
+          command={command}
+          commandFor={commandFor}
+          aria-pressed={active ? "true" : undefined}
+          data-active={active ? "true" : "false"}
+          data-slot="sidebar-menu-button"
+          mix={menuButtonStyle}
+        >
+          {content}
+        </button>
       )
       : (
         <span
@@ -413,11 +429,16 @@ const menuButtonStyle = css({
   height: "32px",
   padding: "8px",
   color: "var(--sidebar-foreground)",
+  background: "transparent",
+  border: 0,
   borderRadius: "var(--radius-md)",
   outline: "none",
+  font: "inherit",
   fontSize: "14px",
   lineHeight: 1,
+  textAlign: "left",
   textDecoration: "none",
+  cursor: "pointer",
   transition: "background-color 150ms ease, color 150ms ease",
   "&:hover, &[data-active='true']": {
     color: "var(--sidebar-accent-foreground)",

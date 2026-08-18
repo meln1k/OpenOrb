@@ -2,7 +2,8 @@ import { createHttpHooks, type VMOptions } from "@earendil-works/gondolin";
 
 const GITHUB_HOST = "github.com";
 const GITHUB_API_HOST = "api.github.com";
-const OPENORB_WORKSPACE_REPOSITORIES = "/workspace/*";
+const OPENORB_WORKSPACE = "/workspace";
+const OPENORB_NESTED_WORKSPACE_REPOSITORIES = "/workspace/*";
 const GITHUB_OWNER_PATTERN = /^(?!-)(?!.*--)[A-Za-z0-9-]{1,39}(?<!-)$/;
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 const GIT_SERVICES = new Set(["git-upload-pack", "git-receive-pack"]);
@@ -55,15 +56,17 @@ export function createOpenOrbGitHubVmOptions(
     ...secretEnvironment,
     GH_HOST: GITHUB_HOST,
     GH_PROMPT_DISABLED: "1",
-    GIT_CONFIG_COUNT: token === undefined ? "1" : "3",
+    GIT_CONFIG_COUNT: token === undefined ? "2" : "4",
     GIT_CONFIG_KEY_0: "safe.directory",
-    GIT_CONFIG_VALUE_0: OPENORB_WORKSPACE_REPOSITORIES,
+    GIT_CONFIG_VALUE_0: OPENORB_WORKSPACE,
+    GIT_CONFIG_KEY_1: "safe.directory",
+    GIT_CONFIG_VALUE_1: OPENORB_NESTED_WORKSPACE_REPOSITORIES,
     GIT_TERMINAL_PROMPT: "0",
     ...(token === undefined ? {} : {
-      GIT_CONFIG_KEY_1: `credential.https://${GITHUB_HOST}.helper`,
-      GIT_CONFIG_VALUE_1: "!gh auth git-credential",
-      GIT_CONFIG_KEY_2: `credential.https://${GITHUB_HOST}.useHttpPath`,
-      GIT_CONFIG_VALUE_2: "true",
+      GIT_CONFIG_KEY_2: `credential.https://${GITHUB_HOST}.helper`,
+      GIT_CONFIG_VALUE_2: "!gh auth git-credential",
+      GIT_CONFIG_KEY_3: `credential.https://${GITHUB_HOST}.useHttpPath`,
+      GIT_CONFIG_VALUE_3: "true",
     }),
   } satisfies Record<string, string>;
 

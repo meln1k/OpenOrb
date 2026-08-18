@@ -1,4 +1,5 @@
 import {
+  initialPromptPreview,
   parseRunnerClientMessage,
   RUNNER_CONNECTED_MESSAGE_TYPE,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
@@ -9,6 +10,15 @@ import {
   type RunnerCapacity,
   type RunnerServerMessage,
   type RunnerSessionSnapshot,
+  runnerSessionStateForProvisioningStage,
+  SESSION_EVENT_MESSAGE_TYPE,
+  SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
+  SESSION_PROVISION_MESSAGE_TYPE,
+  SESSION_PROVISION_REJECTED_MESSAGE_TYPE,
+  type SessionEventPayload,
+  type SessionProvisionAcceptedMessage,
+  type SessionProvisionAcceptedPayload,
+  type SessionProvisionCommandPayload,
 } from "@openorb/protocol";
 import { parseSafe, string } from "remix/data-schema";
 
@@ -17,6 +27,8 @@ import type { SessionCatalogRepository } from "@/app/data/session-catalog-reposi
 
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
 const MAX_MESSAGE_BYTES = 64 * 1024;
+const MAX_CACHED_SESSION_EVENTS = 1_024;
+const PROVISION_ACCEPTANCE_TIMEOUT_MS = 15_000;
 export const RUNNER_HEARTBEAT_TIMEOUT_MS = 60_000;
 
 export interface RunnerLiveState {
@@ -27,11 +39,37 @@ export interface RunnerLiveState {
 export interface RunnerConnectionRegistry {
   getRunnerLiveState(userId: string, runnerId: string): RunnerLiveState | null;
   getSessionRunner(userId: string, sessionId: string): string | null;
+  getSessionSnapshot(userId: string, sessionId: string): RunnerSessionSnapshot | null;
+  provisionSession(input: ProvisionSessionInput): Promise<ProvisionSessionResult>;
+  subscribeToSessionEvents(
+    userId: string,
+    sessionId: string,
+    afterCursor: number,
+    listener: (event: SessionEventPayload) => void,
+  ): SessionEventSubscription;
   disconnectRunner(userId: string, runnerId: string): boolean;
 }
 
 export interface RunnerConnectionGatewayOptions {
   heartbeatTimeoutMs?: number;
+  provisionAcceptanceTimeoutMs?: number;
+}
+
+export interface ProvisionSessionInput {
+  userId: string;
+  runnerId: string;
+  sessionId: string;
+  payload: SessionProvisionCommandPayload;
+}
+
+export type ProvisionSessionResult =
+  | { status: "accepted"; acknowledgement: SessionProvisionAcceptedPayload }
+  | { status: "rejected"; message: string }
+  | { status: "unavailable"; message: string };
+
+export interface SessionEventSubscription {
+  events: SessionEventPayload[];
+  unsubscribe(): void;
 }
 
 interface ActiveRunnerConnection {
@@ -39,6 +77,7 @@ interface ActiveRunnerConnection {
   socket: WebSocket;
   heartbeatTimeout: ReturnType<typeof setTimeout>;
   sessionIds: Set<string>;
+  reservedCreateSessions: number;
   reconciliationStarted: boolean;
   reconciliation?: ReconciliationState;
   capacity?: RunnerCapacity;
@@ -53,6 +92,32 @@ interface ReconciliationState {
   sessions: RunnerSessionSnapshot[];
 }
 
+interface PendingProvisionCommandBase {
+  connection: ActiveRunnerConnection;
+  sessionId: string;
+  resolve: (result: ProvisionSessionResult) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+type PendingProvisionCommand =
+  & PendingProvisionCommandBase
+  & (
+    | {
+      mode: "create";
+      expectedProjectId: string;
+      expectedRef: string;
+      expectedBranchName: string;
+      expectedInitialPromptPreview: string;
+    }
+    | { mode: "retry" }
+  );
+
+interface SessionEventChannel {
+  events: SessionEventPayload[];
+  listeners: Set<(event: SessionEventPayload) => void>;
+  snapshot?: RunnerSessionSnapshot;
+}
+
 type GatewayRepository =
   & Pick<RunnerRepository, "authenticateRunner">
   & Pick<SessionCatalogRepository, "reconcileSessionSnapshotEntries">;
@@ -63,7 +128,11 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
   readonly #sessionRoutes = new Map<string, ActiveRunnerConnection>();
   readonly #sockets = new Set<WebSocket>();
   readonly #revokedRunners = new Set<string>();
+  readonly #pendingProvisionCommands = new Map<string, PendingProvisionCommand>();
+  readonly #pendingProvisionSessions = new Set<string>();
+  readonly #eventChannels = new Map<string, SessionEventChannel>();
   readonly #heartbeatTimeoutMs: number;
+  readonly #provisionAcceptanceTimeoutMs: number;
 
   constructor(
     repository: GatewayRepository,
@@ -71,8 +140,16 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
   ) {
     this.#repository = repository;
     this.#heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? RUNNER_HEARTBEAT_TIMEOUT_MS;
+    this.#provisionAcceptanceTimeoutMs = options.provisionAcceptanceTimeoutMs ??
+      PROVISION_ACCEPTANCE_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#heartbeatTimeoutMs) || this.#heartbeatTimeoutMs <= 0) {
       throw new Error("Runner heartbeat timeout must be a positive integer.");
+    }
+    if (
+      !Number.isSafeInteger(this.#provisionAcceptanceTimeoutMs) ||
+      this.#provisionAcceptanceTimeoutMs <= 0
+    ) {
+      throw new Error("Runner provisioning timeout must be a positive integer.");
     }
   }
 
@@ -145,6 +222,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             clearTimeout(authenticationTimeout);
             const existing = this.#connections.get(runner.id);
             if (existing && existing.socket !== socket) {
+              this.#rejectPendingCommands(existing, "Runner reconnected before acknowledging.");
               this.#removeSessionRoutes(existing);
               closeSocket(existing.socket, 4000, "Replaced by reconnect");
             }
@@ -153,6 +231,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
               socket,
               heartbeatTimeout: this.#createHeartbeatTimeout(runner.id, socket),
               sessionIds: new Set(),
+              reservedCreateSessions: 0,
               reconciliationStarted: false,
             };
             this.#connections.set(runner.id, activeConnection);
@@ -229,6 +308,38 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             return;
           }
 
+          if (message.type === SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE) {
+            await this.#acceptProvisionedSession(activeConnection, message);
+            return;
+          }
+
+          if (message.type === SESSION_PROVISION_REJECTED_MESSAGE_TYPE) {
+            const pending = this.#pendingProvisionCommands.get(message.correlationId);
+            if (
+              !pending ||
+              pending.connection !== activeConnection ||
+              pending.sessionId !== message.sessionId
+            ) {
+              closeSocket(socket, 4400, "Unexpected provisioning rejection");
+              return;
+            }
+            this.#settleProvisionCommand(message.correlationId, {
+              status: "rejected",
+              message: message.payload.message,
+            });
+            return;
+          }
+
+          if (message.type === SESSION_EVENT_MESSAGE_TYPE) {
+            const key = sessionKey(activeConnection.runner.userId, message.sessionId);
+            if (this.#sessionRoutes.get(key) !== activeConnection) {
+              closeSocket(socket, 4400, "Session event is not routed through this runner");
+              return;
+            }
+            this.#publishSessionEvent(key, message.payload);
+            return;
+          }
+
           closeSocket(socket, 4400, "Unexpected message");
         } catch {
           closeSocket(socket, 1011, "Connection handler failed");
@@ -244,7 +355,13 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         authenticatedRunner && this.#connections.get(authenticatedRunner.id) === activeConnection
       ) {
         this.#connections.delete(authenticatedRunner.id);
-        if (activeConnection) this.#removeSessionRoutes(activeConnection);
+        if (activeConnection) {
+          this.#rejectPendingCommands(
+            activeConnection,
+            "Runner disconnected before acknowledging.",
+          );
+          this.#removeSessionRoutes(activeConnection);
+        }
       }
     };
 
@@ -268,7 +385,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       return null;
     }
     return {
-      capacity: { ...connection.capacity },
+      capacity: {
+        ...connection.capacity,
+        activeSessions: connection.capacity.activeSessions + connection.reservedCreateSessions,
+      },
       lastHeartbeatAt: connection.lastHeartbeatAt,
     };
   }
@@ -286,12 +406,124 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     return route.runner.id;
   }
 
+  getSessionSnapshot(userId: string, sessionId: string): RunnerSessionSnapshot | null {
+    const key = sessionKey(userId, sessionId);
+    const route = this.#sessionRoutes.get(key);
+    if (!route || route.runner.userId !== userId || !this.#isActive(route)) return null;
+    const snapshot = this.#eventChannels.get(key)?.snapshot;
+    return snapshot ? { ...snapshot } : null;
+  }
+
+  provisionSession(input: ProvisionSessionInput): Promise<ProvisionSessionResult> {
+    const connection = this.#connections.get(input.runnerId);
+    const liveState = this.getRunnerLiveState(input.userId, input.runnerId);
+    if (
+      !connection ||
+      connection.runner.userId !== input.userId ||
+      !this.#isActive(connection) ||
+      liveState === null
+    ) {
+      return Promise.resolve({
+        status: "unavailable",
+        message: "Runner is unavailable.",
+      });
+    }
+    if (
+      input.payload.mode === "create" &&
+      liveState.capacity.maxConcurrentSessions !== undefined &&
+      liveState.capacity.activeSessions >= liveState.capacity.maxConcurrentSessions
+    ) {
+      return Promise.resolve({
+        status: "unavailable",
+        message: "Runner has reached its concurrent session limit.",
+      });
+    }
+
+    const key = sessionKey(input.userId, input.sessionId);
+    if (this.#pendingProvisionSessions.has(key)) {
+      return Promise.resolve({
+        status: "unavailable",
+        message: "This session already has a provisioning request in flight.",
+      });
+    }
+    const existingRoute = this.#sessionRoutes.get(key);
+    if (existingRoute && existingRoute !== connection && this.#isActive(existingRoute)) {
+      return Promise.resolve({
+        status: "unavailable",
+        message: "This session is pinned to another runner.",
+      });
+    }
+
+    const commandId = crypto.randomUUID();
+    return new Promise((resolve) => {
+      if (input.payload.mode === "create") connection.reservedCreateSessions++;
+      const timeout = setTimeout(() => {
+        this.#settleProvisionCommand(commandId, {
+          status: "unavailable",
+          message: "Runner did not acknowledge provisioning in time.",
+        });
+      }, this.#provisionAcceptanceTimeoutMs);
+      this.#pendingProvisionCommands.set(commandId, {
+        connection,
+        sessionId: input.sessionId,
+        ...(input.payload.mode === "create"
+          ? {
+            mode: input.payload.mode,
+            expectedProjectId: input.payload.projectId,
+            expectedRef: input.payload.ref,
+            expectedBranchName: input.payload.branchName,
+            expectedInitialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
+          }
+          : { mode: input.payload.mode }),
+        resolve,
+        timeout,
+      });
+      this.#pendingProvisionSessions.add(key);
+
+      const command: RunnerServerMessage = {
+        version: 1,
+        id: commandId,
+        type: SESSION_PROVISION_MESSAGE_TYPE,
+        sessionId: input.sessionId,
+        payload: input.payload,
+      };
+      try {
+        connection.socket.send(JSON.stringify(command));
+      } catch {
+        this.#settleProvisionCommand(commandId, {
+          status: "unavailable",
+          message: "Runner disconnected before provisioning could be sent.",
+        });
+      }
+    });
+  }
+
+  subscribeToSessionEvents(
+    userId: string,
+    sessionId: string,
+    afterCursor: number,
+    listener: (event: SessionEventPayload) => void,
+  ): SessionEventSubscription {
+    const channel = this.#getEventChannel(sessionKey(userId, sessionId));
+    channel.listeners.add(listener);
+    let subscribed = true;
+    return {
+      events: channel.events.filter((entry) => entry.cursor > afterCursor),
+      unsubscribe() {
+        if (!subscribed) return;
+        subscribed = false;
+        channel.listeners.delete(listener);
+      },
+    };
+  }
+
   disconnectRunner(userId: string, runnerId: string): boolean {
     this.#revokedRunners.add(runnerKey(userId, runnerId));
     const connection = this.#connections.get(runnerId);
     if (!connection || connection.runner.userId !== userId) return false;
 
     this.#connections.delete(runnerId);
+    this.#rejectPendingCommands(connection, "Runner was revoked before acknowledging.");
     this.#removeSessionRoutes(connection);
     clearTimeout(connection.heartbeatTimeout);
     closeSocket(connection.socket, 4401, "Runner revoked");
@@ -305,10 +537,17 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     for (const socket of this.#sockets) {
       closeSocket(socket, 1001, "Control panel shutting down");
     }
+    for (const commandId of [...this.#pendingProvisionCommands.keys()]) {
+      this.#settleProvisionCommand(commandId, {
+        status: "unavailable",
+        message: "Control panel is shutting down.",
+      });
+    }
     this.#connections.clear();
     this.#sessionRoutes.clear();
     this.#sockets.clear();
     this.#revokedRunners.clear();
+    this.#eventChannels.clear();
   }
 
   #createHeartbeatTimeout(runnerId: string, socket: WebSocket): ReturnType<typeof setTimeout> {
@@ -316,6 +555,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       const connection = this.#connections.get(runnerId);
       if (!connection || connection.socket !== socket) return;
       this.#connections.delete(runnerId);
+      this.#rejectPendingCommands(connection, "Runner heartbeat timed out before acknowledging.");
       this.#removeSessionRoutes(connection);
       closeSocket(socket, 4408, "Heartbeat timed out");
     }, this.#heartbeatTimeoutMs);
@@ -354,7 +594,147 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     }
 
     this.#replaceSessionRoutes(connection, new Set(reconciled.acceptedSessionIds));
+    for (const session of reconciliation.sessions) {
+      if (reconciled.acceptedSessionIds.includes(session.id)) {
+        this.#getEventChannel(sessionKey(connection.runner.userId, session.id)).snapshot = session;
+      }
+    }
     connection.reconciliation = undefined;
+  }
+
+  async #acceptProvisionedSession(
+    connection: ActiveRunnerConnection,
+    message: SessionProvisionAcceptedMessage,
+  ): Promise<void> {
+    const pending = this.#pendingProvisionCommands.get(message.correlationId);
+    if (
+      !pending ||
+      pending.connection !== connection ||
+      pending.sessionId !== message.sessionId
+    ) {
+      closeSocket(connection.socket, 4400, "Unexpected provisioning acceptance");
+      return;
+    }
+    if (
+      pending.mode === "create" &&
+      (pending.expectedProjectId !== message.payload.session.projectId ||
+        pending.expectedRef !== message.payload.ref ||
+        pending.expectedBranchName !== message.payload.branchName ||
+        pending.expectedInitialPromptPreview !== message.payload.session.initialPromptPreview)
+    ) {
+      closeSocket(connection.socket, 4400, "Provisioning acceptance does not match the command");
+      return;
+    }
+
+    const key = sessionKey(connection.runner.userId, message.sessionId);
+    const route = this.#sessionRoutes.get(key);
+    if (route && route !== connection && this.#isActive(route)) {
+      closeSocket(connection.socket, 4400, "Session is already routed through another runner");
+      return;
+    }
+
+    if (pending.mode === "create") {
+      let accepted = false;
+      try {
+        const reconciled = await this.#repository.reconcileSessionSnapshotEntries(
+          connection.runner.userId,
+          [message.payload.session],
+        );
+        accepted = reconciled.rejected.length === 0 &&
+          reconciled.acceptedSessionIds.includes(message.sessionId);
+      } catch {
+        this.#settleProvisionCommand(message.correlationId, {
+          status: "unavailable",
+          message: "The runner accepted the session, but its catalog entry could not be created.",
+        });
+        closeSocket(connection.socket, 1011, "Session catalog persistence failed");
+        return;
+      }
+      if (
+        this.#pendingProvisionCommands.get(message.correlationId) !== pending ||
+        !this.#isActive(connection)
+      ) {
+        return;
+      }
+      if (!accepted) {
+        this.#settleProvisionCommand(message.correlationId, {
+          status: "unavailable",
+          message: "The accepted session could not be reconciled with its catalog entry.",
+        });
+        closeSocket(connection.socket, 4400, "Session catalog reconciliation was rejected");
+        return;
+      }
+    }
+
+    this.#sessionRoutes.set(key, connection);
+    connection.sessionIds.add(message.sessionId);
+    this.#getEventChannel(key).snapshot = message.payload.session;
+    this.#settleProvisionCommand(message.correlationId, {
+      status: "accepted",
+      acknowledgement: message.payload,
+    });
+  }
+
+  #settleProvisionCommand(commandId: string, result: ProvisionSessionResult): void {
+    const pending = this.#pendingProvisionCommands.get(commandId);
+    if (!pending) return;
+    this.#pendingProvisionCommands.delete(commandId);
+    this.#pendingProvisionSessions.delete(
+      sessionKey(pending.connection.runner.userId, pending.sessionId),
+    );
+    if (pending.mode === "create") {
+      pending.connection.reservedCreateSessions = Math.max(
+        0,
+        pending.connection.reservedCreateSessions - 1,
+      );
+      if (result.status === "accepted" && pending.connection.capacity) {
+        pending.connection.capacity = {
+          ...pending.connection.capacity,
+          activeSessions: pending.connection.capacity.activeSessions + 1,
+        };
+      }
+    }
+    clearTimeout(pending.timeout);
+    pending.resolve(result);
+  }
+
+  #rejectPendingCommands(connection: ActiveRunnerConnection, message: string): void {
+    for (const [commandId, pending] of this.#pendingProvisionCommands) {
+      if (pending.connection !== connection) continue;
+      this.#settleProvisionCommand(commandId, { status: "unavailable", message });
+    }
+  }
+
+  #getEventChannel(key: string): SessionEventChannel {
+    let channel = this.#eventChannels.get(key);
+    if (!channel) {
+      channel = { events: [], listeners: new Set() };
+      this.#eventChannels.set(key, channel);
+    }
+    return channel;
+  }
+
+  #publishSessionEvent(key: string, event: SessionEventPayload): void {
+    const channel = this.#getEventChannel(key);
+    const lastCursor = channel.events.at(-1)?.cursor ?? 0;
+    if (event.cursor <= lastCursor) return;
+
+    channel.events.push(event);
+    if (channel.events.length > MAX_CACHED_SESSION_EVENTS) channel.events.shift();
+    if (channel.snapshot && event.event.type === "session.state") {
+      channel.snapshot = {
+        ...channel.snapshot,
+        state: runnerSessionStateForProvisioningStage(event.event.stage),
+        lastEventCursor: event.cursor,
+      };
+    }
+    for (const listener of channel.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // A disconnected browser stream must not disrupt the runner connection.
+      }
+    }
   }
 
   #hasConflictingSessionRoute(

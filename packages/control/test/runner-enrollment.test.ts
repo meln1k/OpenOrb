@@ -284,6 +284,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
       payload: { token: firstRunner.runnerToken },
     }));
     const connected = parseRunnerServerMessage(JSON.parse(await nextMessage(socket)));
+    assert(connected.type === "runner.connected");
     assertEquals(connected.payload.runnerId, firstRunner.runnerId);
     socket.send(JSON.stringify({
       version: 1,

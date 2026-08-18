@@ -8,6 +8,7 @@ import { redirect } from "remix/response/redirect";
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import { routes } from "@/app/routes.ts";
+import { loadSessionComposerData } from "@/app/session-composer-data.ts";
 import { ProjectsPage } from "@/app/actions/projects/page.tsx";
 import { canonicalizeGitHubRepository } from "@/app/actions/projects/project-input.ts";
 
@@ -45,11 +46,18 @@ export default createController(routes.app.projects, {
   middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
     async index(context) {
-      const projects = await context.services.store.listProjects(context.auth.identity.id);
+      const userId = context.auth.identity.id;
+      const [composer, projects, sidebarSessions] = await Promise.all([
+        loadSessionComposerData(userId, context.services),
+        context.services.store.listProjects(userId),
+        context.services.store.listSessionCatalogEntries(userId),
+      ]);
       return context.render(
         <ProjectsPage
+          composer={composer}
           csrfToken={getCsrfToken(context)}
           projects={projects}
+          sidebarSessions={sidebarSessions}
         />,
       );
     },
@@ -59,11 +67,17 @@ export default createController(routes.app.projects, {
       const userId = context.auth.identity.id;
       const intent = context.formData.get("intent");
       const renderError = async (error: string, status: number) => {
-        const projects = await store.listProjects(userId);
+        const [composer, projects, sidebarSessions] = await Promise.all([
+          loadSessionComposerData(userId, context.services),
+          store.listProjects(userId),
+          store.listSessionCatalogEntries(userId),
+        ]);
         return context.render(
           <ProjectsPage
+            composer={composer}
             csrfToken={getCsrfToken(context)}
             projects={projects}
+            sidebarSessions={sidebarSessions}
             error={error}
           />,
           { status },

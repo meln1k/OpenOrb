@@ -6,6 +6,8 @@ import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
 import { parseRunnerCommand } from "@/src/options.ts";
 import { createRunnerCapacityReporter } from "@/src/capacity.ts";
 import { ensureDeveloperImage } from "@/src/developer-image.ts";
+import { SessionEventRelay } from "@/src/session-event-relay.ts";
+import { SessionProvisioner } from "@/src/session-provisioner.ts";
 import { RunnerSessionStore } from "@/src/session-store.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
@@ -127,7 +129,7 @@ export async function main(args: string[] = Deno.args): Promise<number> {
         enrollmentPsk: command.options.enrollmentToken,
         name: command.options.name,
         architecture: normalizeArchitecture(Deno.build.arch),
-        capabilities: ["heartbeat"],
+        capabilities: ["heartbeat", "session-provisioning"],
       });
       identity = {
         runnerId: enrolled.runnerId,
@@ -151,35 +153,54 @@ export async function main(args: string[] = Deno.args): Promise<number> {
         runnerId: identity.runnerId,
       });
       await sessionStore.initialize();
+      const sessionEventRelay = new SessionEventRelay(sessionStore);
+      let getActiveSessionCount = () => 0;
       const getCapacity = createRunnerCapacityReporter({
         path: workingDirectory,
         maxConcurrentSessions: command.options.maxConcurrentSessions,
         vmCpuCount: command.options.vmCpuCount,
         vmMemoryMiB: command.options.vmMemoryMiB,
+        getActiveSessions: () => getActiveSessionCount(),
       });
-      await getCapacity();
-      await maintainRunnerConnection({
-        controlPanelUrl: identity.controlPanelUrl,
-        runnerId: identity.runnerId,
-        runnerToken: identity.runnerToken,
-        signal: shutdownController.signal,
-        getCapacity,
-        async getSessionSnapshot() {
-          const inventory = await sessionStore.loadInventory();
-          for (const error of inventory.errors) {
-            console.error(
-              `[openorb-runner] session ${error.sessionDirectory}: ${error.message}`,
-            );
-          }
-          return inventory.sessions;
-        },
-        onConnected() {
-          console.log(`[openorb-runner] connected runner ${identity.runnerId}`);
-        },
-        onReconnectScheduled(delay) {
-          console.warn(`[openorb-runner] disconnected; reconnecting in ${delay}ms`);
-        },
+      const initialCapacity = await getCapacity();
+      const sessionProvisioner = new SessionProvisioner({
+        sessionStore,
+        eventRelay: sessionEventRelay,
+        developerImage,
+        cpuCount: initialCapacity.vmCpuCount,
+        memoryMiB: initialCapacity.vmMemoryMiB,
       });
+      getActiveSessionCount = () => sessionProvisioner.activeSessionCount;
+      try {
+        await maintainRunnerConnection({
+          controlPanelUrl: identity.controlPanelUrl,
+          runnerId: identity.runnerId,
+          runnerToken: identity.runnerToken,
+          signal: shutdownController.signal,
+          getCapacity,
+          async getSessionSnapshot() {
+            const inventory = await sessionStore.loadInventory();
+            for (const error of inventory.errors) {
+              console.error(
+                `[openorb-runner] session ${error.sessionDirectory}: ${error.message}`,
+              );
+            }
+            return inventory.sessions;
+          },
+          sessionEventRelay,
+          onProvisionCommand(command, send) {
+            return sessionProvisioner.handleCommand(command, send);
+          },
+          onConnected() {
+            console.log(`[openorb-runner] connected runner ${identity.runnerId}`);
+          },
+          onReconnectScheduled(delay) {
+            console.warn(`[openorb-runner] disconnected; reconnecting in ${delay}ms`);
+          },
+        });
+      } finally {
+        await sessionProvisioner.close();
+      }
     } finally {
       removeSignalListeners();
     }

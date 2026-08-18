@@ -11,6 +11,7 @@
     "./identity": "./src/identity.ts",
     "./pi-session-factory": "./src/pi-session-factory.ts",
     "./prerequisites": "./src/prerequisites.ts",
+    "./session-provisioner": "./src/session-provisioner.ts",
     "./session-store": "./src/session-store.ts"
   },
   "imports": {

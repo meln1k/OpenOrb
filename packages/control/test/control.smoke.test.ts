@@ -37,7 +37,7 @@ Deno.test("serves process health and the control shell over HTTP", async () => {
     assertMatch(homeHtml, /Create your administrator/);
     assertMatch(
       homeHtml,
-      /<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no" \/>/,
+      /<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content" \/>/,
     );
     assertMatch(homeHtml, /<script type="module" src="\/assets\/app\/assets\/client\.ts">/);
   } finally {

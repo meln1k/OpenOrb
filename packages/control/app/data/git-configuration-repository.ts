@@ -1,7 +1,7 @@
 import type { Database } from "remix/data-table";
 
 import type { MasterKey } from "@/app/utils/master-key.ts";
-import { encryptSecret, type SecretMetadata } from "@/app/utils/secret-cipher.ts";
+import { decryptSecret, encryptSecret, type SecretMetadata } from "@/app/utils/secret-cipher.ts";
 import {
   encryptedSecretPurposes,
   type EncryptedSecretRow,
@@ -39,6 +39,7 @@ export interface GitConfigurationRepository {
     authorEmail: string;
   }): Promise<GitAuthorConfiguration>;
   getGitHubCredential(userId: string): Promise<GitCredential | null>;
+  getGitHubToken(userId: string): Promise<string | null>;
   saveGitHubCredential(userId: string, token: string): Promise<GitCredential>;
   deleteGitHubCredential(userId: string): Promise<DeleteGitCredentialResult>;
 }
@@ -81,6 +82,29 @@ export function createGitConfigurationRepository(
         where: { user_id: userId, host: GITHUB_HOST },
       });
       return row ? mapGitCredential(row) : null;
+    },
+
+    async getGitHubToken(userId) {
+      const credential = await database.findOne(gitCredentials, {
+        where: { user_id: userId, host: GITHUB_HOST },
+      });
+      if (!credential) return null;
+      const secret = await database.findOne(encryptedSecrets, {
+        where: {
+          id: credential.encrypted_secret_id,
+          user_id: userId,
+          purpose: encryptedSecretPurposes.gitCredential,
+        },
+      });
+      if (!secret) throw new Error("The GitHub credential secret is missing or invalid.");
+      return await decryptSecret(
+        masterKey,
+        {
+          keyVersion: secret.key_version,
+          ciphertext: Uint8Array.fromBase64(secret.ciphertext),
+        },
+        { userId, key: secret.key },
+      );
     },
 
     saveGitHubCredential(userId, token) {

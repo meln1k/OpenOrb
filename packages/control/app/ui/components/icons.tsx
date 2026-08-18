@@ -1,5 +1,6 @@
 import type { Handle } from "remix/ui";
 import type { IconNode } from "lucide";
+import ArrowRight from "lucide/dist/esm/icons/arrow-right.mjs";
 import BadgeCheck from "lucide/dist/esm/icons/badge-check.mjs";
 import Bell from "lucide/dist/esm/icons/bell.mjs";
 import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
@@ -24,6 +25,7 @@ import X from "lucide/dist/esm/icons/x.mjs";
 
 export type IconName =
   | "account"
+  | "arrow-right"
   | "bell"
   | "chevron-down"
   | "chevrons-up-down"
@@ -92,6 +94,7 @@ function LucideNode(handle: Handle<{ node: IconNode[number] }>) {
 
 const iconNodes = {
   account: BadgeCheck,
+  "arrow-right": ArrowRight,
   bell: Bell,
   "chevron-down": ChevronDown,
   "chevrons-up-down": ChevronsUpDown,
