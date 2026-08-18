@@ -133,6 +133,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertMatch(emptySettings, /GitHub credential/);
     assertMatch(emptySettings, /Git author/);
     assertMatch(emptySettings, /Not configured/);
+    assertMatch(emptySettings, /<link data-rmx rel="modulepreload" href="\/assets\//);
 
     const authorResponse = await submitForm(client, settingsPath, {
       intent: "save-git-author",

@@ -5,7 +5,7 @@ import { assetServer } from "@/app/assets.ts";
 const clientEntries = [
   "packages/control/app/assets/client.ts",
   "packages/control/app/ui/components/settings-tabs.tsx",
-  "node_modules/.deno/remix@3.0.0-beta.6/node_modules/remix/dist/ui/button.js",
+  "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/button.js",
 ];
 
 Deno.test("serves browser UI dependencies without exposing server modules", async () => {
@@ -21,13 +21,13 @@ Deno.test("serves browser UI dependencies without exposing server modules", asyn
   for (
     const href of [
       "/assets/app/actions/settings/controller.tsx",
-      "/assets/npm/.deno/remix@3.0.0-beta.6/node_modules/remix/dist/ui/server.js",
-      "/assets/npm/.deno/remix@3.0.0-beta.6/node_modules/remix/dist/ui/test.js",
-      "/assets/npm/.deno/@remix-run+ui@0.5.0/node_modules/@remix-run/ui/dist/server/stream.js",
-      "/assets/npm/.deno/@remix-run+ui@0.5.0/node_modules/@remix-run/ui/dist/test.js",
-      "/assets/npm/.deno/remix@3.0.0-beta.6/node_modules/remix/dist/data-table-postgres.js",
+      "/assets/npm/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/server.js",
+      "/assets/npm/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/test.js",
+      "/assets/npm/.deno/@remix-run+ui@0.7.0/node_modules/@remix-run/ui/dist/server/stream.js",
+      "/assets/npm/.deno/@remix-run+ui@0.7.0/node_modules/@remix-run/ui/dist/test.js",
+      "/assets/npm/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/data-table-postgres.js",
       "/assets/npm/.deno/pg@8.16.3/node_modules/pg/lib/index.js",
-      "/assets/npm/.deno/@remix-run+ui@0.5.0/node_modules/@remix-run/ui/dist/index.d.ts",
+      "/assets/npm/.deno/@remix-run+ui@0.7.0/node_modules/@remix-run/ui/dist/index.d.ts",
     ]
   ) {
     assertEquals(

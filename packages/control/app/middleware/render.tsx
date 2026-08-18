@@ -24,9 +24,14 @@ export function render() {
               );
             }
 
+            const [href, preloads] = await Promise.all([
+              assetServer.getHref(entryId),
+              assetServer.getPreloads(entryId),
+            ]);
             return {
-              href: await assetServer.getHref(entryId),
+              href,
               exportName: entryId.split("#")[1] || component.name || titleCaseFileName(entryId),
+              preloads,
             };
           },
         });

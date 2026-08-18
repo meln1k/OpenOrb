@@ -132,4 +132,4 @@ Guest VM assets are not embedded in the standalone executables. The runner insta
 
 ## Pinned Remix scaffold
 
-The control application uses `remix@3.0.0-beta.6` (source tag commit `2949a5994ab98d0847abd3ed75c6473736375c7e`). `deno.json` and `deno.lock` pin that package exactly; upgrades must be explicit.
+The control application uses `remix@3.0.0-beta.10` (source tag commit `a7a1de4cc535594e673e95905468c9e2b37b00c2`). `deno.json` and `deno.lock` pin that package exactly; upgrades must be explicit.
