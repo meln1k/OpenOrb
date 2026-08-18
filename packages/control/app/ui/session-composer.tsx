@@ -2,6 +2,7 @@ import { css, type Handle } from "remix/ui";
 
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import { routes } from "@/app/routes.ts";
+import { DialogSubmitBehavior } from "@/app/ui/components/alert-dialog.tsx";
 import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
 import { media } from "@/app/ui/responsive.ts";
@@ -140,6 +141,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
           </Button>
         </footer>
       </form>
+      <DialogSubmitBehavior dialogId={dialogId} open={Boolean(autoOpen)} />
     </dialog>
   );
 }

@@ -14,15 +14,17 @@ export function AlertDialog(handle: Handle<Props<"dialog">>) {
         mix={[contentStyle, mix]}
       >
         {children}
-        <AlertDialogBehavior dialogId={id} />
+        <DialogSubmitBehavior dialogId={id} open={Boolean(props.open)} />
       </dialog>
     );
   };
 }
 
-export const AlertDialogBehavior = clientEntry<{ dialogId: string }>(
+export const DialogSubmitBehavior = clientEntry<{ dialogId: string; open?: boolean }>(
   import.meta.url,
-  function AlertDialogBehavior(handle: Handle<{ dialogId: string }>) {
+  function DialogSubmitBehavior(handle: Handle<{ dialogId: string; open?: boolean }>) {
+    let wasOpenRequested = false;
+
     handle.queueTask(() => {
       const dialog = document.getElementById(handle.props.dialogId);
       if (!(dialog instanceof HTMLDialogElement)) return;
@@ -35,7 +37,20 @@ export const AlertDialogBehavior = clientEntry<{ dialogId: string }>(
       }, { signal });
     });
 
-    return () => null;
+    return () => {
+      const openRequested = Boolean(handle.props.open);
+      if (openRequested && !wasOpenRequested) {
+        handle.queueTask((signal) => {
+          if (signal.aborted) return;
+          const dialog = document.getElementById(handle.props.dialogId);
+          if (!(dialog instanceof HTMLDialogElement) || dialog.matches(":modal")) return;
+          if (dialog.open) dialog.close();
+          dialog.showModal();
+        });
+      }
+      wasOpenRequested = openRequested;
+      return null;
+    };
   },
 );
 
