@@ -1,13 +1,7 @@
 import { any, literal, object, optional, parse, string } from "@remix-run/data-schema";
+import type { InferOutput } from "@remix-run/data-schema";
 
-export interface RunnerMessage<T = unknown> {
-  version: 1;
-  id: string;
-  type: string;
-  sessionId?: string;
-  correlationId?: string;
-  payload: T;
-}
+import type { OptionalSchemaProperties } from "@/src/schema-output.ts";
 
 export const runnerMessageSchema = object(
   {
@@ -20,6 +14,13 @@ export const runnerMessageSchema = object(
   },
   { unknownKeys: "error" },
 );
+
+type RunnerMessageEnvelope = OptionalSchemaProperties<
+  InferOutput<typeof runnerMessageSchema>,
+  "sessionId" | "correlationId"
+>;
+
+export type RunnerMessage<T = unknown> = Omit<RunnerMessageEnvelope, "payload"> & { payload: T };
 
 export function parseRunnerMessage(input: unknown): RunnerMessage {
   return parse(runnerMessageSchema, input);

@@ -17,7 +17,9 @@ interface EventConsumer {
 export class SessionEventRelay {
   readonly #sessionStore: RunnerSessionStore;
   #consumer?: EventConsumer;
-  #operations: Promise<void> = Promise.resolve();
+  #attachments: Promise<void> = Promise.resolve();
+  #publishGate: Promise<void> = Promise.resolve();
+  readonly #publishes = new Map<string, Promise<void>>();
 
   constructor(sessionStore: RunnerSessionStore) {
     this.#sessionStore = sessionStore;
@@ -28,14 +30,22 @@ export class SessionEventRelay {
     replay: () => Promise<boolean>,
   ): Promise<() => void> {
     const token = {};
-    return this.#enqueue(async () => {
+    return this.#enqueueAttachment(async () => {
       if (this.#consumer) throw new Error("A session event consumer is already attached.");
-      if (!await replay()) return () => {};
+      const existingPublishes = [...this.#publishes.values()];
+      const handoff = Promise.withResolvers<void>();
+      this.#publishGate = handoff.promise;
+      try {
+        await Promise.all(existingPublishes);
+        if (!await replay()) return () => {};
 
-      this.#consumer = { token, send };
-      return () => {
-        if (this.#consumer?.token === token) this.#consumer = undefined;
-      };
+        this.#consumer = { token, send };
+        return () => {
+          if (this.#consumer?.token === token) this.#consumer = undefined;
+        };
+      } finally {
+        handoff.resolve();
+      }
     });
   }
 
@@ -44,12 +54,25 @@ export class SessionEventRelay {
     return records.map((record) => ({ cursor: record.cursor, event: record.event }));
   }
 
+  replayEvents(
+    sessionId: string,
+    send: (event: SessionEventPayload) => void | Promise<void>,
+  ): Promise<void> {
+    return this.#sessionStore.forEachEvent(
+      sessionId,
+      (record) => send({ cursor: record.cursor, event: record.event }),
+    );
+  }
+
   publish(
     sessionId: string,
     correlationId: string,
     event: SessionProvisioningEvent,
   ): Promise<void> {
-    return this.#enqueue(async () => {
+    const gate = this.#publishGate;
+    const previous = this.#publishes.get(sessionId) ?? Promise.resolve();
+    const pending = previous.catch(() => undefined).then(async () => {
+      await gate;
       const cursor = await this.#sessionStore.appendEvent(
         sessionId,
         event,
@@ -63,11 +86,15 @@ export class SessionEventRelay {
         payload: { cursor, event },
       });
     });
+    this.#publishes.set(sessionId, pending);
+    return pending.finally(() => {
+      if (this.#publishes.get(sessionId) === pending) this.#publishes.delete(sessionId);
+    });
   }
 
-  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#operations.then(operation, operation);
-    this.#operations = result.then(() => undefined, () => undefined);
+  #enqueueAttachment<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#attachments.then(operation, operation);
+    this.#attachments = result.then(() => undefined, () => undefined);
     return result;
   }
 }

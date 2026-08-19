@@ -184,13 +184,13 @@ async function connectOnce(
         );
         if (options.sessionEventRelay) {
           for (const session of sessions) {
-            const events = await options.sessionEventRelay.readEvents(session.id);
-            if (settled || socket.readyState !== WebSocket.OPEN) return false;
-            for (const event of events) {
+            await options.sessionEventRelay.replayEvents(session.id, (event) => {
+              if (settled || socket.readyState !== WebSocket.OPEN) return;
               socket.send(
                 JSON.stringify(replayedSessionEventMessage(session.id, snapshotId, event)),
               );
-            }
+            });
+            if (settled || socket.readyState !== WebSocket.OPEN) return false;
           }
         }
         return true;

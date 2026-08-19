@@ -1,4 +1,5 @@
 import { number, object, optional, parse } from "@remix-run/data-schema";
+import type { InferOutput } from "@remix-run/data-schema";
 
 import { runnerIdSchema, runnerTokenSchema } from "@/src/runner-enrollment.ts";
 import { parseRunnerMessage, type RunnerMessage } from "@/src/runner-message.ts";
@@ -31,33 +32,11 @@ import {
   type SessionProvisionRejectedMessage,
   sessionProvisionRejectedPayloadSchema,
 } from "@/src/runner-session-provisioning.ts";
+import type { OptionalSchemaProperties } from "@/src/schema-output.ts";
 
 export const RUNNER_HELLO_MESSAGE_TYPE = "runner.hello";
 export const RUNNER_HEARTBEAT_MESSAGE_TYPE = "runner.heartbeat";
 export const RUNNER_CONNECTED_MESSAGE_TYPE = "runner.connected";
-
-export interface RunnerHelloPayload {
-  token: string;
-}
-
-export interface RunnerCapacity {
-  /** Omission means the runner does not impose a concurrent-session limit. */
-  maxConcurrentSessions?: number;
-  activeSessions: number;
-  vmCpuCount: number;
-  vmMemoryMiB: number;
-  diskFreeMiB: number;
-}
-
-export interface RunnerHeartbeatPayload {
-  /** Unix epoch time in milliseconds. */
-  observedAt: number;
-  capacity: RunnerCapacity;
-}
-
-export interface RunnerConnectedPayload {
-  runnerId: string;
-}
 
 export type RunnerClientMessage =
   | (RunnerMessage<RunnerHelloPayload> & { type: typeof RUNNER_HELLO_MESSAGE_TYPE })
@@ -96,6 +75,7 @@ const positiveIntegerSchema = number().refine(
   "Expected a positive safe integer.",
 );
 
+/** An omitted maxConcurrentSessions means the runner imposes no concurrent-session limit. */
 const runnerCapacitySchema = object(
   {
     maxConcurrentSessions: optional(positiveIntegerSchema),
@@ -107,6 +87,7 @@ const runnerCapacitySchema = object(
   { unknownKeys: "error" },
 );
 
+/** observedAt is a Unix epoch timestamp in milliseconds. */
 const heartbeatPayloadSchema = object(
   {
     observedAt: number().refine(
@@ -124,6 +105,19 @@ const connectedPayloadSchema = object(
   },
   { unknownKeys: "error" },
 );
+
+export type RunnerHelloPayload = InferOutput<typeof helloPayloadSchema>;
+export type RunnerCapacity = OptionalSchemaProperties<
+  InferOutput<typeof runnerCapacitySchema>,
+  "maxConcurrentSessions"
+>;
+export type RunnerHeartbeatPayload =
+  & Omit<
+    InferOutput<typeof heartbeatPayloadSchema>,
+    "capacity"
+  >
+  & { capacity: RunnerCapacity };
+export type RunnerConnectedPayload = InferOutput<typeof connectedPayloadSchema>;
 
 export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
   const message = parseRunnerMessage(input);

@@ -8,11 +8,7 @@ import type { RunnerEnrollmentToken } from "@/app/data/runner-repository.ts";
 import type { SecretEntry } from "@/app/data/secret-repository.ts";
 import { routes } from "@/app/routes.ts";
 import { Icon } from "@/app/ui/components/icons.tsx";
-import {
-  type SettingsRunner,
-  type SettingsTab,
-  SettingsTabs,
-} from "@/app/ui/components/settings-tabs.tsx";
+import { type SettingsRunner, type SettingsTab, SettingsTabs } from "./settings-tabs.tsx";
 import { designSystemStyle } from "@/app/ui/components/theme.ts";
 import { Document } from "@/app/ui/document.tsx";
 import { media } from "@/app/ui/responsive.ts";

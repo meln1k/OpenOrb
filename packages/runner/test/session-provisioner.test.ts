@@ -13,6 +13,7 @@ import { installLocalDeveloperImage } from "@/test/local-developer-image.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c10";
+const OTHER_SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c12";
 const PROJECT_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c11";
 const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
 const BRANCH_NAME = "openorb/session-test";
@@ -175,6 +176,44 @@ Deno.test("keeps clone failure non-fatal and skips checkout-dependent setup", as
   }
 });
 
+Deno.test("marks provisioning failed when output event persistence fails", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    const originalAppend = store.appendEvent.bind(store);
+    store.appendEvent = (sessionId, event) => {
+      if (event.type === "provisioning.log") {
+        return Promise.reject(new Error("event persistence failed"));
+      }
+      return originalAppend(sessionId, event);
+    };
+    const runtime = new FakeRuntime({ outputSecret: GITHUB_TOKEN });
+    const provisioner = new SessionProvisioner({
+      sessionStore: store,
+      eventRelay: new SessionEventRelay(store),
+      cpuCount: 2,
+      memoryMiB: 4096,
+      createRuntime: () => Promise.resolve(runtime),
+    });
+
+    await provisioner.handleCommand(createCommand(), () => {});
+    const metadata = await waitForState(store, "error");
+    assertEquals(metadata.state, "error");
+    assertEquals(runtime.closed, false);
+    assertEquals(
+      (await store.readEvents(SESSION_ID)).some((record) =>
+        record.event.type === "session.state" && record.event.stage === "ready"
+      ),
+      false,
+    );
+
+    await provisioner.close();
+    assert(runtime.closed);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
 Deno.test("continues active provisioning through a replacement event consumer", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
@@ -216,6 +255,71 @@ Deno.test("continues active provisioning through a replacement event consumer", 
 
     detachSecond();
     await provisioner.close();
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("publishes different sessions concurrently without crossing an attachment handoff", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    await store.createSession({
+      id: SESSION_ID,
+      projectId: PROJECT_ID,
+      repositoryUrl: REPOSITORY_URL,
+      ref: "main",
+      branchName: BRANCH_NAME,
+      initialPrompt: INITIAL_PROMPT,
+    });
+    await store.createSession({
+      id: OTHER_SESSION_ID,
+      projectId: PROJECT_ID,
+      repositoryUrl: REPOSITORY_URL,
+      ref: "main",
+      branchName: BRANCH_NAME,
+      initialPrompt: INITIAL_PROMPT,
+      createdAt: "2026-08-17T12:00:01Z",
+    });
+    const originalAppend = store.appendEvent.bind(store);
+    const firstAppendStarted = Promise.withResolvers<void>();
+    const releaseFirstAppend = Promise.withResolvers<void>();
+    store.appendEvent = async (sessionId, event) => {
+      if (sessionId === SESSION_ID) {
+        firstAppendStarted.resolve();
+        await releaseFirstAppend.promise;
+      }
+      return await originalAppend(sessionId, event);
+    };
+    const relay = new SessionEventRelay(store);
+    const first = relay.publish(SESSION_ID, "first", {
+      type: "provisioning.log",
+      stream: "stdout",
+      text: "first",
+    });
+    await firstAppendStarted.promise;
+    await relay.publish(OTHER_SESSION_ID, "other", {
+      type: "provisioning.log",
+      stream: "stdout",
+      text: "other",
+    });
+
+    const replayed: SessionEventPayload[] = [];
+    const attached = relay.attach(collectEvents(replayed), async () => {
+      replayed.push(...await relay.readEvents(SESSION_ID));
+      return true;
+    });
+    const duringHandoff = relay.publish(SESSION_ID, "second", {
+      type: "provisioning.log",
+      stream: "stdout",
+      text: "second",
+    });
+    releaseFirstAppend.resolve();
+    const detach = await attached;
+    await Promise.all([first, duringHandoff]);
+
+    assertEquals(replayed.map((event) => event.cursor), [1, 2]);
+    detach();
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }

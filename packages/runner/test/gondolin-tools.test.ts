@@ -51,6 +51,56 @@ Deno.test("workspace path mapping rejects lexical escapes", () => {
 });
 
 Deno.test({
+  name: "an output observer failure drains the command and retains the healthy VM",
+  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
+  async fn() {
+    const temporaryDirectory = await Deno.makeTempDir();
+    const workspacePath = `${temporaryDirectory}/workspace`;
+    await Deno.mkdir(workspacePath);
+    const runtime = await createOpenOrbGondolinToolRuntime({
+      workspacePath,
+      developerImage: await installLocalDeveloperImage(temporaryDirectory),
+      sessionLabel: "openorb output observer failure test",
+    });
+
+    try {
+      let observerCalls = 0;
+      await assertRejects(
+        () =>
+          runtime.run(
+            [
+              "/bin/sh",
+              "-lc",
+              "printf first; sleep 0.1; printf second; printf retained > /tmp/openorb-retained-vm",
+            ],
+            {
+              onOutput() {
+                observerCalls++;
+                throw new Error("event persistence failed");
+              },
+            },
+          ),
+        Error,
+        "event persistence failed",
+      );
+      assertEquals(observerCalls, 1);
+
+      let output = "";
+      const result = await runtime.run(["/bin/cat", "/tmp/openorb-retained-vm"], {
+        onOutput(chunk) {
+          output += chunk.text;
+        },
+      });
+      assertEquals(result.exitCode, 0);
+      assertEquals(output, "retained");
+    } finally {
+      await runtime.close();
+      await Deno.remove(temporaryDirectory, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
   name: "real Pi tools execute only in Gondolin and recover after cancellation",
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {

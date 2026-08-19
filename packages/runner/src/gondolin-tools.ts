@@ -185,6 +185,9 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
     const running = await this.getVm();
     if (options.signal?.aborted) throw new Error("Command aborted.");
 
+    let observerFailed = false;
+    let observerError: unknown;
+    let exitCode: number;
     try {
       const process = running.vm.exec(command, {
         cwd: options.cwd === undefined
@@ -196,15 +199,23 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
         stderr: "pipe",
       });
       for await (const chunk of process.output()) {
-        await options.onOutput?.({ stream: chunk.stream, text: chunk.text });
+        if (!observerFailed && options.onOutput) {
+          try {
+            await options.onOutput({ stream: chunk.stream, text: chunk.text });
+          } catch (error) {
+            observerFailed = true;
+            observerError = error;
+          }
+        }
       }
-      const result = await process;
-      return { exitCode: result.exitCode };
+      exitCode = (await process).exitCode;
     } catch (error) {
       await this.discard(running);
       if (options.signal?.aborted) throw new Error("Command aborted.");
       throw error;
     }
+    if (observerFailed) throw observerError;
+    return { exitCode };
   }
 
   close(): Promise<void> {

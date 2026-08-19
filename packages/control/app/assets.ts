@@ -13,6 +13,7 @@ export const assetServer = createAssetServer({
     "protocol/*path": "packages/protocol/src/*path",
   },
   allowFiles: [
+    "packages/control/app/actions/settings/{git-author,github-credential,provider-secrets,runners,settings-shared,settings-tabs}.{ts,tsx}",
     "packages/control/app/assets/**",
     "packages/control/app/ui/components/**",
     "packages/control/app/ui/responsive.ts",

@@ -4,6 +4,7 @@ import { projectIdSchema, runnerSessionSnapshotSchema } from "@/src/runner-sessi
 import type { InferOutput } from "@remix-run/data-schema";
 import type { RunnerMessage } from "@/src/runner-message.ts";
 import { runnerCheckoutStateSchema } from "@/src/runner-session-events.ts";
+import type { OptionalSchemaProperties } from "@/src/schema-output.ts";
 
 export const SESSION_PROVISION_MESSAGE_TYPE = "session.provision";
 export const SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE = "session.provision.accepted";
@@ -62,12 +63,9 @@ export const sessionProvisionCommandPayloadSchema = union([
   retryPayloadSchema,
 ]);
 
-type OptionalGithubToken<T> = T extends { githubToken: infer Token }
-  ? Omit<T, "githubToken"> & { githubToken?: Exclude<Token, undefined> }
-  : T;
-
-export type SessionProvisionCommandPayload = OptionalGithubToken<
-  InferOutput<typeof sessionProvisionCommandPayloadSchema>
+export type SessionProvisionCommandPayload = OptionalSchemaProperties<
+  InferOutput<typeof sessionProvisionCommandPayloadSchema>,
+  "githubToken"
 >;
 
 export type SessionProvisionCommand = RunnerMessage<SessionProvisionCommandPayload> & {

@@ -1,37 +1,11 @@
 import { array, literal, number, object, string, union } from "@remix-run/data-schema";
+import type { InferOutput } from "@remix-run/data-schema";
 import { validate as validateUuid } from "@std/uuid";
 
 export const RUNNER_RECONCILE_START_MESSAGE_TYPE = "runner.reconcile.start";
 export const RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE = "runner.reconcile.chunk";
 export const RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE = "runner.reconcile.complete";
 export const RUNNER_RECONCILE_CHUNK_SESSION_LIMIT = 25;
-
-export type RunnerSessionState = "created" | "provisioning" | "ready" | "error";
-
-export interface RunnerSessionSnapshot {
-  id: string;
-  projectId: string;
-  createdAt: string;
-  initialPromptPreview: string;
-  state: RunnerSessionState;
-  lastEventCursor: number;
-}
-
-export interface RunnerReconcileStartPayload {
-  snapshotId: string;
-}
-
-export interface RunnerReconcileChunkPayload {
-  snapshotId: string;
-  sequence: number;
-  sessions: RunnerSessionSnapshot[];
-}
-
-export interface RunnerReconcileCompletePayload {
-  snapshotId: string;
-  chunkCount: number;
-  sessionCount: number;
-}
 
 export const sessionIdSchema = string().refine(validateUuid, "Expected a session UUID.");
 export const projectIdSchema = string().refine(validateUuid, "Expected a project UUID.");
@@ -99,6 +73,14 @@ export const runnerReconcileCompletePayloadSchema = object(
   },
   { unknownKeys: "error" },
 );
+
+export type RunnerSessionState = InferOutput<typeof runnerSessionStateSchema>;
+export type RunnerSessionSnapshot = InferOutput<typeof runnerSessionSnapshotSchema>;
+export type RunnerReconcileStartPayload = InferOutput<typeof runnerReconcileStartPayloadSchema>;
+export type RunnerReconcileChunkPayload = InferOutput<typeof runnerReconcileChunkPayloadSchema>;
+export type RunnerReconcileCompletePayload = InferOutput<
+  typeof runnerReconcileCompletePayloadSchema
+>;
 
 export function initialPromptPreview(prompt: string): string {
   return Array.from(collapseWhitespace(prompt)).slice(0, 200).join("");

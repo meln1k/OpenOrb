@@ -57,6 +57,7 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
     assertMatch(command, /--allow-read=\./);
     assertMatch(command, /--allow-write=\./);
     assertMatch(command, /--allow-net(?:\s|$)/);
+    assertMatch(command, /--allow-env=PATH,PWD,NODE_V8_COVERAGE/);
     assertMatch(
       command,
       /--allow-sys=gid,homedir,networkInterfaces,statfs,systemMemoryInfo,uid/,

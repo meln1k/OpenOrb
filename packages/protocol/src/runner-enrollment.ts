@@ -1,22 +1,9 @@
 import { array, literal, object, string, union } from "@remix-run/data-schema";
+import type { InferOutput } from "@remix-run/data-schema";
 import { validate as validateUuid } from "@std/uuid";
 
 export const ENROLLMENT_PSK_PREFIX = "openorb_enroll_";
 export const RUNNER_TOKEN_PREFIX = "openorb_runner_";
-
-export type RunnerArchitecture = "x64" | "arm64";
-
-export interface RunnerEnrollmentRequest {
-  enrollmentPsk: string;
-  name: string;
-  architecture: RunnerArchitecture;
-  capabilities: string[];
-}
-
-export interface RunnerEnrollmentResponse {
-  runnerId: string;
-  runnerToken: string;
-}
 
 export const runnerIdSchema = string().refine(
   validateUuid,
@@ -76,3 +63,7 @@ export const runnerEnrollmentResponseSchema = object(
   },
   { unknownKeys: "error" },
 );
+
+export type RunnerArchitecture = InferOutput<typeof runnerArchitectureSchema>;
+export type RunnerEnrollmentRequest = InferOutput<typeof runnerEnrollmentRequestSchema>;
+export type RunnerEnrollmentResponse = InferOutput<typeof runnerEnrollmentResponseSchema>;
