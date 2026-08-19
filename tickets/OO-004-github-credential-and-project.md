@@ -10,7 +10,7 @@ The administrator configures a per-user GitHub token, Git author identity, and G
 ## Scope
 
 - Add encrypted GitHub token create/replace/delete UI using the existing secret store and authenticated Remix controllers/actions. Classify each `encrypted_secrets` row with a required `purpose`: `provider-api-key` for the Secrets UI or `git-credential` for rows owned by `git_credentials`. Repositories must query by authenticated user and purpose rather than infer ownership from key names or cross-repository lookups. A composite foreign key must prevent a Git credential from referencing another user's encrypted secret. Validate forms and project input with `remix/data-schema`; use the session/CSRF middleware from OO-002.
-- Add required per-user Git author name and email configuration in the control panel. Store it as non-secret control configuration keyed by `user_id`; project overrides are deferred.
+- Add required per-user Git author name and email configuration in the gateway. Store it as non-secret gateway configuration keyed by `user_id`; project overrides are deferred.
 - Add user-owned project create/edit/delete UI for name and canonical GitHub repository. Persist `main` and `openorb/{session-name}-{short-session-id}` as internal defaults; project names are unique per user, and foreign-user project IDs are treated as not found. Do not expose ref, branch-pattern, credential, or model selection as project configuration.
 - Validate and canonicalize only the GitHub repository forms explicitly supported by the MVP.
 - Do not accept SSH or non-GitHub repository configuration.

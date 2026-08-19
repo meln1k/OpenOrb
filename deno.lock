@@ -2401,7 +2401,7 @@
       "npm:@earendil-works/gondolin@0.12.0"
     ],
     "members": {
-      "packages/control": {
+      "packages/gateway": {
         "dependencies": [
           "jsr:@std/assert@1.0.19",
           "jsr:@std/crypto@1.1.0",

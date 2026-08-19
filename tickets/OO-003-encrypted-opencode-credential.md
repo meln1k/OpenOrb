@@ -9,7 +9,7 @@ The administrator configures provider API keys — OpenCode Go, OpenAI, or any o
 
 ## Scope
 
-- Require the application master key through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection. Never generate or persist it in control-panel files or PostgreSQL.
+- Require the application master key through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection. Never generate or persist it in gateway files or PostgreSQL.
 - Store each credential in `encrypted_secrets` as a row with a UUID primary key, immutable `user_id`, a credential `key` unique within that user (e.g. `OPENCODE_API_KEY`, `OPENAI_API_KEY`), and the encrypted value. Different users may use the same key name.
 - Encrypt each value with the application-encryption scheme defined in `MASTER_PLAN.md`, authenticating immutable user ID, credential key, and key version as AAD.
 - Require authenticated `userId` in every secret repository operation and scope list/read/replace/delete by both user and purpose.
@@ -23,7 +23,7 @@ The administrator configures provider API keys — OpenCode Go, OpenAI, or any o
 - The browser can save multiple provider API keys under distinct keys and later sees only metadata.
 - One user's list/read/replace/delete operations cannot observe or mutate another user's row, including when both users use the same credential key.
 - Database inspection does not reveal any plaintext value; each row carries a UUID id and the unique credential key.
-- Restarting the control panel with the same master key preserves decryptability.
+- Restarting the gateway with the same master key preserves decryptability.
 - Starting with a missing or invalid master key always fails visibly; a wrong key for existing ciphertext fails without destroying data.
 - No credential testing UI or additional provider abstraction is added.
 
@@ -34,7 +34,7 @@ The administrator configures provider API keys — OpenCode Go, OpenAI, or any o
 - Log/error redaction.
 - Multi-credential create, list, replace (same row identity), and delete.
 - Two-user tenant-separation coverage for duplicate key names and guessed row identifiers.
-- Restart/master-key behavior, including proof that no control-panel file or PostgreSQL row contains the master key.
+- Restart/master-key behavior, including proof that no gateway file or PostgreSQL row contains the master key.
 
 ## Not included
 

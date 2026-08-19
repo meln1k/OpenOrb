@@ -5,11 +5,11 @@
 
 ## Outcome
 
-The first user creates the single administrator through the browser and subsequently logs in to an authenticated control-panel shell.
+The first user creates the single administrator through the browser and subsequently logs in to an authenticated gateway shell.
 
 ## Scope
 
-- Add control-panel PostgreSQL with foreign keys and committed migrations using `remix/data-table` and its PostgreSQL adapter. PostgreSQL is the control panel's only durable persistence; do not add Redis, another database/KV store, or application-owned durable local files.
+- Add gateway PostgreSQL with foreign keys and committed migrations using `remix/data-table` and its PostgreSQL adapter. PostgreSQL is the gateway's only durable persistence; do not add Redis, another database/KV store, or application-owned durable local files.
 - Add the `users`, `password_credentials`, and `browser_sessions` persistence needed by this ticket. `users` uses application-generated UUIDv7 primary keys and supports multiple rows even though setup creates only one administrator; authenticated browser-session rows persist nullable `user_id` ownership and reject mismatches between the owner column and session auth data.
 - Implement first-run setup, password login, and logout with Remix's credentials-auth primitives: `createCredentialsAuthProvider()`, `verifyCredentials()`, and `completeAuth()`.
 - As migrated by OO-001A, use asynchronous Web Crypto PBKDF2-HMAC-SHA-256 with exactly 600,000 iterations, a unique random 16-byte salt, and a 256-bit derived key. Store the recognized fixed profile in `password_credentials`; do not accept database-selected work factors or add a native password package.
@@ -31,7 +31,7 @@ The first user creates the single administrator through the browser and subseque
 - Expired sessions are rejected and removed from the PostgreSQL session store.
 - State-changing requests without valid Remix CSRF protection fail.
 - Production session cookies are signed, opaque, `HttpOnly`, `Secure`, host-only, `SameSite=Lax`, and scoped to `/`; local development may omit `Secure` only when not serving HTTPS.
-- A control-panel restart against the same PostgreSQL database preserves the administrator and valid browser sessions; deleting the control process's local working directory loses no application state.
+- A gateway restart against the same PostgreSQL database preserves the administrator and valid browser sessions; deleting the gateway process's local working directory loses no application state.
 - Authenticated routes are inaccessible without a valid resolved Remix identity.
 
 ## Tests
@@ -43,7 +43,7 @@ The first user creates the single administrator through the browser and subseque
 - Production and development cookie attributes.
 - Login rate limiting.
 - Router/controller tests for setup, login, logout, authenticated, and unauthenticated requests.
-- PostgreSQL-backed session persistence after recreating the router/control process, including authenticated session-owner consistency.
+- PostgreSQL-backed session persistence after recreating the router/gateway process, including authenticated session-owner consistency.
 
 ## Not included
 

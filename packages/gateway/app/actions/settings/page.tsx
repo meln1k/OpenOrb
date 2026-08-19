@@ -21,7 +21,7 @@ export function settingsTabHref(tab: SettingsTab): string {
 
 export interface SettingsPageProps {
   activeTab: SettingsTab;
-  controlPanelUrl: string;
+  gatewayUrl: string;
   csrfToken: string;
   enrollmentToken: RunnerEnrollmentToken;
   error?: string;
@@ -34,7 +34,7 @@ export interface SettingsPageProps {
 export function SettingsPage(handle: Handle<SettingsPageProps>) {
   const {
     activeTab,
-    controlPanelUrl,
+    gatewayUrl,
     csrfToken,
     enrollmentToken,
     error,
@@ -51,7 +51,7 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
           <header mix={dialogHeaderStyle}>
             <div mix={dialogTitleStyle}>
               <h1 mix={pageHeadingStyle}>Settings</h1>
-              <p mix={pageCopyStyle}>Manage control-panel configuration and secrets.</p>
+              <p mix={pageCopyStyle}>Manage gateway configuration and secrets.</p>
             </div>
             <a href={routes.app.index.href()} aria-label="Close settings" mix={closeButtonStyle}>
               <Icon name="x" size={18} />
@@ -61,7 +61,7 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
             activeTab={activeTab}
             csrfToken={csrfToken}
             enrollmentCommand={{
-              command: runnerEnrollmentCommand(controlPanelUrl, enrollmentToken.token),
+              command: runnerEnrollmentCommand(gatewayUrl, enrollmentToken.token),
             }}
             error={error}
             gitAuthor={gitAuthor
@@ -90,10 +90,10 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
   );
 }
 
-function runnerEnrollmentCommand(controlPanelUrl: string, enrollmentToken: string): string {
+function runnerEnrollmentCommand(gatewayUrl: string, enrollmentToken: string): string {
   return [
     "deno task dev:runner \\",
-    `  --control-panel ${controlPanelUrl} \\`,
+    `  --gateway ${gatewayUrl} \\`,
     `  --enrollment-token ${enrollmentToken}`,
   ].join("\n");
 }

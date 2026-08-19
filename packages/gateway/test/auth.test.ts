@@ -107,7 +107,7 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     });
     assertEquals(appResponse.status, 200);
     const appHtml = await appResponse.text();
-    assertMatch(appHtml, /Authenticated control panel/);
+    assertMatch(appHtml, /Authenticated gateway/);
     const logoutToken = csrfFrom(appHtml);
 
     const oldSessionResponse = await fetch(appUrl, {

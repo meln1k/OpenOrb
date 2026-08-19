@@ -1,8 +1,8 @@
 /**
- * Application master key for the control-panel secret store.
+ * Application master key for the gateway secret store.
  *
  * The key is supplied through `OPENORB_MASTER_KEY` (or an equivalent
- * deployment-time secret injection). The control panel never generates or
+ * deployment-time secret injection). The gateway never generates or
  * persists it; startup fails visibly when it is missing or malformed.
  */
 import { trySync } from "@openorb/result";
@@ -36,7 +36,7 @@ export async function loadMasterKey(
   if (!candidate) {
     throw new MasterKeyError(
       `${MASTER_KEY_ENV_VAR} is missing. Provide a 256-bit key (32 bytes) as ` +
-        "64 hexadecimal characters or base64. The control panel never " +
+        "64 hexadecimal characters or base64. The gateway never " +
         "generates or stores the master key.",
     );
   }

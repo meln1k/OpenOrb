@@ -1,19 +1,19 @@
-# OpenOrb control
+# OpenOrb gateway
 
-The Remix 3 control application runs directly on Deno 2.9.5 with `Deno.serve()`. PostgreSQL remains available through Deno's compatibility support for the pinned `pg` npm package. `deno install --frozen` creates a Deno-managed local `node_modules` tree because Remix's browser-asset compiler uses Node-style package resolution. The trusted control process reads that workspace tree and loads pinned OXC native bindings through FFI; npm lifecycle scripts remain disabled and no Node.js or npm executable is used.
+The Remix 3 gateway runs directly on Deno 2.9.5 with `Deno.serve()`. PostgreSQL remains available through Deno's compatibility support for the pinned `pg` npm package. `deno install --frozen` creates a Deno-managed local `node_modules` tree because Remix's browser-asset compiler uses Node-style package resolution. The trusted gateway process reads that workspace tree and loads pinned OXC native bindings through FFI; npm lifecycle scripts remain disabled and no Node.js or npm executable is used.
 
-From the repository root, configure PostgreSQL, a deployment-injected session-cookie secret, and the application master key. Either export them, or copy `packages/control/.env.example` to `packages/control/.env` (gitignored) — the `dev` and `start` tasks load `.env` automatically, and shell-exported variables take precedence:
+From the repository root, configure PostgreSQL, a deployment-injected session-cookie secret, and the application master key. Either export them, or copy `packages/gateway/.env.example` to `packages/gateway/.env` (gitignored) — the `dev` and `start` tasks load `.env` automatically, and shell-exported variables take precedence:
 
 ```sh
 # Option A: copy the example and edit
-cp packages/control/.env.example packages/control/.env
+cp packages/gateway/.env.example packages/gateway/.env
 
 # Option B: export explicitly
 export DATABASE_URL=postgres://localhost/openorb
 export SESSION_SECRET="replace-with-a-long-random-secret"
 export OPENORB_MASTER_KEY="$(openssl rand -hex 32)"
 
-deno task dev:control
+deno task dev:gateway
 ```
 
 Open <http://localhost:44100>. On a fresh database, the root route redirects to first-run setup. The Deno-native migration loader applies committed `remix/data-table` migrations before the server starts.

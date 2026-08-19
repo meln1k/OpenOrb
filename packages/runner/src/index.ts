@@ -20,7 +20,7 @@ export async function main(args: string[] = Deno.args): Promise<number> {
   if (commandError !== undefined) {
     console.error(`[openorb-runner] error: ${commandError.message}`);
     console.error(
-      "Usage: openorb-runner [doctor|--version] [--control-panel URL --enrollment-token PSK] [--name NAME] [--max-concurrent-sessions COUNT] [--vm-cpu-count COUNT] [--vm-memory-mib MIB]",
+      "Usage: openorb-runner [doctor|--version] [--gateway URL --enrollment-token PSK] [--name NAME] [--max-concurrent-sessions COUNT] [--vm-cpu-count COUNT] [--vm-memory-mib MIB]",
     );
     return 2;
   }
@@ -131,14 +131,14 @@ export async function main(args: string[] = Deno.args): Promise<number> {
       }
       let identity = storedIdentity;
       if (!identity) {
-        if (!command.options.controlPanel || !command.options.enrollmentToken) {
+        if (!command.options.gateway || !command.options.enrollmentToken) {
           console.error(
-            "[openorb-runner] error: first start requires --control-panel and --enrollment-token.",
+            "[openorb-runner] error: first start requires --gateway and --enrollment-token.",
           );
           return ok(2);
         }
         const [enrolled, enrollmentError] = await enrollRunner({
-          controlPanelUrl: command.options.controlPanel,
+          gatewayUrl: command.options.gateway,
           enrollmentPsk: command.options.enrollmentToken,
           name: command.options.name,
           architecture: normalizeArchitecture(Deno.build.arch),
@@ -150,7 +150,7 @@ export async function main(args: string[] = Deno.args): Promise<number> {
         identity = {
           runnerId: enrolled.runnerId,
           runnerToken: enrolled.runnerToken,
-          controlPanelUrl: command.options.controlPanel,
+          gatewayUrl: command.options.gateway,
         };
         const [, identityWriteError] = await writeRunnerIdentity(workingDirectory, identity);
         if (identityWriteError !== undefined) {
@@ -163,10 +163,10 @@ export async function main(args: string[] = Deno.args): Promise<number> {
         }
         console.log(`[openorb-runner] enrolled runner ${identity.runnerId}`);
       } else if (
-        command.options.controlPanel && command.options.controlPanel !== identity.controlPanelUrl
+        command.options.gateway && command.options.gateway !== identity.gatewayUrl
       ) {
         console.error(
-          "[openorb-runner] error: --control-panel does not match the enrolled runner.",
+          "[openorb-runner] error: --gateway does not match the enrolled runner.",
         );
         return ok(2);
       }
@@ -214,7 +214,7 @@ export async function main(args: string[] = Deno.args): Promise<number> {
           [, provisionerCloseError] = await sessionProvisioner.close();
         });
         [, connectionError] = await maintainRunnerConnection({
-          controlPanelUrl: identity.controlPanelUrl,
+          gatewayUrl: identity.gatewayUrl,
           runnerId: identity.runnerId,
           runnerToken: identity.runnerToken,
           signal: shutdownController.signal,

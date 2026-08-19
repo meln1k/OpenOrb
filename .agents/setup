@@ -157,7 +157,7 @@ EOF
 }
 
 create_local_environment() {
-  local env_file=packages/control/.env
+  local env_file=packages/gateway/.env
   if [[ -f "$env_file" ]]; then
     echo "$env_file already exists; leaving it unchanged."
     return
@@ -170,7 +170,7 @@ create_local_environment() {
   sed \
     -e "s|^SESSION_SECRET=.*|SESSION_SECRET=$session_secret|" \
     -e "s|^OPENORB_MASTER_KEY=.*|OPENORB_MASTER_KEY=$master_key|" \
-    packages/control/.env.example >"$env_file"
+    packages/gateway/.env.example >"$env_file"
   echo "Created ignored $env_file with orb-local secrets."
 }
 
@@ -200,7 +200,7 @@ install_motel() {
 step 'Install system packages' install_system_packages
 step 'Install pinned Deno toolchain' install_deno
 step 'Configure PostgreSQL' configure_postgres
-step 'Create local control environment' create_local_environment
+step 'Create local gateway environment' create_local_environment
 step 'Install locked Deno dependencies' install_dependencies
 step 'Install Motel local observability tool' install_motel
 

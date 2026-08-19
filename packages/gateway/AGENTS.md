@@ -6,7 +6,7 @@ This app was scaffolded with `remix new`. Use these conventions when continuing 
 
 ```sh
 deno install --frozen
-deno task --filter @openorb/control start
+deno task --filter @openorb/gateway start
 deno task check
 deno task test
 ```
@@ -22,7 +22,7 @@ Refer to ./.agents/skills/remix/SKILL.md
 - `app/actions/controller.tsx` owns the top-level route actions (assets, health, home)
 - `app/actions/<route-key>/` owns each nested route map: its controller, route-local pages, and route-area UI (e.g. `app/actions/auth/ui.tsx`)
 - `app/data/` holds shared persistence only: `schema.ts` table definitions, `store.ts` composition root, and repositories consumed across routes
-- `app/middleware/` holds request lifecycle code: `render.tsx` and `runtime.ts` (ControlRuntime context)
+- `app/middleware/` holds request lifecycle code: `render.tsx` and `runtime.ts` (GatewayRuntime context)
 - `app/ui/` holds shared cross-route UI primitives (`document.tsx`, `shell.tsx`)
 - `app/utils/` holds pure support code that is genuinely cross-layer: password hashing, master key loading, secret encryption, rate limiting, session policy
 - `app/assets.ts` owns the server-side asset pipeline used by the asset route and renderer

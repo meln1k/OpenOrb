@@ -13,7 +13,7 @@ export function SetupPage(handle: Handle<AuthPageProps>) {
     <AuthDocument
       title="Set up OpenOrb"
       heading="Create your administrator"
-      description="Choose the password that protects this single-user control panel"
+      description="Choose the password that protects this single-user gateway"
     >
       <AuthForm
         action={routes.auth.setup.action.href()}

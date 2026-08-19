@@ -10,7 +10,7 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 ## Scope
 
 - Package the OO-001A standalone `openorb-runner-linux-x64` and `openorb-runner-linux-arm64` executables plus checksums; target glibc 2.27+ Linux only. Runner hosts require neither Node.js nor an installed Deno executable.
-- Implement `doctor` checks for architecture/kernel, glibc (with actionable musl rejection), QEMU/KVM, virtualization access, CPU/memory/disk, control-panel reachability, verified pinned image availability, and writable data directory.
+- Implement `doctor` checks for architecture/kernel, glibc (with actionable musl rejection), QEMU/KVM, virtualization access, CPU/memory/disk, gateway reachability, verified pinned image availability, and writable data directory.
 - Add systemd unit/install instructions under a dedicated service user. Set `WorkingDirectory=/var/lib/openorb-runner`, preserve the no-`--data-dir` rule, and secure runner data/token permissions.
 - Apply systemd hardening compatible with KVM/QEMU, including `NoNewPrivileges`, narrowly selected `ProtectSystem`/`ReadWritePaths`, and explicit device access. QEMU children are outside Deno's permission sandbox.
 - Configure runner-wide VM CPU/memory and maximum concurrent sessions.
@@ -20,7 +20,7 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 ## Acceptance criteria
 
 - Fresh glibc 2.27+ Linux x86-64 and ARM64 environments receive actionable `doctor` output; musl hosts are rejected.
-- A passing host enrolls using only control URL and PSK and requires no inbound port/VPN.
+- A passing host enrolls using only gateway URL and PSK and requires no inbound port/VPN.
 - Service restart preserves identity and runner-owned sessions.
 - Fixed VM resources and concurrency are reported accurately.
 - Installation does not require Node.js, Deno, container orchestration, or a containerized runner.

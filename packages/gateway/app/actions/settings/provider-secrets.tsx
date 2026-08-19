@@ -48,8 +48,8 @@ export function ProviderSecrets(
       <header mix={sectionHeaderStyle}>
         <h2 id="secrets-heading" mix={sectionHeadingStyle}>Secrets</h2>
         <p mix={sectionCopyStyle}>
-          Provider API keys are encrypted with the control-panel master key and are never shown
-          again after they are saved.
+          Provider API keys are encrypted with the gateway master key and are never shown again
+          after they are saved.
         </p>
       </header>
       <section aria-label="Stored provider secrets" mix={listStyle}>

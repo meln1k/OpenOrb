@@ -3,8 +3,8 @@ import { assert, assertEquals } from "@std/assert";
 import { assetServer } from "@/app/assets.ts";
 
 const clientEntries = [
-  "packages/control/app/assets/client.ts",
-  "packages/control/app/actions/settings/settings-tabs.tsx",
+  "packages/gateway/app/assets/client.ts",
+  "packages/gateway/app/actions/settings/settings-tabs.tsx",
   "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/button.js",
 ];
 

@@ -1,5 +1,5 @@
 {
-  "name": "@openorb/control",
+  "name": "@openorb/gateway",
   "version": "0.0.0",
   "exports": {
     ".": "./app/router.ts",
@@ -23,7 +23,7 @@
   "publish": false,
   "tasks": {
     "dev": "NODE_ENV=development deno run --watch --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts",
-    "dev:otel": "OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_SERVICE_NAME=openorb-control OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno task dev",
+    "dev:otel": "OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_SERVICE_NAME=openorb-gateway OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno task dev",
     "start": "NODE_ENV=production deno run --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts"
   }
 }

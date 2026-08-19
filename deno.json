@@ -1,6 +1,6 @@
 {
   "workspace": [
-    "./packages/control",
+    "./packages/gateway",
     "./packages/protocol",
     "./packages/result",
     "./packages/runner"
@@ -25,10 +25,10 @@
     "exclude": [
       ".amp/portals",
       ".agents/skills/deno",
-      "packages/control/.agents",
-      "packages/control/public",
-      "packages/control/AGENTS.md",
-      "packages/control/README.md",
+      "packages/gateway/.agents",
+      "packages/gateway/public",
+      "packages/gateway/AGENTS.md",
+      "packages/gateway/README.md",
       "packages/runner/test/fixtures/hostile-pi/global-agent/auth.json",
       "packages/runner/test/fixtures/hostile-pi/global-agent/models.json",
       "AGENTS.md",
@@ -50,14 +50,14 @@
   },
   "tasks": {
     "dev": {
-      "dependencies": ["dev:control", "dev:runner"]
+      "dependencies": ["dev:gateway", "dev:runner"]
     },
-    "dev:control": "deno task --filter @openorb/control dev",
+    "dev:gateway": "deno task --filter @openorb/gateway dev",
     "dev:runner": "deno task --filter @openorb/runner dev",
     "dev:otel": {
-      "dependencies": ["dev:otel:control", "dev:otel:runner"]
+      "dependencies": ["dev:otel:gateway", "dev:otel:runner"]
     },
-    "dev:otel:control": "deno task --filter @openorb/control dev:otel",
+    "dev:otel:gateway": "deno task --filter @openorb/gateway dev:otel",
     "dev:otel:runner": "deno task --filter @openorb/runner dev:otel",
     "check": "deno fmt --check && deno lint && deno check",
     "test": "NODE_ENV=test deno test --allow-env --allow-ffi --allow-net=127.0.0.1,localhost --allow-read --allow-write --allow-sys=homedir",

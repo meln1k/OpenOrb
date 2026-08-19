@@ -25,7 +25,7 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export interface MaintainRunnerConnectionOptions {
-  controlPanelUrl: string;
+  gatewayUrl: string;
   runnerId: string;
   runnerToken: string;
   signal: AbortSignal;
@@ -91,7 +91,7 @@ export function reconnectDelayMs(attempt: number, random: () => number = Math.ra
 async function connectOnce(
   options: MaintainRunnerConnectionOptions,
 ): Promise<"connected" | "disconnected" | "unauthorized"> {
-  const url = new URL("/api/runners/connect", options.controlPanelUrl);
+  const url = new URL("/api/runners/connect", options.gatewayUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
 
   return await new Promise((resolve) => {

@@ -75,7 +75,7 @@ export function AppShell(handle: Handle<AppShellProps>) {
             sessions={handle.props.sessions}
           />
         </SidebarMobile>
-        <SidebarInset aria-label="Authenticated control panel">
+        <SidebarInset aria-label="Authenticated gateway">
           <header mix={topBarStyle}>
             <div mix={topBarContentStyle}>
               <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
@@ -87,7 +87,7 @@ export function AppShell(handle: Handle<AppShellProps>) {
                       <BreadcrumbList>
                         <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
                           <BreadcrumbLink href={routes.app.index.href()}>
-                            Control panel
+                            Gateway
                           </BreadcrumbLink>
                         </BreadcrumbItem>
                         <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
@@ -136,7 +136,7 @@ function AppNavigation(
       <SidebarHeader>
         <a
           href={routes.app.index.href()}
-          aria-label="OpenOrb control panel"
+          aria-label="OpenOrb gateway"
           mix={sidebarBrandStyle}
         >
           <span mix={sidebarBrandMarkStyle}>
@@ -144,7 +144,7 @@ function AppNavigation(
           </span>
           <span mix={sidebarBrandTextStyle}>
             <strong>OpenOrb</strong>
-            <span>Control panel</span>
+            <span>Gateway</span>
           </span>
         </a>
         <SidebarMenu>

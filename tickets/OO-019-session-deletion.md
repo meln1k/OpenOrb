@@ -5,7 +5,7 @@
 
 ## Outcome
 
-The user explicitly deletes a session while its runner is online or offline. The control panel removes the catalog card immediately and a durable minimal deletion marker prevents stale runner state from resurrecting it.
+The user explicitly deletes a session while its runner is online or offline. The gateway removes the catalog card immediately and a durable minimal deletion marker prevents stale runner state from resurrecting it.
 
 ## Scope
 
@@ -16,7 +16,7 @@ The user explicitly deletes a session while its runner is online or offline. The
 - If the runner is offline or permanently lost, complete the control-plane deletion without waiting for runner cleanup.
 - On any later snapshot from a runner with the same owner containing a deleted session ID, do not recreate its catalog row or route. Request runner cleanup repeatedly; if runner work is still active, wait until it settles rather than interrupting it.
 - Retain the minimal deletion marker after cleanup so a stale runner disk or restored backup cannot resurrect the session.
-- Make partial runner filesystem deletion visible in runner/control diagnostics and safely retryable without restoring the catalog card.
+- Make partial runner filesystem deletion visible in runner/gateway diagnostics and safely retryable without restoring the catalog card.
 
 ## Acceptance criteria
 
@@ -28,14 +28,14 @@ The user explicitly deletes a session while its runner is online or offline. The
 - A runner snapshot cannot recreate or route a tombstoned session.
 - A user cannot inspect or delete another user's session, and one user's tombstone cannot suppress or clean up another user's session.
 - Successful online cleanup removes all session-owned runner paths; deleted session IDs are not advertised after runner restart.
-- The control panel retains no deleted-session data beyond `user_id`, `session_id`, and `deleted_at`.
+- The gateway retains no deleted-session data beyond `user_id`, `session_id`, and `deleted_at`.
 
 ## Tests
 
 - Successful idle online deletion.
 - Active online deletion rejection.
 - Offline and revoked-runner deletion.
-- Control crash after marker/catalog transaction but before or during runner cleanup.
+- Gateway crash after marker/catalog transaction but before or during runner cleanup.
 - Injected partial runner filesystem failure followed by snapshot-driven retry.
 - Stale snapshot and restored-runner fixture cannot resurrect a tombstoned session.
 - PostgreSQL schema assertion limiting deletion markers to user ID, session ID, and deletion time.

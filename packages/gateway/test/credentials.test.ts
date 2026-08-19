@@ -316,7 +316,7 @@ Deno.test("restarting with the same master key preserves decryptability", async 
   );
   await first.close();
 
-  // A fresh store over the same database simulates a control-panel restart;
+  // A fresh store over the same database simulates a gateway restart;
   // it must not wipe the previously committed rows.
   const restarted = await createTestStore(undefined, false);
   try {
@@ -408,7 +408,7 @@ Deno.test("a wrong master key fails visibly without destroying the stored data",
   }
 });
 
-Deno.test("no control-panel row contains the master key or the plaintext values", async () => {
+Deno.test("no gateway row contains the master key or the plaintext values", async () => {
   const client = await createAuthenticatedClient();
   try {
     await submitCredentialsForm(client, {

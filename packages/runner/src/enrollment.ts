@@ -9,7 +9,7 @@ import { err, ok, type Result, tryAsync } from "@openorb/result";
 const ENROLLMENT_TIMEOUT_MS = 15_000;
 
 export interface EnrollRunnerOptions {
-  controlPanelUrl: string;
+  gatewayUrl: string;
   enrollmentPsk: string;
   name: string;
   architecture: RunnerArchitecture;
@@ -24,7 +24,7 @@ export async function enrollRunner(
   const [response, networkError] = await tryAsync(
     Promise.resolve().then(() =>
       fetchImplementation(
-        new URL("/api/runners/enroll", options.controlPanelUrl),
+        new URL("/api/runners/enroll", options.gatewayUrl),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -38,8 +38,7 @@ export async function enrollRunner(
         },
       )
     ),
-    (cause) =>
-      new RunnerEnrollmentError("Runner enrollment could not reach the control panel.", cause),
+    (cause) => new RunnerEnrollmentError("Runner enrollment could not reach the gateway.", cause),
   );
   if (networkError !== undefined) return err(networkError);
   if (!response.ok) {
@@ -55,7 +54,7 @@ export async function enrollRunner(
     response.json().then((value) => parse(runnerEnrollmentResponseSchema, value)),
     (cause) =>
       new RunnerEnrollmentError(
-        "Control panel returned an invalid enrollment response.",
+        "Gateway returned an invalid enrollment response.",
         cause,
       ),
   );

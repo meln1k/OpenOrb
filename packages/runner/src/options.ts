@@ -1,7 +1,7 @@
 import { parseArgs } from "@std/cli/parse-args";
 
 export interface RunnerStartOptions {
-  controlPanel?: string;
+  gateway?: string;
   enrollmentToken?: string;
   name: string;
   maxConcurrentSessions?: number;
@@ -29,7 +29,7 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
 
   const parsed = parseArgs(args, {
     string: [
-      "control-panel",
+      "gateway",
       "enrollment-token",
       "name",
       "max-concurrent-sessions",
@@ -48,9 +48,9 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
   if (parsed._.length > 0) throw new RunnerOptionError("Unknown argument.");
 
   const options: RunnerStartOptions = { name: "OpenOrb runner" };
-  if (parsed["control-panel"] !== undefined) {
-    if (!parsed["control-panel"]) throw new RunnerOptionError("--control-panel requires a value.");
-    options.controlPanel = normalizeControlPanelUrl(parsed["control-panel"]);
+  if (parsed.gateway !== undefined) {
+    if (!parsed.gateway) throw new RunnerOptionError("--gateway requires a value.");
+    options.gateway = normalizeGatewayUrl(parsed.gateway);
   }
   if (parsed["enrollment-token"] !== undefined) {
     if (!parsed["enrollment-token"]) {
@@ -89,18 +89,18 @@ function parsePositiveInteger(input: string, flag: string): number {
   return value;
 }
 
-export function normalizeControlPanelUrl(input: string): string {
+export function normalizeGatewayUrl(input: string): string {
   const url = new URL(input);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new RunnerOptionError("--control-panel must use http or https.");
+    throw new RunnerOptionError("--gateway must use http or https.");
   }
   if (url.username || url.password || url.search || url.hash) {
     throw new RunnerOptionError(
-      "--control-panel must not contain credentials, a query, or a fragment.",
+      "--gateway must not contain credentials, a query, or a fragment.",
     );
   }
   if (url.pathname !== "/") {
-    throw new RunnerOptionError("--control-panel must be an origin URL without a path.");
+    throw new RunnerOptionError("--gateway must be an origin URL without a path.");
   }
   return url.origin;
 }

@@ -23,14 +23,14 @@ Deno.test("parses first-start enrollment options without accepting a data direct
   const expected = {
     type: "start" as const,
     options: {
-      controlPanel: "https://openorb.example.com",
+      gateway: "https://openorb.example.com",
       enrollmentToken: ENROLLMENT_PSK,
       name: "Home runner",
     },
   };
   assertEquals(
     parseRunnerCommand([
-      "--control-panel",
+      "--gateway",
       "https://openorb.example.com",
       "--enrollment-token",
       ENROLLMENT_PSK,
@@ -55,7 +55,7 @@ Deno.test("parses first-start enrollment options without accepting a data direct
   );
   assertEquals(
     parseRunnerCommand([
-      "--control-panel=https://openorb.example.com",
+      "--gateway=https://openorb.example.com",
       `--enrollment-token=${ENROLLMENT_PSK}`,
       "--name=Home runner",
     ]),
@@ -71,9 +71,9 @@ Deno.test("parses first-start enrollment options without accepting a data direct
     "Unknown argument.",
   );
   assertThrows(
-    () => parseRunnerCommand(["--control-panel"]),
+    () => parseRunnerCommand(["--gateway"]),
     Error,
-    "--control-panel requires a value",
+    "--gateway requires a value",
   );
   assertThrows(
     () => parseRunnerCommand(["--max-concurrent-sessions", "0"]),
@@ -91,7 +91,7 @@ Deno.test("enrolls with the PSK but accepts only a validated runner-token respon
   let received: unknown;
   const enrolled = success(
     await enrollRunner({
-      controlPanelUrl: "https://openorb.example.com",
+      gatewayUrl: "https://openorb.example.com",
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "arm64",
@@ -114,7 +114,7 @@ Deno.test("enrolls with the PSK but accepts only a validated runner-token respon
 
   const enrollmentError = failure(
     await enrollRunner({
-      controlPanelUrl: "https://openorb.example.com",
+      gatewayUrl: "https://openorb.example.com",
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "arm64",
@@ -132,13 +132,13 @@ Deno.test("stores the runner bearer token in a regular 0600 file", async () => {
       await writeRunnerIdentity(directory, {
         runnerId: RUNNER_ID,
         runnerToken: RUNNER_TOKEN,
-        controlPanelUrl: "https://openorb.example.com",
+        gatewayUrl: "https://openorb.example.com",
       }),
     );
     assertEquals(success(await readRunnerIdentity(directory)), {
       runnerId: RUNNER_ID,
       runnerToken: RUNNER_TOKEN,
-      controlPanelUrl: "https://openorb.example.com",
+      gatewayUrl: "https://openorb.example.com",
     });
     const tokenInfo = await Deno.lstat(`${directory}/token`);
     assert(tokenInfo.isFile);
@@ -190,7 +190,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
 
   try {
     await maintainRunnerConnection({
-      controlPanelUrl: `http://${address.hostname}:${address.port}`,
+      gatewayUrl: `http://${address.hostname}:${address.port}`,
       runnerId: RUNNER_ID,
       runnerToken: RUNNER_TOKEN,
       signal: abortController.signal,
@@ -208,7 +208,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
     closeOnOpen = false;
     const delayAbortController = new AbortController();
     await maintainRunnerConnection({
-      controlPanelUrl: `http://${address.hostname}:${address.port}`,
+      gatewayUrl: `http://${address.hostname}:${address.port}`,
       runnerId: RUNNER_ID,
       runnerToken: RUNNER_TOKEN,
       signal: delayAbortController.signal,
@@ -272,7 +272,7 @@ Deno.test("sends a complete session inventory in bounded reconciliation chunks",
 
   try {
     const connection = maintainRunnerConnection({
-      controlPanelUrl: `http://${address.hostname}:${address.port}`,
+      gatewayUrl: `http://${address.hostname}:${address.port}`,
       runnerId: RUNNER_ID,
       runnerToken: RUNNER_TOKEN,
       signal: abortController.signal,

@@ -12,7 +12,7 @@ export default createController(routes, {
       );
     },
     health() {
-      return Response.json({ service: "openorb-control", status: "ok" });
+      return Response.json({ service: "openorb-gateway", status: "ok" });
     },
     async home(context) {
       const { store } = context.services;

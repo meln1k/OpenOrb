@@ -6,8 +6,8 @@ build metadata and OO-023 will complete supported-host/service validation.
 ## Pinned toolchain
 
 Use Deno 2.9.5 exactly with a frozen `deno.lock`. Dependency installation creates a Deno-managed
-local `node_modules` tree for control-panel browser-asset compatibility; it is only a
-build/development input and is not shipped with the standalone runner:
+local `node_modules` tree for gateway browser-asset compatibility; it is only a build/development
+input and is not shipped with the standalone runner:
 
 ```sh
 deno --version

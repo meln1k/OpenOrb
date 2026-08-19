@@ -2,7 +2,7 @@ import { runnerEnrollmentResponseSchema } from "@openorb/protocol";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 import { object, parse, string } from "@remix-run/data-schema";
 
-import { normalizeControlPanelUrl } from "@/src/options.ts";
+import { normalizeGatewayUrl } from "@/src/options.ts";
 
 const METADATA_FILE = "runner.json";
 const TOKEN_FILE = "token";
@@ -10,18 +10,18 @@ const TOKEN_FILE = "token";
 export interface RunnerIdentity {
   runnerId: string;
   runnerToken: string;
-  controlPanelUrl: string;
+  gatewayUrl: string;
 }
 
 interface RunnerMetadata {
   runnerId: string;
-  controlPanelUrl: string;
+  gatewayUrl: string;
 }
 
 const runnerMetadataSchema = object(
   {
     runnerId: string(),
-    controlPanelUrl: string(),
+    gatewayUrl: string(),
   },
   { unknownKeys: "error" },
 );
@@ -78,7 +78,7 @@ export async function readRunnerIdentity(
       return {
         runnerId: metadata.runnerId,
         runnerToken,
-        controlPanelUrl: normalizeControlPanelUrl(metadata.controlPanelUrl),
+        gatewayUrl: normalizeGatewayUrl(metadata.gatewayUrl),
       };
     })(),
     (cause) =>
@@ -101,7 +101,7 @@ export async function writeRunnerIdentity(
       });
       return {
         runnerId: identity.runnerId,
-        controlPanelUrl: normalizeControlPanelUrl(identity.controlPanelUrl),
+        gatewayUrl: normalizeGatewayUrl(identity.gatewayUrl),
       };
     },
     (cause) => new RunnerIdentityWriteError("Runner identity is invalid.", cause),

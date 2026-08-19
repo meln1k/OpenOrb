@@ -7,11 +7,11 @@ import { migrate } from "@/db/migrate.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
-const tracer = trace.getTracer("openorb-control", "0.0.0");
+const tracer = trace.getTracer("openorb-gateway", "0.0.0");
 const [initialized, initializationError] = await tracer.startActiveSpan(
-  "control.initialize",
+  "gateway.initialize",
   async (span) => {
-    const [value, error] = await initializeControl();
+    const [value, error] = await initializeGateway();
     if (error !== undefined) {
       span.recordException(error);
       span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
@@ -41,7 +41,7 @@ const server = Deno.serve(
       const displayHost = hostname === "0.0.0.0" ? "localhost" : hostname;
       console.log(
         JSON.stringify({
-          component: "openorb-control",
+          component: "openorb-gateway",
           status: "healthy",
           url: `http://${displayHost}:${listeningPort}`,
           healthUrl: `http://${displayHost}:${listeningPort}/healthz`,
@@ -57,7 +57,7 @@ const server = Deno.serve(
         }
         return await router.fetch(request);
       })(),
-      (cause) => new ControlRequestError(cause),
+      (cause) => new GatewayRequestError(cause),
     );
     if (requestError !== undefined) {
       const span = trace.getActiveSpan();
@@ -77,7 +77,7 @@ let shuttingDown = false;
 function shutdown(signal: Deno.Signal) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`[openorb-control] received ${signal}; shutting down`);
+  console.log(`[openorb-gateway] received ${signal}; shutting down`);
   runnerConnectionGateway.close();
   abortController.abort();
 }
@@ -88,18 +88,18 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 await server.finished;
 
-interface InitializedControl {
+interface InitializedGateway {
   store: Awaited<ReturnType<typeof createDefaultStore>>;
   router: ReturnType<typeof createAppRouter>;
   runnerConnectionGateway: RunnerConnectionGateway;
 }
 
-async function initializeControl(): Promise<
-  Result<InitializedControl, ControlInitializationError>
+async function initializeGateway(): Promise<
+  Result<InitializedGateway, GatewayInitializationError>
 > {
   const [store, storeError] = await tryAsync(
     createDefaultStore(),
-    (cause) => new ControlInitializationError("Control data store initialization failed.", cause),
+    (cause) => new GatewayInitializationError("Gateway data store initialization failed.", cause),
   );
   if (storeError !== undefined) return err(storeError);
 
@@ -108,7 +108,7 @@ async function initializeControl(): Promise<
     async (span) => {
       const [value, error] = await tryAsync(
         migrate(store.pool),
-        (cause) => new ControlInitializationError("Control database migration failed.", cause),
+        (cause) => new GatewayInitializationError("Gateway database migration failed.", cause),
       );
       if (error !== undefined) {
         span.recordException(error);
@@ -131,22 +131,22 @@ async function initializeControl(): Promise<
         runnerConnectionGateway,
       };
     },
-    (cause) => new ControlInitializationError("Control services initialization failed.", cause),
+    (cause) => new GatewayInitializationError("Gateway services initialization failed.", cause),
   );
   if (serviceError !== undefined) return err(serviceError);
   return ok(services);
 }
 
-class ControlInitializationError extends Error {
+class GatewayInitializationError extends Error {
   constructor(message: string, override readonly cause: unknown) {
     super(message, { cause });
-    this.name = "ControlInitializationError";
+    this.name = "GatewayInitializationError";
   }
 }
 
-class ControlRequestError extends Error {
+class GatewayRequestError extends Error {
   constructor(override readonly cause: unknown) {
-    super("Control request handling failed.", { cause });
-    this.name = "ControlRequestError";
+    super("Gateway request handling failed.", { cause });
+    this.name = "GatewayRequestError";
   }
 }

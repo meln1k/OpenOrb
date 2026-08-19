@@ -6,7 +6,7 @@
 
 ## Outcome
 
-OpenOrb has one supported JavaScript/TypeScript runtime and toolchain: Deno 2.9.5. The control panel and development runner run under Deno, the repository uses Deno-native workspace/manifests/lockfile/tasks, and the Linux runner can be released as standalone x86-64 and ARM64 executables without requiring Node.js, pnpm, or an installed Deno executable on the target host.
+OpenOrb has one supported JavaScript/TypeScript runtime and toolchain: Deno 2.9.5. The gateway and development runner run under Deno, the repository uses Deno-native workspace/manifests/lockfile/tasks, and the Linux runner can be released as standalone x86-64 and ARM64 executables without requiring Node.js, pnpm, or an installed Deno executable on the target host.
 
 This is a migration, not a parallel runtime path. The existing OO-001 Node.js/pnpm baseline is replaced after its behavior is reproduced under Deno.
 
@@ -14,15 +14,15 @@ This is a migration, not a parallel runtime path. The existing OO-001 Node.js/pn
 
 ### Deno workspace and development commands
 
-- Add the root Deno workspace configuration for the existing `packages/control`, `packages/runner`, and `packages/protocol` packages.
-- Pin Deno exactly to `2.9.5` for development, CI, control-panel deployment, lockfile generation, and runner compilation.
+- Add the root Deno workspace configuration for the existing `packages/gateway`, `packages/runner`, and `packages/protocol` packages.
+- Pin Deno exactly to `2.9.5` for development, CI, gateway deployment, lockfile generation, and runner compilation.
 - Give each existing OpenOrb package a Deno-native `deno.json` containing its package metadata, exports, imports, and `publish: false` policy.
 - Resolve dependencies through exact `npm:` and `jsr:` imports and a committed `deno.lock`; use `nodeModulesDir: "auto"` so Deno creates the local package tree required by Remix's Node-style browser-asset resolver, and keep npm compatibility dependencies only where required by the selected Remix, PostgreSQL, Gondolin, or Pi implementations.
 - Remove OpenOrb-owned `package.json` files, `pnpm-workspace.yaml`, and `pnpm-lock.yaml`. Do not retain a package-manifest shim for a dependency that has not been isolated as a compatibility blocker.
-- Preserve the OO-001 development workflow through the lean root task interface: `dev`, `dev:control`, `dev:runner`, `check`, and `test`. `check` performs formatting verification, linting, and typechecking. Production control startup remains package-scoped, while production runners use standalone artifacts.
+- Preserve the OO-001 development workflow through the lean root task interface: `dev`, `dev:gateway`, `dev:runner`, `check`, and `test`. `check` performs formatting verification, linting, and typechecking. Production gateway startup remains package-scoped, while production runners use standalone artifacts.
 - Establish Deno check, lint, format, and test commands from a clean checkout. No task or production path may invoke Node.js, npm, pnpm, or an installed Deno executable as a runtime dependency.
 
-### Control panel
+### Gateway
 
 - Replace the Node-specific startup adapter with Deno-native TypeScript execution, preferably `Deno.serve()` around the existing Fetch-oriented router.
 - Preserve Remix route rendering/actions, static assets, PostgreSQL access/migrations, SSE compatibility for later tickets, and signal-based graceful shutdown.
@@ -44,7 +44,7 @@ This is a migration, not a parallel runtime path. The existing OO-001 Node.js/pn
 
 ### Documentation and compatibility audit
 
-- Update `MASTER_PLAN.md`, `MVP.md`, OO-001, OO-009, OO-023, `packages/control/README.md`, root/package manifests, and release documentation to describe the Deno-only path, PBKDF2 profile, standalone runner, glibc baseline, and permission/QEMU boundary.
+- Update `MASTER_PLAN.md`, `MVP.md`, OO-001, OO-009, OO-023, `packages/gateway/README.md`, root/package manifests, and release documentation to describe the Deno-only path, PBKDF2 profile, standalone runner, glibc baseline, and permission/QEMU boundary.
 - Update the Pi/runtime scope documentation with the approved web search/fetch tool contracts and their loopback, private, link-local, cloud-metadata, redirect, and DNS-rebinding protections before implementing those tools. This ticket must not invent an unapproved Pi tool API.
 - Verify that remaining `node`, `npm`, `pnpm`, `crypto.argon2`, `@types/node`, and `NodeJS` references are either documented Deno compatibility details or removed; references implying a required Node.js/pnpm installation are not acceptable.
 
@@ -55,7 +55,7 @@ The following interfaces are fixed for this follow-up:
 1. A clean checkout uses Deno 2.9.5 and the documented root commands:
    ```sh
    deno task dev
-   deno task dev:control
+   deno task dev:gateway
    deno task dev:runner
    deno task check
    deno task test
@@ -63,7 +63,7 @@ The following interfaces are fixed for this follow-up:
    deno task compile:runner:linux-arm64
    deno task release:runner
    ```
-2. The control health endpoint and browser shell remain available at the OO-001 interfaces (`/healthz` and `http://localhost:44100`) when started through Deno.
+2. The gateway health endpoint and browser shell remain available at the OO-001 interfaces (`/healthz` and `http://localhost:44100`) when started through Deno.
 3. The compiled runner artifact names and target architectures are exactly `openorb-runner-linux-x64` for `x86_64-unknown-linux-gnu` and `openorb-runner-linux-arm64` for `aarch64-unknown-linux-gnu`.
 4. The compiled runner starts from its canonical runner working directory and does not accept a configurable `--data-dir` in the MVP.
 5. QEMU is launched only through the pinned Gondolin `VM` integration. There is no OpenOrb raw-QEMU command or arbitrary-argv interface.
@@ -73,7 +73,7 @@ The following interfaces are fixed for this follow-up:
 
 - A clean checkout can install/resolve dependencies with the pinned Deno workflow and pass `deno check`, `deno lint`, format checking, and `deno test` without Node.js or pnpm.
 - No OpenOrb-owned `package.json`, `pnpm-workspace.yaml`, or `pnpm-lock.yaml` remains tracked; the Deno workspace and lockfile are authoritative.
-- The control page, `/healthz`, PostgreSQL migrations, and existing authentication/session tests run under Deno.
+- The gateway, `/healthz`, PostgreSQL migrations, and existing authentication/session tests run under Deno.
 - Password credentials use only PBKDF2-HMAC-SHA-256 with 600,000 iterations, a random 16-byte salt, and a 256-bit derived key. Wrong passwords, malformed metadata, and length mismatches fail safely. No Argon2 compatibility path exists.
 - The temporary runner harness starts under Deno and reports actionable prerequisite errors without requiring a VM in the baseline tests.
 - Both standalone Linux runner artifacts compile reproducibly with Deno 2.9.5, report the correct architecture/version, and start on supported glibc Linux hosts that have neither Node.js nor an installed Deno executable.
@@ -84,7 +84,7 @@ The following interfaces are fixed for this follow-up:
 ## Tests
 
 - Clean-room Deno install/lockfile, combined `deno task check`, and test run with no pnpm invocation.
-- Control health/rendering, PostgreSQL migration, session persistence, and graceful-shutdown smoke tests under Deno.
+- Gateway health/rendering, PostgreSQL migration, session persistence, and graceful-shutdown smoke tests under Deno.
 - PBKDF2 correct/incorrect password, malformed profile, equal-length/timing-safe comparison, and rate-limit regression tests.
 - Deno runner prerequisite and platform tests, including working-directory and denied-permission behavior.
 - Standalone x86-64/ARM64 artifact smoke tests on native glibc Linux hosts without Node.js or Deno installed.

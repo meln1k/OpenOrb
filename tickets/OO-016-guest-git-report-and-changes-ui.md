@@ -12,7 +12,7 @@ After each settled run, the user reviews a bounded Git status/diff produced insi
 - Run controlled status/diff commands inside the session VM after Pi settles.
 - Disable external diff, textconv, configured filesystem monitors, pagers, prompts, and other avoidable executable Git features.
 - Parse, bound, and sanitize the result before writing reports outside the guest-writable workspace.
-- Proxy the current/cached report through the connected runner without control-panel persistence.
+- Proxy the current/cached report through the connected runner without gateway persistence.
 - Add aggregate status, changed-file list, and patch display to the session Changes view.
 - Mark incomplete/stale reports visibly.
 
@@ -22,7 +22,7 @@ After each settled run, the user reviews a bounded Git status/diff produced insi
 - Large/binary/control-character output is bounded and safely represented.
 - No native host Git process consumes the workspace.
 - A connected runner can serve the cached report while its VM is stopped.
-- An offline runner makes changes unavailable rather than serving a control-panel copy.
+- An offline runner makes changes unavailable rather than serving a gateway copy.
 
 ## Tests
 
@@ -33,4 +33,4 @@ After each settled run, the user reviews a bounded Git status/diff produced insi
 
 ## Not included
 
-Host-side Git parsing, editable files, patch download, control-panel commit/push, or a file browser.
+Host-side Git parsing, editable files, patch download, gateway commit/push, or a file browser.

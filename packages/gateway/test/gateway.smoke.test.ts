@@ -6,7 +6,7 @@ import { routes } from "@/app/routes.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
 import { createTestStore } from "@/test/postgres-test.ts";
 
-Deno.test("serves process health and the control shell over HTTP", async () => {
+Deno.test("serves process health and the gateway shell over HTTP", async () => {
   const store = await createTestStore();
   const router = createAppRouter(createAppServices(store));
   const server = await createTestServer((request) => router.fetch(request));
@@ -15,7 +15,7 @@ Deno.test("serves process health and the control shell over HTTP", async () => {
     const healthResponse = await fetch(new URL(routes.health.href(), server.baseUrl));
     assertEquals(healthResponse.status, 200);
     assertEquals(await healthResponse.json(), {
-      service: "openorb-control",
+      service: "openorb-gateway",
       status: "ok",
     });
     assertEquals(healthResponse.headers.get("set-cookie"), null);

@@ -157,7 +157,7 @@ async function renderSettings(
   return context.render(
     <SettingsPage
       csrfToken={getCsrfToken(context)}
-      controlPanelUrl={runnerControlPanelUrl(context.request)}
+      gatewayUrl={runnerGatewayUrl(context.request)}
       secrets={secrets}
       githubCredential={githubCredential}
       gitAuthor={gitAuthor}
@@ -328,7 +328,7 @@ function settingsTabFromRequest(request: Request, intent?: FormDataEntryValue | 
   return "secrets";
 }
 
-function runnerControlPanelUrl(request: Request): string {
+function runnerGatewayUrl(request: Request): string {
   const publicUrl = Deno.env.get("PUBLIC_URL");
   return new URL(publicUrl ?? request.url).origin;
 }

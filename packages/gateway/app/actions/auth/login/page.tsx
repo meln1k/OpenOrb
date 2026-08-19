@@ -14,7 +14,7 @@ export function LoginPage(handle: Handle<AuthPageProps>) {
     <AuthDocument
       title="Log in to OpenOrb"
       heading="Welcome back"
-      description="Enter your password to access your control panel"
+      description="Enter your password to access your gateway"
       footer={
         <AuthFootnote>
           Use the administrator password configured during first-run setup.

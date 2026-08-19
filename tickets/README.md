@@ -14,14 +14,14 @@ These tickets split `MVP.md` into dependency-ordered vertical slices. The first 
 - MVP Git support is GitHub HTTPS only. Public repositories require no credential; private operations use a guest placeholder `GH_TOKEN` mediated by Gondolin. SSH and non-GitHub hosts are deferred.
 - The initial real model is Pi's `opencode-go/deepseek-v4-flash`, configured through the browser with an OpenCode Go API key.
 
-## Remix control-panel conventions
+## Remix gateway conventions
 
 Unless a ticket explicitly says otherwise:
 
-- Define browser URLs in `packages/control/app/routes.ts` and implement them with Remix controllers/actions under `app/actions/`.
+- Define browser URLs in `packages/gateway/app/routes.ts` and implement them with Remix controllers/actions under `app/actions/`.
 - Use `remix/data-schema` (and `remix/data-schema/form-data` for forms) at browser/request boundaries.
 - Use the global Remix session, auth, and CSRF middleware established by OO-002; state-changing browser actions must not hand-roll cookie or CSRF handling.
-- Use `remix/data-table` for control-panel PostgreSQL reads/writes and committed migrations. Keep persistence adapters narrow and app-owned only where Remix has no required PostgreSQL adapter.
+- Use `remix/data-table` for gateway PostgreSQL reads/writes and committed migrations. Keep persistence adapters narrow and app-owned only where Remix has no required PostgreSQL adapter.
 - Prefer server-rendered Remix UI and normal form POST/redirect flows. Add `clientEntry()`/`remix/ui` browser behavior only when the workflow needs interactivity or streaming.
 - Test route behavior with `router.fetch(...)`; use memory session storage only in isolated tests, never as production persistence.
 
@@ -29,7 +29,7 @@ Unless a ticket explicitly says otherwise:
 
 | Ticket | Outcome |
 |---|---|
-| [OO-001](OO-001-runnable-development-baseline.md) | Control app and temporary macOS runner harness start locally |
+| [OO-001](OO-001-runnable-development-baseline.md) | Gateway and temporary macOS runner harness start locally |
 | [OO-001A](OO-001A-deno-migration.md) | Replace the Node.js/pnpm baseline with the pinned Deno-only toolchain and standalone runner path |
 
 ## Slice 1 — Configure and enroll

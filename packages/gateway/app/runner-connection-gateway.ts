@@ -480,11 +480,11 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       clearTimeout(connection.heartbeatTimeout);
     }
     for (const socket of this.#sockets) {
-      closeSocket(socket, 1001, "Control panel shutting down");
+      closeSocket(socket, 1001, "Gateway shutting down");
     }
     this.#provisionCommands.settleAll({
       status: "unavailable",
-      message: "Control panel is shutting down.",
+      message: "Gateway is shutting down.",
     });
     this.#connections.clear();
     this.#sessionRoutes.clear();

@@ -35,7 +35,7 @@ type ErrorGuard = {
 
 const RESULT_PACKAGE = "@openorb/result";
 const APPLICATION_PATHS = [
-  "packages/control/app/",
+  "packages/gateway/app/",
   "packages/protocol/src/",
   "packages/runner/src/",
 ];
@@ -47,7 +47,7 @@ function normalizedPath(filename: string): string {
 function isApplicationFile(filename: string): boolean {
   const path = normalizedPath(filename);
   return APPLICATION_PATHS.some((part) => path.includes(part)) ||
-    path.endsWith("packages/control/server.ts");
+    path.endsWith("packages/gateway/server.ts");
 }
 
 function isApplicationTestFile(filename: string): boolean {

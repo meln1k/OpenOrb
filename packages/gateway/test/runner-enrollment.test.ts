@@ -16,7 +16,7 @@ import { createTestServer } from "@/test/http-test-server.ts";
 import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
 const PASSWORD = "[REDACTED:password] horse battery staple";
-const PUBLIC_CONTROL_PANEL_URL = "https://openorb.example.com";
+const PUBLIC_GATEWAY_URL = "https://openorb.example.com";
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -185,7 +185,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
     const runnersSettingsUrl = new URL(runnersSettingsPath, server.baseUrl);
     assertEquals((await fetch(runnersSettingsUrl)).status, 401);
     const previousPublicUrl = Deno.env.get("PUBLIC_URL");
-    Deno.env.set("PUBLIC_URL", `${PUBLIC_CONTROL_PANEL_URL}/proxy-path`);
+    Deno.env.set("PUBLIC_URL", `${PUBLIC_GATEWAY_URL}/proxy-path`);
     let createdPage: Response;
     try {
       createdPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
@@ -213,7 +213,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
     assertMatch(createdHtml, /data-slot="item-title"/);
     assertMatch(createdHtml, /data-slot="item-actions"/);
     assertMatch(createdHtml, /deno task dev:runner/);
-    assert(createdHtml.includes(`--control-panel ${PUBLIC_CONTROL_PANEL_URL}`));
+    assert(createdHtml.includes(`--gateway ${PUBLIC_GATEWAY_URL}`));
     assertNotMatch(createdHtml, /proxy-path/);
     assert(createdHtml.includes(`--enrollment-token ${enrollmentPsk}`));
     assertMatch(createdHtml, />Copy command</);
@@ -229,7 +229,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
     const laterPage = await fetch(runnersSettingsUrl, { headers: { Cookie: cookie } });
     const laterHtml = await laterPage.text();
     assertMatch(laterHtml, new RegExp(enrollmentPsk));
-    assert(laterHtml.includes(`--control-panel ${server.baseUrl.origin}`));
+    assert(laterHtml.includes(`--gateway ${server.baseUrl.origin}`));
 
     const enrollUrl = new URL(routes.api.runners.enroll.href(), server.baseUrl);
     const enrollmentBody = {
@@ -339,7 +339,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
     const harnessShutdown = new AbortController();
     let harnessConnections = 0;
     await maintainRunnerConnection({
-      controlPanelUrl: server.baseUrl.origin,
+      gatewayUrl: server.baseUrl.origin,
       runnerId: firstRunner.runnerId,
       runnerToken: firstRunner.runnerToken,
       signal: harnessShutdown.signal,

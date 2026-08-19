@@ -307,7 +307,7 @@ Deno.test("Result utility and test code may implement or assert exception bounda
     [],
   );
   assertEquals(
-    Deno.lint.runPlugin(plugin, "packages/control/app/example.test.ts", source).filter(({ id }) =>
+    Deno.lint.runPlugin(plugin, "packages/gateway/app/example.test.ts", source).filter(({ id }) =>
       id === CATCH_RULE || id === THROW_RULE
     ),
     [],

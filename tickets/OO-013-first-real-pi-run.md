@@ -13,7 +13,7 @@ After provisioning, the stored initial prompt runs through host-side Pi with `op
 - Configure Pi's model runtime in memory without writing an auth file or falling back to runner-global credentials.
 - Create persistent Pi JSONL through the audited factory and enable only Gondolin-backed `read`, `write`, `edit`, and `bash`.
 - Normalize the minimum required Pi events, append completed semantic events/state transitions to runner `events.jsonl`, and relay live deltas.
-- Add runner-backed SSE from browser through control panel, including keepalives and disconnect cleanup.
+- Add runner-backed SSE from browser through gateway, including keepalives and disconnect cleanup.
 - Render status, user/assistant content, thinking, tool calls, and tool results in the session page.
 - Settle only after Pi's complete retry/compaction lifecycle is idle.
 
@@ -23,7 +23,7 @@ After provisioning, the stored initial prompt runs through host-side Pi with `op
 - A prompt can inspect and change the repository only through Gondolin tools.
 - Text/thinking/tool activity appears while the run is active.
 - Completed semantic records survive browser reconnect in runner storage.
-- Token deltas, full prompt content, and tool output are not persisted by the control panel or infrastructure logs; the only control-panel prompt-derived value is the required trimmed `initial_prompt_preview` catalog field.
+- Token deltas, full prompt content, and tool output are not persisted by the gateway or infrastructure logs; the only gateway prompt-derived value is the required trimmed `initial_prompt_preview` catalog field.
 - The model key never enters Gondolin or Pi auth files.
 - Composer state reflects real runner/Pi state rather than optimistic completion.
 
