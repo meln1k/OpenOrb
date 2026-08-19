@@ -25,6 +25,7 @@ import {
   string,
 } from "@remix-run/data-schema";
 import { dirname, join } from "node:path";
+import { ok, type Result, tryAsync, trySync } from "@openorb/result";
 
 const SESSIONS_DIRECTORY = "sessions";
 const METADATA_FILE = "metadata.json";
@@ -98,6 +99,29 @@ export interface RunnerSessionInventory {
   errors: RunnerSessionInventoryError[];
 }
 
+export type RunnerSessionStoreOperation =
+  | "initialize"
+  | "create-session"
+  | "read-metadata"
+  | "update-session-state"
+  | "update-provisioning"
+  | "get-workspace-path"
+  | "get-session-snapshot"
+  | "load-inventory"
+  | "read-events"
+  | "append-event";
+
+export class RunnerSessionStoreError extends Error {
+  constructor(
+    readonly operation: RunnerSessionStoreOperation,
+    message: string,
+    override readonly cause: unknown,
+  ) {
+    super(message, { cause });
+    this.name = "RunnerSessionStoreError";
+  }
+}
+
 interface EventCursorInspection {
   lastCursor: number;
   byteLength: number;
@@ -112,7 +136,7 @@ interface EventCursor {
 export class RunnerSessionStore {
   readonly #workingDirectory: string;
   readonly #runnerId: string;
-  readonly #eventWrites = new Map<string, Promise<number>>();
+  readonly #eventWrites = new Map<string, Promise<Result<number, RunnerSessionStoreError>>>();
   readonly #eventCursors = new Map<string, EventCursor>();
 
   constructor(options: { workingDirectory: string; runnerId: string }) {
@@ -120,11 +144,23 @@ export class RunnerSessionStore {
     this.#runnerId = parse(runnerIdSchema, options.runnerId);
   }
 
-  async initialize(): Promise<void> {
-    await ensurePrivateDirectory(this.sessionsPath());
+  initialize(): Promise<Result<void, RunnerSessionStoreError>> {
+    return tryAsync(
+      ensurePrivateDirectory(this.sessionsPath()),
+      storeError("initialize", "Could not initialize runner session storage"),
+    );
   }
 
-  async createSession(input: CreateRunnerSessionInput): Promise<RunnerSessionMetadata> {
+  createSession(
+    input: CreateRunnerSessionInput,
+  ): Promise<Result<RunnerSessionMetadata, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#createSession(input),
+      storeError("create-session", `Could not create runner session ${input.id}`),
+    );
+  }
+
+  async #createSession(input: CreateRunnerSessionInput): Promise<RunnerSessionMetadata> {
     const metadata = parseMetadata({
       version: 1,
       id: input.id,
@@ -139,45 +175,69 @@ export class RunnerSessionStore {
       checkoutState: "pending",
     });
 
-    await this.initialize();
+    await ensurePrivateDirectory(this.sessionsPath());
     const sessionPath = this.sessionPath(metadata.id);
     await Deno.mkdir(sessionPath, { mode: 0o700 });
-    try {
-      for (const directory of ["workspace", "pi", "logs", "reports"]) {
-        await Deno.mkdir(join(sessionPath, directory), { mode: 0o700 });
-      }
-      await writeNewPrivateFile(join(sessionPath, EVENTS_FILE), new Uint8Array());
-      await writeNewPrivateFile(join(sessionPath, PI_SESSION_FILE), new Uint8Array());
-      await writeAtomicMetadata(join(sessionPath, METADATA_FILE), metadata);
-      await syncDirectory(this.sessionsPath());
-      this.#eventCursors.set(metadata.id, { value: 0, byteLength: 0 });
-      return metadata;
-    } catch (error) {
+    let committed = false;
+    await using rollback = new AsyncDisposableStack();
+    rollback.defer(async () => {
+      if (committed) return;
       this.#eventCursors.delete(metadata.id);
-      await Deno.remove(sessionPath, { recursive: true }).catch(() => undefined);
-      throw error;
+      await tryAsync(Deno.remove(sessionPath, { recursive: true }), () => undefined);
+    });
+
+    for (const directory of ["workspace", "pi", "logs", "reports"]) {
+      await Deno.mkdir(join(sessionPath, directory), { mode: 0o700 });
     }
+    await writeNewPrivateFile(join(sessionPath, EVENTS_FILE), new Uint8Array());
+    await writeNewPrivateFile(join(sessionPath, PI_SESSION_FILE), new Uint8Array());
+    await writeAtomicMetadata(join(sessionPath, METADATA_FILE), metadata);
+    await syncDirectory(this.sessionsPath());
+    this.#eventCursors.set(metadata.id, { value: 0, byteLength: 0 });
+    committed = true;
+    return metadata;
   }
 
-  async readMetadata(sessionId: string): Promise<RunnerSessionMetadata> {
+  readMetadata(
+    sessionId: string,
+  ): Promise<Result<RunnerSessionMetadata, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#readMetadataValue(sessionId),
+      storeError("read-metadata", `Could not read runner session ${sessionId}`),
+    );
+  }
+
+  async #readMetadataValue(sessionId: string): Promise<RunnerSessionMetadata> {
     const id = parse(sessionIdSchema, sessionId);
     const sessionPath = this.sessionPath(id);
     await assertRealDirectory(sessionPath, "Runner session directory");
     const metadata = await readMetadataFile(join(sessionPath, METADATA_FILE));
     if (metadata.id !== id) {
-      throw new Error(`Session directory ${id} contains metadata for ${metadata.id}.`);
+      throw new RunnerSessionDataError(
+        `Session directory ${id} contains metadata for ${metadata.id}.`,
+      );
     }
     if (metadata.runnerId !== this.#runnerId) {
-      throw new Error(`Session ${id} belongs to a different runner.`);
+      throw new RunnerSessionDataError(`Session ${id} belongs to a different runner.`);
     }
     return metadata;
   }
 
-  async updateSessionState(
+  updateSessionState(
+    sessionId: string,
+    state: RunnerSessionState,
+  ): Promise<Result<RunnerSessionMetadata, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#updateSessionState(sessionId, state),
+      storeError("update-session-state", `Could not update runner session ${sessionId}`),
+    );
+  }
+
+  async #updateSessionState(
     sessionId: string,
     state: RunnerSessionState,
   ): Promise<RunnerSessionMetadata> {
-    const metadata = await this.readMetadata(sessionId);
+    const metadata = await this.#readMetadataValue(sessionId);
     const updated = parseMetadata({
       ...metadata,
       state: parse(runnerSessionStateSchema, state),
@@ -186,11 +246,21 @@ export class RunnerSessionStore {
     return updated;
   }
 
-  async updateProvisioning(
+  updateProvisioning(
+    sessionId: string,
+    input: UpdateRunnerSessionProvisioningInput,
+  ): Promise<Result<RunnerSessionMetadata, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#updateProvisioning(sessionId, input),
+      storeError("update-provisioning", `Could not update runner session ${sessionId}`),
+    );
+  }
+
+  async #updateProvisioning(
     sessionId: string,
     input: UpdateRunnerSessionProvisioningInput,
   ): Promise<RunnerSessionMetadata> {
-    const metadata = await this.readMetadata(sessionId);
+    const metadata = await this.#readMetadataValue(sessionId);
     const updated = parseMetadata({
       ...metadata,
       state: parse(runnerSessionStateSchema, input.state),
@@ -201,15 +271,31 @@ export class RunnerSessionStore {
     return updated;
   }
 
-  async getSessionWorkspacePath(sessionId: string): Promise<string> {
-    const metadata = await this.readMetadata(sessionId);
+  getSessionWorkspacePath(sessionId: string): Promise<Result<string, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#getSessionWorkspacePath(sessionId),
+      storeError("get-workspace-path", `Could not access runner session ${sessionId} workspace`),
+    );
+  }
+
+  async #getSessionWorkspacePath(sessionId: string): Promise<string> {
+    const metadata = await this.#readMetadataValue(sessionId);
     const workspacePath = join(this.sessionPath(metadata.id), "workspace");
     await assertRealDirectory(workspacePath, "Runner session workspace");
     return await Deno.realPath(workspacePath);
   }
 
-  async getSessionSnapshot(sessionId: string): Promise<RunnerSessionSnapshot> {
-    const metadata = await this.readMetadata(sessionId);
+  getSessionSnapshot(
+    sessionId: string,
+  ): Promise<Result<RunnerSessionSnapshot, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#getSessionSnapshot(sessionId),
+      storeError("get-session-snapshot", `Could not snapshot runner session ${sessionId}`),
+    );
+  }
+
+  async #getSessionSnapshot(sessionId: string): Promise<RunnerSessionSnapshot> {
+    const metadata = await this.#readMetadataValue(sessionId);
     const eventLog = await iterateEventLog(
       join(this.sessionPath(metadata.id), EVENTS_FILE),
       () => {},
@@ -219,8 +305,15 @@ export class RunnerSessionStore {
     return snapshotFrom(metadata, eventLog.lastCursor);
   }
 
-  async loadInventory(): Promise<RunnerSessionInventory> {
-    await this.initialize();
+  loadInventory(): Promise<Result<RunnerSessionInventory, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#loadInventory(),
+      storeError("load-inventory", "Could not access the runner session inventory root"),
+    );
+  }
+
+  async #loadInventory(): Promise<RunnerSessionInventory> {
+    await ensurePrivateDirectory(this.sessionsPath());
     const sessions: RunnerSessionSnapshot[] = [];
     const errors: RunnerSessionInventoryError[] = [];
     const entries = [];
@@ -237,41 +330,74 @@ export class RunnerSessionStore {
         continue;
       }
 
-      let metadata: RunnerSessionMetadata;
-      try {
-        metadata = await this.readMetadata(entry.name);
-      } catch (error) {
-        errors.push({ sessionDirectory: entry.name, message: errorMessage(error) });
-        continue;
-      }
+      const metadataInspection = await this.#inspectMetadata(entry.name);
+      if ("metadata" in metadataInspection) {
+        const metadata = metadataInspection.metadata;
+        if (!metadata) {
+          errors.push({ sessionDirectory: entry.name, message: "Session metadata is invalid." });
+          continue;
+        }
 
-      const eventLog = await iterateEventLog(join(entryPath, EVENTS_FILE), () => {});
-      if (eventLog.error) {
-        errors.push({ sessionDirectory: entry.name, message: eventLog.error.message });
+        const eventLog = await iterateEventLog(join(entryPath, EVENTS_FILE), () => {});
+        if (eventLog.error) {
+          errors.push({ sessionDirectory: entry.name, message: eventLog.error.message });
+        } else {
+          this.#rememberEventCursor(metadata.id, eventLog);
+        }
+        sessions.push(
+          snapshotFrom(metadata, eventLog.lastCursor, eventLog.error ? "error" : undefined),
+        );
       } else {
-        this.#rememberEventCursor(metadata.id, eventLog);
+        errors.push({
+          sessionDirectory: entry.name,
+          message: errorMessage(metadataInspection.error),
+        });
       }
-      sessions.push(
-        snapshotFrom(metadata, eventLog.lastCursor, eventLog.error ? "error" : undefined),
-      );
     }
 
     return { sessions, errors };
   }
 
-  async readEvents(sessionId: string): Promise<StoredRunnerSessionEvent[]> {
+  async #inspectMetadata(
+    sessionId: string,
+  ): Promise<{ metadata: RunnerSessionMetadata } | { error: RunnerSessionStoreError }> {
+    const [metadata, metadataError] = await this.readMetadata(sessionId);
+    if (metadataError !== undefined) return { error: metadataError };
+    return { metadata };
+  }
+
+  readEvents(
+    sessionId: string,
+  ): Promise<Result<StoredRunnerSessionEvent[], RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#readEvents(sessionId),
+      storeError("read-events", `Could not read events for runner session ${sessionId}`),
+    );
+  }
+
+  async #readEvents(sessionId: string): Promise<StoredRunnerSessionEvent[]> {
     const records: StoredRunnerSessionEvent[] = [];
-    await this.forEachEvent(sessionId, (record) => {
+    await this.#forEachEvent(sessionId, (record) => {
       records.push(record);
     });
     return records;
   }
 
-  async forEachEvent(
+  forEachEvent(
+    sessionId: string,
+    visit: (record: StoredRunnerSessionEvent) => void | Promise<void>,
+  ): Promise<Result<void, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#forEachEvent(sessionId, visit),
+      storeError("read-events", `Could not read events for runner session ${sessionId}`),
+    );
+  }
+
+  async #forEachEvent(
     sessionId: string,
     visit: (record: StoredRunnerSessionEvent) => void | Promise<void>,
   ): Promise<void> {
-    const metadata = await this.readMetadata(sessionId);
+    const metadata = await this.#readMetadataValue(sessionId);
     const inspection = await iterateEventLog(
       join(this.sessionPath(metadata.id), EVENTS_FILE),
       visit,
@@ -280,49 +406,56 @@ export class RunnerSessionStore {
     this.#rememberEventCursor(metadata.id, inspection);
   }
 
-  appendEvent(sessionId: string, event: SessionProvisioningEvent): Promise<number> {
-    const id = parse(sessionIdSchema, sessionId);
-    const parsedEvent = parseSessionEvent(event);
-    const previous = this.#eventWrites.get(id) ?? Promise.resolve(0);
-    const pending = previous.catch(() => 0).then(async () => {
-      const metadata = await this.readMetadata(id);
-      const path = join(this.sessionPath(metadata.id), EVENTS_FILE);
-      let cursorState = this.#eventCursors.get(id);
-      if (cursorState && cursorState.byteLength !== await regularFileSize(path)) {
-        this.#eventCursors.delete(id);
-        cursorState = undefined;
-      }
-      if (!cursorState) {
-        const inspection = await iterateEventLog(path, () => {});
-        if (inspection.error) throw inspection.error;
-        cursorState = { value: inspection.lastCursor, byteLength: inspection.byteLength };
-        this.#eventCursors.set(id, cursorState);
-      }
-
-      const cursor = cursorState.value + 1;
-      const record: StoredRunnerSessionEvent = { cursor, event: parsedEvent };
-      const contents = new TextEncoder().encode(`${JSON.stringify(record)}\n`);
-      try {
-        const file = await openRegularFile(path, { write: true, append: true });
-        try {
-          await writeAll(file, contents);
-          await file.sync();
-        } finally {
-          file.close();
+  appendEvent(
+    sessionId: string,
+    event: SessionProvisioningEvent,
+  ): Promise<Result<number, RunnerSessionStoreError>> {
+    const previous = this.#eventWrites.get(sessionId) ?? Promise.resolve(ok(0));
+    const pending = tryAsync(
+      previous.then(async () => {
+        const id = parse(sessionIdSchema, sessionId);
+        const parsedEvent = parseSessionEvent(event);
+        const metadata = await this.#readMetadataValue(id);
+        const path = join(this.sessionPath(metadata.id), EVENTS_FILE);
+        let cursorState = this.#eventCursors.get(id);
+        if (cursorState && cursorState.byteLength !== await regularFileSize(path)) {
+          this.#eventCursors.delete(id);
+          cursorState = undefined;
         }
-      } catch (error) {
-        this.#eventCursors.delete(id);
-        throw error;
-      }
-      this.#eventCursors.set(id, {
-        value: cursor,
-        byteLength: cursorState.byteLength + contents.byteLength,
-      });
-      return cursor;
-    });
-    this.#eventWrites.set(id, pending);
+        if (!cursorState) {
+          const inspection = await iterateEventLog(path, () => {});
+          if (inspection.error) throw inspection.error;
+          cursorState = { value: inspection.lastCursor, byteLength: inspection.byteLength };
+          this.#eventCursors.set(id, cursorState);
+        }
+
+        const cursor = cursorState.value + 1;
+        const record: StoredRunnerSessionEvent = { cursor, event: parsedEvent };
+        const contents = new TextEncoder().encode(`${JSON.stringify(record)}\n`);
+        {
+          let writeSucceeded = false;
+          using rollback = new DisposableStack();
+          rollback.defer(() => {
+            if (!writeSucceeded) this.#eventCursors.delete(id);
+          });
+          {
+            using file = await openRegularFile(path, { write: true, append: true });
+            await writeAll(file, contents);
+            await file.sync();
+          }
+          writeSucceeded = true;
+        }
+        this.#eventCursors.set(id, {
+          value: cursor,
+          byteLength: cursorState.byteLength + contents.byteLength,
+        });
+        return cursor;
+      }),
+      storeError("append-event", `Could not append event for runner session ${sessionId}`),
+    );
+    this.#eventWrites.set(sessionId, pending);
     return pending.finally(() => {
-      if (this.#eventWrites.get(id) === pending) this.#eventWrites.delete(id);
+      if (this.#eventWrites.get(sessionId) === pending) this.#eventWrites.delete(sessionId);
     });
   }
 
@@ -364,75 +497,73 @@ function snapshotFrom(
 }
 
 async function readMetadataFile(path: string): Promise<RunnerSessionMetadata> {
-  try {
-    const file = await openRegularFile(path, { read: true });
-    try {
-      const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(
-        await readAll(file),
-      ));
-      return parseMetadata(value);
-    } finally {
-      file.close();
-    }
-  } catch (error) {
-    throw new Error(`Session metadata is invalid: ${errorMessage(error)}`);
-  }
+  using file = await openRegularFile(path, { read: true });
+  const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(
+    await readAll(file),
+  ));
+  return parseMetadata(value);
 }
 
 async function iterateEventLog(
   path: string,
   visit: (record: StoredRunnerSessionEvent) => void | Promise<void>,
 ): Promise<EventCursorInspection> {
-  let file: Deno.FsFile;
-  try {
-    file = await openRegularFile(path, { read: true });
-  } catch (error) {
-    return { lastCursor: 0, byteLength: 0, error: corruptEventLog(errorMessage(error)) };
-  }
+  const [openedFile, openError] = await tryAsync(
+    openRegularFile(path, { read: true }),
+    (cause) => corruptEventLog(errorMessage(cause)),
+  );
+  if (openError !== undefined) return { lastCursor: 0, byteLength: 0, error: openError };
+  using file = openedFile;
 
   const buffer = new Uint8Array(64 * 1024);
   let lineBytes: number[] = [];
   let lastCursor = 0;
   let byteLength = 0;
-  try {
-    while (true) {
-      let bytesRead: number | null;
-      try {
-        bytesRead = await file.read(buffer);
-      } catch (error) {
-        return { lastCursor, byteLength, error: corruptEventLog(errorMessage(error)) };
+  while (true) {
+    const [bytesRead, readError] = await tryAsync(
+      file.read(buffer),
+      (cause) => corruptEventLog(errorMessage(cause)),
+    );
+    if (readError !== undefined) return { lastCursor, byteLength, error: readError };
+    if (bytesRead === null) break;
+    byteLength += bytesRead;
+    for (const byte of buffer.subarray(0, bytesRead)) {
+      if (byte !== 0x0a) {
+        lineBytes.push(byte);
+        continue;
       }
-      if (bytesRead === null) break;
-      byteLength += bytesRead;
-      for (const byte of buffer.subarray(0, bytesRead)) {
-        if (byte !== 0x0a) {
-          lineBytes.push(byte);
-          continue;
-        }
-        let record: StoredRunnerSessionEvent;
-        try {
+      const [record, recordError] = trySync(
+        () => {
           const line = new TextDecoder("utf-8", { fatal: true }).decode(
             Uint8Array.from(lineBytes),
           );
-          record = parseStoredEvent(JSON.parse(line));
-          const expectedCursor = lastCursor + 1;
-          if (record.cursor !== expectedCursor) {
-            throw new Error(`expected cursor ${expectedCursor}, found ${record.cursor}`);
-          }
-        } catch (error) {
-          return {
-            lastCursor,
-            byteLength,
-            error: corruptEventLog(`line ${lastCursor + 1} is invalid: ${errorMessage(error)}`),
-          };
-        }
-        await visit(record);
-        lastCursor = record.cursor;
-        lineBytes = [];
+          return parseStoredEvent(JSON.parse(line));
+        },
+        (cause) => new RunnerSessionDataError(errorMessage(cause)),
+      );
+      if (recordError !== undefined) {
+        return {
+          lastCursor,
+          byteLength,
+          error: corruptEventLog(
+            `line ${lastCursor + 1} is invalid: ${errorMessage(recordError)}`,
+          ),
+        };
       }
+      const expectedCursor = lastCursor + 1;
+      if (record.cursor !== expectedCursor) {
+        return {
+          lastCursor,
+          byteLength,
+          error: corruptEventLog(
+            `line ${expectedCursor} is invalid: expected cursor ${expectedCursor}, found ${record.cursor}`,
+          ),
+        };
+      }
+      await visit(record);
+      lastCursor = record.cursor;
+      lineBytes = [];
     }
-  } finally {
-    file.close();
   }
   if (lineBytes.length > 0) {
     return { lastCursor, byteLength, error: corruptEventLog("the final append is incomplete") };
@@ -455,55 +586,52 @@ function corruptEventLog(message: string): Error {
 async function writeAtomicMetadata(path: string, metadata: RunnerSessionMetadata): Promise<void> {
   const temporaryPath = `${path}.${crypto.randomUUID()}.tmp`;
   const contents = new TextEncoder().encode(`${JSON.stringify(metadata, null, 2)}\n`);
-  try {
-    await writeNewPrivateFile(temporaryPath, contents);
-    await Deno.rename(temporaryPath, path);
-    await syncDirectory(dirname(path));
-  } catch (error) {
-    await Deno.remove(temporaryPath).catch(() => undefined);
-    throw error;
-  }
+  await using cleanup = new AsyncDisposableStack();
+  cleanup.defer(async () => {
+    await tryAsync(Deno.remove(temporaryPath), () => undefined);
+  });
+  await writeNewPrivateFile(temporaryPath, contents);
+  await Deno.rename(temporaryPath, path);
+  await syncDirectory(dirname(path));
 }
 
 async function writeNewPrivateFile(path: string, contents: Uint8Array): Promise<void> {
-  const file = await Deno.open(path, {
+  using file = await Deno.open(path, {
     write: true,
     createNew: true,
     mode: 0o600,
   });
-  try {
-    await writeAll(file, contents);
-    await file.sync();
-  } finally {
-    file.close();
-  }
+  await writeAll(file, contents);
+  await file.sync();
   if (Deno.build.os !== "windows") await Deno.chmod(path, 0o600);
 }
 
 async function ensurePrivateDirectory(path: string): Promise<void> {
-  try {
-    await Deno.mkdir(path, { mode: 0o700 });
-  } catch (error) {
-    if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
-  }
+  await Deno.mkdir(path, { mode: 0o700, recursive: true });
   await assertRealDirectory(path, "Runner sessions directory");
   if (Deno.build.os !== "windows") await Deno.chmod(path, 0o700);
 }
 
 async function assertRealDirectory(path: string, label: string): Promise<void> {
   const info = await Deno.lstat(path);
-  if (!info.isDirectory || info.isSymlink) throw new Error(`${label} must be a real directory.`);
+  if (!info.isDirectory || info.isSymlink) {
+    throw new RunnerSessionDataError(`${label} must be a real directory.`);
+  }
 }
 
 async function openRegularFile(path: string, options: Deno.OpenOptions): Promise<Deno.FsFile> {
   const info = await Deno.lstat(path);
-  if (!info.isFile || info.isSymlink) throw new Error(`${path} must be a regular file.`);
+  if (!info.isFile || info.isSymlink) {
+    throw new RunnerSessionDataError(`${path} must be a regular file.`);
+  }
   return await Deno.open(path, options);
 }
 
 async function regularFileSize(path: string): Promise<number> {
   const info = await Deno.lstat(path);
-  if (!info.isFile || info.isSymlink) throw new Error(`${path} must be a regular file.`);
+  if (!info.isFile || info.isSymlink) {
+    throw new RunnerSessionDataError(`${path} must be a regular file.`);
+  }
   return info.size;
 }
 
@@ -533,14 +661,25 @@ async function writeAll(file: Deno.FsFile, contents: Uint8Array): Promise<void> 
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  const directory = await Deno.open(path, { read: true });
-  try {
-    await directory.sync();
-  } finally {
-    directory.close();
-  }
+  using directory = await Deno.open(path, { read: true });
+  await directory.sync();
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+class RunnerSessionDataError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunnerSessionDataError";
+  }
+}
+
+function storeError(
+  operation: RunnerSessionStoreOperation,
+  context: string,
+): (cause: unknown) => RunnerSessionStoreError {
+  return (cause) =>
+    new RunnerSessionStoreError(operation, `${context}: ${errorMessage(cause)}`, cause);
 }

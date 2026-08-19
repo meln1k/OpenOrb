@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStrictEquals, assertStringIncludes } from "@std/assert";
 import { delay } from "@std/async/delay";
 
 import type {
@@ -6,9 +6,11 @@ import type {
   SessionEventPayload,
   SessionProvisionCommand,
 } from "@openorb/protocol";
+import { err, ok, type Result } from "@openorb/result";
 import { SessionEventRelay } from "@/src/session-event-relay.ts";
+import { GondolinRuntimeError } from "@/src/gondolin-tools.ts";
 import { type ProvisioningRuntime, SessionProvisioner } from "@/src/session-provisioner.ts";
-import { RunnerSessionStore } from "@/src/session-store.ts";
+import { RunnerSessionStore, RunnerSessionStoreError } from "@/src/session-store.ts";
 import { installLocalDeveloperImage } from "@/test/local-developer-image.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
@@ -46,23 +48,23 @@ class FakeRuntime implements ProvisioningRuntime {
           text: `remote output ${this.#options.outputSecret}\n`,
         });
       }
-      return { exitCode: this.#options.cloneExitCode ?? 0 };
+      return ok({ exitCode: this.#options.cloneExitCode ?? 0 });
     }
     if (command[1] === "rev-parse") {
       await options?.onOutput?.({ stream: "stdout", text: `${BASE_COMMIT}\n` });
-      return { exitCode: 0 };
+      return ok({ exitCode: 0 });
     }
-    if (command[1] === "switch") return { exitCode: 0 };
+    if (command[1] === "switch") return ok({ exitCode: 0 });
     if (command[0] === "/bin/sh") {
       await options?.onOutput?.({ stream: "stdout", text: "setup output\n" });
-      return { exitCode: this.#options.setupExitCode ?? 0 };
+      return ok({ exitCode: this.#options.setupExitCode ?? 0 });
     }
     throw new Error(`Unexpected guest command: ${command.join(" ")}`);
   };
 
-  close(): Promise<void> {
+  close(): Promise<Result<void, never>> {
     this.closed = true;
-    return Promise.resolve();
+    return Promise.resolve(ok(undefined));
   }
 }
 
@@ -76,11 +78,11 @@ class PausingCloneRuntime implements ProvisioningRuntime {
     this.paused.resolve();
     await this.resumed.promise;
     await options?.onOutput?.({ stream: "stderr", text: "after reconnect\n" });
-    return { exitCode: 128 };
+    return ok({ exitCode: 128 });
   };
 
-  close(): Promise<void> {
-    return Promise.resolve();
+  close(): Promise<Result<void, never>> {
+    return Promise.resolve(ok(undefined));
   }
 }
 
@@ -98,18 +100,20 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
       memoryMiB: 8192,
       createRuntime(options) {
         receivedToken = options.github?.token;
-        return Promise.resolve(runtime);
+        return Promise.resolve(ok(runtime));
       },
     });
     const messages: RunnerClientMessage[] = [];
-    const detach = await eventRelay.attach(
-      (message) => messages.push(message),
-      () => Promise.resolve(true),
+    const detach = success(
+      await eventRelay.attach(
+        (message) => messages.push(message),
+        () => Promise.resolve(ok(true)),
+      ),
     );
 
-    await provisioner.handleCommand(createCommand(), (message) => messages.push(message));
+    success(await provisioner.handleCommand(createCommand(), (message) => messages.push(message)));
     assertEquals(messages[0]?.type, "session.provision.accepted");
-    const acceptedMetadata = await store.readMetadata(SESSION_ID);
+    const acceptedMetadata = success(await store.readMetadata(SESSION_ID));
     assertEquals(acceptedMetadata.state, "created");
     assertEquals(acceptedMetadata.initialPrompt, INITIAL_PROMPT);
 
@@ -133,7 +137,7 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
       ["/bin/sh", "-lc", "if [ -x .agents/setup ]; then exec ./.agents/setup; fi"],
     ]);
 
-    const events = await store.readEvents(SESSION_ID);
+    const events = success(await store.readEvents(SESSION_ID));
     const stages = events.flatMap((record) =>
       record.event.type === "session.state" ? [record.event.stage] : []
     );
@@ -143,7 +147,7 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
     assertStringIncludes(persisted, "[REDACTED]");
     assertEquals(messages.at(-1)?.type, "session.event");
     detach();
-    await provisioner.close();
+    success(await provisioner.close());
     assert(runtime.closed);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
@@ -160,17 +164,17 @@ Deno.test("keeps clone failure non-fatal and skips checkout-dependent setup", as
       eventRelay: new SessionEventRelay(store),
       cpuCount: 2,
       memoryMiB: 4096,
-      createRuntime: () => Promise.resolve(runtime),
+      createRuntime: () => Promise.resolve(ok(runtime)),
     });
 
-    await provisioner.handleCommand(createCommand(), () => {});
+    success(await provisioner.handleCommand(createCommand(), () => {}));
     const metadata = await waitForState(store, "ready");
     assertEquals(metadata.checkoutState, "unavailable");
     assertEquals(runtime.commands.length, 1);
     assertEquals(runtime.commands[0]?.slice(0, 2), ["/usr/bin/git", "clone"]);
     const persisted = await readSessionText(workingDirectory);
     assertStringIncludes(persisted, "Repository clone failed");
-    await provisioner.close();
+    success(await provisioner.close());
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -183,7 +187,12 @@ Deno.test("marks provisioning failed when output event persistence fails", async
     const originalAppend = store.appendEvent.bind(store);
     store.appendEvent = (sessionId, event) => {
       if (event.type === "provisioning.log") {
-        return Promise.reject(new Error("event persistence failed"));
+        return Promise.resolve(err({
+          name: "RunnerSessionStoreError",
+          operation: "append-event",
+          message: "event persistence failed",
+          cause: new Error("event persistence failed"),
+        }));
       }
       return originalAppend(sessionId, event);
     };
@@ -193,22 +202,66 @@ Deno.test("marks provisioning failed when output event persistence fails", async
       eventRelay: new SessionEventRelay(store),
       cpuCount: 2,
       memoryMiB: 4096,
-      createRuntime: () => Promise.resolve(runtime),
+      createRuntime: () => Promise.resolve(ok(runtime)),
     });
 
-    await provisioner.handleCommand(createCommand(), () => {});
+    success(await provisioner.handleCommand(createCommand(), () => {}));
     const metadata = await waitForState(store, "error");
     assertEquals(metadata.state, "error");
     assertEquals(runtime.closed, false);
     assertEquals(
-      (await store.readEvents(SESSION_ID)).some((record) =>
+      success(await store.readEvents(SESSION_ID)).some((record) =>
         record.event.type === "session.state" && record.event.stage === "ready"
       ),
       false,
     );
 
-    await provisioner.close();
+    success(await provisioner.close());
     assert(runtime.closed);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("releases capacity when provisioning failure recovery also fails", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    const originalReadMetadata = store.readMetadata.bind(store);
+    const recoveryRead = Promise.withResolvers<void>();
+    let failMetadataRead = false;
+    store.readMetadata = (sessionId) => {
+      if (!failMetadataRead) return originalReadMetadata(sessionId);
+      recoveryRead.resolve();
+      return Promise.resolve(
+        err(
+          new RunnerSessionStoreError(
+            "read-metadata",
+            "Provisioning failure recovery could not read metadata.",
+            undefined,
+          ),
+        ),
+      );
+    };
+    const provisioner = new SessionProvisioner({
+      sessionStore: store,
+      eventRelay: new SessionEventRelay(store),
+      cpuCount: 2,
+      memoryMiB: 4096,
+      createRuntime: () => {
+        failMetadataRead = true;
+        return Promise.resolve(
+          err(new GondolinRuntimeError("Could not create the test runtime.", undefined)),
+        );
+      },
+    });
+
+    success(await provisioner.handleCommand(createCommand(), () => {}));
+    await recoveryRead.promise;
+    await delay(0);
+
+    assertEquals(provisioner.activeSessionCount, 0);
+    success(await provisioner.close());
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -225,23 +278,27 @@ Deno.test("continues active provisioning through a replacement event consumer", 
       eventRelay,
       cpuCount: 2,
       memoryMiB: 4096,
-      createRuntime: () => Promise.resolve(runtime),
+      createRuntime: () => Promise.resolve(ok(runtime)),
     });
     const firstEvents: SessionEventPayload[] = [];
     const secondEvents: SessionEventPayload[] = [];
-    const detachFirst = await eventRelay.attach(
-      collectEvents(firstEvents),
-      () => Promise.resolve(true),
+    const detachFirst = success(
+      await eventRelay.attach(
+        collectEvents(firstEvents),
+        () => Promise.resolve(ok(true)),
+      ),
     );
 
-    await provisioner.handleCommand(createCommand(), () => {});
+    success(await provisioner.handleCommand(createCommand(), () => {}));
     await runtime.paused.promise;
     detachFirst();
 
-    const detachSecond = await eventRelay.attach(collectEvents(secondEvents), async () => {
-      secondEvents.push(...await eventRelay.readEvents(SESSION_ID));
-      return true;
-    });
+    const detachSecond = success(
+      await eventRelay.attach(collectEvents(secondEvents), async () => {
+        secondEvents.push(...success(await eventRelay.readEvents(SESSION_ID)));
+        return ok(true);
+      }),
+    );
     runtime.resumed.resolve();
     await waitForState(store, "ready");
     await delay(0);
@@ -249,12 +306,12 @@ Deno.test("continues active provisioning through a replacement event consumer", 
     assertEquals(firstEvents.map((event) => event.cursor), [1, 2, 3]);
     assertEquals(secondEvents.map((event) => event.cursor), [1, 2, 3, 4, 5, 6]);
     assertEquals(
-      (await store.readEvents(SESSION_ID)).map((event) => event.cursor),
+      success(await store.readEvents(SESSION_ID)).map((event) => event.cursor),
       [1, 2, 3, 4, 5, 6],
     );
 
     detachSecond();
-    await provisioner.close();
+    success(await provisioner.close());
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -264,23 +321,27 @@ Deno.test("publishes different sessions concurrently without crossing an attachm
   const workingDirectory = await Deno.makeTempDir();
   try {
     const store = await createStore(workingDirectory);
-    await store.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: REPOSITORY_URL,
-      ref: "main",
-      branchName: BRANCH_NAME,
-      initialPrompt: INITIAL_PROMPT,
-    });
-    await store.createSession({
-      id: OTHER_SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: REPOSITORY_URL,
-      ref: "main",
-      branchName: BRANCH_NAME,
-      initialPrompt: INITIAL_PROMPT,
-      createdAt: "2026-08-17T12:00:01Z",
-    });
+    success(
+      await store.createSession({
+        id: SESSION_ID,
+        projectId: PROJECT_ID,
+        repositoryUrl: REPOSITORY_URL,
+        ref: "main",
+        branchName: BRANCH_NAME,
+        initialPrompt: INITIAL_PROMPT,
+      }),
+    );
+    success(
+      await store.createSession({
+        id: OTHER_SESSION_ID,
+        projectId: PROJECT_ID,
+        repositoryUrl: REPOSITORY_URL,
+        ref: "main",
+        branchName: BRANCH_NAME,
+        initialPrompt: INITIAL_PROMPT,
+        createdAt: "2026-08-17T12:00:01Z",
+      }),
+    );
     const originalAppend = store.appendEvent.bind(store);
     const firstAppendStarted = Promise.withResolvers<void>();
     const releaseFirstAppend = Promise.withResolvers<void>();
@@ -298,16 +359,18 @@ Deno.test("publishes different sessions concurrently without crossing an attachm
       text: "first",
     });
     await firstAppendStarted.promise;
-    await relay.publish(OTHER_SESSION_ID, "other", {
-      type: "provisioning.log",
-      stream: "stdout",
-      text: "other",
-    });
+    success(
+      await relay.publish(OTHER_SESSION_ID, "other", {
+        type: "provisioning.log",
+        stream: "stdout",
+        text: "other",
+      }),
+    );
 
     const replayed: SessionEventPayload[] = [];
     const attached = relay.attach(collectEvents(replayed), async () => {
-      replayed.push(...await relay.readEvents(SESSION_ID));
-      return true;
+      replayed.push(...success(await relay.readEvents(SESSION_ID)));
+      return ok(true);
     });
     const duringHandoff = relay.publish(SESSION_ID, "second", {
       type: "provisioning.log",
@@ -315,11 +378,47 @@ Deno.test("publishes different sessions concurrently without crossing an attachm
       text: "second",
     });
     releaseFirstAppend.resolve();
-    const detach = await attached;
-    await Promise.all([first, duringHandoff]);
+    const detach = success(await attached);
+    for (const result of await Promise.all([first, duringHandoff])) success(result);
 
     assertEquals(replayed.map((event) => event.cursor), [1, 2]);
     detach();
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("maps replay callback failures to a relay domain error", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    success(
+      await store.createSession({
+        id: SESSION_ID,
+        projectId: PROJECT_ID,
+        repositoryUrl: REPOSITORY_URL,
+        ref: "main",
+        branchName: BRANCH_NAME,
+        initialPrompt: INITIAL_PROMPT,
+      }),
+    );
+    const relay = new SessionEventRelay(store);
+    success(
+      await relay.publish(SESSION_ID, "first", {
+        type: "provisioning.log",
+        stream: "stdout",
+        text: "first",
+      }),
+    );
+    const cause = new Error("consumer failed");
+
+    const [, replayError] = await relay.replayEvents(SESSION_ID, () => {
+      throw cause;
+    });
+
+    assert(replayError);
+    assertEquals(replayError.message, "Could not replay a persisted session event.");
+    assertStrictEquals(replayError.cause, cause);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -340,15 +439,15 @@ Deno.test("retries fatal setup failure in a fresh VM without replacing stored pr
       createRuntime: () => {
         const runtime = runtimes.shift();
         if (!runtime) throw new Error("No fake runtime remains.");
-        return Promise.resolve(runtime);
+        return Promise.resolve(ok(runtime));
       },
     });
     const messages: RunnerClientMessage[] = [];
 
-    await provisioner.handleCommand(createCommand(), (message) => messages.push(message));
+    success(await provisioner.handleCommand(createCommand(), (message) => messages.push(message)));
     await waitForFailedEvent(store);
     await delay(0);
-    await provisioner.handleCommand(retryCommand(), (message) => messages.push(message));
+    success(await provisioner.handleCommand(retryCommand(), (message) => messages.push(message)));
     const metadata = await waitForState(store, "ready");
 
     assert(firstRuntime.closed);
@@ -362,7 +461,7 @@ Deno.test("retries fatal setup failure in a fresh VM without replacing stored pr
       messages.filter((message) => message.type === "session.provision.accepted").length,
       2,
     );
-    await provisioner.close();
+    success(await provisioner.close());
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -400,7 +499,7 @@ Deno.test({
       };
       const messages: RunnerClientMessage[] = [];
 
-      await provisioner.handleCommand(command, (message) => messages.push(message));
+      success(await provisioner.handleCommand(command, (message) => messages.push(message)));
       assertEquals(messages[0]?.type, "session.provision.accepted");
       const metadata = await waitForState(store, "ready", 240_000);
       assertEquals(metadata.checkoutState, "available");
@@ -408,12 +507,12 @@ Deno.test({
         await Deno.readTextFile(`${workingDirectory}/sessions/${SESSION_ID}/workspace/.git/HEAD`),
         `ref: refs/heads/${branchName}\n`,
       );
-      const stages = (await store.readEvents(SESSION_ID)).flatMap((record) =>
+      const stages = success(await store.readEvents(SESSION_ID)).flatMap((record) =>
         record.event.type === "session.state" ? [record.event.stage] : []
       );
       assertEquals(stages, ["starting-vm", "cloning", "creating-branch", "setup", "ready"]);
     } finally {
-      await provisioner?.close();
+      if (provisioner) success(await provisioner.close());
       await Deno.remove(workingDirectory, { recursive: true });
     }
   },
@@ -421,7 +520,7 @@ Deno.test({
 
 async function createStore(workingDirectory: string): Promise<RunnerSessionStore> {
   const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
-  await store.initialize();
+  success(await store.initialize());
   return store;
 }
 
@@ -460,11 +559,13 @@ async function waitForState(
 ) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const metadata = await store.readMetadata(SESSION_ID);
+    const metadata = success(await store.readMetadata(SESSION_ID));
     if (metadata.state === state) return metadata;
     if (state === "ready" && metadata.state === "error") {
       throw new Error(
-        `Session provisioning failed: ${JSON.stringify(await store.readEvents(SESSION_ID))}`,
+        `Session provisioning failed: ${
+          JSON.stringify(success(await store.readEvents(SESSION_ID)))
+        }`,
       );
     }
     await delay(10);
@@ -478,7 +579,7 @@ async function waitForFailedEvent(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const events = await store.readEvents(SESSION_ID);
+    const events = success(await store.readEvents(SESSION_ID));
     if (
       events.some((record) =>
         record.event.type === "session.state" && record.event.stage === "failed"
@@ -505,4 +606,11 @@ function collectEvents(events: SessionEventPayload[]) {
   return (message: RunnerClientMessage) => {
     if (message.type === "session.event") events.push(message.payload);
   };
+}
+
+function success<T, E>(result: Result<T, E>): T {
+  const [value, error] = result;
+  if (error !== undefined) throw error;
+  // SAFETY: The Result success variant always contains T when the error slot is undefined.
+  return value as T;
 }

@@ -1,4 +1,5 @@
 import { type Database, DataTableDatabaseError } from "remix/data-table";
+import { err, ok, type Result, tryAsync } from "@openorb/result";
 
 import { hasPostgresErrorCode } from "@/app/data/postgres-error.ts";
 import { type ProjectRow, projects } from "@/app/data/schema.ts";
@@ -29,11 +30,21 @@ export type SaveProjectResult =
 
 export type DeleteProjectResult = "deleted" | "not-found" | "in-use";
 
+export class ProjectPersistenceError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("Project persistence failed.", { cause });
+    this.name = "ProjectPersistenceError";
+  }
+}
+
 export interface ProjectRepository {
   listProjects(userId: string): Promise<Project[]>;
   getProject(userId: string, id: string): Promise<Project | null>;
   saveProject(userId: string, input: SaveProjectInput): Promise<SaveProjectResult>;
-  deleteProject(userId: string, id: string): Promise<DeleteProjectResult>;
+  deleteProject(
+    userId: string,
+    id: string,
+  ): Promise<Result<DeleteProjectResult, ProjectPersistenceError>>;
 }
 
 export function createProjectRepository(database: Database): ProjectRepository {
@@ -91,14 +102,19 @@ export function createProjectRepository(database: Database): ProjectRepository {
     },
 
     async deleteProject(userId, id) {
-      try {
-        const row = await database.findOne(projects, { where: { id, user_id: userId } });
-        if (!row) return "not-found";
-        return (await database.delete(projects, row.id)) ? "deleted" : "not-found";
-      } catch (error) {
-        if (isPostgresForeignKeyViolation(error)) return "in-use";
-        throw error;
+      const [result, persistenceError] = await tryAsync(
+        (async () => {
+          const row = await database.findOne(projects, { where: { id, user_id: userId } });
+          if (!row) return "not-found";
+          return (await database.delete(projects, row.id)) ? "deleted" : "not-found";
+        })(),
+        (cause) => new ProjectPersistenceError(cause),
+      );
+      if (persistenceError !== undefined) {
+        if (isPostgresForeignKeyViolation(persistenceError.cause)) return ok("in-use");
+        return err(persistenceError);
       }
+      return ok(result);
     },
   };
 }

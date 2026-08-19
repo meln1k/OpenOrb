@@ -2423,6 +2423,11 @@
           "npm:@remix-run/data-schema@0.3.0"
         ]
       },
+      "packages/result": {
+        "dependencies": [
+          "jsr:@std/assert@1.0.19"
+        ]
+      },
       "packages/runner": {
         "dependencies": [
           "jsr:@std/assert@1.0.19",

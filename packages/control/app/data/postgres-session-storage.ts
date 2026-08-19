@@ -188,12 +188,12 @@ function parseSessionData(value: unknown): BrowserSessionData | null {
 function sessionUserId(data: unknown): string | null {
   const parsed = parseSessionData(data);
   if (!parsed) {
-    throw new Error("Cannot persist malformed browser session data.");
+    throw new TypeError("Cannot persist malformed browser session data.");
   }
 
   const identity = parseSessionIdentity(parsed);
   if (identity.kind === "invalid") {
-    throw new Error("Cannot persist malformed browser session authentication.");
+    throw new TypeError("Cannot persist malformed browser session authentication.");
   }
   return identity.kind === "authenticated" ? identity.userId : null;
 }

@@ -30,7 +30,7 @@ const PUBLIC_DIRECTORY = fromFileUrl(new URL("../public/", import.meta.url));
 export function createSessionCookie(options: { secure?: boolean; secret?: string } = {}): Cookie {
   const secret = options.secret ?? Deno.env.get("SESSION_SECRET");
   if (!secret && Deno.env.get("NODE_ENV") !== "test") {
-    throw new Error("SESSION_SECRET is required outside tests.");
+    throw new SessionConfigurationError("SESSION_SECRET is required outside tests.");
   }
 
   const secure = options.secure ??
@@ -67,7 +67,7 @@ export function createAppRouter(
             verify(value, context) {
               const currentServices = context.get(AppServicesKey);
               if (!currentServices) {
-                throw new Error("App services middleware is missing.");
+                throw new TypeError("App services middleware is missing.");
               }
               return currentServices.store.getAdministrator(value.userId);
             },
@@ -93,6 +93,13 @@ export function createAppRouter(
   appRouter.map(routes.api.sessions, apiSessionsController);
 
   return appRouter;
+}
+
+class SessionConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionConfigurationError";
+  }
 }
 
 function publicFiles(): Middleware {

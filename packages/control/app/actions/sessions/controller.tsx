@@ -85,10 +85,8 @@ export default createController(routes.app.sessions, {
         return await renderCreateError(context, selected.message, 409, submitted);
       }
 
-      let githubToken: string | null;
-      try {
-        githubToken = await store.getGitHubToken(userId);
-      } catch {
+      const [githubToken, credentialError] = await store.getGitHubToken(userId);
+      if (credentialError !== undefined) {
         return await renderCreateError(
           context,
           "The saved GitHub credential could not be read.",
@@ -143,10 +141,8 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      let githubToken: string | null;
-      try {
-        githubToken = await context.services.store.getGitHubToken(userId);
-      } catch {
+      const [githubToken, credentialError] = await context.services.store.getGitHubToken(userId);
+      if (credentialError !== undefined) {
         return await renderDetailPage(
           context,
           "The saved GitHub credential could not be read.",

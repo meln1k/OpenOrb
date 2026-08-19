@@ -5,6 +5,7 @@
  * deployment-time secret injection). The control panel never generates or
  * persists it; startup fails visibly when it is missing or malformed.
  */
+import { trySync } from "@openorb/result";
 
 export const MASTER_KEY_ENV_VAR = "OPENORB_MASTER_KEY";
 export const MASTER_KEY_BYTE_LENGTH = 32;
@@ -70,14 +71,12 @@ export function decodeMasterKey(source: string): Uint8Array<ArrayBuffer> {
     return Uint8Array.fromHex(source);
   }
 
-  try {
-    const bytes = Uint8Array.fromBase64(source);
-    if (bytes.byteLength === MASTER_KEY_BYTE_LENGTH) {
-      return bytes;
-    }
-  } catch {
-    // Fall through to the validation error below.
-  }
+  const [bytes, decodeError] = trySync(
+    () => Uint8Array.fromBase64(source),
+    () => new MasterKeyError(`${MASTER_KEY_ENV_VAR} is not valid base64.`),
+  );
+  if (decodeError !== undefined) throw decodeError;
+  if (bytes?.byteLength === MASTER_KEY_BYTE_LENGTH) return bytes;
 
   throw new MasterKeyError(
     `${MASTER_KEY_ENV_VAR} must be a 256-bit key: 64 hexadecimal characters ` +

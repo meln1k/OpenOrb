@@ -1,3 +1,5 @@
+import { trySync } from "@openorb/result";
+
 const GITHUB_OWNER_PATTERN = /^(?!-)(?!.*--)[A-Za-z0-9-]{1,39}(?<!-)$/;
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 
@@ -12,12 +14,8 @@ export function canonicalizeGitHubRepository(value: string): string | null {
     if (!parts) return null;
     [owner, repository] = parts;
   } else {
-    let url: URL;
-    try {
-      url = new URL(input);
-    } catch {
-      return null;
-    }
+    const [url, urlError] = trySync(() => new URL(input), () => new Error("Invalid URL"));
+    if (urlError !== undefined) return null;
     if (
       url.protocol !== "https:" ||
       url.hostname.toLowerCase() !== "github.com" ||

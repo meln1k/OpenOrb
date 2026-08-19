@@ -1,5 +1,6 @@
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { parseRunnerClientMessage } from "@openorb/protocol";
+import type { Result } from "@openorb/result";
 
 import { enrollRunner } from "@/src/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
@@ -88,19 +89,21 @@ Deno.test("parses first-start enrollment options without accepting a data direct
 
 Deno.test("enrolls with the PSK but accepts only a validated runner-token response", async () => {
   let received: unknown;
-  const enrolled = await enrollRunner({
-    controlPanelUrl: "https://openorb.example.com",
-    enrollmentPsk: ENROLLMENT_PSK,
-    name: "Home runner",
-    architecture: "arm64",
-    capabilities: ["heartbeat"],
-    fetch(_input, init) {
-      received = JSON.parse(String(init?.body));
-      return Promise.resolve(
-        Response.json({ runnerId: RUNNER_ID, runnerToken: RUNNER_TOKEN }, { status: 201 }),
-      );
-    },
-  });
+  const enrolled = success(
+    await enrollRunner({
+      controlPanelUrl: "https://openorb.example.com",
+      enrollmentPsk: ENROLLMENT_PSK,
+      name: "Home runner",
+      architecture: "arm64",
+      capabilities: ["heartbeat"],
+      fetch(_input, init) {
+        received = JSON.parse(String(init?.body));
+        return Promise.resolve(
+          Response.json({ runnerId: RUNNER_ID, runnerToken: RUNNER_TOKEN }, { status: 201 }),
+        );
+      },
+    }),
+  );
   assertEquals(received, {
     enrollmentPsk: ENROLLMENT_PSK,
     name: "Home runner",
@@ -109,30 +112,30 @@ Deno.test("enrolls with the PSK but accepts only a validated runner-token respon
   });
   assertEquals(enrolled, { runnerId: RUNNER_ID, runnerToken: RUNNER_TOKEN });
 
-  await assertRejects(
-    () =>
-      enrollRunner({
-        controlPanelUrl: "https://openorb.example.com",
-        enrollmentPsk: ENROLLMENT_PSK,
-        name: "Home runner",
-        architecture: "arm64",
-        capabilities: ["heartbeat"],
-        fetch: () => Promise.resolve(Response.json({ runnerId: RUNNER_ID, runnerToken: "bad" })),
-      }),
-    Error,
-    "invalid enrollment response",
+  const enrollmentError = failure(
+    await enrollRunner({
+      controlPanelUrl: "https://openorb.example.com",
+      enrollmentPsk: ENROLLMENT_PSK,
+      name: "Home runner",
+      architecture: "arm64",
+      capabilities: ["heartbeat"],
+      fetch: () => Promise.resolve(Response.json({ runnerId: RUNNER_ID, runnerToken: "bad" })),
+    }),
   );
+  assert(enrollmentError.message.includes("invalid enrollment response"));
 });
 
 Deno.test("stores the runner bearer token in a regular 0600 file", async () => {
   const directory = await Deno.makeTempDir();
   try {
-    await writeRunnerIdentity(directory, {
-      runnerId: RUNNER_ID,
-      runnerToken: RUNNER_TOKEN,
-      controlPanelUrl: "https://openorb.example.com",
-    });
-    assertEquals(await readRunnerIdentity(directory), {
+    success(
+      await writeRunnerIdentity(directory, {
+        runnerId: RUNNER_ID,
+        runnerToken: RUNNER_TOKEN,
+        controlPanelUrl: "https://openorb.example.com",
+      }),
+    );
+    assertEquals(success(await readRunnerIdentity(directory)), {
       runnerId: RUNNER_ID,
       runnerToken: RUNNER_TOKEN,
       controlPanelUrl: "https://openorb.example.com",
@@ -143,11 +146,8 @@ Deno.test("stores the runner bearer token in a regular 0600 file", async () => {
     if (Deno.build.os !== "windows" && tokenInfo.mode !== null) {
       assertEquals(tokenInfo.mode & 0o777, 0o600);
       await Deno.chmod(`${directory}/token`, 0o644);
-      await assertRejects(
-        () => readRunnerIdentity(directory),
-        Error,
-        "permissions must be 0600",
-      );
+      const readError = failure(await readRunnerIdentity(directory));
+      assert(readError.message.includes("permissions must be 0600"));
     }
   } finally {
     await Deno.remove(directory, { recursive: true });
@@ -195,7 +195,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
       runnerToken: RUNNER_TOKEN,
       signal: abortController.signal,
       getCapacity: () => Promise.reject(new Error("Connection never authenticates")),
-      getSessionSnapshot: () => Promise.resolve([]),
+      getSessionSnapshot: () => Promise.resolve([[], undefined] as const),
       random: () => 0,
       sleep(milliseconds) {
         delays.push(milliseconds);
@@ -213,7 +213,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
       runnerToken: RUNNER_TOKEN,
       signal: delayAbortController.signal,
       getCapacity: () => Promise.reject(new Error("Connection never authenticates")),
-      getSessionSnapshot: () => Promise.resolve([]),
+      getSessionSnapshot: () => Promise.resolve([[], undefined] as const),
       handshakeTimeoutMs: 20,
       onReconnectScheduled() {
         delayAbortController.abort();
@@ -283,7 +283,7 @@ Deno.test("sends a complete session inventory in bounded reconciliation chunks",
           vmMemoryMiB: 8192,
           diskFreeMiB: 20_480,
         }),
-      getSessionSnapshot: () => Promise.resolve(sessions),
+      getSessionSnapshot: () => Promise.resolve([sessions, undefined] as const),
       onConnected() {
         abortController.abort();
       },
@@ -316,3 +316,16 @@ Deno.test("sends a complete session inventory in bounded reconciliation chunks",
     await server.finished;
   }
 });
+
+function success<T, E>(result: Result<T, E>): T {
+  const [value, error] = result;
+  if (error !== undefined) throw error;
+  // SAFETY: The Result success variant always contains T when the error slot is undefined.
+  return value as T;
+}
+
+function failure<T, E>(result: Result<T, E>): E {
+  const [, error] = result;
+  if (error === undefined) throw new Error("Expected operation to fail.");
+  return error;
+}

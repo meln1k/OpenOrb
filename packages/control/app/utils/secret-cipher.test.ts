@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertInstanceOf, assertNotEquals } from "@std/assert";
 
 import { importMasterKey } from "@/app/utils/master-key.ts";
 import { decryptSecret, encryptSecret, SecretDecryptionError } from "@/app/utils/secret-cipher.ts";
@@ -13,7 +13,7 @@ Deno.test("encrypts and decrypts a secret with authenticated metadata", async ()
   assertEquals(encrypted.keyVersion, 1);
   // Output is nonce (12) || ciphertext || tag (16); opaque bytes.
   assert(encrypted.ciphertext.byteLength >= 12 + SECRET.length + 16);
-  assertEquals(await decryptSecret(masterKey, encrypted, METADATA), SECRET);
+  assertEquals(await decryptSecret(masterKey, encrypted, METADATA), [SECRET, undefined]);
 });
 
 Deno.test("each encryption uses a fresh random nonce", async () => {
@@ -21,7 +21,7 @@ Deno.test("each encryption uses a fresh random nonce", async () => {
   const first = await encryptSecret(masterKey, SECRET, METADATA);
   const second = await encryptSecret(masterKey, SECRET, METADATA);
   assertNotEquals(first.ciphertext, second.ciphertext);
-  assertEquals(await decryptSecret(masterKey, second, METADATA), SECRET);
+  assertEquals(await decryptSecret(masterKey, second, METADATA), [SECRET, undefined]);
 });
 
 Deno.test("tampered ciphertext, metadata, or key version fails authentication", async () => {
@@ -30,26 +30,20 @@ Deno.test("tampered ciphertext, metadata, or key version fails authentication", 
 
   const tamperedCiphertext = new Uint8Array(encrypted.ciphertext);
   tamperedCiphertext[28]! ^= 0xff;
-  await assertRejects(
-    () => decryptSecret(masterKey, { ...encrypted, ciphertext: tamperedCiphertext }, METADATA),
-    SecretDecryptionError,
+  await assertDecryptionFails(
+    decryptSecret(masterKey, { ...encrypted, ciphertext: tamperedCiphertext }, METADATA),
   );
-
-  await assertRejects(
-    () => decryptSecret(masterKey, encrypted, { ...METADATA, key: "OTHER_MODEL" }),
-    SecretDecryptionError,
+  await assertDecryptionFails(
+    decryptSecret(masterKey, encrypted, { ...METADATA, key: "OTHER_MODEL" }),
   );
-  await assertRejects(
-    () =>
-      decryptSecret(masterKey, encrypted, {
-        ...METADATA,
-        userId: "0198a5f8-3029-7000-8000-000000000012",
-      }),
-    SecretDecryptionError,
+  await assertDecryptionFails(
+    decryptSecret(masterKey, encrypted, {
+      ...METADATA,
+      userId: "0198a5f8-3029-7000-8000-000000000012",
+    }),
   );
-  await assertRejects(
-    () => decryptSecret(masterKey, { ...encrypted, keyVersion: 2 }, METADATA),
-    SecretDecryptionError,
+  await assertDecryptionFails(
+    decryptSecret(masterKey, { ...encrypted, keyVersion: 2 }, METADATA),
   );
 });
 
@@ -58,16 +52,23 @@ Deno.test("a wrong master key fails without revealing or destroying data", async
   const wrongKey = await importMasterKey(new Uint8Array(32).fill(7));
   const encrypted = await encryptSecret(masterKey, SECRET, METADATA);
 
-  let message = "";
-  try {
-    await decryptSecret(wrongKey, encrypted, METADATA);
-    assert(false, "expected decryption with the wrong key to fail");
-  } catch (error) {
-    assert(error instanceof SecretDecryptionError);
-    message = error.message;
+  const [, error] = await decryptSecret(wrongKey, encrypted, METADATA);
+  if (error !== undefined) {
+    assertInstanceOf(error, SecretDecryptionError);
+    const message = error.message;
+    assert(!message.includes(SECRET), `decryption error leaked the secret: ${message}`);
+    // The original key still decrypts the untouched ciphertext.
+    assertEquals(await decryptSecret(masterKey, encrypted, METADATA), [SECRET, undefined]);
+    return;
   }
-  assert(!message.includes(SECRET), `decryption error leaked the secret: ${message}`);
-
-  // The original key still decrypts the untouched ciphertext.
-  assertEquals(await decryptSecret(masterKey, encrypted, METADATA), SECRET);
+  throw new TypeError("Expected decryption to fail.");
 });
+
+async function assertDecryptionFails(result: ReturnType<typeof decryptSecret>): Promise<void> {
+  const [, error] = await result;
+  if (error !== undefined) {
+    assertInstanceOf(error, SecretDecryptionError);
+    return;
+  }
+  throw new TypeError("Expected decryption to fail.");
+}

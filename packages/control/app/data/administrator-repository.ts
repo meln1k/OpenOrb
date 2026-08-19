@@ -1,5 +1,6 @@
 import type { Database } from "remix/data-table";
 import { v7 } from "@std/uuid";
+import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
 import {
   hashPassword,
@@ -18,10 +19,17 @@ export interface Administrator {
   id: string;
 }
 
+export class AdministratorPersistenceError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("Administrator persistence failed.", { cause });
+    this.name = "AdministratorPersistenceError";
+  }
+}
+
 export interface AdministratorRepository {
   hasAdministrator(): Promise<boolean>;
   getAdministrator(id: string): Promise<Administrator | null>;
-  createAdministrator(password: string): Promise<boolean>;
+  createAdministrator(password: string): Promise<Result<boolean, AdministratorPersistenceError>>;
   verifyAdministratorPassword(password: string): Promise<Administrator | null>;
 }
 
@@ -39,8 +47,8 @@ export function createAdministratorRepository(database: Database): Administrator
     async createAdministrator(password) {
       const passwordHash = await hashPassword(password);
 
-      try {
-        await database.transaction(async (transaction) => {
+      const [, persistenceError] = await tryAsync(
+        database.transaction(async (transaction) => {
           const user = await transaction.create(
             users,
             {
@@ -60,14 +68,14 @@ export function createAdministratorRepository(database: Database): Administrator
             key_length_bits: passwordHash.keyLengthBits,
             created_at: new Date().toISOString(),
           });
-        });
-        return true;
-      } catch (error) {
-        if (isConstraintViolation(error)) {
-          return false;
-        }
-        throw error;
+        }),
+        (cause) => new AdministratorPersistenceError(cause),
+      );
+      if (persistenceError !== undefined) {
+        if (isConstraintViolation(persistenceError.cause)) return ok(false);
+        return err(persistenceError);
       }
+      return ok(true);
     },
     async verifyAdministratorPassword(password) {
       const administrator = await database.findOne(users, {
@@ -100,27 +108,27 @@ function decodePasswordHash(credential: PasswordCredential): PasswordHash | null
     return null;
   }
 
-  try {
-    const salt = Uint8Array.fromBase64(credential.salt);
-    const derivedKey = Uint8Array.fromBase64(credential.derived_key);
-    if (
-      salt.byteLength !== PASSWORD_SALT_LENGTH ||
-      derivedKey.byteLength * 8 !== PASSWORD_KEY_LENGTH_BITS
-    ) {
-      return null;
-    }
-
+  const [decoded, decodeError] = trySync(() => {
     return {
-      salt,
-      derivedKey,
-      algorithm: credential.algorithm,
-      hash: credential.hash,
-      iterations: credential.iterations,
-      keyLengthBits: credential.key_length_bits,
+      salt: Uint8Array.fromBase64(credential.salt),
+      derivedKey: Uint8Array.fromBase64(credential.derived_key),
     };
-  } catch {
+  }, () => new Error("Invalid password hash"));
+  if (decodeError !== undefined) return null;
+  if (
+    decoded.salt.byteLength !== PASSWORD_SALT_LENGTH ||
+    decoded.derivedKey.byteLength * 8 !== PASSWORD_KEY_LENGTH_BITS
+  ) {
     return null;
   }
+
+  return {
+    ...decoded,
+    algorithm: credential.algorithm,
+    hash: credential.hash,
+    iterations: credential.iterations,
+    keyLengthBits: credential.key_length_bits,
+  };
 }
 
 function isConstraintViolation(error: unknown): boolean {

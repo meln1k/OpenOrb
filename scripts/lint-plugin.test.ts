@@ -6,7 +6,7 @@ const PI_RESOURCE_RULE_ID = "openorb/no-default-pi-resource-loader";
 const PI_SESSION_RULE_ID = "openorb/no-direct-pi-session-construction";
 const PI_SETTINGS_RULE_ID = "openorb/no-file-backed-pi-settings";
 
-Deno.test("the OpenOrb plugin registers all anti-slop rules", () => {
+Deno.test("the OpenOrb plugin registers all configured rules", () => {
   const expected = [
     "no-chained-type-assertions",
     "no-known-value-widening",
@@ -14,11 +14,15 @@ Deno.test("the OpenOrb plugin registers all anti-slop rules", () => {
     "no-reflect-apply",
     "no-reflect-get",
     "no-runtime-typeof",
+    "no-catch",
+    "no-generic-error-throw",
     "no-unknown-returns",
     "no-unknown-type-aliases",
     "no-unsafe-dictionary-type",
     "no-widen-then-assert",
+    "prefer-disposable-stack",
     "require-safety-comment-for-type-assertion",
+    "require-result-handling",
   ];
   assertEquals(
     expected.filter((rule) => !(rule in plugin.rules)),

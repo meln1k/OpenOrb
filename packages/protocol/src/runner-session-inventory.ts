@@ -1,5 +1,6 @@
 import { array, literal, number, object, string, union } from "@remix-run/data-schema";
 import type { InferOutput } from "@remix-run/data-schema";
+import { trySync } from "@openorb/result";
 import { validate as validateUuid } from "@std/uuid";
 
 export const RUNNER_RECONCILE_START_MESSAGE_TYPE = "runner.reconcile.start";
@@ -91,10 +92,17 @@ function collapseWhitespace(value: string): string {
 }
 
 function isInstant(value: string): boolean {
-  try {
-    Temporal.Instant.from(value);
-    return true;
-  } catch {
-    return false;
+  const [, invalidInstant] = trySync(
+    () => Temporal.Instant.from(value),
+    (cause) => new InvalidProtocolInstantError(value, cause),
+  );
+  if (invalidInstant !== undefined) return false;
+  return true;
+}
+
+class InvalidProtocolInstantError extends Error {
+  constructor(readonly value: string, override readonly cause: unknown) {
+    super("Runner session creation time is not an ISO 8601 instant.", { cause });
+    this.name = "InvalidProtocolInstantError";
   }
 }

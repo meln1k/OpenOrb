@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 
 import { UntarStream } from "@std/tar";
+import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
 import {
   DEVELOPER_IMAGE_RELEASE,
@@ -74,55 +75,138 @@ export interface VerifyDeveloperImageOptions {
 
 export async function ensureDeveloperImage(
   options: EnsureDeveloperImageOptions,
-): Promise<DeveloperImage> {
-  const release = options.release ?? DEVELOPER_IMAGE_RELEASE;
-  const architecture = options.architecture ?? currentDeveloperImageArchitecture();
-  validateReleaseId(release.id);
-  const asset = release.assets[architecture];
-  validateReleaseAsset(asset, architecture);
+): Promise<Result<DeveloperImage, DeveloperImageError>> {
+  const [configuration, configurationError] = trySync(
+    () => {
+      const release = options.release ?? DEVELOPER_IMAGE_RELEASE;
+      const architecture = options.architecture ?? currentDeveloperImageArchitecture();
+      validateReleaseId(release.id);
+      const asset = release.assets[architecture];
+      validateReleaseAsset(asset, architecture);
+      const imagesDirectory = join(options.workingDirectory, "images");
+      const releaseDirectory = join(imagesDirectory, release.id);
+      return {
+        release,
+        architecture,
+        asset,
+        imagesDirectory,
+        releaseDirectory,
+        imageDirectory: join(releaseDirectory, architecture),
+      };
+    },
+    (cause) => developerImageError("Developer image configuration is invalid", cause),
+  );
+  if (configurationError !== undefined) return err(configurationError);
+  const { release, architecture, asset, imagesDirectory, releaseDirectory, imageDirectory } =
+    configuration;
 
-  const imagesDirectory = join(options.workingDirectory, "images");
-  const releaseDirectory = join(imagesDirectory, release.id);
-  const imageDirectory = join(releaseDirectory, architecture);
-  if (await pathExists(imageDirectory)) {
-    return await verifyDeveloperImage(imageDirectory, { architecture, release });
-  }
+  const [imageExists, existenceError] = await pathExists(imageDirectory);
+  if (existenceError !== undefined) return err(existenceError);
+  if (imageExists) return await verifyDeveloperImage(imageDirectory, { architecture, release });
 
-  await ensureRealDirectory(imagesDirectory);
-  await ensureRealDirectory(releaseDirectory);
+  const [, directoryError] = await tryAsync(
+    (async () => {
+      await ensureRealDirectory(imagesDirectory);
+      await ensureRealDirectory(releaseDirectory);
+    })(),
+    (cause) => developerImageError("Developer image directories could not be prepared", cause),
+  );
+  if (directoryError !== undefined) return err(directoryError);
   const nonce = crypto.randomUUID();
   const archivePath = join(releaseDirectory, `.${architecture}.${nonce}.tar.gz`);
   const temporaryDirectory = join(releaseDirectory, `.${architecture}.${nonce}.installing`);
 
-  try {
-    await downloadArchive(asset, archivePath, options.fetch ?? fetch);
-    await Deno.mkdir(temporaryDirectory, { mode: 0o700 });
-    await extractArchive(archivePath, temporaryDirectory);
-    const verified = await verifyDeveloperImage(temporaryDirectory, { architecture, release });
-    try {
-      await Deno.rename(temporaryDirectory, imageDirectory);
-    } catch (error) {
-      if (await pathExists(imageDirectory)) {
-        return await verifyDeveloperImage(imageDirectory, { architecture, release });
-      }
-      throw error;
-    }
-    return { ...verified, path: resolve(imageDirectory) };
-  } catch (error) {
-    throw new Error(
-      `Unable to install OpenOrb developer image ${release.id} for ${architecture}: ${
-        errorMessage(error)
-      }`,
-    );
-  } finally {
-    await removeIfPresent(archivePath);
-    await removeIfPresent(temporaryDirectory, true);
+  const [installedImage, installError] = await installDeveloperImage(
+    asset,
+    archivePath,
+    temporaryDirectory,
+    imageDirectory,
+    architecture,
+    release,
+    options.fetch ?? fetch,
+  );
+  if (installError !== undefined) {
+    const [, cleanupError] = await cleanupInstallation(archivePath, temporaryDirectory);
+    if (cleanupError !== undefined) return err(cleanupError);
+    return err(installError);
   }
+  const [, cleanupError] = await cleanupInstallation(archivePath, temporaryDirectory);
+  if (cleanupError !== undefined) return err(cleanupError);
+  return ok(installedImage);
+}
+
+async function installDeveloperImage(
+  asset: DeveloperImageAssetRelease,
+  archivePath: string,
+  temporaryDirectory: string,
+  imageDirectory: string,
+  architecture: DeveloperImageArchitecture,
+  release: DeveloperImageRelease,
+  fetchImage: FetchImage,
+): Promise<Result<DeveloperImage, DeveloperImageError>> {
+  const [, installError] = await tryAsync(
+    (async () => {
+      await downloadArchive(asset, archivePath, fetchImage);
+      await Deno.mkdir(temporaryDirectory, { mode: 0o700 });
+      await extractArchive(archivePath, temporaryDirectory);
+      return undefined;
+    })(),
+    (cause) =>
+      developerImageError(
+        `Unable to install OpenOrb developer image ${release.id} for ${architecture}: ${
+          errorMessage(cause)
+        }`,
+        cause,
+      ),
+  );
+  if (installError !== undefined) return err(installError);
+  const [verified, verificationError] = await verifyDeveloperImage(temporaryDirectory, {
+    architecture,
+    release,
+  });
+  if (verificationError !== undefined) return err(verificationError);
+  const [, renameError] = await tryAsync(
+    Deno.rename(temporaryDirectory, imageDirectory),
+    (cause) => developerImageError("Developer image installation could not be committed", cause),
+  );
+  if (renameError !== undefined) {
+    const [concurrentInstallExists, concurrentExistenceError] = await pathExists(imageDirectory);
+    if (concurrentExistenceError !== undefined) return err(concurrentExistenceError);
+    if (!concurrentInstallExists) return err(renameError);
+    return await verifyDeveloperImage(imageDirectory, { architecture, release });
+  }
+  return ok({ ...verified, path: resolve(imageDirectory) });
+}
+
+async function cleanupInstallation(
+  archivePath: string,
+  temporaryDirectory: string,
+): Promise<Result<void, DeveloperImageError>> {
+  const [, archiveCleanupError] = await removeIfPresent(archivePath);
+  if (archiveCleanupError !== undefined) return err(archiveCleanupError);
+  const [, directoryCleanupError] = await removeIfPresent(temporaryDirectory, true);
+  if (directoryCleanupError !== undefined) return err(directoryCleanupError);
+  return ok(undefined);
 }
 
 export async function verifyDeveloperImage(
   imageDirectory: string,
   options: VerifyDeveloperImageOptions = {},
+): Promise<Result<DeveloperImage, DeveloperImageError>> {
+  const release = options.release ?? DEVELOPER_IMAGE_RELEASE;
+  const expectedPath = resolve(imageDirectory);
+  return await tryAsync(
+    verifyDeveloperImageValue(imageDirectory, options),
+    (cause) =>
+      cause instanceof Deno.errors.NotFound
+        ? invalidImageError(release.id, expectedPath, "the image directory is missing")
+        : developerImageError(`Developer image verification failed for ${imageDirectory}`, cause),
+  );
+}
+
+async function verifyDeveloperImageValue(
+  imageDirectory: string,
+  options: VerifyDeveloperImageOptions,
 ): Promise<DeveloperImage> {
   const release = options.release ?? DEVELOPER_IMAGE_RELEASE;
   const architecture = options.architecture ?? currentDeveloperImageArchitecture();
@@ -131,15 +215,7 @@ export async function verifyDeveloperImage(
   validateReleaseAsset(asset, architecture);
 
   const expectedPath = resolve(imageDirectory);
-  let directoryInfo: Deno.FileInfo;
-  try {
-    directoryInfo = await Deno.lstat(expectedPath);
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      throw invalidImageError(release.id, expectedPath, "the image directory is missing");
-    }
-    throw error;
-  }
+  const directoryInfo = await Deno.lstat(expectedPath);
   if (!directoryInfo.isDirectory || directoryInfo.isSymlink) {
     throw invalidImageError(release.id, expectedPath, "the image path is not a real directory");
   }
@@ -181,11 +257,7 @@ export async function verifyDeveloperImage(
       "manifest.json SHA-256 does not match release metadata",
     );
   }
-  const manifest = parseManifest(
-    new TextDecoder().decode(manifestBytes),
-    realPath,
-    release.id,
-  );
+  const manifest = parseManifest(new TextDecoder().decode(manifestBytes));
   validateManifest(manifest, asset, realPath, release.id);
   if (!await verifyManifestChecksums(realPath, manifest)) {
     throw invalidImageError(release.id, realPath, "an asset checksum does not match manifest.json");
@@ -202,25 +274,28 @@ export async function verifyDeveloperImage(
 
 export async function prepareDeveloperImageForVm(
   image: DeveloperImage,
-): Promise<DeveloperImageVmAssets> {
+): Promise<Result<DeveloperImageVmAssets, DeveloperImageError>> {
   const release = image[VERIFIED_DEVELOPER_IMAGE];
   const asset = release?.assets[image.architecture];
   if (
     !asset || release.id !== image.releaseId ||
     asset.gondolinBuildId !== image.gondolinBuildId
   ) {
-    throw new Error("The OpenOrb developer image handle is invalid.");
+    return err(
+      new DeveloperImageError("The OpenOrb developer image handle is invalid.", undefined),
+    );
   }
 
-  const verified = await verifyDeveloperImage(image.path, {
+  const [verified, verificationError] = await verifyDeveloperImage(image.path, {
     architecture: image.architecture,
     release,
   });
-  return {
+  if (verificationError !== undefined) return err(verificationError);
+  return ok({
     kernelPath: join(verified.path, "vmlinuz-virt"),
     initrdPath: join(verified.path, "initramfs.cpio.lz4"),
     rootfsPath: join(verified.path, "rootfs.ext4"),
-  };
+  });
 }
 
 export function currentDeveloperImageArchitecture(
@@ -230,8 +305,9 @@ export function currentDeveloperImageArchitecture(
     return "x64";
   }
   if (architecture === "aarch64" || architecture === "arm64") return "arm64";
-  throw new Error(
+  throw new DeveloperImageError(
     `No OpenOrb developer image is available for host architecture "${architecture}".`,
+    undefined,
   );
 }
 
@@ -245,47 +321,52 @@ async function downloadArchive(
     redirect: "follow",
   });
   if (!response.ok || !response.body) {
-    throw new Error(
+    throw new DeveloperImageError(
       `download failed with HTTP ${response.status} ${response.statusText} from ${asset.url}`,
+      undefined,
     );
   }
   const contentLength = response.headers.get("content-length");
   if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) !== asset.sizeBytes) {
     await response.body.cancel();
-    throw new Error(
+    throw new DeveloperImageError(
       `download size header is ${contentLength} bytes; expected ${asset.sizeBytes} bytes`,
+      undefined,
     );
   }
 
-  const file = await Deno.open(destination, {
+  using file = await Deno.open(destination, {
     createNew: true,
     write: true,
     mode: 0o600,
   });
   const hash = createHash("sha256");
   let received = 0;
-  try {
-    for await (const chunk of response.body) {
-      received += chunk.byteLength;
-      if (received > asset.sizeBytes) {
-        throw new Error(
-          `download exceeded the pinned size of ${asset.sizeBytes} bytes from ${asset.url}`,
-        );
-      }
-      hash.update(chunk);
-      await writeAll(file, chunk);
+  for await (const chunk of response.body) {
+    received += chunk.byteLength;
+    if (received > asset.sizeBytes) {
+      throw new DeveloperImageError(
+        `download exceeded the pinned size of ${asset.sizeBytes} bytes from ${asset.url}`,
+        undefined,
+      );
     }
-    await file.sync();
-  } finally {
-    file.close();
+    hash.update(chunk);
+    await writeAll(file, chunk);
   }
+  await file.sync();
 
   if (received !== asset.sizeBytes) {
-    throw new Error(`downloaded ${received} bytes; expected ${asset.sizeBytes} bytes`);
+    throw new DeveloperImageError(
+      `downloaded ${received} bytes; expected ${asset.sizeBytes} bytes`,
+      undefined,
+    );
   }
   const checksum = hash.digest("hex");
   if (checksum !== asset.sha256) {
-    throw new Error(`download SHA-256 is ${checksum}; expected ${asset.sha256}`);
+    throw new DeveloperImageError(
+      `download SHA-256 is ${checksum}; expected ${asset.sha256}`,
+      undefined,
+    );
   }
 }
 
@@ -300,63 +381,69 @@ async function extractArchive(archivePath: string, destination: string): Promise
   for await (const entry of entries) {
     if (!IMAGE_FILES.has(entry.path) || seen.has(entry.path) || !entry.readable) {
       await entry.readable?.cancel();
-      throw new Error(`image archive contains an invalid entry: ${entry.path}`);
+      throw new DeveloperImageError(
+        `image archive contains an invalid entry: ${entry.path}`,
+        undefined,
+      );
     }
     if (entry.header.typeflag !== "0" && entry.header.typeflag !== "\0") {
       await entry.readable.cancel();
-      throw new Error(`image archive entry is not a regular file: ${entry.path}`);
+      throw new DeveloperImageError(
+        `image archive entry is not a regular file: ${entry.path}`,
+        undefined,
+      );
     }
     if (!Number.isSafeInteger(entry.header.size) || entry.header.size < 0) {
       await entry.readable.cancel();
-      throw new Error(`image archive entry has an invalid size: ${entry.path}`);
+      throw new DeveloperImageError(
+        `image archive entry has an invalid size: ${entry.path}`,
+        undefined,
+      );
     }
     totalBytes += entry.header.size;
     if (totalBytes > MAX_UNCOMPRESSED_IMAGE_BYTES) {
       await entry.readable.cancel();
-      throw new Error("image archive expands beyond the 2 GiB safety limit");
+      throw new DeveloperImageError(
+        "image archive expands beyond the 2 GiB safety limit",
+        undefined,
+      );
     }
 
-    const output = await Deno.open(join(destination, entry.path), {
+    using output = await Deno.open(join(destination, entry.path), {
       createNew: true,
       write: true,
       mode: 0o600,
     });
     let written = 0;
-    try {
-      for await (const chunk of entry.readable) {
-        written += chunk.byteLength;
-        if (written > entry.header.size) {
-          throw new Error(`image archive entry exceeds its declared size: ${entry.path}`);
-        }
-        await writeAll(output, chunk);
+    for await (const chunk of entry.readable) {
+      written += chunk.byteLength;
+      if (written > entry.header.size) {
+        throw new DeveloperImageError(
+          `image archive entry exceeds its declared size: ${entry.path}`,
+          undefined,
+        );
       }
-      await output.sync();
-    } finally {
-      output.close();
+      await writeAll(output, chunk);
     }
+    await output.sync();
     if (written !== entry.header.size) {
-      throw new Error(
+      throw new DeveloperImageError(
         `image archive entry ${entry.path} contains ${written} bytes; expected ${entry.header.size}`,
+        undefined,
       );
     }
     seen.add(entry.path);
   }
 
   for (const expected of IMAGE_FILES) {
-    if (!seen.has(expected)) throw new Error(`image archive is missing ${expected}`);
+    if (!seen.has(expected)) {
+      throw new DeveloperImageError(`image archive is missing ${expected}`, undefined);
+    }
   }
 }
 
-function parseManifest(
-  text: string,
-  imagePath: string,
-  releaseId: string,
-): DeveloperImageManifest {
-  try {
-    return parseDeveloperImageManifest(JSON.parse(text));
-  } catch {
-    throw invalidImageError(releaseId, imagePath, "manifest.json is not valid JSON");
-  }
+function parseManifest(text: string): DeveloperImageManifest {
+  return parseDeveloperImageManifest(JSON.parse(text));
 }
 
 function validateManifest(
@@ -400,16 +487,12 @@ async function verifyManifestChecksums(
 
 async function fileSha256(path: string): Promise<string> {
   const hash = createHash("sha256");
-  const file = await Deno.open(path, { read: true });
+  using file = await Deno.open(path, { read: true });
   const buffer = new Uint8Array(1024 * 1024);
-  try {
-    while (true) {
-      const bytesRead = await file.read(buffer);
-      if (bytesRead === null) break;
-      hash.update(buffer.subarray(0, bytesRead));
-    }
-  } finally {
-    file.close();
+  while (true) {
+    const bytesRead = await file.read(buffer);
+    if (bytesRead === null) break;
+    hash.update(buffer.subarray(0, bytesRead));
   }
   return hash.digest("hex");
 }
@@ -425,7 +508,10 @@ function validateReleaseAsset(
     !SHA256_PATTERN.test(asset.manifestSha256) ||
     !SHA256_PATTERN.test(asset.sha256) || new URL(asset.url).protocol !== "https:"
   ) {
-    throw new Error(`Invalid OpenOrb developer image release metadata for ${architecture}.`);
+    throw new DeveloperImageError(
+      `Invalid OpenOrb developer image release metadata for ${architecture}.`,
+      undefined,
+    );
   }
 }
 
@@ -445,14 +531,18 @@ function pinRelease(release: DeveloperImageRelease): DeveloperImageRelease {
 
 function validateReleaseId(releaseId: string): void {
   if (!RELEASE_ID_PATTERN.test(releaseId)) {
-    throw new Error(`Invalid OpenOrb developer image release ID: ${releaseId}.`);
+    throw new DeveloperImageError(
+      `Invalid OpenOrb developer image release ID: ${releaseId}.`,
+      undefined,
+    );
   }
 }
 
-function invalidImageError(releaseId: string, path: string, reason: string): Error {
-  return new Error(
+function invalidImageError(releaseId: string, path: string, reason: string): DeveloperImageError {
+  return new DeveloperImageError(
     `OpenOrb developer image ${releaseId} at ${path} is unavailable or incompatible: ${reason}. ` +
       "Remove that image directory and restart the runner to download a verified copy.",
+    undefined,
   );
 }
 
@@ -460,7 +550,10 @@ async function ensureRealDirectory(path: string): Promise<void> {
   await Deno.mkdir(path, { recursive: true, mode: 0o700 });
   const info = await Deno.lstat(path);
   if (!info.isDirectory || info.isSymlink || await Deno.realPath(path) !== resolve(path)) {
-    throw new Error(`Runner image directory must be a real directory: ${path}`);
+    throw new DeveloperImageError(
+      `Runner image directory must be a real directory: ${path}`,
+      undefined,
+    );
   }
 }
 
@@ -469,22 +562,45 @@ async function writeAll(file: Deno.FsFile, bytes: Uint8Array): Promise<void> {
   while (offset < bytes.byteLength) offset += await file.write(bytes.subarray(offset));
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await Deno.lstat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return false;
-    throw error;
+async function pathExists(path: string): Promise<Result<boolean, DeveloperImageError>> {
+  const [, inspectionError] = await tryAsync(
+    Deno.lstat(path),
+    (cause) => developerImageError(`Developer image path could not be inspected: ${path}`, cause),
+  );
+  if (inspectionError !== undefined) {
+    if (inspectionError.cause instanceof Deno.errors.NotFound) return ok(false);
+    return err(inspectionError);
+  }
+  return ok(true);
+}
+
+async function removeIfPresent(
+  path: string,
+  recursive = false,
+): Promise<Result<void, DeveloperImageError>> {
+  const [, removalError] = await tryAsync(
+    Deno.remove(path, { recursive }),
+    (cause) =>
+      developerImageError(`Developer image temporary path could not be removed: ${path}`, cause),
+  );
+  if (removalError !== undefined) {
+    if (removalError.cause instanceof Deno.errors.NotFound) return ok(undefined);
+    return err(removalError);
+  }
+  return ok(undefined);
+}
+
+export class DeveloperImageError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "DeveloperImageError";
   }
 }
 
-async function removeIfPresent(path: string, recursive = false): Promise<void> {
-  try {
-    await Deno.remove(path, { recursive });
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-  }
+function developerImageError(message: string, cause: unknown): DeveloperImageError {
+  return cause instanceof DeveloperImageError
+    ? cause
+    : new DeveloperImageError(`${message}: ${errorMessage(cause)}`, cause);
 }
 
 function errorMessage(error: unknown): string {

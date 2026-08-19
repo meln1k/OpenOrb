@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { assertEquals, assertMatch, assertRejects } from "@std/assert";
 import { TarStream, type TarStreamInput } from "@std/tar";
+import type { Result } from "@openorb/result";
 
 import {
   currentDeveloperImageArchitecture,
@@ -30,18 +31,22 @@ Deno.test("installs and reuses a verified developer image atomically", async () 
   };
 
   try {
-    const first = await ensureDeveloperImage({
-      workingDirectory,
-      architecture: "x64",
-      release: fixture.release,
-      fetch: fetchImage,
-    });
-    const second = await ensureDeveloperImage({
-      workingDirectory,
-      architecture: "x64",
-      release: fixture.release,
-      fetch: fetchImage,
-    });
+    const first = success(
+      await ensureDeveloperImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: fetchImage,
+      }),
+    );
+    const second = success(
+      await ensureDeveloperImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: fetchImage,
+      }),
+    );
 
     assertEquals(downloads, 1);
     assertEquals(first.path, join(workingDirectory, "images", "test-1", "x64"));
@@ -83,20 +88,23 @@ for (
     const fixture = await createImageFixture();
     const workingDirectory = await Deno.makeTempDir();
     try {
-      await assertRejects(
-        () =>
-          ensureDeveloperImage({
-            workingDirectory,
-            architecture: "x64",
-            release: fixture.release,
-            fetch: () => Promise.resolve(response(fixture.archive)),
-          }),
-        Error,
-        name === "wrong declared size"
-          ? "download size header"
-          : name === "truncated body"
-          ? "downloaded"
-          : "download SHA-256",
+      const error = failure(
+        await ensureDeveloperImage({
+          workingDirectory,
+          architecture: "x64",
+          release: fixture.release,
+          fetch: () => Promise.resolve(response(fixture.archive)),
+        }),
+      );
+      assertMatch(
+        error.message,
+        new RegExp(
+          name === "wrong declared size"
+            ? "download size header"
+            : name === "truncated body"
+            ? "downloaded"
+            : "download SHA-256",
+        ),
       );
       assertEquals(await releaseDirectoryEntries(workingDirectory), []);
     } finally {
@@ -109,17 +117,15 @@ Deno.test("reports an unavailable image download without a partial install", asy
   const fixture = await createImageFixture();
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const error = await assertRejects(
-      () =>
-        ensureDeveloperImage({
-          workingDirectory,
-          architecture: "x64",
-          release: fixture.release,
-          fetch: () => Promise.resolve(new Response(null, { status: 404 })),
-        }),
-      Error,
-      "download failed with HTTP 404",
+    const error = failure(
+      await ensureDeveloperImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: () => Promise.resolve(new Response(null, { status: 404 })),
+      }),
     );
+    assertMatch(error.message, /download failed with HTTP 404/);
     assertMatch(error.message, /https:\/\/example\.test\/developer-image\.tar\.gz/);
     assertEquals(await releaseDirectoryEntries(workingDirectory), []);
   } finally {
@@ -144,17 +150,15 @@ for (
     const fixture = await createImageFixture({ extraEntries: [hostileEntry], omit });
     const workingDirectory = await Deno.makeTempDir();
     try {
-      await assertRejects(
-        () =>
-          ensureDeveloperImage({
-            workingDirectory,
-            architecture: "x64",
-            release: fixture.release,
-            fetch: () => Promise.resolve(responseFor(fixture.archive)),
-          }),
-        Error,
-        "invalid entry",
+      const error = failure(
+        await ensureDeveloperImage({
+          workingDirectory,
+          architecture: "x64",
+          release: fixture.release,
+          fetch: () => Promise.resolve(responseFor(fixture.archive)),
+        }),
       );
+      assertMatch(error.message, /invalid entry/);
       assertEquals(await releaseDirectoryEntries(workingDirectory), []);
       if (hostileEntry.path === "../escape") {
         await assertRejects(
@@ -188,17 +192,15 @@ for (
     const fixture = await createImageFixture({ buildId, architecture });
     const workingDirectory = await Deno.makeTempDir();
     try {
-      await assertRejects(
-        () =>
-          ensureDeveloperImage({
-            workingDirectory,
-            architecture: "x64",
-            release: fixture.release,
-            fetch: () => Promise.resolve(responseFor(fixture.archive)),
-          }),
-        Error,
-        expected,
+      const error = failure(
+        await ensureDeveloperImage({
+          workingDirectory,
+          architecture: "x64",
+          release: fixture.release,
+          fetch: () => Promise.resolve(responseFor(fixture.archive)),
+        }),
       );
+      assertMatch(error.message, new RegExp(expected));
       assertEquals(await releaseDirectoryEntries(workingDirectory), []);
     } finally {
       await Deno.remove(workingDirectory, { recursive: true });
@@ -210,27 +212,27 @@ Deno.test("fails clearly instead of replacing a corrupt cached image", async () 
   const fixture = await createImageFixture();
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const image = await ensureDeveloperImage({
-      workingDirectory,
-      architecture: "x64",
-      release: fixture.release,
-      fetch: () => Promise.resolve(responseFor(fixture.archive)),
-    });
+    const image = success(
+      await ensureDeveloperImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: () => Promise.resolve(responseFor(fixture.archive)),
+      }),
+    );
     await Deno.writeTextFile(join(image.path, "rootfs.ext4"), "corrupt");
 
-    const error = await assertRejects(
-      () =>
-        ensureDeveloperImage({
-          workingDirectory,
-          architecture: "x64",
-          release: fixture.release,
-          fetch: () => {
-            throw new Error("must not redownload over an existing image");
-          },
-        }),
-      Error,
-      "asset checksum does not match",
+    const error = failure(
+      await ensureDeveloperImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: () => {
+          throw new Error("must not redownload over an existing image");
+        },
+      }),
     );
+    assertMatch(error.message, /asset checksum does not match/);
     assertMatch(error.message, /Remove that image directory and restart the runner/);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
@@ -241,12 +243,14 @@ Deno.test("rejects a changed asset even when its manifest checksum is rewritten"
   const fixture = await createImageFixture();
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const image = await ensureDeveloperImage({
-      workingDirectory,
-      architecture: "x64",
-      release: fixture.release,
-      fetch: () => Promise.resolve(responseFor(fixture.archive)),
-    });
+    const image = success(
+      await ensureDeveloperImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: () => Promise.resolve(responseFor(fixture.archive)),
+      }),
+    );
     const changedRootfs = new TextEncoder().encode("changed rootfs");
     await Deno.writeFile(join(image.path, "rootfs.ext4"), changedRootfs);
     const manifestPath = join(image.path, "manifest.json");
@@ -254,19 +258,17 @@ Deno.test("rejects a changed asset even when its manifest checksum is rewritten"
     manifest.checksums.rootfs = sha256(changedRootfs);
     await Deno.writeTextFile(manifestPath, JSON.stringify(manifest));
 
-    await assertRejects(
-      () =>
-        ensureDeveloperImage({
-          workingDirectory,
-          architecture: "x64",
-          release: fixture.release,
-          fetch: () => {
-            throw new Error("must not redownload over an existing image");
-          },
-        }),
-      Error,
-      "manifest.json SHA-256 does not match release metadata",
+    const error = failure(
+      await ensureDeveloperImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: () => {
+          throw new Error("must not redownload over an existing image");
+        },
+      }),
     );
+    assertMatch(error.message, /manifest\.json SHA-256 does not match release metadata/);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -276,24 +278,23 @@ Deno.test("reverifies a developer image immediately before VM use", async () => 
   const fixture = await createImageFixture();
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const image = await ensureDeveloperImage({
-      workingDirectory,
-      architecture: "x64",
-      release: fixture.release,
-      fetch: () => Promise.resolve(responseFor(fixture.archive)),
-    });
-    assertEquals(await prepareDeveloperImageForVm(image), {
+    const image = success(
+      await ensureDeveloperImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: () => Promise.resolve(responseFor(fixture.archive)),
+      }),
+    );
+    assertEquals(success(await prepareDeveloperImageForVm(image)), {
       kernelPath: join(image.path, "vmlinuz-virt"),
       initrdPath: join(image.path, "initramfs.cpio.lz4"),
       rootfsPath: join(image.path, "rootfs.ext4"),
     });
 
     await Deno.writeTextFile(join(image.path, "vmlinuz-virt"), "changed kernel");
-    await assertRejects(
-      () => prepareDeveloperImageForVm(image),
-      Error,
-      "asset checksum does not match manifest.json",
-    );
+    const error = failure(await prepareDeveloperImageForVm(image));
+    assertMatch(error.message, /asset checksum does not match manifest\.json/);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -305,6 +306,19 @@ Deno.test("maps supported host architecture names", () => {
   assertEquals(currentDeveloperImageArchitecture("aarch64"), "arm64");
   assertEquals(currentDeveloperImageArchitecture("arm64"), "arm64");
 });
+
+function success<T, E>(result: Result<T, E>): T {
+  const [value, error] = result;
+  if (error !== undefined) throw error;
+  // SAFETY: The Result success variant always contains T when the error slot is undefined.
+  return value as T;
+}
+
+function failure<T, E>(result: Result<T, E>): E {
+  const [, error] = result;
+  if (error === undefined) throw new Error("Expected operation to fail.");
+  return error;
+}
 
 interface ImageFixtureOptions {
   buildId?: string;

@@ -1,4 +1,5 @@
 import { literal, object, optional, string, union } from "@remix-run/data-schema";
+import { trySync } from "@openorb/result";
 
 import { projectIdSchema, runnerSessionSnapshotSchema } from "@/src/runner-session-inventory.ts";
 import type { InferOutput } from "@remix-run/data-schema";
@@ -114,12 +115,11 @@ export type SessionProvisionRejectedMessage = RunnerMessage<SessionProvisionReje
 };
 
 function isCanonicalGitHubRepository(value: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
-  }
+  const [url, invalidUrl] = trySync(
+    () => new URL(value),
+    (cause) => new InvalidRepositoryUrlError(value, cause),
+  );
+  if (invalidUrl !== undefined) return false;
   if (
     url.protocol !== "https:" ||
     url.hostname !== "github.com" ||
@@ -159,4 +159,11 @@ function isSafeGitReference(value: string): boolean {
 
 function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+class InvalidRepositoryUrlError extends Error {
+  constructor(readonly value: string, override readonly cause: unknown) {
+    super("Session repository URL is invalid.", { cause });
+    this.name = "InvalidRepositoryUrlError";
+  }
 }

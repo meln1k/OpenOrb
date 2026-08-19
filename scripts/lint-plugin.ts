@@ -4,6 +4,8 @@ import { callAntiSlopRules } from "./anti-slop/call-rules.ts";
 import { flowAntiSlopRules } from "./anti-slop/flow-rules.ts";
 import { syntaxAntiSlopRules } from "./anti-slop/syntax-rules.ts";
 import { typeAntiSlopRules } from "./anti-slop/type-rules.ts";
+import { disposableStackRules } from "./lint-rules/disposable-stack-rules.ts";
+import { resultRules } from "./lint-rules/result-rules.ts";
 
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 const PI_SESSION_FACTORY_PATH = "packages/runner/src/pi-session-factory.ts";
@@ -35,9 +37,11 @@ const plugin = {
   name: "openorb",
   rules: {
     ...callAntiSlopRules,
+    ...disposableStackRules,
     ...flowAntiSlopRules,
     ...syntaxAntiSlopRules,
     ...typeAntiSlopRules,
+    ...resultRules,
     "no-default-pi-resource-loader": {
       create(context) {
         if (!isRunnerFile(context.filename)) return {};

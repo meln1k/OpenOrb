@@ -2,6 +2,7 @@ import { basename } from "node:path";
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import type { Result } from "@openorb/result";
 
 import {
   createOpenOrbGondolinToolRuntime,
@@ -21,6 +22,13 @@ const RUN_PRIVATE_TEST = RUN_GONDOLIN_TESTS &&
   PRIVATE_TOKEN !== undefined &&
   RUN_GITHUB_WRITE_TESTS;
 
+function success<T, E>(result: Result<T, E>): T {
+  const [value, error] = result;
+  if (error !== undefined) throw error;
+  // SAFETY: The Result success variant always contains T when the error slot is undefined.
+  return value as T;
+}
+
 Deno.test({
   name:
     "public GitHub repository clones inside Gondolin and hostile Git metadata stays in the guest",
@@ -34,12 +42,14 @@ Deno.test({
     let pi: Awaited<ReturnType<typeof OpenOrbPiSessionFactory.create>> | undefined;
 
     try {
-      runtime = await createOpenOrbGondolinToolRuntime({
-        workspacePath,
-        developerImage: await installLocalDeveloperImage(temporaryDirectory),
-        sessionLabel: "openorb OO-010 public GitHub integration test",
-        github: { repositoryUrl: PUBLIC_REPOSITORY_URL },
-      });
+      runtime = success(
+        await createOpenOrbGondolinToolRuntime({
+          workspacePath,
+          developerImage: await installLocalDeveloperImage(temporaryDirectory),
+          sessionLabel: "openorb OO-010 public GitHub integration test",
+          github: { repositoryUrl: PUBLIC_REPOSITORY_URL },
+        }),
+      );
       pi = await createPiSession(runtime, temporaryDirectory);
       const bash = getBashTool(pi);
       monitor.start();
@@ -90,7 +100,7 @@ Deno.test({
       await assertRejects(() => Deno.lstat(hostMarkerPath), Deno.errors.NotFound);
     } finally {
       pi?.session.dispose();
-      await runtime?.close();
+      if (runtime) success(await runtime.close());
       const findings = await monitor.stop();
       assertEquals(findings, [], `native host Git touched the session workspace: ${findings}`);
       await Deno.remove(temporaryDirectory, { recursive: true });
@@ -117,12 +127,14 @@ Deno.test({
     let pushed = false;
 
     try {
-      runtime = await createOpenOrbGondolinToolRuntime({
-        workspacePath,
-        developerImage: await installLocalDeveloperImage(temporaryDirectory),
-        sessionLabel: "openorb OO-010 private GitHub integration test",
-        github: { repositoryUrl, token },
-      });
+      runtime = success(
+        await createOpenOrbGondolinToolRuntime({
+          workspacePath,
+          developerImage: await installLocalDeveloperImage(temporaryDirectory),
+          sessionLabel: "openorb OO-010 private GitHub integration test",
+          github: { repositoryUrl, token },
+        }),
+      );
       pi = await createPiSession(runtime, temporaryDirectory);
       const bash = getBashTool(pi);
       monitor.start();
@@ -200,7 +212,7 @@ Deno.test({
       } finally {
         pi?.session.dispose();
         try {
-          await runtime?.close();
+          if (runtime) success(await runtime.close());
         } finally {
           let findings: string[] = [];
           try {

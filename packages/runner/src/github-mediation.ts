@@ -1,4 +1,5 @@
 import { createHttpHooks, type VMOptions } from "@earendil-works/gondolin";
+import { err, ok, type Result, trySync } from "@openorb/result";
 
 const GITHUB_HOST = "github.com";
 const GITHUB_API_HOST = "api.github.com";
@@ -27,30 +28,40 @@ interface GitHubRepository {
 
 export function createOpenOrbGitHubVmOptions(
   options: OpenOrbGitHubMediationOptions,
-): OpenOrbGitHubVmOptions {
-  const repository = parseCanonicalGitHubRepository(options.repositoryUrl);
+): Result<OpenOrbGitHubVmOptions, GitHubMediationError> {
+  const [repository, repositoryError] = parseCanonicalGitHubRepository(options.repositoryUrl);
+  if (repositoryError !== undefined) return err(repositoryError);
   const token = options.token;
   if (
     token !== undefined && (token.length === 0 || token.length > 4096 || token.trim() !== token)
   ) {
-    throw new Error(
-      "The GitHub token must be a non-empty trimmed value of at most 4096 characters.",
+    return err(
+      new GitHubMediationError(
+        "The GitHub token must be a non-empty trimmed value of at most 4096 characters.",
+        undefined,
+      ),
     );
   }
 
-  const { env: secretEnvironment, httpHooks } = createHttpHooks({
-    allowedHosts: [GITHUB_HOST, GITHUB_API_HOST],
-    allowedInternalHosts: [],
-    blockInternalRanges: true,
-    replaceSecretsInQuery: false,
-    secrets: token === undefined ? undefined : {
-      GH_TOKEN: {
-        hosts: [GITHUB_HOST, GITHUB_API_HOST],
-        value: token,
-      },
-    },
-    isRequestAllowed: (request) => isAllowedGitHubRequest(request, repository),
-  });
+  const [hooks, hooksError] = trySync(
+    () =>
+      createHttpHooks({
+        allowedHosts: [GITHUB_HOST, GITHUB_API_HOST],
+        allowedInternalHosts: [],
+        blockInternalRanges: true,
+        replaceSecretsInQuery: false,
+        secrets: token === undefined ? undefined : {
+          GH_TOKEN: {
+            hosts: [GITHUB_HOST, GITHUB_API_HOST],
+            value: token,
+          },
+        },
+        isRequestAllowed: (request) => isAllowedGitHubRequest(request, repository),
+      }),
+    (cause) => new GitHubMediationError("GitHub request mediation could not be created.", cause),
+  );
+  if (hooksError !== undefined) return err(hooksError);
+  const { env: secretEnvironment, httpHooks } = hooks;
 
   const env = {
     ...secretEnvironment,
@@ -70,21 +81,22 @@ export function createOpenOrbGitHubVmOptions(
     }),
   } satisfies Record<string, string>;
 
-  return {
+  return ok({
     allowWebSockets: false,
     dns: { mode: "synthetic" },
     env,
     httpHooks,
-  };
+  });
 }
 
-function parseCanonicalGitHubRepository(repositoryUrl: string): GitHubRepository {
-  let url: URL;
-  try {
-    url = new URL(repositoryUrl);
-  } catch {
-    throw invalidRepositoryUrl();
-  }
+function parseCanonicalGitHubRepository(
+  repositoryUrl: string,
+): Result<GitHubRepository, GitHubMediationError> {
+  const [url, urlError] = trySync(
+    () => new URL(repositoryUrl),
+    (cause) => invalidRepositoryUrl(cause),
+  );
+  if (urlError !== undefined) return err(urlError);
   if (
     url.protocol !== "https:" ||
     url.hostname !== GITHUB_HOST ||
@@ -95,11 +107,11 @@ function parseCanonicalGitHubRepository(repositoryUrl: string): GitHubRepository
     url.hash ||
     !url.pathname.endsWith(".git")
   ) {
-    throw invalidRepositoryUrl();
+    return err(invalidRepositoryUrl());
   }
 
   const parts = url.pathname.slice(1, -4).split("/");
-  if (parts.length !== 2) throw invalidRepositoryUrl();
+  if (parts.length !== 2) return err(invalidRepositoryUrl());
   const [owner, name] = parts;
   if (
     !owner ||
@@ -110,15 +122,22 @@ function parseCanonicalGitHubRepository(repositoryUrl: string): GitHubRepository
     name === ".." ||
     repositoryUrl !== `https://${GITHUB_HOST}/${owner}/${name}.git`
   ) {
-    throw invalidRepositoryUrl();
+    return err(invalidRepositoryUrl());
   }
 
-  return {
+  return ok({
     owner,
     name,
     gitPath: `/${owner}/${name}.git`,
     apiPath: `/repos/${owner}/${name}`,
-  };
+  });
+}
+
+export class GitHubMediationError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "GitHubMediationError";
+  }
 }
 
 function isAllowedGitHubRequest(request: Request, repository: GitHubRepository): boolean {
@@ -150,8 +169,9 @@ function isAllowedGitHubRequest(request: Request, repository: GitHubRepository):
   return false;
 }
 
-function invalidRepositoryUrl(): Error {
-  return new Error(
+function invalidRepositoryUrl(cause?: unknown): GitHubMediationError {
+  return new GitHubMediationError(
     "The GitHub repository URL must use the canonical https://github.com/OWNER/REPOSITORY.git form.",
+    cause,
   );
 }

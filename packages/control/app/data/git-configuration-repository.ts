@@ -1,4 +1,5 @@
 import type { Database } from "remix/data-table";
+import { err, ok, type Result, trySync } from "@openorb/result";
 
 import type { MasterKey } from "@/app/utils/master-key.ts";
 import { decryptSecret, encryptSecret, type SecretMetadata } from "@/app/utils/secret-cipher.ts";
@@ -32,6 +33,13 @@ export type DeleteGitCredentialResult =
   | { status: "deleted" }
   | { status: "not-found" };
 
+export class GitCredentialReadError extends Error {
+  constructor(override readonly cause?: unknown) {
+    super("The saved GitHub credential could not be read.", { cause });
+    this.name = "GitCredentialReadError";
+  }
+}
+
 export interface GitConfigurationRepository {
   getGitAuthorConfiguration(userId: string): Promise<GitAuthorConfiguration | null>;
   saveGitAuthorConfiguration(userId: string, input: {
@@ -39,7 +47,7 @@ export interface GitConfigurationRepository {
     authorEmail: string;
   }): Promise<GitAuthorConfiguration>;
   getGitHubCredential(userId: string): Promise<GitCredential | null>;
-  getGitHubToken(userId: string): Promise<string | null>;
+  getGitHubToken(userId: string): Promise<Result<string | null, GitCredentialReadError>>;
   saveGitHubCredential(userId: string, token: string): Promise<GitCredential>;
   deleteGitHubCredential(userId: string): Promise<DeleteGitCredentialResult>;
 }
@@ -88,7 +96,7 @@ export function createGitConfigurationRepository(
       const credential = await database.findOne(gitCredentials, {
         where: { user_id: userId, host: GITHUB_HOST },
       });
-      if (!credential) return null;
+      if (!credential) return ok(null);
       const secret = await database.findOne(encryptedSecrets, {
         where: {
           id: credential.encrypted_secret_id,
@@ -96,15 +104,22 @@ export function createGitConfigurationRepository(
           purpose: encryptedSecretPurposes.gitCredential,
         },
       });
-      if (!secret) throw new Error("The GitHub credential secret is missing or invalid.");
-      return await decryptSecret(
+      if (!secret) return err(new GitCredentialReadError());
+      const [ciphertext, decodeError] = trySync(
+        () => Uint8Array.fromBase64(secret.ciphertext),
+        (cause) => new GitCredentialReadError(cause),
+      );
+      if (decodeError !== undefined) return err(decodeError);
+      const [token, decryptionError] = await decryptSecret(
         masterKey,
         {
           keyVersion: secret.key_version,
-          ciphertext: Uint8Array.fromBase64(secret.ciphertext),
+          ciphertext,
         },
         { userId, key: secret.key },
       );
+      if (decryptionError !== undefined) return err(new GitCredentialReadError(decryptionError));
+      return ok(token);
     },
 
     saveGitHubCredential(userId, token) {
@@ -117,13 +132,17 @@ export function createGitConfigurationRepository(
         if (existing) {
           const secret = await transaction.find(encryptedSecrets, existing.encrypted_secret_id);
           if (!secret) {
-            throw new Error("The GitHub credential secret is missing.");
+            throw new GitCredentialIntegrityError("The GitHub credential secret is missing.");
           }
           if (secret.purpose !== encryptedSecretPurposes.gitCredential) {
-            throw new Error("The GitHub credential secret has an invalid purpose.");
+            throw new GitCredentialIntegrityError(
+              "The GitHub credential secret has an invalid purpose.",
+            );
           }
           if (secret.user_id !== userId) {
-            throw new Error("The GitHub credential secret has an invalid owner.");
+            throw new GitCredentialIntegrityError(
+              "The GitHub credential secret has an invalid owner.",
+            );
           }
           const encrypted = await encryptSecret(masterKey, token, { userId, key: secret.key });
           await transaction.update(encryptedSecrets, secret.id, {
@@ -181,6 +200,13 @@ export function createGitConfigurationRepository(
       });
     },
   };
+}
+
+class GitCredentialIntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GitCredentialIntegrityError";
+  }
 }
 
 function mapGitAuthorConfiguration(

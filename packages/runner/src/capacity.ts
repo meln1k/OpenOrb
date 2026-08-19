@@ -57,12 +57,19 @@ function toSafeInteger(value: bigint): number {
 
 function assertPositiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive integer.`);
+    throw new RunnerCapacityConfigurationError(`${name} must be a positive integer.`);
   }
 }
 
 function assertNonNegativeInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${name} must be a non-negative integer.`);
+    throw new RunnerCapacityConfigurationError(`${name} must be a non-negative integer.`);
+  }
+}
+
+class RunnerCapacityConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunnerCapacityConfigurationError";
   }
 }

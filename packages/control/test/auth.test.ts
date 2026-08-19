@@ -141,7 +141,10 @@ Deno.test("rejects malformed persisted password material", async () => {
   const store = await createTestStore();
 
   try {
-    assertEquals(await store.createAdministrator("correct horse battery staple"), true);
+    assertEquals(await store.createAdministrator("correct horse battery staple"), [
+      true,
+      undefined,
+    ]);
     const administrator = await store.verifyAdministratorPassword(
       "correct horse battery staple",
     );

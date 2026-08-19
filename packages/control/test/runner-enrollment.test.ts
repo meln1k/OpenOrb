@@ -1,4 +1,5 @@
 import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
+import { ok } from "@openorb/result";
 import { parse } from "remix/data-schema";
 
 import {
@@ -349,7 +350,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
           vmMemoryMiB: 8192,
           diskFreeMiB: 20_480,
         }),
-      getSessionSnapshot: () => Promise.resolve([]),
+      getSessionSnapshot: () => Promise.resolve([[], undefined] as const),
       onConnected() {
         harnessConnections++;
         harnessShutdown.abort();
@@ -563,9 +564,9 @@ async function assertRejectsCrossTenantRunnerOwner(
 }
 
 function emptyReconciliation() {
-  return Promise.resolve({
+  return Promise.resolve(ok({
     acceptedSessionIds: [],
     tombstonedSessionIds: [],
     rejected: [],
-  });
+  }));
 }

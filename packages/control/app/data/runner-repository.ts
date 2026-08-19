@@ -179,7 +179,11 @@ async function revokeEnrollmentToken(
 }
 
 function mapEnrollmentToken(row: RunnerEnrollmentTokenRow): RunnerEnrollmentToken {
-  if (!row.token) throw new Error(`Enrollment token ${row.id} does not have a stored PSK.`);
+  if (!row.token) {
+    throw new RunnerPersistenceIntegrityError(
+      `Enrollment token ${row.id} does not have a stored PSK.`,
+    );
+  }
   return {
     id: row.id,
     token: row.token,
@@ -190,10 +194,12 @@ function mapEnrollmentToken(row: RunnerEnrollmentTokenRow): RunnerEnrollmentToke
 function mapRunner(row: RunnerRow): RunnerRecord {
   const capabilities = parseSafe(runnerCapabilitiesSchema, JSON.parse(row.capabilities));
   if (!capabilities.success) {
-    throw new Error(`Runner ${row.id} has invalid stored capabilities.`);
+    throw new RunnerPersistenceIntegrityError(`Runner ${row.id} has invalid stored capabilities.`);
   }
   if (row.architecture !== "x64" && row.architecture !== "arm64") {
-    throw new Error(`Runner ${row.id} has an invalid stored architecture.`);
+    throw new RunnerPersistenceIntegrityError(
+      `Runner ${row.id} has an invalid stored architecture.`,
+    );
   }
   return {
     id: row.id,
@@ -207,4 +213,11 @@ function mapRunner(row: RunnerRow): RunnerRecord {
 
 function mapAuthenticatedRunner(row: RunnerRow): AuthenticatedRunner {
   return { id: row.id, userId: row.user_id };
+}
+
+class RunnerPersistenceIntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunnerPersistenceIntegrityError";
+  }
 }

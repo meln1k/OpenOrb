@@ -1,4 +1,5 @@
 import { css, type Handle, on } from "remix/ui";
+import { tryAsync } from "../../../../result/src/index.ts";
 
 import {
   AlertDialog,
@@ -360,12 +361,16 @@ function EnrollmentCommand(
           size="sm"
           variant="outline"
           mix={on("click", async (_event, signal) => {
-            try {
-              await globalThis.navigator.clipboard.writeText(handle.props.enrollmentCommand);
-              copyStatus = "copied";
-            } catch {
+            const [, copyError] = await tryAsync(
+              globalThis.navigator.clipboard.writeText(handle.props.enrollmentCommand),
+              () => true,
+            );
+            if (copyError !== undefined) {
               copyStatus = "failed";
+              if (!signal.aborted) await handle.update();
+              return;
             }
+            copyStatus = "copied";
             if (!signal.aborted) await handle.update();
           })}
         >

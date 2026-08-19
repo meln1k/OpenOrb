@@ -2,6 +2,7 @@ import { basename, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RealFSProvider, VM } from "@earendil-works/gondolin";
+import { err, ok, type Result, tryAsync } from "@openorb/result";
 import {
   type AgentToolResult,
   type BashOperations,
@@ -26,6 +27,7 @@ import { type DeveloperImage, prepareDeveloperImageForVm } from "@/src/developer
 import {
   createOpenOrbGitHubVmOptions,
   type OpenOrbGitHubMediationOptions,
+  type OpenOrbGitHubVmOptions,
 } from "@/src/github-mediation.ts";
 import { installGondolinTlsCompatibility } from "@/src/gondolin-tls-compatibility.ts";
 
@@ -52,8 +54,8 @@ export interface OpenOrbGondolinToolRuntime {
   run(
     command: string[],
     options?: OpenOrbGuestCommandOptions,
-  ): Promise<OpenOrbGuestCommandResult>;
-  close(): Promise<void>;
+  ): Promise<Result<OpenOrbGuestCommandResult, GondolinRuntimeError>>;
+  close(): Promise<Result<void, GondolinRuntimeError>>;
 }
 
 export interface OpenOrbGuestCommandOptions {
@@ -68,35 +70,56 @@ export interface OpenOrbGuestCommandResult {
 
 export async function createOpenOrbGondolinToolRuntime(
   options: OpenOrbGondolinToolRuntimeOptions,
-): Promise<OpenOrbGondolinToolRuntime> {
-  const workspace = await Deno.lstat(options.workspacePath);
+): Promise<Result<OpenOrbGondolinToolRuntime, GondolinRuntimeError>> {
+  const [workspace, inspectionError] = await tryAsync(
+    Deno.lstat(options.workspacePath),
+    (cause) => new GondolinRuntimeError("The Gondolin workspace could not be inspected.", cause),
+  );
+  if (inspectionError !== undefined) return err(inspectionError);
   if (!workspace.isDirectory || workspace.isSymlink) {
-    throw new Error("The Gondolin workspace must be a real host directory.");
+    return err(
+      new GondolinRuntimeError(
+        "The Gondolin workspace must be a real host directory.",
+        undefined,
+      ),
+    );
   }
 
-  const runtime = new GondolinToolRuntime(
-    await Deno.realPath(options.workspacePath),
-    options.developerImage,
-    options.sessionLabel,
-    options.github,
-    options.cpuCount,
-    options.memoryMiB,
+  const [runtime, creationError] = await tryAsync(
+    (async () => {
+      return new GondolinToolRuntime(
+        await Deno.realPath(options.workspacePath),
+        options.developerImage,
+        options.sessionLabel,
+        options.github,
+        options.cpuCount,
+        options.memoryMiB,
+      );
+    })(),
+    (cause) => new GondolinRuntimeError("The Gondolin runtime could not be created.", cause),
   );
-  await runtime.start();
-  return runtime;
+  if (creationError !== undefined) return err(creationError);
+  const [, startError] = await runtime.start();
+  if (startError !== undefined) return err(startError);
+  return ok(runtime);
 }
 
 export function resolveGuestWorkspacePath(inputPath: string): string {
-  if (inputPath.includes("\0")) throw new Error("Workspace paths must not contain NUL bytes.");
+  if (inputPath.includes("\0")) {
+    throw new GondolinRuntimeError("Workspace paths must not contain NUL bytes.", undefined);
+  }
 
   let normalized = inputPath.replace(PI_UNICODE_SPACES, " ");
   if (normalized.startsWith("@")) normalized = normalized.slice(1);
   if (normalized === "~" || normalized.startsWith("~/")) {
-    throw new Error(`Path must remain within ${OPENORB_GUEST_WORKSPACE}.`);
+    throw new GondolinRuntimeError(
+      `Path must remain within ${OPENORB_GUEST_WORKSPACE}.`,
+      undefined,
+    );
   }
   if (/^file:\/\//.test(normalized)) normalized = fileURLToPath(normalized);
   if (normalized.includes("\0")) {
-    throw new Error("Workspace paths must not contain NUL bytes.");
+    throw new GondolinRuntimeError("Workspace paths must not contain NUL bytes.", undefined);
   }
 
   const resolved = posix.isAbsolute(normalized)
@@ -106,7 +129,10 @@ export function resolveGuestWorkspacePath(inputPath: string): string {
     resolved !== OPENORB_GUEST_WORKSPACE &&
     !resolved.startsWith(`${OPENORB_GUEST_WORKSPACE}/`)
   ) {
-    throw new Error(`Path must remain within ${OPENORB_GUEST_WORKSPACE}.`);
+    throw new GondolinRuntimeError(
+      `Path must remain within ${OPENORB_GUEST_WORKSPACE}.`,
+      undefined,
+    );
   }
   return resolved;
 }
@@ -121,9 +147,9 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
   readonly #cpuCount?: number;
   readonly #memoryMiB?: number;
   #running?: RunningVm;
-  #starting?: Promise<RunningVm>;
-  #cleanup?: Promise<void>;
-  #closePromise?: Promise<void>;
+  #starting?: Promise<Result<RunningVm, GondolinRuntimeError>>;
+  #cleanup?: Promise<Result<void, GondolinRuntimeError>>;
+  #closePromise?: Promise<Result<void, GondolinRuntimeError>>;
   #closed = false;
 
   constructor(
@@ -143,134 +169,212 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
     this.tools = createTools(this);
   }
 
-  async start(): Promise<void> {
-    await this.getVm();
+  async start(): Promise<Result<void, GondolinRuntimeError>> {
+    const [, startError] = await this.getVm();
+    if (startError !== undefined) return err(startError);
+    return ok(undefined);
   }
 
-  async getVm(): Promise<RunningVm> {
-    if (this.#closed) throw new Error("The Gondolin tool runtime is closed.");
-    if (this.#cleanup) await this.#cleanup;
-    if (this.#running) return this.#running;
+  async getVm(): Promise<Result<RunningVm, GondolinRuntimeError>> {
+    if (this.#closed) {
+      return err(new GondolinRuntimeError("The Gondolin tool runtime is closed.", undefined));
+    }
+    if (this.#cleanup) {
+      const [, cleanupError] = await this.#cleanup;
+      if (cleanupError !== undefined) return err(cleanupError);
+    }
+    if (this.#running) return ok(this.#running);
 
     if (!this.#starting) {
       const starting = this.#startVm();
       this.#starting = starting;
       void starting.finally(() => {
         if (this.#starting === starting) this.#starting = undefined;
-      }).catch(() => undefined);
+      });
     }
     return await this.#starting;
   }
 
-  async discard(running: RunningVm): Promise<void> {
-    if (this.#running !== running) return;
+  async getVmForTool(): Promise<RunningVm> {
+    const [running, startError] = await this.getVm();
+    if (startError !== undefined) throw startError;
+    return running;
+  }
+
+  async discard(running: RunningVm): Promise<Result<void, GondolinRuntimeError>> {
+    if (this.#running !== running) return ok(undefined);
     this.#running = undefined;
-    const cleanup = running.vm.close();
+    const cleanup = tryAsync(
+      running.vm.close(),
+      (cause) => new GondolinRuntimeError("The Gondolin VM could not be discarded.", cause),
+    );
     this.#cleanup = cleanup;
-    try {
-      await cleanup;
-    } finally {
+    const [value, cleanupError] = await cleanup;
+    if (cleanupError !== undefined) {
       if (this.#cleanup === cleanup) this.#cleanup = undefined;
+      return err(cleanupError);
     }
+    if (this.#cleanup === cleanup) this.#cleanup = undefined;
+    return ok(value);
   }
 
   async run(
     command: string[],
     options: OpenOrbGuestCommandOptions = {},
-  ): Promise<OpenOrbGuestCommandResult> {
+  ): Promise<Result<OpenOrbGuestCommandResult, GondolinRuntimeError>> {
     if (command.length === 0 || !command[0]?.startsWith("/")) {
-      throw new Error("Guest commands require an absolute executable path.");
+      return err(
+        new GondolinRuntimeError("Guest commands require an absolute executable path.", undefined),
+      );
     }
-    if (options.signal?.aborted) throw new Error("Command aborted.");
-    const running = await this.getVm();
-    if (options.signal?.aborted) throw new Error("Command aborted.");
+    if (options.signal?.aborted) {
+      return err(new GondolinRuntimeError("Command aborted.", options.signal.reason));
+    }
+    const [running, startError] = await this.getVm();
+    if (startError !== undefined) return err(startError);
+    if (options.signal?.aborted) {
+      return err(new GondolinRuntimeError("Command aborted.", options.signal.reason));
+    }
 
     let observerFailed = false;
-    let observerError: unknown;
-    let exitCode: number;
-    try {
-      const process = running.vm.exec(command, {
-        cwd: options.cwd === undefined
-          ? OPENORB_GUEST_WORKSPACE
-          : resolveGuestWorkspacePath(options.cwd),
-        env: { [OPENORB_GUEST_MARKER]: "1" },
-        signal: options.signal,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      for await (const chunk of process.output()) {
-        if (!observerFailed && options.onOutput) {
-          try {
-            await options.onOutput({ stream: chunk.stream, text: chunk.text });
-          } catch (error) {
-            observerFailed = true;
-            observerError = error;
+    let observerError: GondolinRuntimeError | undefined;
+    const [exitCode, commandError] = await tryAsync(
+      (async () => {
+        const process = running.vm.exec(command, {
+          cwd: options.cwd === undefined
+            ? OPENORB_GUEST_WORKSPACE
+            : resolveGuestWorkspacePath(options.cwd),
+          env: { [OPENORB_GUEST_MARKER]: "1" },
+          signal: options.signal,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        for await (const chunk of process.output()) {
+          if (!observerFailed && options.onOutput) {
+            const [, outputError] = await tryAsync(
+              Promise.resolve().then(() =>
+                options.onOutput?.({ stream: chunk.stream, text: chunk.text })
+              ),
+              (cause) => new GondolinRuntimeError("Guest command output handling failed.", cause),
+            );
+            if (outputError !== undefined) {
+              observerFailed = true;
+              observerError = outputError;
+              continue;
+            }
           }
         }
+        return (await process).exitCode;
+      })(),
+      (cause) => new GondolinRuntimeError("Guest command execution failed.", cause),
+    );
+    if (commandError !== undefined) {
+      const [, discardError] = await this.discard(running);
+      if (discardError !== undefined) return err(discardError);
+      if (options.signal?.aborted) {
+        return err(new GondolinRuntimeError("Command aborted.", options.signal.reason));
       }
-      exitCode = (await process).exitCode;
-    } catch (error) {
-      await this.discard(running);
-      if (options.signal?.aborted) throw new Error("Command aborted.");
-      throw error;
+      return err(commandError);
     }
-    if (observerFailed) throw observerError;
-    return { exitCode };
+    if (observerFailed && observerError !== undefined) return err(observerError);
+    return ok({ exitCode: exitCode! });
   }
 
-  close(): Promise<void> {
+  close(): Promise<Result<void, GondolinRuntimeError>> {
     this.#closePromise ??= this.#close();
     return this.#closePromise;
   }
 
-  async #close(): Promise<void> {
-    if (this.#closed) return;
+  async #close(): Promise<Result<void, GondolinRuntimeError>> {
+    if (this.#closed) return ok(undefined);
     this.#closed = true;
 
-    try {
-      await this.#starting;
-    } catch {
-      // A failed or concurrently cancelled startup has no active VM to retain.
+    if (this.#starting) await this.#starting;
+    if (this.#cleanup) {
+      const [, cleanupError] = await this.#cleanup;
+      if (cleanupError !== undefined) return err(cleanupError);
     }
-    await this.#cleanup;
 
     const running = this.#running;
     this.#running = undefined;
-    if (running) await running.vm.close();
+    if (!running) return ok(undefined);
+    return await tryAsync(
+      running.vm.close(),
+      (cause) => new GondolinRuntimeError("The Gondolin VM could not be closed.", cause),
+    );
   }
 
-  async #startVm(): Promise<RunningVm> {
-    const imagePath = await prepareDeveloperImageForVm(this.#developerImage);
-    const githubOptions = this.#github ? createOpenOrbGitHubVmOptions(this.#github) : undefined;
-    if (githubOptions) installGondolinTlsCompatibility();
-    const vm = await VM.create({
-      sessionLabel: this.#sessionLabel,
-      ...(this.#cpuCount === undefined ? {} : { cpus: this.#cpuCount }),
-      ...(this.#memoryMiB === undefined ? {} : { memory: `${this.#memoryMiB}M` }),
-      rootfs: { mode: "cow" },
-      ...githubOptions,
-      sandbox: {
-        imagePath,
-      },
-      vfs: {
-        mounts: {
-          [OPENORB_GUEST_WORKSPACE]: new RealFSProvider(this.#workspacePath),
-        },
-      },
-    });
-
-    try {
-      const shellProbe = await vm.exec(["/bin/sh", "-lc", "command -v bash || true"]);
-      const running = { vm, shellPath: shellProbe.stdout.trim() || "/bin/sh" };
-      if (this.#closed) {
-        throw new Error("The Gondolin tool runtime was closed during startup.");
-      }
-      this.#running = running;
-      return running;
-    } catch (error) {
-      await vm.close();
-      throw error;
+  async #startVm(): Promise<Result<RunningVm, GondolinRuntimeError>> {
+    const [imagePath, imageError] = await prepareDeveloperImageForVm(this.#developerImage);
+    if (imageError !== undefined) {
+      return err(
+        new GondolinRuntimeError("The developer image could not be prepared.", imageError),
+      );
     }
+    let githubOptions: OpenOrbGitHubVmOptions | undefined;
+    if (this.#github) {
+      const [options, githubError] = createOpenOrbGitHubVmOptions(this.#github);
+      if (githubError !== undefined) {
+        return err(
+          new GondolinRuntimeError("GitHub mediation could not be configured.", githubError),
+        );
+      }
+      githubOptions = options;
+    }
+    const [vm, creationError] = await tryAsync(
+      Promise.resolve().then(() => {
+        if (githubOptions) installGondolinTlsCompatibility();
+        return VM.create({
+          sessionLabel: this.#sessionLabel,
+          ...(this.#cpuCount === undefined ? {} : { cpus: this.#cpuCount }),
+          ...(this.#memoryMiB === undefined ? {} : { memory: `${this.#memoryMiB}M` }),
+          rootfs: { mode: "cow" },
+          ...githubOptions,
+          sandbox: {
+            imagePath,
+          },
+          vfs: {
+            mounts: {
+              [OPENORB_GUEST_WORKSPACE]: new RealFSProvider(this.#workspacePath),
+            },
+          },
+        });
+      }),
+      (cause) => new GondolinRuntimeError("The Gondolin VM could not be created.", cause),
+    );
+    if (creationError !== undefined) return err(creationError);
+
+    const [running, probeError] = await tryAsync(
+      (async () => {
+        const shellProbe = await vm.exec(["/bin/sh", "-lc", "command -v bash || true"]);
+        const running = { vm, shellPath: shellProbe.stdout.trim() || "/bin/sh" };
+        if (this.#closed) {
+          throw new GondolinRuntimeError(
+            "The Gondolin tool runtime was closed during startup.",
+            undefined,
+          );
+        }
+        this.#running = running;
+        return running;
+      })(),
+      (cause) => new GondolinRuntimeError("The Gondolin VM shell probe failed.", cause),
+    );
+    if (probeError !== undefined) {
+      const [, closeError] = await tryAsync(
+        vm.close(),
+        (cause) => new GondolinRuntimeError("The failed Gondolin VM could not be closed.", cause),
+      );
+      if (closeError !== undefined) return err(closeError);
+      return err(probeError);
+    }
+    return ok(running);
+  }
+}
+
+export class GondolinRuntimeError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "GondolinRuntimeError";
   }
 }
 
@@ -339,7 +443,7 @@ async function executeGondolinRead(
   supportsImages: boolean,
 ): Promise<AgentToolResult<ReadToolDetails | undefined>> {
   const throwIfAborted = () => {
-    if (signal?.aborted) throw new Error("Operation aborted");
+    if (signal?.aborted) throw new GondolinRuntimeError("Operation aborted.", signal.reason);
   };
 
   throwIfAborted();
@@ -368,7 +472,10 @@ async function executeGondolinRead(
   const startLine = offset ? Math.max(0, offset - 1) : 0;
   const startLineDisplay = startLine + 1;
   if (startLine >= allLines.length) {
-    throw new Error(`Offset ${offset} is beyond end of file (${allLines.length} lines total)`);
+    throw new GondolinRuntimeError(
+      `Offset ${offset} is beyond end of file (${allLines.length} lines total)`,
+      undefined,
+    );
   }
 
   const endLine = limit === undefined
@@ -405,11 +512,11 @@ async function executeGondolinRead(
 function createReadOperations(runtime: GondolinToolRuntime): ReadOperations {
   return {
     async readFile(filePath) {
-      const { vm } = await runtime.getVm();
+      const { vm } = await runtime.getVmForTool();
       return await vm.fs.readFile(resolveGuestWorkspacePath(filePath));
     },
     async access(filePath) {
-      const { vm } = await runtime.getVm();
+      const { vm } = await runtime.getVmForTool();
       await vm.fs.access(resolveGuestWorkspacePath(filePath));
     },
     detectImageMimeType(filePath) {
@@ -428,11 +535,11 @@ function createReadOperations(runtime: GondolinToolRuntime): ReadOperations {
 function createWriteOperations(runtime: GondolinToolRuntime): WriteOperations {
   return {
     async writeFile(filePath, content) {
-      const { vm } = await runtime.getVm();
+      const { vm } = await runtime.getVmForTool();
       await vm.fs.writeFile(resolveGuestWorkspacePath(filePath), content, { encoding: "utf8" });
     },
     async mkdir(directoryPath) {
-      const { vm } = await runtime.getVm();
+      const { vm } = await runtime.getVmForTool();
       await vm.fs.mkdir(resolveGuestWorkspacePath(directoryPath), { recursive: true });
     },
   };
@@ -441,9 +548,9 @@ function createWriteOperations(runtime: GondolinToolRuntime): WriteOperations {
 function createBashOperations(runtime: GondolinToolRuntime): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout }) {
-      if (signal?.aborted) throw new Error("aborted");
-      const running = await runtime.getVm();
-      if (signal?.aborted) throw new Error("aborted");
+      if (signal?.aborted) throw new GondolinRuntimeError("Command aborted.", signal.reason);
+      const running = await runtime.getVmForTool();
+      if (signal?.aborted) throw new GondolinRuntimeError("Command aborted.", signal.reason);
       const controller = new AbortController();
       const abort = () => controller.abort();
       signal?.addEventListener("abort", abort, { once: true });
@@ -455,28 +562,42 @@ function createBashOperations(runtime: GondolinToolRuntime): BashOperations {
           controller.abort();
         }, timeout * 1000)
         : undefined;
-
-      try {
-        const process = running.vm.exec([running.shellPath, "-lc", command], {
-          cwd: resolveGuestWorkspacePath(cwd),
-          // Never copy Pi's host process environment into the untrusted guest.
-          env: { [OPENORB_GUEST_MARKER]: "1" },
-          signal: controller.signal,
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        for await (const chunk of process.output()) onData(chunk.data);
-        const result = await process;
-        return { exitCode: result.exitCode };
-      } catch (error) {
-        await runtime.discard(running);
-        if (signal?.aborted) throw new Error("aborted");
-        if (timedOut) throw new Error(`timeout:${timeout}`);
-        throw error;
-      } finally {
+      using cleanup = new DisposableStack();
+      cleanup.defer(() => {
         if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
         signal?.removeEventListener("abort", abort);
+      });
+
+      const [result, commandError] = await tryAsync(
+        (async () => {
+          const process = running.vm.exec([running.shellPath, "-lc", command], {
+            cwd: resolveGuestWorkspacePath(cwd),
+            // Never copy Pi's host process environment into the untrusted guest.
+            env: { [OPENORB_GUEST_MARKER]: "1" },
+            signal: controller.signal,
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          for await (const chunk of process.output()) onData(chunk.data);
+          const completed = await process;
+          return { exitCode: completed.exitCode };
+        })(),
+        (cause) => new GondolinRuntimeError("Guest shell command execution failed.", cause),
+      );
+      if (commandError !== undefined) {
+        cleanup.dispose();
+        const [, discardError] = await runtime.discard(running);
+        if (discardError !== undefined) throw discardError;
+        if (signal?.aborted) throw new GondolinRuntimeError("Command aborted.", signal.reason);
+        if (timedOut) {
+          throw new GondolinRuntimeError(
+            `Command timed out after ${timeout} seconds.`,
+            commandError,
+          );
+        }
+        throw commandError;
       }
+      return result;
     },
   };
 }

@@ -17,7 +17,7 @@ const passwordProvider = createCredentialsAuthProvider({
   parse(context) {
     const formData = context.get(FormData);
     if (!formData) {
-      throw new Error("Expected formData() middleware before credential verification.");
+      throw new TypeError("Expected formData() middleware before credential verification.");
     }
 
     return s.parse(loginSchema, formData);
@@ -25,7 +25,7 @@ const passwordProvider = createCredentialsAuthProvider({
   verify({ password }, context) {
     const services = context.get(AppServicesKey);
     if (!services) {
-      throw new Error("App services middleware is missing.");
+      throw new TypeError("App services middleware is missing.");
     }
     return services.store.verifyAdministratorPassword(password);
   },

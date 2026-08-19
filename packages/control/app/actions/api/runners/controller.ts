@@ -1,4 +1,5 @@
 import { type RunnerEnrollmentRequest, runnerEnrollmentRequestSchema } from "@openorb/protocol";
+import { tryAsync, trySync } from "@openorb/result";
 import { LimitedBytesTransformStream } from "@std/streams/limited-bytes-transform-stream";
 import { ContentType } from "remix/headers/content-type";
 import { parse } from "remix/data-schema";
@@ -23,24 +24,28 @@ export default createController(routes.api.runners, {
         return Response.json({ error: "Expected application/json." }, { status: 415 });
       }
 
-      let rawBody: string;
-      try {
-        rawBody = await new Response(
-          context.request.body?.pipeThrough(
-            new LimitedBytesTransformStream(MAX_ENROLLMENT_BODY_BYTES, { error: true }),
-          ),
-        ).text();
-      } catch (error) {
-        if (error instanceof RangeError) {
+      const [rawBody, bodyError] = await tryAsync(
+        Promise.resolve().then(() =>
+          new Response(
+            context.request.body?.pipeThrough(
+              new LimitedBytesTransformStream(MAX_ENROLLMENT_BODY_BYTES, { error: true }),
+            ),
+          ).text()
+        ),
+        (cause) => new EnrollmentRequestReadError(cause),
+      );
+      if (bodyError !== undefined) {
+        if (bodyError.cause instanceof RangeError) {
           return Response.json({ error: "Enrollment request is too large." }, { status: 413 });
         }
         return Response.json({ error: "Unable to read enrollment request." }, { status: 400 });
       }
 
-      let input: RunnerEnrollmentRequest;
-      try {
-        input = parse(runnerEnrollmentRequestSchema, JSON.parse(rawBody));
-      } catch {
+      const [input, parseError] = trySync(
+        (): RunnerEnrollmentRequest => parse(runnerEnrollmentRequestSchema, JSON.parse(rawBody)),
+        () => new Error("Invalid enrollment request"),
+      );
+      if (parseError !== undefined) {
         return Response.json({ error: "Invalid enrollment request." }, { status: 400 });
       }
 
@@ -63,3 +68,10 @@ export default createController(routes.api.runners, {
     },
   },
 });
+
+class EnrollmentRequestReadError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("The runner enrollment request body could not be read.", { cause });
+    this.name = "EnrollmentRequestReadError";
+  }
+}

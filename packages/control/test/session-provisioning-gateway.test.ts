@@ -1,6 +1,8 @@
 import { assert, assertEquals } from "@std/assert";
 
 import { parseRunnerServerMessage } from "@openorb/protocol";
+import { err, ok } from "@openorb/result";
+import { SessionCatalogPersistenceError } from "@/app/data/session-catalog-repository.ts";
 import { RunnerConnectionGateway } from "@/app/runner-connection-gateway.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
 
@@ -18,11 +20,11 @@ Deno.test("pins only after durable acceptance and relays cursor-addressed events
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
     reconcileSessionSnapshotEntries(_userId, entries) {
       reconciliationCalls++;
-      return Promise.resolve({
+      return Promise.resolve(ok({
         acceptedSessionIds: entries.map((entry) => entry.id),
         tombstonedSessionIds: [],
         rejected: [],
-      });
+      }));
     },
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
@@ -112,12 +114,14 @@ Deno.test("catalog failure rejects acceptance before installing the session rout
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
     reconcileSessionSnapshotEntries(_userId, entries) {
       reconciliationCalls++;
-      if (entries.length > 0) throw new Error("database unavailable");
-      return Promise.resolve({
+      if (entries.length > 0) {
+        return Promise.resolve(err(new SessionCatalogPersistenceError("database unavailable")));
+      }
+      return Promise.resolve(ok({
         acceptedSessionIds: [],
         tombstonedSessionIds: [],
         rejected: [],
-      });
+      }));
     },
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
@@ -163,11 +167,11 @@ Deno.test("times out unacknowledged provisioning and releases reserved capacity"
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
     reconcileSessionSnapshotEntries: (_userId, entries) =>
-      Promise.resolve({
+      Promise.resolve(ok({
         acceptedSessionIds: entries.map((entry) => entry.id),
         tombstonedSessionIds: [],
         rejected: [],
-      }),
+      })),
   }, { provisionAcceptanceTimeoutMs: 20 });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;
@@ -207,11 +211,11 @@ Deno.test("times out while accepted provisioning waits for catalog persistence",
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
     reconcileSessionSnapshotEntries(_userId, entries) {
       if (entries.length === 0) {
-        return Promise.resolve({
+        return Promise.resolve(ok({
           acceptedSessionIds: [],
           tombstonedSessionIds: [],
           rejected: [],
-        });
+        }));
       }
       catalogWriteStarted.resolve();
       return new Promise(() => {});
@@ -261,11 +265,11 @@ Deno.test("an in-flight create reserves capacity across runner heartbeats", asyn
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
     reconcileSessionSnapshotEntries: (_userId, entries) =>
-      Promise.resolve({
+      Promise.resolve(ok({
         acceptedSessionIds: entries.map((entry) => entry.id),
         tombstonedSessionIds: [],
         rejected: [],
-      }),
+      })),
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;

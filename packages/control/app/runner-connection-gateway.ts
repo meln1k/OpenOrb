@@ -18,6 +18,7 @@ import {
   type SessionProvisionAcceptedPayload,
   type SessionProvisionCommandPayload,
 } from "@openorb/protocol";
+import { tryAsync, trySync } from "@openorb/result";
 import { parseSafe, string } from "remix/data-schema";
 
 import type { AuthenticatedRunner, RunnerRepository } from "@/app/data/runner-repository.ts";
@@ -116,13 +117,17 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     this.#provisionAcceptanceTimeoutMs = options.provisionAcceptanceTimeoutMs ??
       PROVISION_ACCEPTANCE_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#heartbeatTimeoutMs) || this.#heartbeatTimeoutMs <= 0) {
-      throw new Error("Runner heartbeat timeout must be a positive integer.");
+      throw new RunnerGatewayConfigurationError(
+        "Runner heartbeat timeout must be a positive integer.",
+      );
     }
     if (
       !Number.isSafeInteger(this.#provisionAcceptanceTimeoutMs) ||
       this.#provisionAcceptanceTimeoutMs <= 0
     ) {
-      throw new Error("Runner provisioning timeout must be a positive integer.");
+      throw new RunnerGatewayConfigurationError(
+        "Runner provisioning timeout must be a positive integer.",
+      );
     }
     this.#provisionCommands = new ProvisionCommandOwner(this.#provisionAcceptanceTimeoutMs);
   }
@@ -150,8 +155,8 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         closeSocket(socket, 4400, "Authentication already in progress");
         return;
       }
-      messageQueue = messageQueue.then(async () => {
-        try {
+      messageQueue = tryAsync(
+        messageQueue.then(async () => {
           if (socket.readyState !== WebSocket.OPEN) return;
           const frame = parseSafe(string(), event.data);
           if (!frame.success || byteLength(frame.value) > MAX_MESSAGE_BYTES) {
@@ -159,18 +164,11 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             return;
           }
 
-          let input: unknown;
-          try {
-            input = JSON.parse(frame.value);
-          } catch {
-            closeSocket(socket, 4400, "Invalid message");
-            return;
-          }
-
-          let message;
-          try {
-            message = parseRunnerClientMessage(input);
-          } catch {
+          const [message, messageError] = trySync(
+            () => parseRunnerClientMessage(JSON.parse(frame.value)),
+            (cause) => new InvalidRunnerMessageError(cause),
+          );
+          if (messageError !== undefined) {
             closeSocket(socket, 4400, "Invalid message");
             return;
           }
@@ -318,8 +316,12 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
           }
 
           closeSocket(socket, 4400, "Unexpected message");
-        } catch {
+        }),
+        (cause) => new RunnerConnectionHandlerError(cause),
+      ).then(([, handlerError]) => {
+        if (handlerError !== undefined) {
           closeSocket(socket, 1011, "Connection handler failed");
+          return;
         }
       });
     };
@@ -434,13 +436,16 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         sessionId: input.sessionId,
         payload: input.payload,
       };
-      try {
-        connection.socket.send(JSON.stringify(command));
-      } catch {
+      const [, sendError] = trySync(
+        () => connection.socket.send(JSON.stringify(command)),
+        (cause) => new RunnerWebSocketError("Runner command delivery failed.", cause),
+      );
+      if (sendError !== undefined) {
         this.#provisionCommands.settle(commandId, {
           status: "unavailable",
           message: "Runner disconnected before provisioning could be sent.",
         });
+        return;
       }
     });
   }
@@ -519,10 +524,14 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       return;
     }
 
-    const reconciled = await this.#repository.reconcileSessionSnapshotEntries(
+    const [reconciled, persistenceError] = await this.#repository.reconcileSessionSnapshotEntries(
       connection.runner.userId,
       reconciliation.sessions,
     );
+    if (persistenceError !== undefined) {
+      closeSocket(connection.socket, 1011, "Session catalog persistence failed");
+      return;
+    }
     if (!this.#isActive(connection)) return;
     if (reconciled.rejected.length > 0) {
       closeSocket(connection.socket, 4400, "Session reconciliation was rejected");
@@ -573,15 +582,11 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     }
 
     if (pending.mode === "create") {
-      let accepted = false;
-      try {
-        const reconciled = await this.#repository.reconcileSessionSnapshotEntries(
-          connection.runner.userId,
-          [message.payload.session],
-        );
-        accepted = reconciled.rejected.length === 0 &&
-          reconciled.acceptedSessionIds.includes(message.sessionId);
-      } catch {
+      const [reconciled, persistenceError] = await this.#repository.reconcileSessionSnapshotEntries(
+        connection.runner.userId,
+        [message.payload.session],
+      );
+      if (persistenceError !== undefined) {
         this.#provisionCommands.settle(message.correlationId, {
           status: "unavailable",
           message: "The runner accepted the session, but its catalog entry could not be created.",
@@ -589,6 +594,8 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         closeSocket(connection.socket, 1011, "Session catalog persistence failed");
         return;
       }
+      const accepted = reconciled.rejected.length === 0 &&
+        reconciled.acceptedSessionIds.includes(message.sessionId);
       if (
         this.#provisionCommands.get(message.correlationId) !== pending ||
         !this.#isActive(connection)
@@ -637,9 +644,34 @@ function runnerKey(userId: string, runnerId: string): string {
 }
 
 function closeSocket(socket: WebSocket, code: number, reason: string): void {
-  try {
-    socket.close(code, reason);
-  } catch {
-    // The peer may have closed while an asynchronous authentication lookup was in flight.
+  // The peer may have closed while an asynchronous authentication lookup was in flight.
+  trySync(() => socket.close(code, reason), () => false);
+}
+
+class InvalidRunnerMessageError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("The runner sent an invalid protocol message.", { cause });
+    this.name = "InvalidRunnerMessageError";
+  }
+}
+
+class RunnerConnectionHandlerError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("Runner connection message handling failed.", { cause });
+    this.name = "RunnerConnectionHandlerError";
+  }
+}
+
+class RunnerWebSocketError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "RunnerWebSocketError";
+  }
+}
+
+class RunnerGatewayConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunnerGatewayConfigurationError";
   }
 }

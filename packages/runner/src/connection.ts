@@ -8,7 +8,6 @@ import {
   RUNNER_RECONCILE_START_MESSAGE_TYPE,
   type RunnerCapacity,
   type RunnerClientMessage,
-  type RunnerServerMessage,
   type RunnerSessionSnapshot,
   SESSION_EVENT_MESSAGE_TYPE,
   SESSION_PROVISION_MESSAGE_TYPE,
@@ -17,8 +16,9 @@ import {
 } from "@openorb/protocol";
 import { parseSafe, string } from "@remix-run/data-schema";
 import { delay } from "@std/async/delay";
+import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
-import type { SessionEventRelay } from "@/src/session-event-relay.ts";
+import { type SessionEventRelay, SessionEventRelayError } from "@/src/session-event-relay.ts";
 
 export const RUNNER_HEARTBEAT_INTERVAL_MS = 10_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -30,7 +30,7 @@ export interface MaintainRunnerConnectionOptions {
   runnerToken: string;
   signal: AbortSignal;
   getCapacity: () => Promise<RunnerCapacity>;
-  getSessionSnapshot: () => Promise<RunnerSessionSnapshot[]>;
+  getSessionSnapshot: () => Promise<Result<RunnerSessionSnapshot[], Error>>;
   sessionEventRelay?: SessionEventRelay;
   handshakeTimeoutMs?: number;
   random?: () => number;
@@ -40,32 +40,45 @@ export interface MaintainRunnerConnectionOptions {
   onProvisionCommand?: (
     command: SessionProvisionCommand,
     send: (message: RunnerClientMessage) => void,
-  ) => Promise<void>;
+  ) => Promise<Result<void, Error>>;
 }
 
 export async function maintainRunnerConnection(
   options: MaintainRunnerConnectionOptions,
-): Promise<void> {
+): Promise<Result<void, RunnerConnectionError>> {
   const random = options.random ?? Math.random;
   const sleep = options.sleep ?? delay;
   let attempt = 0;
 
   while (!options.signal.aborted) {
-    const outcome = await connectOnce(options);
-    if (options.signal.aborted) return;
+    const [outcome, connectionError] = await tryAsync(
+      connectOnce(options),
+      (cause) => new RunnerConnectionError("Runner connection attempt failed.", cause),
+    );
+    if (connectionError !== undefined) return err(connectionError);
+    if (options.signal.aborted) return ok(undefined);
     if (outcome === "unauthorized") {
-      throw new Error("Runner authentication was rejected. Enroll the runner again.");
+      return err(
+        new RunnerConnectionError(
+          "Runner authentication was rejected. Enroll the runner again.",
+          undefined,
+        ),
+      );
     }
     if (outcome === "connected") attempt = 0;
 
     const reconnectDelay = reconnectDelayMs(attempt++, random);
     options.onReconnectScheduled?.(reconnectDelay);
-    try {
-      await sleep(reconnectDelay, { signal: options.signal });
-    } catch (error) {
-      if (!options.signal.aborted) throw error;
+    const [, sleepError] = await tryAsync(
+      Promise.resolve().then(() => sleep(reconnectDelay, { signal: options.signal })),
+      (cause) => new RunnerConnectionError("Runner reconnect delay failed.", cause),
+    );
+    if (sleepError !== undefined) {
+      if (!options.signal.aborted) return err(sleepError);
+      return ok(undefined);
     }
   }
+  return ok(undefined);
 }
 
 export function reconnectDelayMs(attempt: number, random: () => number = Math.random): number {
@@ -134,10 +147,11 @@ async function connectOnce(
         socket.close(4400, "Invalid server message");
         return;
       }
-      let message: RunnerServerMessage;
-      try {
-        message = parseRunnerServerMessage(JSON.parse(frame.value));
-      } catch {
+      const [message, messageError] = trySync(
+        () => parseRunnerServerMessage(JSON.parse(frame.value)),
+        () => new Error("Invalid server message"),
+      );
+      if (messageError !== undefined) {
         socket.close(4400, "Invalid server message");
         return;
       }
@@ -149,8 +163,10 @@ async function connectOnce(
           socket.close(4400, "Unexpected server message");
           return;
         }
-        void options.onProvisionCommand(message, send).catch(() => {
-          closeSocket(socket, 1011, "Runner provisioning command failed");
+        void options.onProvisionCommand(message, send).then(([, commandError]) => {
+          if (commandError !== undefined) {
+            closeSocket(socket, 1011, "Runner provisioning command failed");
+          }
         });
         return;
       }
@@ -164,55 +180,90 @@ async function connectOnce(
       }
       connected = true;
       handshakeDeadline.removeEventListener("abort", handshakeTimedOut);
-      const sendSnapshot = async () => {
-        const sessions = await options.getSessionSnapshot();
-        if (settled || socket.readyState !== WebSocket.OPEN) return false;
+      const sendSnapshot = async (): Promise<Result<boolean, Error>> => {
+        const [sessions, snapshotError] = await options.getSessionSnapshot();
+        if (snapshotError !== undefined) return err(snapshotError);
+        if (settled || socket.readyState !== WebSocket.OPEN) return ok(false);
 
-        const snapshotId = crypto.randomUUID();
-        socket.send(JSON.stringify(reconcileStartMessage(snapshotId)));
-        let sequence = 0;
-        for (
-          let index = 0;
-          index < sessions.length;
-          index += RUNNER_RECONCILE_CHUNK_SESSION_LIMIT
-        ) {
-          const chunk = sessions.slice(index, index + RUNNER_RECONCILE_CHUNK_SESSION_LIMIT);
-          socket.send(JSON.stringify(reconcileChunkMessage(snapshotId, sequence++, chunk)));
-        }
-        socket.send(
-          JSON.stringify(reconcileCompleteMessage(snapshotId, sequence, sessions.length)),
+        const [sent, sendError] = trySync(
+          () => {
+            const snapshotId = crypto.randomUUID();
+            socket.send(JSON.stringify(reconcileStartMessage(snapshotId)));
+            let sequence = 0;
+            for (
+              let index = 0;
+              index < sessions.length;
+              index += RUNNER_RECONCILE_CHUNK_SESSION_LIMIT
+            ) {
+              const chunk = sessions.slice(index, index + RUNNER_RECONCILE_CHUNK_SESSION_LIMIT);
+              socket.send(JSON.stringify(reconcileChunkMessage(snapshotId, sequence++, chunk)));
+            }
+            socket.send(
+              JSON.stringify(reconcileCompleteMessage(snapshotId, sequence, sessions.length)),
+            );
+            return snapshotId;
+          },
+          (cause) => new RunnerConnectionError("Runner session inventory delivery failed.", cause),
         );
+        if (sendError !== undefined) return err(sendError);
         if (options.sessionEventRelay) {
           for (const session of sessions) {
-            await options.sessionEventRelay.replayEvents(session.id, (event) => {
-              if (settled || socket.readyState !== WebSocket.OPEN) return;
-              socket.send(
-                JSON.stringify(replayedSessionEventMessage(session.id, snapshotId, event)),
+            const [, replayError] = await options.sessionEventRelay.replayEvents(
+              session.id,
+              (event) => {
+                if (settled || socket.readyState !== WebSocket.OPEN) return;
+                socket.send(
+                  JSON.stringify(replayedSessionEventMessage(session.id, sent, event)),
+                );
+              },
+            );
+            if (replayError !== undefined) {
+              return err(
+                new RunnerConnectionError("Runner session event replay failed.", replayError),
               );
-            });
-            if (settled || socket.readyState !== WebSocket.OPEN) return false;
+            }
+            if (settled || socket.readyState !== WebSocket.OPEN) return ok(false);
           }
         }
-        return true;
+        return ok(true);
       };
       const sendHeartbeat = async () => {
         if (settled || heartbeatInFlight || socket.readyState !== WebSocket.OPEN) return;
         heartbeatInFlight = true;
-        try {
-          const capacity = await options.getCapacity();
-          if (!settled && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify(heartbeatMessage(capacity)));
-          }
-        } catch {
-          closeSocket(socket, 1011, "Runner capacity report failed");
-        } finally {
+        const [capacity, capacityError] = await tryAsync(
+          Promise.resolve().then(() => options.getCapacity()),
+          (cause) => new RunnerConnectionError("Runner capacity report failed.", cause),
+        );
+        if (capacityError !== undefined) {
+          closeSocket(socket, 1011, capacityError.message);
           heartbeatInFlight = false;
+          return;
         }
+        if (!settled && socket.readyState === WebSocket.OPEN) {
+          const [, sendError] = trySync(
+            () => socket.send(JSON.stringify(heartbeatMessage(capacity))),
+            (cause) => new RunnerConnectionError("Runner heartbeat delivery failed.", cause),
+          );
+          if (sendError !== undefined) {
+            closeSocket(socket, 1011, sendError.message);
+            heartbeatInFlight = false;
+            return;
+          }
+        }
+        heartbeatInFlight = false;
       };
       void (async () => {
-        const detach = options.sessionEventRelay
+        const [detach, inventoryError] = options.sessionEventRelay
           ? await options.sessionEventRelay.attach(send, sendSnapshot)
-          : await sendSnapshot().then((sent) => sent ? () => {} : undefined);
+          : await sendSnapshot().then(([sent, error]) =>
+            error === undefined
+              ? ok(sent ? () => {} : undefined)
+              : err(new SessionEventRelayError("Runner session inventory failed.", error))
+          );
+        if (inventoryError !== undefined) {
+          closeSocket(socket, 1011, "Runner session inventory failed");
+          return;
+        }
         if (!detach || settled || socket.readyState !== WebSocket.OPEN) {
           detach?.();
           return;
@@ -223,9 +274,7 @@ async function connectOnce(
           void sendHeartbeat();
         }, RUNNER_HEARTBEAT_INTERVAL_MS);
         options.onConnected?.();
-      })().catch(() => {
-        closeSocket(socket, 1011, "Runner session inventory failed");
-      });
+      })();
     });
     socket.addEventListener("close", (event) => {
       finish(event.code === 4401 ? "unauthorized" : connected ? "connected" : "disconnected");
@@ -306,9 +355,14 @@ function replayedSessionEventMessage(
 }
 
 function closeSocket(socket: WebSocket, code?: number, reason?: string): void {
-  try {
+  trySync(() => {
     code === undefined ? socket.close() : socket.close(code, reason);
-  } catch {
-    // Closing a WebSocket that is still connecting may fail; the attempt is still settled locally.
+  }, () => undefined);
+}
+
+export class RunnerConnectionError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "RunnerConnectionError";
   }
 }

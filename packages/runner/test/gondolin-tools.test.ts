@@ -5,6 +5,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
+import type { Result } from "@openorb/result";
 
 import {
   createOpenOrbGondolinToolRuntime,
@@ -57,44 +58,46 @@ Deno.test({
     const temporaryDirectory = await Deno.makeTempDir();
     const workspacePath = `${temporaryDirectory}/workspace`;
     await Deno.mkdir(workspacePath);
-    const runtime = await createOpenOrbGondolinToolRuntime({
-      workspacePath,
-      developerImage: await installLocalDeveloperImage(temporaryDirectory),
-      sessionLabel: "openorb output observer failure test",
-    });
+    const runtime = success(
+      await createOpenOrbGondolinToolRuntime({
+        workspacePath,
+        developerImage: await installLocalDeveloperImage(temporaryDirectory),
+        sessionLabel: "openorb output observer failure test",
+      }),
+    );
 
     try {
       let observerCalls = 0;
-      await assertRejects(
-        () =>
-          runtime.run(
-            [
-              "/bin/sh",
-              "-lc",
-              "printf first; sleep 0.1; printf second; printf retained > /tmp/openorb-retained-vm",
-            ],
-            {
-              onOutput() {
-                observerCalls++;
-                throw new Error("event persistence failed");
-              },
+      const observerError = failure(
+        await runtime.run(
+          [
+            "/bin/sh",
+            "-lc",
+            "printf first; sleep 0.1; printf second; printf retained > /tmp/openorb-retained-vm",
+          ],
+          {
+            onOutput() {
+              observerCalls++;
+              throw new Error("event persistence failed");
             },
-          ),
-        Error,
-        "event persistence failed",
+          },
+        ),
       );
+      assertStringIncludes(String(observerError.cause), "event persistence failed");
       assertEquals(observerCalls, 1);
 
       let output = "";
-      const result = await runtime.run(["/bin/cat", "/tmp/openorb-retained-vm"], {
-        onOutput(chunk) {
-          output += chunk.text;
-        },
-      });
+      const result = success(
+        await runtime.run(["/bin/cat", "/tmp/openorb-retained-vm"], {
+          onOutput(chunk) {
+            output += chunk.text;
+          },
+        }),
+      );
       assertEquals(result.exitCode, 0);
       assertEquals(output, "retained");
     } finally {
-      await runtime.close();
+      success(await runtime.close());
       await Deno.remove(temporaryDirectory, { recursive: true });
     }
   },
@@ -116,11 +119,13 @@ Deno.test({
     Deno.env.set("OPENORB_HOST_PROCESS_MARKER", hostProcessMarker);
 
     const developerImage = await installLocalDeveloperImage(temporaryDirectory);
-    const runtime = await createOpenOrbGondolinToolRuntime({
-      workspacePath,
-      developerImage,
-      sessionLabel: "openorb OO-008 integration test",
-    });
+    const runtime = success(
+      await createOpenOrbGondolinToolRuntime({
+        workspacePath,
+        developerImage,
+        sessionLabel: "openorb OO-008 integration test",
+      }),
+    );
     const pi = await OpenOrbPiSessionFactory.create({
       runnerSessionDirectory: `${temporaryDirectory}/pi-sessions`,
       runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
@@ -296,10 +301,23 @@ Deno.test({
       );
     } finally {
       pi.session.dispose();
-      await runtime.close();
+      success(await runtime.close());
       if (originalHostMarker === undefined) Deno.env.delete("OPENORB_HOST_PROCESS_MARKER");
       else Deno.env.set("OPENORB_HOST_PROCESS_MARKER", originalHostMarker);
       await Deno.remove(temporaryDirectory, { recursive: true });
     }
   },
 });
+
+function success<T, E>(result: Result<T, E>): T {
+  const [value, error] = result;
+  if (error !== undefined) throw error;
+  // SAFETY: The Result success variant always contains T when the error slot is undefined.
+  return value as T;
+}
+
+function failure<T, E>(result: Result<T, E>): E {
+  const [, error] = result;
+  if (error === undefined) throw new Error("Expected operation to fail.");
+  return error;
+}

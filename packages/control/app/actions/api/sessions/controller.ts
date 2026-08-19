@@ -4,6 +4,7 @@ import { parseSafe } from "remix/data-schema";
 
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { type SessionEventPayload, sessionIdSchema } from "@openorb/protocol";
+import { trySync } from "@openorb/result";
 import { routes } from "@/app/routes.ts";
 
 const KEEPALIVE_INTERVAL_MS = 15_000;
@@ -39,18 +40,18 @@ export default createController(routes.api.sessions, {
             if (keepalive !== undefined) clearInterval(keepalive);
             unsubscribe();
             context.request.signal.removeEventListener("abort", abort);
-            try {
-              controller.close();
-            } catch {
-              // A peer may cancel immediately before the abort signal is delivered.
-            }
+            // A peer may cancel immediately before the abort signal is delivered.
+            trySync(() => controller.close(), () => undefined);
           };
           const enqueue = (event: SessionEventPayload) => {
             if (closed) return;
-            try {
-              controller.enqueue(encodeEvent(event));
-            } catch {
+            const [, enqueueError] = trySync(
+              () => controller.enqueue(encodeEvent(event)),
+              () => true,
+            );
+            if (enqueueError !== undefined) {
               close();
+              return;
             }
           };
           const subscription = context.services.runnerConnections.subscribeToSessionEvents(
@@ -63,10 +64,13 @@ export default createController(routes.api.sessions, {
           for (const event of subscription.events) enqueue(event);
           keepalive = setInterval(() => {
             if (closed) return;
-            try {
-              controller.enqueue(encoder.encode(": keepalive\n\n"));
-            } catch {
+            const [, enqueueError] = trySync(
+              () => controller.enqueue(encoder.encode(": keepalive\n\n")),
+              () => true,
+            );
+            if (enqueueError !== undefined) {
               close();
+              return;
             }
           }, KEEPALIVE_INTERVAL_MS);
           abort = close;

@@ -9,6 +9,7 @@ import {
   verifyAssets,
 } from "@earendil-works/gondolin";
 import { TarStream, type TarStreamInput } from "@std/tar";
+import { err, ok, type Result, tryAsync } from "@openorb/result";
 
 import {
   type DeveloperImageManifest,
@@ -45,9 +46,15 @@ if (import.meta.main) {
     );
   }
 
-  await Deno.remove(outputDirectory, { recursive: true }).catch((error) => {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-  });
+  const [, removeError] = await tryAsync(
+    Deno.remove(outputDirectory, { recursive: true }),
+    (cause) =>
+      new DeveloperImageBuildError(
+        `The previous developer image output could not be removed: ${outputDirectory}.`,
+        cause,
+      ),
+  );
+  if (removeError && !(removeError.cause instanceof Deno.errors.NotFound)) throw removeError;
   const result = await buildAssets(config, {
     outputDir: outputDirectory,
     configDir: dirname(configPath),
@@ -60,7 +67,8 @@ if (import.meta.main) {
 
   const archiveName = developerImageArchiveName(architecture);
   const archivePath = join(repositoryRoot, "dist", "developer-image", archiveName);
-  await createArchive(outputDirectory, archivePath);
+  const [, archiveError] = await createArchive(outputDirectory, archivePath);
+  if (archiveError !== undefined) throw archiveError;
   const archive = await inspectFile(archivePath);
   const manifestFile = await inspectFile(result.manifestPath);
   const metadata = {
@@ -100,23 +108,40 @@ function requiredBuildId(manifest: DeveloperImageManifest): string {
   return manifest.buildId;
 }
 
-async function createArchive(sourceDirectory: string, destination: string): Promise<void> {
-  await Deno.mkdir(dirname(destination), { recursive: true });
-  const output = await Deno.open(destination, {
-    create: true,
-    truncate: true,
-    write: true,
-    mode: 0o600,
-  });
-  const entries = ReadableStream.from<TarStreamInput>(archiveEntries(sourceDirectory));
-  try {
-    await entries
-      .pipeThrough(new TarStream())
-      .pipeThrough(new CompressionStream("gzip"))
-      .pipeTo(output.writable);
-  } catch (error) {
-    await Deno.remove(destination).catch(() => undefined);
-    throw error;
+async function createArchive(
+  sourceDirectory: string,
+  destination: string,
+): Promise<Result<void, DeveloperImageBuildError>> {
+  const [, archiveError] = await tryAsync(
+    (async () => {
+      await Deno.mkdir(dirname(destination), { recursive: true });
+      const output = await Deno.open(destination, {
+        create: true,
+        truncate: true,
+        write: true,
+        mode: 0o600,
+      });
+      const entries = ReadableStream.from<TarStreamInput>(archiveEntries(sourceDirectory));
+      await entries
+        .pipeThrough(new TarStream())
+        .pipeThrough(new CompressionStream("gzip"))
+        .pipeTo(output.writable);
+    })(),
+    (cause) =>
+      new DeveloperImageBuildError(
+        `The developer image archive could not be created: ${destination}.`,
+        cause,
+      ),
+  );
+  if (!archiveError) return ok(undefined);
+  await tryAsync(Deno.remove(destination), () => undefined);
+  return err(archiveError);
+}
+
+class DeveloperImageBuildError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "DeveloperImageBuildError";
   }
 }
 
@@ -139,18 +164,14 @@ async function* archiveEntries(sourceDirectory: string): AsyncGenerator<TarStrea
 
 async function inspectFile(path: string): Promise<{ sizeBytes: number; sha256: string }> {
   const hash = createHash("sha256");
-  const file = await Deno.open(path, { read: true });
+  using file = await Deno.open(path, { read: true });
   const buffer = new Uint8Array(1024 * 1024);
   let sizeBytes = 0;
-  try {
-    while (true) {
-      const bytesRead = await file.read(buffer);
-      if (bytesRead === null) break;
-      sizeBytes += bytesRead;
-      hash.update(buffer.subarray(0, bytesRead));
-    }
-  } finally {
-    file.close();
+  while (true) {
+    const bytesRead = await file.read(buffer);
+    if (bytesRead === null) break;
+    sizeBytes += bytesRead;
+    hash.update(buffer.subarray(0, bytesRead));
   }
   return { sizeBytes, sha256: hash.digest("hex") };
 }

@@ -1,13 +1,18 @@
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import type { Result } from "@openorb/result";
 
-import { createOpenOrbGitHubVmOptions } from "@/src/github-mediation.ts";
+import {
+  createOpenOrbGitHubVmOptions,
+  type OpenOrbGitHubMediationOptions,
+  type OpenOrbGitHubVmOptions,
+} from "@/src/github-mediation.ts";
 
 const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
 const TOKEN = "github-test-token-4e63d197c57a";
 
 Deno.test("creates a fresh guest placeholder and a scoped Git credential helper", () => {
-  const first = createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
-  const second = createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
+  const first = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
+  const second = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
   const firstEnvironment = environmentOf(first.env);
   const secondEnvironment = environmentOf(second.env);
   const placeholder = firstEnvironment.GH_TOKEN;
@@ -36,7 +41,7 @@ Deno.test("creates a fresh guest placeholder and a scoped Git credential helper"
 });
 
 Deno.test("allows only the configured GitHub repository smart-HTTP and metadata paths", async () => {
-  const options = createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
+  const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
 
   for (
     const [method, url] of [
@@ -73,7 +78,7 @@ Deno.test("allows only the configured GitHub repository smart-HTTP and metadata 
 });
 
 Deno.test("substitutes the placeholder only in allowed GitHub authorization headers", async () => {
-  const options = createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
+  const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
   const environment = environmentOf(options.env);
   const placeholder = environment.GH_TOKEN;
   assert(placeholder);
@@ -103,7 +108,7 @@ Deno.test("substitutes the placeholder only in allowed GitHub authorization head
 });
 
 Deno.test("denies redirect targets outside the configured repository endpoint", async () => {
-  const options = createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
+  const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
   for (
     const target of [
       "https://github.com/octocat/Hello-World.git/info/refs?service=git-upload-pack",
@@ -120,7 +125,7 @@ Deno.test("denies redirect targets outside the configured repository endpoint", 
 });
 
 Deno.test("supports an unauthenticated public policy without exposing GH_TOKEN", () => {
-  const options = createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL });
+  const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL });
   const environment = environmentOf(options.env);
   assertEquals(environment.GH_TOKEN, undefined);
   assertEquals(environment.GIT_CONFIG_COUNT, "2");
@@ -146,21 +151,39 @@ Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
       "ssh://git@github.com/meln1k/openorb.git",
     ]
   ) {
-    assertThrows(
-      () => createOpenOrbGitHubVmOptions({ repositoryUrl }),
-      Error,
+    const repositoryError = failure(
+      createOpenOrbGitHubVmOptions({ repositoryUrl }),
+    );
+    assertStringIncludes(
+      repositoryError.message,
       "canonical https://github.com/OWNER/REPOSITORY.git",
     );
   }
 
   for (const token of ["", " token", "token ", "x".repeat(4097)]) {
-    assertThrows(
-      () => createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL, token }),
-      Error,
-      "non-empty trimmed value",
+    const tokenError = failure(
+      createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL, token }),
     );
+    assertStringIncludes(tokenError.message, "non-empty trimmed value");
   }
 });
+
+function githubVmOptions(options: OpenOrbGitHubMediationOptions): OpenOrbGitHubVmOptions {
+  return success(createOpenOrbGitHubVmOptions(options));
+}
+
+function success<T, E>(result: Result<T, E>): T {
+  const [value, error] = result;
+  if (error !== undefined) throw error;
+  // SAFETY: The Result success variant always contains T when the error slot is undefined.
+  return value as T;
+}
+
+function failure<T, E>(result: Result<T, E>): E {
+  const [, error] = result;
+  if (error === undefined) throw new Error("Expected operation to fail.");
+  return error;
+}
 
 function environmentOf(
   environment: string[] | Record<string, string> | undefined,
@@ -170,7 +193,7 @@ function environmentOf(
 }
 
 async function requestAllowed(
-  options: ReturnType<typeof createOpenOrbGitHubVmOptions>,
+  options: OpenOrbGitHubVmOptions,
   method: string,
   url: string,
 ): Promise<boolean> {

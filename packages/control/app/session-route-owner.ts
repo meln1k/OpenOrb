@@ -3,6 +3,7 @@ import {
   runnerSessionStateForProvisioningStage,
   type SessionEventPayload,
 } from "@openorb/protocol";
+import { trySync } from "@openorb/result";
 
 const MAX_CACHED_SESSION_EVENTS = 1_024;
 
@@ -100,11 +101,8 @@ export class SessionRouteOwner<Connection extends SessionRouteConnection> {
       };
     }
     for (const listener of channel.listeners) {
-      try {
-        listener(event);
-      } catch {
-        // A disconnected browser stream must not disrupt the runner connection.
-      }
+      // A disconnected browser stream must not disrupt the runner connection.
+      trySync(() => listener(event), () => undefined);
     }
     return true;
   }

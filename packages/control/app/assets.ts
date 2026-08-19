@@ -11,6 +11,7 @@ export const assetServer = createAssetServer({
     "app/*path": "packages/control/app/*path",
     "npm/*path": "node_modules/*path",
     "protocol/*path": "packages/protocol/src/*path",
+    "result/*path": "packages/result/src/*path",
   },
   allowFiles: [
     "packages/control/app/actions/settings/{git-author,github-credential,provider-secrets,runners,settings-shared,settings-tabs}.{ts,tsx}",
@@ -18,6 +19,7 @@ export const assetServer = createAssetServer({
     "packages/control/app/ui/components/**",
     "packages/control/app/ui/responsive.ts",
     "packages/protocol/src/runner-session-events.ts",
+    "packages/result/src/index.ts",
     "node_modules/.deno/@remix-run+data-schema@0.3.0/node_modules/@remix-run/data-schema/dist/**/*.js",
     "node_modules/.deno/lucide@1.31.0/node_modules/lucide/dist/esm/icons/*.mjs",
     "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/data-schema.js",

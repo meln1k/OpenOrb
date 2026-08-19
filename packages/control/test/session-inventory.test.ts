@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
+import { ok } from "@openorb/result";
 
 import type { RunnerSessionSnapshot } from "@openorb/protocol";
 import { RunnerConnectionGateway } from "@/app/runner-connection-gateway.ts";
@@ -231,11 +232,11 @@ Deno.test("concurrent same-user snapshots cannot take over an active runner rout
       reconciliationCalls++;
       if (reconciliationCalls === 2) bothReconciliationsStarted();
       await (entries.length === 1 ? firstReconciliationPending : secondReconciliationPending);
-      return {
+      return ok({
         acceptedSessionIds: entries.map((entry) => entry.id),
         tombstonedSessionIds: [],
         rejected: [],
-      };
+      });
     },
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));

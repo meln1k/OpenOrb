@@ -6,10 +6,17 @@ const publicOrigin = publicUrl ? getPublicOrigin(publicUrl) : undefined;
 function getPublicOrigin(publicUrl: string) {
   const url = new URL(publicUrl);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("PUBLIC_URL must use http or https.");
+    throw new PublicUrlConfigurationError("PUBLIC_URL must use http or https.");
   }
 
   return url.origin;
+}
+
+class PublicUrlConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PublicUrlConfigurationError";
+  }
 }
 
 export function csrf() {

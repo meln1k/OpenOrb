@@ -1,4 +1,5 @@
 import { decryptAesGcm, encryptAesGcm } from "@std/crypto/aes-gcm";
+import { err, ok, type Result, tryAsync } from "@openorb/result";
 
 import type { MasterKey } from "@/app/utils/master-key.ts";
 
@@ -51,17 +52,16 @@ export async function decryptSecret(
   masterKey: MasterKey,
   encrypted: EncryptedSecret,
   metadata: SecretMetadata,
-): Promise<string> {
+): Promise<Result<string, SecretDecryptionError>> {
   const additionalData = secretAad(metadata, encrypted.keyVersion);
-  let plaintext: Uint8Array;
-  try {
-    plaintext = await decryptAesGcm(masterKey.key, encrypted.ciphertext, {
+  const [plaintext, decryptionError] = await tryAsync(
+    decryptAesGcm(masterKey.key, encrypted.ciphertext, {
       additionalData,
-    });
-  } catch {
-    throw new SecretDecryptionError();
-  }
-  return new TextDecoder().decode(plaintext);
+    }),
+    () => new SecretDecryptionError(),
+  );
+  if (decryptionError !== undefined) return err(decryptionError);
+  return ok(new TextDecoder().decode(plaintext));
 }
 
 function secretAad(metadata: SecretMetadata, keyVersion: number): Uint8Array<ArrayBuffer> {

@@ -1,6 +1,8 @@
-import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import type { Result } from "@openorb/result";
 import { join } from "node:path";
 
+import type { SessionProvisioningEvent } from "@openorb/protocol";
 import { RunnerSessionStore } from "@/src/session-store.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
@@ -16,15 +18,17 @@ Deno.test("creates private runner session files and atomically reloads metadata"
   try {
     const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
     const prompt = `  inspect\n\tthis   ${"😀".repeat(205)}  `;
-    const metadata = await store.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: REPOSITORY_URL,
-      ref: REF,
-      branchName: BRANCH_NAME,
-      initialPrompt: prompt,
-      createdAt: CREATED_AT,
-    });
+    const metadata = success(
+      await store.createSession({
+        id: SESSION_ID,
+        projectId: PROJECT_ID,
+        repositoryUrl: REPOSITORY_URL,
+        ref: REF,
+        branchName: BRANCH_NAME,
+        initialPrompt: prompt,
+        createdAt: CREATED_AT,
+      }),
+    );
     assertEquals(metadata.state, "created");
 
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
@@ -43,11 +47,11 @@ Deno.test("creates private runner session files and atomically reloads metadata"
 
     await Deno.writeTextFile(join(sessionPath, "metadata.json.interrupted.tmp"), "{");
     const restarted = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
-    assertEquals(await restarted.readMetadata(SESSION_ID), metadata);
-    assertEquals((await restarted.updateSessionState(SESSION_ID, "error")).state, "error");
-    assertEquals((await restarted.readMetadata(SESSION_ID)).state, "error");
+    assertEquals(success(await restarted.readMetadata(SESSION_ID)), metadata);
+    assertEquals(success(await restarted.updateSessionState(SESSION_ID, "error")).state, "error");
+    assertEquals(success(await restarted.readMetadata(SESSION_ID)).state, "error");
 
-    const inventory = await restarted.loadInventory();
+    const inventory = success(await restarted.loadInventory());
     assertEquals(inventory.errors, []);
     assertEquals(inventory.sessions.length, 1);
     assertEquals(inventory.sessions[0], {
@@ -68,18 +72,20 @@ Deno.test("appends monotonic events and exposes a corrupt final append without g
   const workingDirectory = await Deno.makeTempDir();
   try {
     const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
-    await store.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: REPOSITORY_URL,
-      ref: REF,
-      branchName: BRANCH_NAME,
-      initialPrompt: "Inspect the repository",
-      createdAt: CREATED_AT,
-    });
+    success(
+      await store.createSession({
+        id: SESSION_ID,
+        projectId: PROJECT_ID,
+        repositoryUrl: REPOSITORY_URL,
+        ref: REF,
+        branchName: BRANCH_NAME,
+        initialPrompt: "Inspect the repository",
+        createdAt: CREATED_AT,
+      }),
+    );
 
     assertEquals(
-      await Promise.all([
+      (await Promise.all([
         store.appendEvent(SESSION_ID, {
           type: "session.state",
           stage: "created",
@@ -90,11 +96,11 @@ Deno.test("appends monotonic events and exposes a corrupt final append without g
           stream: "stdout",
           text: "starting",
         }),
-      ]),
+      ])).map(success),
       [1, 2],
     );
     const restarted = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
-    assertEquals(await restarted.readEvents(SESSION_ID), [
+    assertEquals(success(await restarted.readEvents(SESSION_ID)), [
       {
         cursor: 1,
         event: { type: "session.state", stage: "created", checkoutState: "pending" },
@@ -110,26 +116,68 @@ Deno.test("appends monotonic events and exposes a corrupt final append without g
       '{"cursor":3,"event":{"type":"session.state"}',
       { append: true },
     );
-    const inventory = await restarted.loadInventory();
+    const inventory = success(await restarted.loadInventory());
     assertEquals(inventory.sessions[0]?.state, "error");
     assertEquals(inventory.sessions[0]?.lastEventCursor, 2);
     assertEquals(inventory.errors.length, 1);
     assertStringIncludes(inventory.errors[0]!.message, "final append is incomplete");
-    await assertRejects(
-      () =>
-        restarted.appendEvent(SESSION_ID, {
-          type: "session.state",
-          stage: "ready",
-          checkoutState: "available",
-        }),
-      Error,
-      "event log is corrupt",
+    const [, appendError] = await restarted.appendEvent(SESSION_ID, {
+      type: "session.state",
+      stage: "ready",
+      checkoutState: "available",
+    });
+    assertEquals(appendError?.name, "RunnerSessionStoreError");
+    assertEquals(appendError?.operation, "append-event");
+    assertStringIncludes(appendError?.message ?? "", "event log is corrupt");
+    const [, readError] = await restarted.readEvents(SESSION_ID);
+    assertEquals(readError?.name, "RunnerSessionStoreError");
+    assertEquals(readError?.operation, "read-events");
+    assertStringIncludes(readError?.message ?? "", "event log is corrupt");
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("continues serialized appends after a failed prior append", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
+    success(
+      await store.createSession({
+        id: SESSION_ID,
+        projectId: PROJECT_ID,
+        repositoryUrl: REPOSITORY_URL,
+        ref: REF,
+        branchName: BRANCH_NAME,
+        initialPrompt: "Inspect the repository",
+        createdAt: CREATED_AT,
+      }),
     );
-    await assertRejects(
-      () => restarted.readEvents(SESSION_ID),
-      Error,
-      "event log is corrupt",
-    );
+
+    // SAFETY: This intentionally bypasses the event type to exercise durable schema rejection.
+    const failed = store.appendEvent(SESSION_ID, {} as SessionProvisioningEvent);
+    const succeeded = store.appendEvent(SESSION_ID, {
+      type: "provisioning.log",
+      stream: "stdout",
+      text: "continued",
+    });
+    assertEquals((await failed)[1]?.operation, "append-event");
+    assertEquals(success(await succeeded), 1);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("returns inventory-root access failures as the outer Result error", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(join(workingDirectory, "sessions"), "not a directory");
+    const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
+    const [inventory, error] = await store.loadInventory();
+    assertEquals(inventory, undefined);
+    assertEquals(error?.name, "RunnerSessionStoreError");
+    assertEquals(error?.operation, "load-inventory");
+    assertStringIncludes(error?.message ?? "", "inventory root");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -137,4 +185,11 @@ Deno.test("appends monotonic events and exposes a corrupt final append without g
 
 function assertPrivateMode(mode: number | null, expected: number): void {
   if (Deno.build.os !== "windows" && mode !== null) assertEquals(mode & 0o777, expected);
+}
+
+function success<T, E>(result: Result<T, E>): T {
+  const [value, error] = result;
+  assertEquals(error, undefined);
+  assert(value !== undefined);
+  return value;
 }

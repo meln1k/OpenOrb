@@ -312,7 +312,7 @@ Deno.test("the ticket down migration removes the encrypted GitHub token", async 
   const store = await createTestStore();
   const connection = await store.pool.connect();
   try {
-    assert(await store.createAdministrator(PASSWORD));
+    assertEquals(await store.createAdministrator(PASSWORD), [true, undefined]);
     const user = await store.verifyAdministratorPassword(PASSWORD);
     assert(user);
     await store.saveGitHubCredential(user.id, FIRST_TOKEN);

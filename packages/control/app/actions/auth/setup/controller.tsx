@@ -48,7 +48,10 @@ export default createController(routes.auth.setup, {
         );
       }
 
-      const created = await store.createAdministrator(parsed.value.password);
+      const [created, persistenceError] = await store.createAdministrator(parsed.value.password);
+      if (persistenceError !== undefined) {
+        return new Response("Administrator setup could not be completed.", { status: 500 });
+      }
       if (!created) {
         return new Response("Administrator setup is already complete.", { status: 409 });
       }

@@ -60,10 +60,17 @@ export async function createDefaultStore(): Promise<PostgresStore> {
   const databaseUrl = Deno.env.get("DATABASE_URL") ??
     (Deno.env.get("NODE_ENV") === "test" ? "postgres://localhost/openorb-test" : undefined);
   if (!databaseUrl) {
-    throw new Error("DATABASE_URL is required outside tests.");
+    throw new StoreConfigurationError("DATABASE_URL is required outside tests.");
   }
 
   // Fails startup visibly when the master key is missing or invalid.
   const masterKey = await loadMasterKey();
   return createPostgresStore(databaseUrl, masterKey);
+}
+
+class StoreConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StoreConfigurationError";
+  }
 }

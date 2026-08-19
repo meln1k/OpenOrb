@@ -1,4 +1,11 @@
-import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertInstanceOf,
+  assertMatch,
+  assertNotEquals,
+  assertNotMatch,
+} from "@std/assert";
 import { array, number, object, parse, string } from "remix/data-schema";
 
 import { createAppServices } from "@/app/middleware/services.ts";
@@ -346,7 +353,7 @@ Deno.test("restarting with the same master key preserves decryptability", async 
           },
           { userId, key },
         ),
-        value,
+        [value, undefined],
       );
     }
   } finally {
@@ -374,21 +381,16 @@ Deno.test("a wrong master key fails visibly without destroying the stored data",
         "select key, key_version, ciphertext from encrypted_secrets",
       )).rows[0],
     );
-    let message = "";
-    try {
-      await decryptSecret(
-        wrongKey,
-        {
-          ciphertext: Uint8Array.fromBase64(row.ciphertext),
-          keyVersion: row.key_version,
-        },
-        { userId, key: row.key },
-      );
-      assert(false, "expected decryption with the wrong key to fail");
-    } catch (error) {
-      assert(error instanceof SecretDecryptionError);
-      message = error.message;
-    }
+    const [, error] = await decryptSecret(
+      wrongKey,
+      {
+        ciphertext: Uint8Array.fromBase64(row.ciphertext),
+        keyVersion: row.key_version,
+      },
+      { userId, key: row.key },
+    );
+    assertInstanceOf(error, SecretDecryptionError);
+    const message = error.message;
     assert(!message.includes(OPENCODE_VALUE));
     const count = await wrongKeyStore.pool.query(
       "select count(*)::integer as count from encrypted_secrets",

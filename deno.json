@@ -2,6 +2,7 @@
   "workspace": [
     "./packages/control",
     "./packages/protocol",
+    "./packages/result",
     "./packages/runner"
   ],
   "unstable": ["no-legacy-abort"],
@@ -42,6 +43,7 @@
   "lint": {
     "exclude": [
       "scripts/anti-slop",
+      "scripts/lint-rules",
       "scripts/lint-plugin.ts"
     ],
     "plugins": ["./scripts/lint-plugin.ts"]

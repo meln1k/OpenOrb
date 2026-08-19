@@ -14,6 +14,13 @@ export type RunnerCommand =
   | { type: "doctor" }
   | { type: "version" };
 
+export class RunnerOptionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunnerOptionError";
+  }
+}
+
 export function parseRunnerCommand(args: string[]): RunnerCommand {
   if (args.length === 1 && (args[0] === "--version" || args[0] === "version")) {
     return { type: "version" };
@@ -31,28 +38,30 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
     ],
     unknown(_argument, key) {
       if (key === "data-dir") {
-        throw new Error(
+        throw new RunnerOptionError(
           "--data-dir is not supported. Start the runner from its canonical working directory.",
         );
       }
-      throw new Error("Unknown argument.");
+      throw new RunnerOptionError("Unknown argument.");
     },
   });
-  if (parsed._.length > 0) throw new Error("Unknown argument.");
+  if (parsed._.length > 0) throw new RunnerOptionError("Unknown argument.");
 
   const options: RunnerStartOptions = { name: "OpenOrb runner" };
   if (parsed["control-panel"] !== undefined) {
-    if (!parsed["control-panel"]) throw new Error("--control-panel requires a value.");
+    if (!parsed["control-panel"]) throw new RunnerOptionError("--control-panel requires a value.");
     options.controlPanel = normalizeControlPanelUrl(parsed["control-panel"]);
   }
   if (parsed["enrollment-token"] !== undefined) {
-    if (!parsed["enrollment-token"]) throw new Error("--enrollment-token requires a value.");
+    if (!parsed["enrollment-token"]) {
+      throw new RunnerOptionError("--enrollment-token requires a value.");
+    }
     options.enrollmentToken = parsed["enrollment-token"];
   }
   if (parsed.name !== undefined) {
     const name = parsed.name.trim();
     if (name.length === 0 || name.length > 100) {
-      throw new Error("--name must contain between 1 and 100 characters.");
+      throw new RunnerOptionError("--name must contain between 1 and 100 characters.");
     }
     options.name = name;
   }
@@ -75,7 +84,7 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
 function parsePositiveInteger(input: string, flag: string): number {
   const value = Number(input);
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${flag} must be a positive integer.`);
+    throw new RunnerOptionError(`${flag} must be a positive integer.`);
   }
   return value;
 }
@@ -83,13 +92,15 @@ function parsePositiveInteger(input: string, flag: string): number {
 export function normalizeControlPanelUrl(input: string): string {
   const url = new URL(input);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("--control-panel must use http or https.");
+    throw new RunnerOptionError("--control-panel must use http or https.");
   }
   if (url.username || url.password || url.search || url.hash) {
-    throw new Error("--control-panel must not contain credentials, a query, or a fragment.");
+    throw new RunnerOptionError(
+      "--control-panel must not contain credentials, a query, or a fragment.",
+    );
   }
   if (url.pathname !== "/") {
-    throw new Error("--control-panel must be an origin URL without a path.");
+    throw new RunnerOptionError("--control-panel must be an origin URL without a path.");
   }
   return url.origin;
 }

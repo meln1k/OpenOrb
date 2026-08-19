@@ -87,7 +87,7 @@ function LucideNode(handle: Handle<{ node: IconNode[number] }>) {
       case "rect":
         return <rect {...attributes} />;
       default:
-        throw new Error(`Unsupported Lucide SVG element: ${tag}`);
+        throw new TypeError(`Unsupported Lucide SVG element: ${tag}`);
     }
   };
 }

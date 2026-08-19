@@ -3,6 +3,7 @@ import {
   type SessionProvisioningEvent,
   sessionProvisioningEventSchema,
 } from "../../../../packages/protocol/src/runner-session-events.ts";
+import { trySync } from "../../../result/src/index.ts";
 import { parseSafe, string } from "remix/data-schema";
 import { run } from "remix/ui";
 
@@ -106,14 +107,12 @@ function connectSessionStream(element: HTMLElement, stream: EventSource) {
 }
 
 function parseSessionEvent(source: string): SessionProvisioningEvent | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(source);
-  } catch {
-    return null;
-  }
-  const parsed = parseSafe(sessionProvisioningEventSchema, value);
-  return parsed.success ? parsed.value : null;
+  const [value, parseError] = trySync(
+    () => parseSafe(sessionProvisioningEventSchema, JSON.parse(source)),
+    () => true,
+  );
+  if (parseError !== undefined) return null;
+  return value.success ? value.value : null;
 }
 
 function sessionStageLabel(

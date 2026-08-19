@@ -72,7 +72,7 @@ Deno.test("configuration persistence separates users across every repository ope
     );
     assertEquals(
       await store.deleteProject(secondUserId, firstProjectResult.project.id),
-      "not-found",
+      ["not-found", undefined],
     );
     assertEquals(
       (await store.getProject(firstUserId, firstProjectResult.project.id))?.name,

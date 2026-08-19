@@ -7,15 +7,25 @@ import {
   type SessionProvisioningStage,
 } from "@openorb/protocol";
 import { join } from "node:path";
+import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
 import type { DeveloperImage } from "@/src/developer-image.ts";
 import {
   createOpenOrbGondolinToolRuntime,
+  type GondolinRuntimeError,
   type OpenOrbGondolinToolRuntime,
   type OpenOrbGondolinToolRuntimeOptions,
 } from "@/src/gondolin-tools.ts";
-import type { SendRunnerMessage, SessionEventRelay } from "@/src/session-event-relay.ts";
-import type { RunnerSessionMetadata, RunnerSessionStore } from "@/src/session-store.ts";
+import type {
+  SendRunnerMessage,
+  SessionEventRelay,
+  SessionEventRelayError,
+} from "@/src/session-event-relay.ts";
+import type {
+  RunnerSessionMetadata,
+  RunnerSessionStore,
+  RunnerSessionStoreError,
+} from "@/src/session-store.ts";
 
 const MAX_PROVISIONING_LOG_BYTES = 256 * 1024;
 const MAX_CAPTURED_COMMAND_BYTES = 4 * 1024;
@@ -29,12 +39,12 @@ export interface SessionProvisionerOptions {
   memoryMiB: number;
   createRuntime?: (
     options: Omit<OpenOrbGondolinToolRuntimeOptions, "developerImage">,
-  ) => Promise<ProvisioningRuntime>;
+  ) => Promise<Result<ProvisioningRuntime, GondolinRuntimeError>>;
 }
 
 export interface ProvisioningRuntime {
   run: OpenOrbGondolinToolRuntime["run"];
-  close(): Promise<void>;
+  close(): Promise<Result<void, GondolinRuntimeError>>;
 }
 
 interface ProvisioningLogBudget {
@@ -60,7 +70,7 @@ export class SessionProvisioner {
   readonly #cpuCount: number;
   readonly #memoryMiB: number;
   readonly #createRuntime: NonNullable<SessionProvisionerOptions["createRuntime"]>;
-  readonly #jobs = new Map<string, Promise<void>>();
+  readonly #jobs = new Map<string, Promise<Result<void, SessionProvisioningError>>>();
   readonly #runtimes = new Map<string, ProvisioningRuntime>();
   readonly #activeSessionIds = new Set<string>();
   #closed = false;
@@ -74,7 +84,10 @@ export class SessionProvisioner {
       this.#createRuntime = options.createRuntime;
     } else {
       if (!options.developerImage) {
-        throw new Error("A verified developer image is required for Gondolin provisioning.");
+        throw new SessionProvisioningError(
+          "A verified developer image is required for Gondolin provisioning.",
+          undefined,
+        );
       }
       const developerImage = options.developerImage;
       this.#createRuntime = (runtimeOptions) =>
@@ -89,37 +102,49 @@ export class SessionProvisioner {
   async handleCommand(
     command: SessionProvisionCommand,
     send: SendRunnerMessage,
-  ): Promise<void> {
+  ): Promise<Result<void, SessionProvisioningError>> {
     if (this.#closed) {
-      send(rejectedMessage(command, "The runner is shutting down."));
-      return;
+      return sendProvisioningMessage(
+        send,
+        rejectedMessage(command, "The runner is shutting down."),
+      );
     }
     if (this.#jobs.has(command.sessionId)) {
-      send(rejectedMessage(command, "This session is already provisioning."));
-      return;
+      return sendProvisioningMessage(
+        send,
+        rejectedMessage(command, "This session is already provisioning."),
+      );
     }
 
-    let metadata: RunnerSessionMetadata;
-    try {
-      if (command.payload.mode === "create") {
-        metadata = await this.#sessionStore.createSession({
-          id: command.sessionId,
-          projectId: command.payload.projectId,
-          repositoryUrl: command.payload.repositoryUrl,
-          ref: command.payload.ref,
-          branchName: command.payload.branchName,
-          initialPrompt: command.payload.initialPrompt,
-        });
-      } else {
-        metadata = await this.#prepareRetry(command.sessionId);
-      }
-    } catch (error) {
-      send(rejectedMessage(command, commandRejectionMessage(command, error)));
-      return;
+    const [metadata, preparationError] = command.payload.mode === "create"
+      ? await this.#sessionStore.createSession({
+        id: command.sessionId,
+        projectId: command.payload.projectId,
+        repositoryUrl: command.payload.repositoryUrl,
+        ref: command.payload.ref,
+        branchName: command.payload.branchName,
+        initialPrompt: command.payload.initialPrompt,
+      })
+      : await this.#prepareRetry(command.sessionId);
+    if (preparationError !== undefined) {
+      const [, sendError] = sendProvisioningMessage(
+        send,
+        rejectedMessage(command, commandRejectionMessage(command, preparationError)),
+      );
+      if (sendError !== undefined) return err(sendError);
+      return ok(undefined);
     }
 
-    const snapshot = await this.#sessionStore.getSessionSnapshot(metadata.id);
-    send({
+    const [snapshot, snapshotError] = await this.#sessionStore.getSessionSnapshot(metadata.id);
+    if (snapshotError !== undefined) {
+      const [, sendError] = sendProvisioningMessage(
+        send,
+        rejectedMessage(command, "The runner could not read the durable session snapshot."),
+      );
+      if (sendError !== undefined) return err(sendError);
+      return ok(undefined);
+    }
+    const [, sendError] = sendProvisioningMessage(send, {
       version: 1,
       id: crypto.randomUUID(),
       type: SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
@@ -132,49 +157,72 @@ export class SessionProvisioner {
         checkoutState: metadata.checkoutState,
       },
     });
+    if (sendError !== undefined) return err(sendError);
 
     const githubToken = command.payload.githubToken;
-    const job = Promise.resolve()
-      .then(() => this.#provision(metadata, githubToken, command.id))
-      .finally(() => {
-        if (this.#jobs.get(metadata.id) === job) this.#jobs.delete(metadata.id);
-      });
+    const job = this.#provision(metadata, githubToken, command.id);
     this.#jobs.set(metadata.id, job);
-    void job;
+    void job.then(() => {
+      if (this.#jobs.get(metadata.id) === job) this.#jobs.delete(metadata.id);
+    });
+    return ok(undefined);
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  async close(): Promise<Result<void, SessionProvisioningError>> {
+    if (this.#closed) return ok(undefined);
     this.#closed = true;
-    await Promise.allSettled(this.#jobs.values());
-    await Promise.allSettled([...this.#runtimes.values()].map((runtime) => runtime.close()));
+    await Promise.all(this.#jobs.values());
+    const closeErrors = await Promise.all(
+      [...this.#runtimes.values()].map(async (runtime) => {
+        const [, closeError] = await runtime.close();
+        if (closeError !== undefined) return closeError;
+        return undefined;
+      }),
+    );
     this.#runtimes.clear();
     this.#activeSessionIds.clear();
+    const closeError = closeErrors.find((error) => error !== undefined);
+    return closeError === undefined
+      ? ok(undefined)
+      : err(new SessionProvisioningError("Could not close a provisioning runtime.", closeError));
   }
 
-  async #prepareRetry(sessionId: string): Promise<RunnerSessionMetadata> {
-    const metadata = await this.#sessionStore.readMetadata(sessionId);
+  async #prepareRetry(
+    sessionId: string,
+  ): Promise<Result<RunnerSessionMetadata, SessionProvisioningError>> {
+    const [metadata, metadataError] = await this.#sessionStore.readMetadata(sessionId);
+    if (metadataError !== undefined) return err(provisioningStoreError(sessionId, metadataError));
     if (metadata.state !== "error") {
-      throw new RetryRejected("Only a failed provisioning attempt can be retried.");
+      return err(new RetryRejected("Only a failed provisioning attempt can be retried."));
     }
     const runtime = this.#runtimes.get(sessionId);
     if (runtime) {
-      await runtime.close();
+      const [, closeError] = await runtime.close();
+      if (closeError !== undefined) {
+        return err(
+          new SessionProvisioningError(
+            `Could not close the previous runtime for session ${sessionId}.`,
+            closeError,
+          ),
+        );
+      }
       this.#runtimes.delete(sessionId);
       this.#activeSessionIds.delete(sessionId);
     }
-    return await this.#sessionStore.updateProvisioning(sessionId, {
+    const [updated, updateError] = await this.#sessionStore.updateProvisioning(sessionId, {
       state: "created",
       checkoutState: metadata.checkoutState,
       ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
     });
+    if (updateError !== undefined) return err(provisioningStoreError(sessionId, updateError));
+    return ok(updated);
   }
 
   async #provision(
     initialMetadata: RunnerSessionMetadata,
     githubToken: string | undefined,
     correlationId: string,
-  ): Promise<void> {
+  ): Promise<Result<void, SessionProvisioningError>> {
     const sessionId = initialMetadata.id;
     const logBudget: ProvisioningLogBudget = {
       remainingBytes: MAX_PROVISIONING_LOG_BYTES,
@@ -184,16 +232,37 @@ export class SessionProvisioner {
     let metadata = initialMetadata;
 
     this.#activeSessionIds.add(sessionId);
-    try {
-      metadata = await this.#sessionStore.updateProvisioning(sessionId, {
-        state: "provisioning",
-        checkoutState: metadata.checkoutState,
-        ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-      });
-      await this.#emitState(metadata, "starting-vm", correlationId);
+    using activeSessionCleanup = new DisposableStack();
+    activeSessionCleanup.defer(() => {
+      // Resource ownership is retained only when a runtime was successfully installed.
+      if (!this.#runtimes.has(sessionId)) this.#activeSessionIds.delete(sessionId);
+    });
+    const [, provisionError] = await (async (): Promise<Result<void, SessionProvisioningError>> => {
+      const [provisioning, provisioningError] = mapStoreResult(
+        sessionId,
+        await this.#sessionStore.updateProvisioning(sessionId, {
+          state: "provisioning",
+          checkoutState: metadata.checkoutState,
+          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+        }),
+      );
+      if (provisioningError !== undefined) return err(provisioningError);
+      metadata = provisioning;
 
-      const runtime = await this.#createRuntime({
-        workspacePath: await this.#sessionStore.getSessionWorkspacePath(sessionId),
+      const [, startingEventError] = await this.#emitState(
+        metadata,
+        "starting-vm",
+        correlationId,
+      );
+      if (startingEventError !== undefined) return err(startingEventError);
+
+      const [workspacePath, workspaceError] = mapStoreResult(
+        sessionId,
+        await this.#sessionStore.getSessionWorkspacePath(sessionId),
+      );
+      if (workspaceError !== undefined) return err(workspaceError);
+      const [runtime, runtimeError] = await this.#createRuntime({
+        workspacePath,
         sessionLabel: `openorb session ${sessionId}`,
         github: {
           repositoryUrl: metadata.repositoryUrl,
@@ -202,12 +271,33 @@ export class SessionProvisioner {
         cpuCount: this.#cpuCount,
         memoryMiB: this.#memoryMiB,
       });
+      if (runtimeError !== undefined) {
+        return err(
+          new SessionProvisioningError(
+            `Could not start the provisioning runtime for session ${sessionId}.`,
+            runtimeError,
+          ),
+        );
+      }
       this.#runtimes.set(sessionId, runtime);
 
       if (metadata.checkoutState === "pending") {
-        await clearWorkspace(await this.#sessionStore.getSessionWorkspacePath(sessionId));
-        await this.#emitState(metadata, "cloning", correlationId);
-        const clone = await this.#runCommand(
+        const [, clearError] = await tryAsync(
+          clearWorkspace(workspacePath),
+          (cause) =>
+            new SessionProvisioningError(
+              `Could not clear the workspace for session ${sessionId}.`,
+              cause,
+            ),
+        );
+        if (clearError !== undefined) return err(clearError);
+        const [, cloningEventError] = await this.#emitState(
+          metadata,
+          "cloning",
+          correlationId,
+        );
+        if (cloningEventError !== undefined) return err(cloningEventError);
+        const [clone, cloneError] = await this.#runCommand(
           runtime,
           [
             "/usr/bin/git",
@@ -223,22 +313,28 @@ export class SessionProvisioner {
           correlationId,
           logBudget,
         );
+        if (cloneError !== undefined) return err(cloneError);
         if (clone.exitCode !== 0) {
-          metadata = await this.#sessionStore.updateProvisioning(sessionId, {
-            state: "ready",
-            checkoutState: "unavailable",
-          });
-          await this.#emitLog(
+          const [unavailable, updateError] = mapStoreResult(
+            sessionId,
+            await this.#sessionStore.updateProvisioning(sessionId, {
+              state: "ready",
+              checkoutState: "unavailable",
+            }),
+          );
+          if (updateError !== undefined) return err(updateError);
+          metadata = unavailable;
+          const [, logError] = await this.#emitLog(
             sessionId,
             correlationId,
             "stderr",
             "Repository clone failed. The checkout is unavailable; the stored prompt remains ready for Pi.\n",
           );
-          await this.#emitState(metadata, "ready", correlationId);
-          return;
+          if (logError !== undefined) return err(logError);
+          return await this.#emitState(metadata, "ready", correlationId);
         }
 
-        const revision = await this.#runCommand(
+        const [revision, revisionError] = await this.#runCommand(
           runtime,
           ["/usr/bin/git", "rev-parse", "HEAD"],
           sessionId,
@@ -246,29 +342,54 @@ export class SessionProvisioner {
           logBudget,
           true,
         );
+        if (revisionError !== undefined) return err(revisionError);
         if (revision.exitCode !== 0) {
-          throw new Error("Git could not report the cloned base commit.");
+          return err(
+            new SessionProvisioningError(
+              "Git could not report the cloned base commit.",
+              undefined,
+            ),
+          );
         }
         const baseCommit = revision.stdout.trim();
 
-        await this.#emitState(metadata, "creating-branch", correlationId);
-        const branch = await this.#runCommand(
+        const [, branchEventError] = await this.#emitState(
+          metadata,
+          "creating-branch",
+          correlationId,
+        );
+        if (branchEventError !== undefined) return err(branchEventError);
+        const [branch, branchError] = await this.#runCommand(
           runtime,
           ["/usr/bin/git", "switch", "-c", metadata.branchName],
           sessionId,
           correlationId,
           logBudget,
         );
-        if (branch.exitCode !== 0) throw new Error("Git could not create the session branch.");
-        metadata = await this.#sessionStore.updateProvisioning(sessionId, {
-          state: "provisioning",
-          checkoutState: "available",
-          baseCommit,
-        });
+        if (branchError !== undefined) return err(branchError);
+        if (branch.exitCode !== 0) {
+          return err(
+            new SessionProvisioningError(
+              "Git could not create the session branch.",
+              undefined,
+            ),
+          );
+        }
+        const [available, updateError] = mapStoreResult(
+          sessionId,
+          await this.#sessionStore.updateProvisioning(sessionId, {
+            state: "provisioning",
+            checkoutState: "available",
+            baseCommit,
+          }),
+        );
+        if (updateError !== undefined) return err(updateError);
+        metadata = available;
       }
 
-      await this.#emitState(metadata, "setup", correlationId);
-      const setup = await this.#runCommand(
+      const [, setupEventError] = await this.#emitState(metadata, "setup", correlationId);
+      if (setupEventError !== undefined) return err(setupEventError);
+      const [setup, setupError] = await this.#runCommand(
         runtime,
         [
           "/bin/sh",
@@ -279,45 +400,64 @@ export class SessionProvisioner {
         correlationId,
         logBudget,
       );
+      if (setupError !== undefined) return err(setupError);
       if (setup.exitCode !== 0) {
-        metadata = await this.#sessionStore.updateProvisioning(sessionId, {
-          state: "error",
-          checkoutState: metadata.checkoutState,
-          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-        });
-        await this.#emitLog(
+        const [failed, updateError] = mapStoreResult(
+          sessionId,
+          await this.#sessionStore.updateProvisioning(sessionId, {
+            state: "error",
+            checkoutState: metadata.checkoutState,
+            ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+          }),
+        );
+        if (updateError !== undefined) return err(updateError);
+        metadata = failed;
+        const [, logError] = await this.#emitLog(
           sessionId,
           correlationId,
           "stderr",
           `.agents/setup exited with status ${setup.exitCode}; the initial prompt was not dispatched.\n`,
         );
-        await this.#emitState(metadata, "failed", correlationId);
-        return;
+        if (logError !== undefined) return err(logError);
+        return await this.#emitState(metadata, "failed", correlationId);
       }
 
-      metadata = await this.#sessionStore.updateProvisioning(sessionId, {
-        state: "ready",
-        checkoutState: metadata.checkoutState,
-        ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-      });
-      await this.#emitState(metadata, "ready", correlationId);
-    } catch (error) {
-      const current = await this.#sessionStore.readMetadata(sessionId).catch(() => metadata);
-      const failed = await this.#sessionStore.updateProvisioning(sessionId, {
+      const [ready, readyError] = mapStoreResult(
+        sessionId,
+        await this.#sessionStore.updateProvisioning(sessionId, {
+          state: "ready",
+          checkoutState: metadata.checkoutState,
+          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+        }),
+      );
+      if (readyError !== undefined) return err(readyError);
+      metadata = ready;
+      return await this.#emitState(metadata, "ready", correlationId);
+    })();
+
+    if (provisionError !== undefined) {
+      const [storedCurrent, readError] = await this.#sessionStore.readMetadata(sessionId);
+      if (readError !== undefined) return err(provisionError);
+      const current = storedCurrent ?? metadata;
+      const [storedFailed, updateError] = await this.#sessionStore.updateProvisioning(sessionId, {
         state: "error",
         checkoutState: current.checkoutState,
         ...(current.baseCommit === undefined ? {} : { baseCommit: current.baseCommit }),
-      }).catch(() => current);
-      await this.#emitLog(
+      });
+      if (updateError !== undefined) return err(provisionError);
+      const failed = storedFailed ?? current;
+      const [, logError] = await this.#emitLog(
         sessionId,
         correlationId,
         "stderr",
-        `Provisioning failed: ${redactedErrorMessage(error, githubToken)}\n`,
-      ).catch(() => undefined);
-      await this.#emitState(failed, "failed", correlationId).catch(() => undefined);
-    } finally {
-      if (!this.#runtimes.has(sessionId)) this.#activeSessionIds.delete(sessionId);
+        `Provisioning failed: ${redactedErrorMessage(provisionError, githubToken)}\n`,
+      );
+      if (logError !== undefined) return err(provisionError);
+      const [, stateError] = await this.#emitState(failed, "failed", correlationId);
+      if (stateError !== undefined) return err(provisionError);
+      return err(provisionError);
     }
+    return ok(undefined);
   }
 
   async #runCommand(
@@ -327,23 +467,38 @@ export class SessionProvisioner {
     correlationId: string,
     logBudget: ProvisioningLogBudget,
     captureStdout = false,
-  ): Promise<CommandOutput> {
+  ): Promise<Result<CommandOutput, SessionProvisioningError>> {
     let stdout = "";
-    const result = await runtime.run(command, {
+    let outputError: SessionProvisioningError | undefined;
+    const [result, commandError] = await runtime.run(command, {
       onOutput: async (output) => {
+        if (outputError !== undefined) return;
         if (captureStdout && output.stream === "stdout") {
           stdout = appendBounded(stdout, output.text, MAX_CAPTURED_COMMAND_BYTES);
         }
-        await this.#emitBoundedOutput(
+        const [, error] = await this.#emitBoundedOutput(
           sessionId,
           correlationId,
           output.stream,
           output.text,
           logBudget,
         );
+        if (error !== undefined) {
+          outputError = error;
+          return;
+        }
       },
     });
-    return { exitCode: result.exitCode, stdout };
+    if (commandError !== undefined) {
+      return err(
+        new SessionProvisioningError(
+          `Guest command failed while provisioning session ${sessionId}.`,
+          commandError,
+        ),
+      );
+    }
+    if (outputError !== undefined) return err(outputError);
+    return ok({ exitCode: result.exitCode, stdout });
   }
 
   async #emitBoundedOutput(
@@ -352,37 +507,43 @@ export class SessionProvisioner {
     stream: "stdout" | "stderr",
     rawText: string,
     budget: ProvisioningLogBudget,
-  ): Promise<void> {
+  ): Promise<Result<void, SessionProvisioningError>> {
     let text = sanitizeOutput(rawText);
     if (budget.secret !== undefined) text = text.replaceAll(budget.secret, "[REDACTED]");
     while (text.length > 0 && budget.remainingBytes > 0) {
       const limit = Math.min(budget.remainingBytes, MAX_PROVISIONING_EVENT_TEXT_BYTES);
       const { head, tail, bytes } = takeUtf8(text, limit);
       if (head.length === 0) break;
-      await this.#emitLog(sessionId, correlationId, stream, head);
+      const [, logError] = await this.#emitLog(sessionId, correlationId, stream, head);
+      if (logError !== undefined) return err(logError);
       budget.remainingBytes -= bytes;
       text = tail;
     }
     if (text.length > 0 && !budget.truncated) {
       budget.truncated = true;
-      await this.#emitLog(
+      const [, logError] = await this.#emitLog(
         sessionId,
         correlationId,
         "stderr",
         OUTPUT_TRUNCATED_MESSAGE,
       );
+      if (logError !== undefined) return err(logError);
     }
+    return ok(undefined);
   }
 
   async #emitState(
     metadata: RunnerSessionMetadata,
     stage: SessionProvisioningStage,
     correlationId: string,
-  ): Promise<void> {
-    await this.#eventRelay.publish(
+  ): Promise<Result<void, SessionProvisioningError>> {
+    return mapRelayResult(
       metadata.id,
-      correlationId,
-      { type: "session.state", stage, checkoutState: metadata.checkoutState },
+      await this.#eventRelay.publish(
+        metadata.id,
+        correlationId,
+        { type: "session.state", stage, checkoutState: metadata.checkoutState },
+      ),
     );
   }
 
@@ -391,16 +552,76 @@ export class SessionProvisioner {
     correlationId: string,
     stream: "stdout" | "stderr",
     text: string,
-  ): Promise<void> {
-    await this.#eventRelay.publish(
+  ): Promise<Result<void, SessionProvisioningError>> {
+    return mapRelayResult(
       sessionId,
-      correlationId,
-      { type: "provisioning.log", stream, text },
+      await this.#eventRelay.publish(
+        sessionId,
+        correlationId,
+        { type: "provisioning.log", stream, text },
+      ),
     );
   }
 }
 
-class RetryRejected extends Error {}
+export class SessionProvisioningError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "SessionProvisioningError";
+  }
+}
+
+class RetryRejected extends SessionProvisioningError {
+  constructor(message: string) {
+    super(message, undefined);
+    this.name = "RetryRejected";
+  }
+}
+
+function sendProvisioningMessage(
+  send: SendRunnerMessage,
+  message: RunnerClientMessage,
+): Result<void, SessionProvisioningError> {
+  return trySync(
+    () => send(message),
+    (cause) => new SessionProvisioningError("Could not send a provisioning response.", cause),
+  );
+}
+
+function mapStoreResult<T>(
+  sessionId: string,
+  result: Result<T, RunnerSessionStoreError>,
+): Result<T, SessionProvisioningError> {
+  const [value, storeError] = result;
+  if (storeError !== undefined) return err(provisioningStoreError(sessionId, storeError));
+  return ok(value);
+}
+
+function provisioningStoreError(
+  sessionId: string,
+  cause: RunnerSessionStoreError,
+): SessionProvisioningError {
+  return new SessionProvisioningError(
+    `Durable session state failed for runner session ${sessionId}.`,
+    cause,
+  );
+}
+
+function mapRelayResult<T>(
+  sessionId: string,
+  result: Result<T, SessionEventRelayError>,
+): Result<T, SessionProvisioningError> {
+  const [value, relayError] = result;
+  if (relayError !== undefined) {
+    return err(
+      new SessionProvisioningError(
+        `Session event publication failed for runner session ${sessionId}.`,
+        relayError,
+      ),
+    );
+  }
+  return ok(value);
+}
 
 function rejectedMessage(
   command: SessionProvisionCommand,
@@ -419,10 +640,15 @@ function rejectedMessage(
 function commandRejectionMessage(command: SessionProvisionCommand, error: unknown): string {
   if (error instanceof RetryRejected) return error.message;
   if (command.payload.mode === "retry") return "The runner could not prepare this session retry.";
-  if (error instanceof Deno.errors.AlreadyExists) {
+  if (hasAlreadyExistsCause(error)) {
     return "This session already exists on the runner.";
   }
   return "The runner could not durably create the session.";
+}
+
+function hasAlreadyExistsCause(error: unknown): boolean {
+  if (error instanceof Deno.errors.AlreadyExists) return true;
+  return error instanceof Error && hasAlreadyExistsCause(error.cause);
 }
 
 async function clearWorkspace(workspacePath: string): Promise<void> {

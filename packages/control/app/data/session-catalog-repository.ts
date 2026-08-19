@@ -1,4 +1,5 @@
 import type { RunnerSessionSnapshot } from "@openorb/protocol";
+import { err, ok, type Result, tryAsync } from "@openorb/result";
 import type { Database } from "remix/data-table";
 
 import { deletedSessions, type SessionRow, sessions } from "@/app/data/schema.ts";
@@ -16,6 +17,13 @@ export interface ReconciledSessionSnapshots {
   rejected: RejectedSessionSnapshot[];
 }
 
+export class SessionCatalogPersistenceError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("Session catalog persistence failed.", { cause });
+    this.name = "SessionCatalogPersistenceError";
+  }
+}
+
 export interface SessionCatalogEntry {
   id: string;
   projectId: string;
@@ -29,7 +37,7 @@ export interface SessionCatalogRepository {
   reconcileSessionSnapshotEntries(
     userId: string,
     entries: RunnerSessionSnapshot[],
-  ): Promise<ReconciledSessionSnapshots>;
+  ): Promise<Result<ReconciledSessionSnapshots, SessionCatalogPersistenceError>>;
 }
 
 class SessionSnapshotReconciliationRejected extends Error {
@@ -56,8 +64,8 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
     },
 
     async reconcileSessionSnapshotEntries(userId, entries) {
-      try {
-        return await database.transaction(async (transaction) => {
+      const [result, transactionError] = await tryAsync(
+        database.transaction(async (transaction) => {
           // Tombstone inserts take a key-share lock on this referenced user row. Holding the
           // conflicting update lock through reconciliation makes either the tombstone or the
           // catalog snapshot win first, so a deletion can never miss an uncommitted catalog row.
@@ -127,11 +135,16 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
             });
           }
           return result;
-        });
-      } catch (error) {
-        if (error instanceof SessionSnapshotReconciliationRejected) return error.result;
-        throw error;
+        }),
+        (cause) => new SessionCatalogPersistenceError(cause),
+      );
+      if (transactionError !== undefined) {
+        if (transactionError.cause instanceof SessionSnapshotReconciliationRejected) {
+          return ok(transactionError.cause.result);
+        }
+        return err(transactionError);
       }
+      return ok(result);
     },
   };
 }

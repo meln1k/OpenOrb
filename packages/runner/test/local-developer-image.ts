@@ -51,7 +51,7 @@ export async function installLocalDeveloperImage(
       },
     },
   };
-  return await ensureDeveloperImage({
+  const [image, imageError] = await ensureDeveloperImage({
     workingDirectory,
     architecture,
     release,
@@ -63,4 +63,6 @@ export async function installLocalDeveloperImage(
       });
     },
   });
+  if (imageError !== undefined) throw imageError;
+  return image;
 }

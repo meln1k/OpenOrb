@@ -8,6 +8,13 @@ export const GONDOLIN_TLS_COMPATIBILITY = {
 
 let installed = false;
 
+class GondolinTlsCompatibilityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GondolinTlsCompatibilityError";
+  }
+}
+
 interface TlsSocketReference {
   current?: tls.TLSSocket;
 }
@@ -30,7 +37,7 @@ interface TlsSocketReference {
 export function installGondolinTlsCompatibility(): void {
   if (installed) return;
   if (Deno.version.deno !== GONDOLIN_TLS_COMPATIBILITY.denoVersion) {
-    throw new Error(
+    throw new GondolinTlsCompatibilityError(
       `The Gondolin TLS compatibility shim is validated only with Deno ${GONDOLIN_TLS_COMPATIBILITY.denoVersion}; found ${Deno.version.deno}. Follow the compatibility review in docs/runner-release.md before using GitHub mediation with a different Deno version.`,
     );
   }
@@ -72,7 +79,9 @@ export function installGondolinTlsCompatibility(): void {
 
 function restartTlsSocket(socket: tls.TLSSocket | undefined): void {
   if (!socket || !("_start" in socket) || !(socket._start instanceof Function)) {
-    throw new Error("Deno's private TLS handshake restart method is unavailable.");
+    throw new GondolinTlsCompatibilityError(
+      "Deno's private TLS handshake restart method is unavailable.",
+    );
   }
   socket._start.call(socket);
 }

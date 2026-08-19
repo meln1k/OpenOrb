@@ -137,7 +137,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       assertEquals(count.rows[0]?.count, 0);
     };
     connections.reconcileAcceptance = async (snapshot) => {
-      const reconciled = await store.reconcileSessionSnapshotEntries(client.userId, [snapshot]);
+      const [reconciled] = await store.reconcileSessionSnapshotEntries(client.userId, [snapshot]);
+      assert(reconciled);
       assertEquals(reconciled.acceptedSessionIds, [snapshot.id]);
     };
 
@@ -209,7 +210,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
     const olderSessionId = crypto.randomUUID();
     const newerSessionId = crypto.randomUUID();
-    const additionalCatalog = await store.reconcileSessionSnapshotEntries(client.userId, [
+    const [additionalCatalog] = await store.reconcileSessionSnapshotEntries(client.userId, [
       {
         id: olderSessionId,
         projectId: projectResult.project.id,
@@ -227,6 +228,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         lastEventCursor: 1,
       },
     ]);
+    assert(additionalCatalog);
     assertEquals(additionalCatalog.acceptedSessionIds, [olderSessionId, newerSessionId]);
     assertEquals(
       (await store.listSessionCatalogEntries(client.userId)).map((session) => session.id),

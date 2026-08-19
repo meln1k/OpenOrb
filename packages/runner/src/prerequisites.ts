@@ -1,4 +1,5 @@
 export const REQUIRED_DENO_VERSION = "2.9.5";
+import { tryAsync } from "@openorb/result";
 const SUPPORTED_ARCHITECTURES = new Set(["arm64", "x64"]);
 const SUPPORTED_PLATFORMS = new Set(["darwin", "linux"]);
 
@@ -74,17 +75,33 @@ export async function checkRunnerPrerequisites(
   if (SUPPORTED_PLATFORMS.has(platform) && SUPPORTED_ARCHITECTURES.has(architecture)) {
     const executable = architecture === "arm64" ? "qemu-system-aarch64" : "qemu-system-x86_64";
 
-    try {
-      const output = await probeExecutable(executable, ["--version"]);
-      qemu = {
-        executable,
-        version: output.split(/\r?\n/, 1)[0]?.trim() || "version unavailable",
-      };
-    } catch (error) {
-      errors.push(qemuError(platform, executable, error));
+    const [output, probeError] = await tryAsync(
+      Promise.resolve().then(() => probeExecutable(executable, ["--version"])),
+      (cause) =>
+        new RunnerPrerequisiteProbeError(`Could not probe QEMU with ${executable}.`, cause),
+    );
+    if (probeError !== undefined) {
+      errors.push(qemuError(platform, executable, probeError));
+      return prerequisiteReport(platform, architecture, denoVersion, libc, qemu, errors, warnings);
     }
+    qemu = {
+      executable,
+      version: output.split(/\r?\n/, 1)[0]?.trim() || "version unavailable",
+    };
   }
 
+  return prerequisiteReport(platform, architecture, denoVersion, libc, qemu, errors, warnings);
+}
+
+function prerequisiteReport(
+  platform: RunnerPlatform,
+  architecture: string,
+  denoVersion: string,
+  libc: RunnerLibc | undefined,
+  qemu: PrerequisiteReport["qemu"],
+  errors: string[],
+  warnings: string[],
+): PrerequisiteReport {
   return {
     ok: errors.length === 0,
     platform,
@@ -97,6 +114,13 @@ export async function checkRunnerPrerequisites(
   };
 }
 
+class RunnerPrerequisiteProbeError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "RunnerPrerequisiteProbeError";
+  }
+}
+
 async function probe(executable: string, args: string[]): Promise<string> {
   const command = new Deno.Command(executable, {
     args,
@@ -107,7 +131,10 @@ async function probe(executable: string, args: string[]): Promise<string> {
   const output = await command.output();
   if (!output.success) {
     const message = new TextDecoder().decode(output.stderr).trim();
-    throw new Error(message || `${executable} exited with status ${output.code}.`);
+    throw new RunnerPrerequisiteProbeError(
+      message || `${executable} exited with status ${output.code}.`,
+      undefined,
+    );
   }
   return new TextDecoder().decode(output.stdout);
 }

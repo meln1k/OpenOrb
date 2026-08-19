@@ -126,7 +126,13 @@ export default createController(routes.app.projects, {
         if (!parsed.success) {
           return renderError(parsed.issues[0]?.message ?? "Invalid project deletion.", 400);
         }
-        const result = await store.deleteProject(userId, parsed.value.projectId);
+        const [result, persistenceError] = await store.deleteProject(
+          userId,
+          parsed.value.projectId,
+        );
+        if (persistenceError !== undefined) {
+          return renderError("The project could not be deleted.", 500);
+        }
         if (result === "in-use") {
           return renderError("This project is used by a session and cannot be deleted.", 409);
         }

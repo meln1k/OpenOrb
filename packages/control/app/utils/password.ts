@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "@std/crypto/timing-safe-equal";
+import { tryAsync } from "@openorb/result";
 
 export const PASSWORD_ALGORITHM = "PBKDF2" as const;
 export const PASSWORD_HASH = "SHA-256" as const;
@@ -31,12 +32,8 @@ export async function verifyPassword(
   password: string,
   stored: PasswordHash,
 ): Promise<boolean> {
-  let derivedKey: Uint8Array;
-  try {
-    derivedKey = await derive(password, stored.salt);
-  } catch {
-    return false;
-  }
+  const [derivedKey, deriveError] = await tryAsync(derive(password, stored.salt), () => false);
+  if (deriveError !== undefined) return false;
 
   if (derivedKey.byteLength !== stored.derivedKey.byteLength) return false;
   return timingSafeEqual(derivedKey, stored.derivedKey);

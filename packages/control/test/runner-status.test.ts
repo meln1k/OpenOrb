@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
+import { ok } from "@openorb/result";
 
 import type { RunnerCapacity } from "@openorb/protocol";
 import type { RunnerRecord } from "@/app/data/runner-repository.ts";
@@ -227,9 +228,9 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 function emptyReconciliation() {
-  return Promise.resolve({
+  return Promise.resolve(ok({
     acceptedSessionIds: [],
     tombstonedSessionIds: [],
     rejected: [],
-  });
+  }));
 }
