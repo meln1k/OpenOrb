@@ -10,8 +10,8 @@ import {
   sectionHeaderStyle,
   sectionHeadingStyle,
   settingsSectionStyle,
-} from "./settings-shared.ts";
-import type { SettingsGitAuthor } from "./settings-tabs.tsx";
+} from "@/app/ui/settings/settings-shared.ts";
+import type { SettingsGitAuthor } from "@/app/ui/settings/settings-tabs.tsx";
 export function GitAuthorSection(
   handle: Handle<
     {

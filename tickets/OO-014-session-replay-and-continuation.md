@@ -9,11 +9,11 @@ A reconnecting browser reloads completed history from its connected runner, and 
 
 ## Scope
 
-- Replay completed normalized events after a runner-owned cursor through the unpersisted gateway proxy.
+- Project and replay completed conversation events from the active branch of Pi JSONL after a derived runner-owned cursor through the unpersisted gateway proxy.
 - Support `Last-Event-ID`/the MVP cursor request behavior without duplicating completed UI records.
 - Reopen the exact runner-owned Pi session JSONL for continuation.
 - Accept a subsequent prompt only when runner, VM, and Pi are ready and idle.
-- Store the completed continuation in Pi JSONL and normalized `events.jsonl`.
+- Store the completed continuation only in Pi JSONL.
 - Show unavailable history rather than a gateway copy when the runner is disconnected.
 
 ## Acceptance criteria
@@ -26,7 +26,7 @@ A reconnecting browser reloads completed history from its connected runner, and 
 
 ## Tests
 
-- Cursor replay from the beginning and from the middle.
+- Pi-derived cursor replay from the beginning and from the middle.
 - Browser/SSE reconnect deduplication.
 - Pi JSONL reopen and context continuation.
 - Gateway persistence/schema assertion after replay.

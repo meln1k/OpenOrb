@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_MODEL } from "@openorb/protocol";
 import { css, type Handle } from "remix/ui";
 
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
@@ -7,10 +8,9 @@ import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
 import { media } from "@/app/ui/responsive.ts";
 
-const FIXED_MVP_MODEL = "deepseek-v4-flash";
-
 export interface SessionComposerValues {
   projectId: string;
+  model: string;
   ref: string;
   runnerId: string;
   branchName: string;
@@ -26,14 +26,18 @@ export interface SessionComposerProps extends SessionComposerData {
 }
 
 export function SessionComposer(handle: Handle<SessionComposerProps>) {
-  const { autoOpen, csrfToken, dialogId, error, projects, runners, values } = handle.props;
+  const { autoOpen, csrfToken, dialogId, error, models, projects, runners, values } = handle.props;
   const titleId = `${dialogId}-title`;
   const firstProject = projects[0];
   const selectedProjectId = values?.projectId ?? firstProject?.id ?? "";
+  const selectedModel = values?.model ??
+    models.find((model) => model.id === DEFAULT_SESSION_MODEL)?.id ??
+    models[0]?.id ??
+    "";
   const selectedRunnerId = values?.runnerId || runners[0]?.id || "";
   const ref = values?.ref ?? firstProject?.defaultRef ?? "main";
   const branchName = values?.branchName ?? "openorb/session";
-  const canSubmit = projects.length > 0 && runners.length > 0;
+  const canSubmit = projects.length > 0 && models.length > 0 && runners.length > 0;
 
   return () => (
     <dialog
@@ -82,6 +86,8 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
             )
             : runners.length === 0
             ? <p mix={noticeStyle}>Connect an available runner before starting a session.</p>
+            : models.length === 0
+            ? <p mix={noticeStyle}>Configure a model provider before starting a session.</p>
             : null}
         </div>
         <footer mix={footerStyle}>
@@ -121,20 +127,31 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
               </select>
               <Icon name="chevron-down" />
             </label>
-            <span
-              aria-label={`Model: opencode-go/${FIXED_MVP_MODEL}`}
-              title="The MVP model is fixed for all sessions"
-              mix={controlBaseStyle}
-            >
+            <label aria-label="Model" mix={selectControlStyle}>
               <Icon name="sparkles" />
-              {FIXED_MVP_MODEL}
-            </span>
+              <select
+                name="model"
+                value={selectedModel}
+                required
+                disabled={models.length === 0}
+                mix={selectStyle}
+              >
+                {models.length === 0
+                  ? <option value="">No model</option>
+                  : models.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.providerName} · {model.name}
+                    </option>
+                  ))}
+              </select>
+              <Icon name="chevron-down" />
+            </label>
           </div>
           <Button
             type="submit"
             size="icon-lg"
             aria-label="Start session"
-            title={canSubmit ? "Start session" : "Project and runner required"}
+            title={canSubmit ? "Start session" : "Project, model, and runner required"}
             disabled={!canSubmit}
           >
             <Icon name="arrow-right" size={20} />

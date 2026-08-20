@@ -11,7 +11,7 @@ A session VM can be explicitly stopped or destroyed after 15 minutes idle, then 
 
 - Record the latest accepted user-message time. Allow idle destruction only after at least 15 minutes have passed since that message and no agent, provisioning, setup, or report work is active.
 - Before destruction, create a final controlled Git report and flush workspace writes.
-- Destroy the VM without checkpointing while retaining workspace, Pi JSONL, metadata, events, reports, and logs.
+- Destroy the VM without checkpointing while retaining workspace, Pi JSONL, metadata, reports, and logs.
 - Add the browser Stop action. Reject Stop while Pi or another provisioning/setup/report operation is active; the user must wait or Abort the active run first.
 - On the next idle prompt, create a clean VM, remount the existing workspace, restore mediation, rerun `.agents/setup`, reopen Pi JSONL, and then dispatch.
 - Make `.agents/setup` idempotence requirement visible in project/session UI or documentation.
@@ -22,7 +22,7 @@ A session VM can be explicitly stopped or destroyed after 15 minutes idle, then 
 - Stop is unavailable during active work and succeeds once the session is idle.
 - Test-configured short timeout exercises the same eligibility rule as the production 15-minute timeout.
 - Guest root/process changes disappear; workspace changes persist.
-- `.agents/setup` runs again before continuation and failure blocks the prompt visibly.
+- `.agents/setup` runs again before continuation; failure is visible and does not block the prompt.
 - The continued model response has prior conversation context and current workspace state.
 - No checkpoint, lease system, `.agents/resume`, or process restoration is introduced.
 

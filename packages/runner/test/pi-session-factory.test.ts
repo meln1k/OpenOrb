@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 
@@ -11,6 +11,13 @@ import {
 const hostileFixture = decodeURIComponent(
   new URL("./fixtures/hostile-pi", import.meta.url).pathname,
 );
+const MODEL_RUNTIME = {
+  model: "opencode-go/deepseek-v4-flash",
+  thinkingLevel: "high" as const,
+  credential: { type: "api_key" as const, value: "test-model-provider-key" },
+};
+const RUN_REAL_MODEL_TEST = Deno.env.get("OPENORB_RUN_PI_MODEL_TESTS") === "1";
+const REAL_MODEL_API_KEY = Deno.env.get("OPENCODE_API_KEY");
 
 Deno.test("the audited factory ignores hostile workspace and global Pi resources", async () => {
   const temporaryDirectory = await Deno.makeTempDir();
@@ -22,10 +29,14 @@ Deno.test("the audited factory ignores hostile workspace and global Pi resources
   try {
     Deno.chdir(`${hostileFixture}/workspace`);
     Deno.env.set("OPENORB_HOSTILE_PI_MARKER", markerPath);
+    await Deno.mkdir(sessionDirectory);
+    const sessionFile = `${sessionDirectory}/session.jsonl`;
+    await Deno.writeTextFile(sessionFile, "");
 
     const result = await OpenOrbPiSessionFactory.create({
-      runnerSessionDirectory: sessionDirectory,
+      runnerSessionFile: sessionFile,
       runnerAgentDirectory: `${hostileFixture}/global-agent`,
+      modelRuntime: MODEL_RUNTIME,
       tools: [],
     });
     try {
@@ -51,7 +62,7 @@ Deno.test("the audited factory ignores hostile workspace and global Pi resources
         result.session.systemPrompt,
         `${OPENORB_SYSTEM_PROMPT}\nCurrent working directory: ${OPENORB_GUEST_WORKSPACE}\n`,
       );
-      assertStringIncludes(result.session.sessionFile ?? "", `${sessionDirectory}/`);
+      assertEquals(result.session.sessionFile, sessionFile);
       assertEquals(result.session.settingsManager.getGlobalSettings().packages, []);
       assertEquals(result.session.settingsManager.getProjectSettings(), {});
 
@@ -92,9 +103,13 @@ Deno.test("the factory allowlists supplied tools without enabling Pi host tools"
   });
 
   try {
+    const sessionFile = `${temporaryDirectory}/session.jsonl`;
+    const agentDirectory = `${temporaryDirectory}/pi-agent`;
+    await Deno.writeTextFile(sessionFile, "");
     const result = await OpenOrbPiSessionFactory.create({
-      runnerSessionDirectory: `${temporaryDirectory}/pi-sessions`,
-      runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
+      runnerSessionFile: sessionFile,
+      runnerAgentDirectory: agentDirectory,
+      modelRuntime: MODEL_RUNTIME,
       tools: [guestTool],
     });
     try {
@@ -103,6 +118,8 @@ Deno.test("the factory allowlists supplied tools without enabling Pi host tools"
         result.session.getAllTools().map((tool) => tool.name),
         ["guest-test"],
       );
+      assert(!(await Deno.readTextFile(sessionFile)).includes(MODEL_RUNTIME.credential.value));
+      assertEquals(await pathExists(`${agentDirectory}/auth.json`), false);
     } finally {
       result.session.dispose();
     }
@@ -110,3 +127,72 @@ Deno.test("the factory allowlists supplied tools without enabling Pi host tools"
     await Deno.remove(temporaryDirectory, { recursive: true });
   }
 });
+
+Deno.test({
+  name: "a real DeepSeek run streams and persists a response without persisting its credential",
+  ignore: !RUN_REAL_MODEL_TEST || !REAL_MODEL_API_KEY,
+  async fn() {
+    const apiKey = REAL_MODEL_API_KEY;
+    if (!apiKey) throw new Error("OPENCODE_API_KEY is required.");
+    const temporaryDirectory = await Deno.makeTempDir();
+    try {
+      const sessionFile = `${temporaryDirectory}/session.jsonl`;
+      const agentDirectory = `${temporaryDirectory}/agent`;
+      await Deno.writeTextFile(sessionFile, "");
+      await Deno.mkdir(agentDirectory);
+      const result = await OpenOrbPiSessionFactory.create({
+        runnerSessionFile: sessionFile,
+        runnerAgentDirectory: agentDirectory,
+        modelRuntime: {
+          ...MODEL_RUNTIME,
+          credential: { type: "api_key", value: apiKey },
+        },
+        tools: [],
+      });
+      let responseText = "";
+      let sawTextDelta = false;
+      let sawThinkingDelta = false;
+      const unsubscribe = result.session.subscribe((event) => {
+        if (event.type === "message_update") {
+          if (event.assistantMessageEvent.type === "text_delta") sawTextDelta = true;
+          if (event.assistantMessageEvent.type === "thinking_delta") sawThinkingDelta = true;
+          return;
+        }
+        if (event.type !== "message_end" || event.message.role !== "assistant") return;
+        responseText = event.message.content.flatMap((block) =>
+          block.type === "text" ? [block.text] : []
+        ).join("");
+      });
+
+      try {
+        await result.session.prompt("Reply with exactly OPENORB_PI_E2E_OK and nothing else.");
+      } finally {
+        unsubscribe();
+        result.session.dispose();
+      }
+
+      assert(sawTextDelta);
+      assert(sawThinkingDelta);
+      assert(responseText.includes("OPENORB_PI_E2E_OK"));
+      const persistedSession = await Deno.readTextFile(sessionFile);
+      assert(persistedSession.includes("OPENORB_PI_E2E_OK"));
+      assert(!persistedSession.includes(apiKey));
+      assertEquals(
+        [...Deno.readDirSync(agentDirectory)].some((entry) => entry.name === "auth.json"),
+        false,
+      );
+    } finally {
+      await Deno.remove(temporaryDirectory, { recursive: true });
+    }
+  },
+});
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}

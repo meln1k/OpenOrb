@@ -12,7 +12,7 @@ The user explicitly deletes a session while its runner is online or offline. The
 - Add destructive confirmation in the browser.
 - Reject online deletion while Pi or provisioning/setup/report work is active; the user must wait for work to settle rather than having deletion implicitly stop it.
 - In one PostgreSQL transaction, write `deleted_sessions(user_id, session_id, deleted_at)` and remove the five-column catalog row matching the authenticated user. Remove the user-scoped in-memory route immediately afterward.
-- If the runner is online and idle, request idempotent removal of runner metadata, workspace, Pi JSONL, normalized events, reports, and logs.
+- If the runner is online and idle, request idempotent removal of runner metadata, workspace, Pi JSONL, reports, and logs.
 - If the runner is offline or permanently lost, complete the control-plane deletion without waiting for runner cleanup.
 - On any later snapshot from a runner with the same owner containing a deleted session ID, do not recreate its catalog row or route. Request runner cleanup repeatedly; if runner work is still active, wait until it settles rather than interrupting it.
 - Retain the minimal deletion marker after cleanup so a stale runner disk or restored backup cannot resurrect the session.

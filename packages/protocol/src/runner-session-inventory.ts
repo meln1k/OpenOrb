@@ -2,6 +2,7 @@ import { array, literal, number, object, string, union } from "@remix-run/data-s
 import type { InferOutput } from "@remix-run/data-schema";
 import { trySync } from "@openorb/result";
 import { validate as validateUuid } from "@std/uuid";
+import { modelReferenceSchema } from "@/src/model-provider.ts";
 
 export const RUNNER_RECONCILE_START_MESSAGE_TYPE = "runner.reconcile.start";
 export const RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE = "runner.reconcile.chunk";
@@ -13,6 +14,7 @@ export const projectIdSchema = string().refine(validateUuid, "Expected a project
 export const runnerSessionStateSchema = union([
   literal("created" as const),
   literal("provisioning" as const),
+  literal("running" as const),
   literal("ready" as const),
   literal("error" as const),
 ]);
@@ -40,6 +42,7 @@ export const runnerSessionSnapshotSchema = object(
     projectId: projectIdSchema,
     createdAt: runnerSessionCreatedAtSchema,
     initialPromptPreview: initialPromptPreviewSchema,
+    model: modelReferenceSchema,
     state: runnerSessionStateSchema,
     lastEventCursor: nonNegativeIntegerSchema,
   },

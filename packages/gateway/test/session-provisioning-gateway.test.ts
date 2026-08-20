@@ -13,8 +13,13 @@ const SECOND_SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c05";
 const PROJECT_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c04";
 const RUNNER_TOKEN = `openorb_runner_${"a".repeat(43)}`;
 const INITIAL_PROMPT = "Inspect the repository";
+const MODEL_RUNTIME = {
+  model: "opencode-go/deepseek-v4-flash",
+  thinkingLevel: "high" as const,
+  credential: { type: "api_key" as const, value: "model-provider-key" },
+};
 
-Deno.test("pins only after durable acceptance and relays cursor-addressed events in memory", async () => {
+Deno.test("requests Pi replay for each subscriber and relays only subsequent live events", async () => {
   let reconciliationCalls = 0;
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
@@ -46,6 +51,7 @@ Deno.test("pins only after durable acceptance and relays cursor-addressed events
         ref: "main",
         branchName: "openorb/session-test",
         initialPrompt: INITIAL_PROMPT,
+        modelRuntime: MODEL_RUNTIME,
         githubToken: "memory-only-token",
       },
     });
@@ -73,12 +79,22 @@ Deno.test("pins only after durable acceptance and relays cursor-addressed events
     assertEquals(reconciliationCalls, 2);
 
     const receivedEvents: number[] = [];
+    const receivedLiveEvents: string[] = [];
+    const replayCommandFrame = nextMessage(socket);
     const subscription = gateway.subscribeToSessionEvents(
       USER_ID,
       SESSION_ID,
       0,
-      (event) => receivedEvents.push(event.cursor),
+      (event) => {
+        if ("cursor" in event) receivedEvents.push(event.cursor);
+        else receivedLiveEvents.push(event.event.type);
+      },
     );
+    const replayCommand = parseRunnerServerMessage(JSON.parse(await replayCommandFrame));
+    assert(replayCommand.type === "session.event.replay");
+    assertEquals(replayCommand.payload, { afterCursor: 0 });
+
+    // Live traffic that predates the Pi snapshot is discarded rather than merged with replay.
     socket.send(JSON.stringify({
       version: 1,
       id: crypto.randomUUID(),
@@ -86,20 +102,117 @@ Deno.test("pins only after durable acceptance and relays cursor-addressed events
       sessionId: SESSION_ID,
       correlationId: command.id,
       payload: {
+        event: {
+          type: "assistant.text.delta",
+          messageId: "assistant-1",
+          delta: "stale",
+        },
+      },
+    }));
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.event",
+      sessionId: SESSION_ID,
+      correlationId: replayCommand.id,
+      payload: { event: { type: "conversation.reset" } },
+    }));
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.event",
+      sessionId: SESSION_ID,
+      correlationId: replayCommand.id,
+      payload: {
         cursor: 1,
+        event: {
+          type: "user.message",
+          messageId: "pi:user:1",
+          text: INITIAL_PROMPT,
+        },
+      },
+    }));
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.event.replay.result",
+      sessionId: SESSION_ID,
+      correlationId: replayCommand.id,
+      payload: { status: "completed", cursor: 1 },
+    }));
+    await subscription.replay;
+    assertEquals(receivedEvents, [1]);
+    assertEquals(receivedLiveEvents, ["conversation.reset"]);
+
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.event",
+      sessionId: SESSION_ID,
+      correlationId: command.id,
+      payload: {
         event: { type: "session.state", stage: "cloning", checkoutState: "pending" },
       },
     }));
-    await waitFor(() => receivedEvents.length === 1);
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.event",
+      sessionId: SESSION_ID,
+      correlationId: command.id,
+      payload: {
+        event: {
+          type: "assistant.text.delta",
+          messageId: "assistant-1",
+          delta: "Hello",
+        },
+      },
+    }));
+    await waitFor(() => receivedLiveEvents.length === 3);
     assertEquals(receivedEvents, [1]);
+    assertEquals(receivedLiveEvents, [
+      "conversation.reset",
+      "session.state",
+      "assistant.text.delta",
+    ]);
     subscription.unsubscribe();
-    const replay = gateway.subscribeToSessionEvents(USER_ID, SESSION_ID, 0, () => {});
-    assertEquals(replay.events.map((event) => event.cursor), [1]);
-    replay.unsubscribe();
+
+    const secondReplayCommandFrame = nextMessage(socket);
+    const secondReplayEvents: number[] = [];
+    const replay = gateway.subscribeToSessionEvents(USER_ID, SESSION_ID, 1, (event) => {
+      if ("cursor" in event) secondReplayEvents.push(event.cursor);
+    });
+    const secondReplayCommand = parseRunnerServerMessage(
+      JSON.parse(await secondReplayCommandFrame),
+    );
+    assert(secondReplayCommand.type === "session.event.replay");
+    assertEquals(secondReplayCommand.payload, { afterCursor: 1 });
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.event",
+      sessionId: SESSION_ID,
+      correlationId: secondReplayCommand.id,
+      payload: {
+        cursor: 2,
+        event: { type: "user.message", messageId: "pi:user:2", text: "Continue" },
+      },
+    }));
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.event.replay.result",
+      sessionId: SESSION_ID,
+      correlationId: secondReplayCommand.id,
+      payload: { status: "completed", cursor: 2 },
+    }));
+    await replay.replay;
+    assertEquals(secondReplayEvents, [2]);
     assertEquals(gateway.getSessionSnapshot(USER_ID, SESSION_ID)?.state, "provisioning");
 
     socket.close();
     await waitFor(() => gateway.getSessionRunner(USER_ID, SESSION_ID) === null);
+    assertEquals(replay.signal.aborted, true);
     assertEquals(gateway.getSessionSnapshot(USER_ID, SESSION_ID), null);
   } finally {
     socket?.close();
@@ -191,6 +304,7 @@ Deno.test("times out unacknowledged provisioning and releases reserved capacity"
         ref: "main",
         branchName: "openorb/session-test",
         initialPrompt: INITIAL_PROMPT,
+        modelRuntime: MODEL_RUNTIME,
       },
     });
     await commandFrame;
@@ -359,6 +473,7 @@ function provisionInput(sessionId: string) {
       ref: "main",
       branchName: "openorb/session-test",
       initialPrompt: INITIAL_PROMPT,
+      modelRuntime: MODEL_RUNTIME,
     },
   };
 }
@@ -387,6 +502,7 @@ function sessionSnapshot() {
     projectId: PROJECT_ID,
     createdAt: "2026-08-17T12:00:00Z",
     initialPromptPreview: INITIAL_PROMPT,
+    model: "opencode-go/deepseek-v4-flash",
     state: "created" as const,
     lastEventCursor: 0,
   };

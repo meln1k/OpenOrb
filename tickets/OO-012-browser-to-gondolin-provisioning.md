@@ -22,7 +22,7 @@ A logged-in user sends an initial prompt from the browser and the selected real 
 
 - Browser provisioning works for the configured real public/private GitHub project.
 - No native host Git process consumes the workspace.
-- On a successful clone, `.agents/setup` runs inside Gondolin and a non-zero exit blocks the prompt.
+- On a successful clone, `.agents/setup` runs inside Gondolin. A non-zero exit is visible but leaves the prompt ready for Pi in OO-013.
 - A clone failure is clearly logged but does not fail the session or prevent the stored prompt from proceeding in OO-013.
 - Browser shows clone/setup progress and useful failure output.
 - Runner choice cannot change after provisioning begins.
@@ -33,7 +33,7 @@ A logged-in user sends an initial prompt from the browser and the selected real 
 ## Tests
 
 - Real public/private repository provisioning path.
-- Clone failure continues with an unavailable-checkout state; setup success/failure fixtures cover successful clones.
+- Clone failure continues with an unavailable-checkout state; setup success/failure fixtures prove both paths remain ready for Pi.
 - Manual/automatic runner selection and pinning.
 - Two-user project/runner/session separation.
 - Catalog preview Unicode truncation and schema guard.

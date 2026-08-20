@@ -10,10 +10,14 @@ import {
   type RunnerServerMessage,
   type RunnerSessionSnapshot,
   SESSION_EVENT_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
   SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
   SESSION_PROVISION_MESSAGE_TYPE,
   SESSION_PROVISION_REJECTED_MESSAGE_TYPE,
   type SessionEventPayload,
+  type SessionEventReplayResultMessage,
+  type SessionEventReplayResultPayload,
   type SessionProvisionAcceptedMessage,
   type SessionProvisionAcceptedPayload,
   type SessionProvisionCommandPayload,
@@ -68,7 +72,8 @@ export type ProvisionSessionResult =
   | { status: "unavailable"; message: string };
 
 export interface SessionEventSubscription {
-  events: SessionEventPayload[];
+  replay: Promise<void>;
+  signal: AbortSignal;
   unsubscribe(): void;
 }
 
@@ -104,6 +109,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
   readonly #sessionRoutes = new SessionRouteOwner<ActiveRunnerConnection>((connection) =>
     this.#isActive(connection)
   );
+  readonly #sessionEventReplays = new Map<string, PendingSessionEventReplay>();
   readonly #provisionCommands: ProvisionCommandOwner<ActiveRunnerConnection>;
   readonly #heartbeatTimeoutMs: number;
   readonly #provisionAcceptanceTimeoutMs: number;
@@ -197,6 +203,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
               this.#provisionCommands.rejectForConnection(
                 existing,
                 "Runner reconnected before acknowledging.",
+              );
+              this.#failSessionEventReplaysForConnection(
+                existing,
+                "Runner reconnected before session history was replayed.",
               );
               this.#sessionRoutes.remove(existing);
               closeSocket(existing.socket, 4000, "Replaced by reconnect");
@@ -306,12 +316,32 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
           }
 
           if (message.type === SESSION_EVENT_MESSAGE_TYPE) {
+            const replay = this.#sessionEventReplays.get(message.correlationId);
+            if (replay) {
+              if (
+                replay.connection !== activeConnection || replay.sessionId !== message.sessionId
+              ) {
+                closeSocket(socket, 4400, "Session event replay does not match its request");
+                return;
+              }
+              if (!replay.accept(message.payload)) {
+                this.#sessionEventReplays.delete(message.correlationId);
+                replay.fail("Runner sent an invalid session history replay.");
+                closeSocket(socket, 4400, "Invalid session event replay sequence");
+              }
+              return;
+            }
             if (
               !this.#sessionRoutes.publish(activeConnection, message.sessionId, message.payload)
             ) {
               closeSocket(socket, 4400, "Session event is not routed through this runner");
               return;
             }
+            return;
+          }
+
+          if (message.type === SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE) {
+            this.#settleSessionEventReplay(activeConnection, message);
             return;
           }
 
@@ -338,6 +368,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
           this.#provisionCommands.rejectForConnection(
             activeConnection,
             "Runner disconnected before acknowledging.",
+          );
+          this.#failSessionEventReplaysForConnection(
+            activeConnection,
+            "Runner disconnected before session history was replayed.",
           );
           this.#sessionRoutes.remove(activeConnection);
         }
@@ -456,7 +490,39 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     afterCursor: number,
     listener: (event: SessionEventPayload) => void,
   ): SessionEventSubscription {
-    return this.#sessionRoutes.subscribe(userId, sessionId, afterCursor, listener);
+    const connection = this.#sessionRoutes.getRoute(userId, sessionId);
+    if (!connection || !this.#isActive(connection)) {
+      return failedSessionEventSubscription("The pinned runner is offline.");
+    }
+
+    const commandId = crypto.randomUUID();
+    const replay = new PendingSessionEventReplay(connection, sessionId, afterCursor, listener);
+    const liveSubscription = this.#sessionRoutes.subscribe(
+      userId,
+      sessionId,
+      (event) => replay.acceptLive(event),
+      () => replay.fail("Runner disconnected from the session event stream."),
+    );
+    replay.setUnsubscribeLive(() => liveSubscription.unsubscribe());
+    this.#sessionEventReplays.set(commandId, replay);
+
+    const command: RunnerServerMessage = {
+      version: 1,
+      id: commandId,
+      type: SESSION_EVENT_REPLAY_MESSAGE_TYPE,
+      sessionId,
+      payload: { afterCursor },
+    };
+    const [, sendError] = trySync(
+      () => connection.socket.send(JSON.stringify(command)),
+      (cause) => new RunnerWebSocketError("Runner replay request delivery failed.", cause),
+    );
+    if (sendError !== undefined) {
+      this.#sessionEventReplays.delete(commandId);
+      replay.fail("Runner disconnected before session history could be requested.");
+      return replay;
+    }
+    return replay;
   }
 
   disconnectRunner(userId: string, runnerId: string): boolean {
@@ -468,6 +534,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     this.#provisionCommands.rejectForConnection(
       connection,
       "Runner was revoked before acknowledging.",
+    );
+    this.#failSessionEventReplaysForConnection(
+      connection,
+      "Runner was revoked before session history was replayed.",
     );
     this.#sessionRoutes.remove(connection);
     clearTimeout(connection.heartbeatTimeout);
@@ -486,6 +556,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       status: "unavailable",
       message: "Gateway is shutting down.",
     });
+    for (const replay of this.#sessionEventReplays.values()) {
+      replay.fail("Gateway shut down before session history was replayed.");
+    }
+    this.#sessionEventReplays.clear();
     this.#connections.clear();
     this.#sessionRoutes.clear();
     this.#sockets.clear();
@@ -500,6 +574,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       this.#provisionCommands.rejectForConnection(
         connection,
         "Runner heartbeat timed out before acknowledging.",
+      );
+      this.#failSessionEventReplaysForConnection(
+        connection,
+        "Runner heartbeat timed out before session history was replayed.",
       );
       this.#sessionRoutes.remove(connection);
       closeSocket(socket, 4408, "Heartbeat timed out");
@@ -620,6 +698,32 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     });
   }
 
+  #settleSessionEventReplay(
+    connection: ActiveRunnerConnection,
+    message: SessionEventReplayResultMessage,
+  ): void {
+    const replay = this.#sessionEventReplays.get(message.correlationId);
+    if (!replay || replay.connection !== connection || replay.sessionId !== message.sessionId) {
+      closeSocket(connection.socket, 4400, "Unexpected session event replay result");
+      return;
+    }
+    this.#sessionEventReplays.delete(message.correlationId);
+    if (!replay.complete(message.payload)) {
+      closeSocket(connection.socket, 4400, "Invalid session event replay result");
+    }
+  }
+
+  #failSessionEventReplaysForConnection(
+    connection: ActiveRunnerConnection,
+    message: string,
+  ): void {
+    for (const [commandId, replay] of this.#sessionEventReplays) {
+      if (replay.connection !== connection) continue;
+      this.#sessionEventReplays.delete(commandId);
+      replay.fail(message);
+    }
+  }
+
   #isActive(connection: ActiveRunnerConnection): boolean {
     return connection.socket.readyState === WebSocket.OPEN &&
       this.#connections.get(connection.runner.id) === connection;
@@ -673,5 +777,127 @@ class RunnerGatewayConfigurationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RunnerGatewayConfigurationError";
+  }
+}
+
+class PendingSessionEventReplay implements SessionEventSubscription {
+  readonly connection: ActiveRunnerConnection;
+  readonly sessionId: string;
+  readonly replay: Promise<void>;
+  readonly #abort = new AbortController();
+  readonly #resolveReplay: () => void;
+  readonly #rejectReplay: (error: Error) => void;
+  readonly #listener: (event: SessionEventPayload) => void;
+  readonly #afterCursor: number;
+  #unsubscribeLive = () => {};
+  #active = true;
+  #replaying = true;
+  #settled = false;
+  #replayMode: "pending" | "incremental" | "reset" = "pending";
+  #nextCursor: number;
+
+  get signal(): AbortSignal {
+    return this.#abort.signal;
+  }
+
+  constructor(
+    connection: ActiveRunnerConnection,
+    sessionId: string,
+    afterCursor: number,
+    listener: (event: SessionEventPayload) => void,
+  ) {
+    this.connection = connection;
+    this.sessionId = sessionId;
+    this.#afterCursor = afterCursor;
+    this.#nextCursor = afterCursor + 1;
+    this.#listener = listener;
+    const replay = Promise.withResolvers<void>();
+    this.replay = replay.promise;
+    this.#resolveReplay = replay.resolve;
+    this.#rejectReplay = replay.reject;
+  }
+
+  setUnsubscribeLive(unsubscribe: () => void): void {
+    this.#unsubscribeLive = unsubscribe;
+  }
+
+  accept(event: SessionEventPayload): boolean {
+    if (!this.#replaying) return false;
+    if (!("cursor" in event) && event.event.type === "conversation.reset") {
+      if (this.#replayMode !== "pending") return false;
+      this.#replayMode = "reset";
+      this.#nextCursor = 1;
+    } else {
+      if (!("cursor" in event)) return false;
+      if (this.#replayMode === "pending") {
+        if (this.#afterCursor === 0) return false;
+        this.#replayMode = "incremental";
+      }
+      if (event.cursor !== this.#nextCursor) return false;
+      this.#nextCursor += 1;
+    }
+    if (this.#active) {
+      // A disconnected browser stream must not disrupt the runner connection.
+      trySync(() => this.#listener(event), () => undefined);
+    }
+    return true;
+  }
+
+  acceptLive(event: SessionEventPayload): void {
+    if (this.#active && !this.#replaying) this.#listener(event);
+  }
+
+  complete(result: SessionEventReplayResultPayload): boolean {
+    if (result.status === "failed") {
+      this.fail("Runner could not replay Pi session history.");
+      return true;
+    }
+    const expectedCursor = this.#replayMode === "pending"
+      ? this.#afterCursor === 0 ? undefined : this.#afterCursor
+      : this.#nextCursor - 1;
+    if (expectedCursor === undefined || result.cursor !== expectedCursor) {
+      this.fail("Runner sent an incomplete Pi session history replay.");
+      return false;
+    }
+    if (this.#settled) return true;
+    this.#settled = true;
+    this.#replaying = false;
+    this.#resolveReplay();
+    return true;
+  }
+
+  fail(message: string): void {
+    if (!this.#active) return;
+    this.#active = false;
+    this.#unsubscribeLive();
+    if (!this.#settled) {
+      this.#settled = true;
+      this.#rejectReplay(new SessionEventReplayError(message));
+    }
+    this.#abort.abort();
+  }
+
+  unsubscribe(): void {
+    if (!this.#active) return;
+    this.#active = false;
+    this.#unsubscribeLive();
+    if (!this.#settled) {
+      this.#settled = true;
+      this.#resolveReplay();
+    }
+    this.#abort.abort();
+  }
+}
+
+function failedSessionEventSubscription(message: string): SessionEventSubscription {
+  const replay = Promise.reject<void>(new SessionEventReplayError(message));
+  void replay.catch(() => undefined);
+  return { replay, signal: AbortSignal.abort(), unsubscribe() {} };
+}
+
+class SessionEventReplayError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionEventReplayError";
   }
 }

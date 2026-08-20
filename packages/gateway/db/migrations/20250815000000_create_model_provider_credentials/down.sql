@@ -1,0 +1,8 @@
+alter table model_provider_credentials
+  drop constraint model_provider_credentials_secret_owner_fk;
+
+delete from encrypted_secrets
+using model_provider_credentials
+where encrypted_secrets.id = model_provider_credentials.encrypted_secret_id;
+
+drop table model_provider_credentials;

@@ -12,6 +12,10 @@ import {
   type GitConfigurationRepository,
 } from "@/app/data/git-configuration-repository.ts";
 import { loadMasterKey, type MasterKey } from "@/app/utils/master-key.ts";
+import {
+  createModelProviderRepository,
+  type ModelProviderRepository,
+} from "@/app/data/model-provider-repository.ts";
 import { createProjectRepository, type ProjectRepository } from "@/app/data/project-repository.ts";
 import { createRunnerRepository, type RunnerRepository } from "@/app/data/runner-repository.ts";
 import { createSecretRepository, type SecretRepository } from "@/app/data/secret-repository.ts";
@@ -25,6 +29,7 @@ export interface Store
   extends
     AdministratorRepository,
     SecretRepository,
+    ModelProviderRepository,
     GitConfigurationRepository,
     ProjectRepository,
     RunnerRepository,
@@ -45,6 +50,7 @@ export function createPostgresStore(databaseUrl: string, masterKey: MasterKey): 
     pool,
     ...createAdministratorRepository(database),
     ...createSecretRepository(database, masterKey),
+    ...createModelProviderRepository(database, masterKey),
     ...createGitConfigurationRepository(database, masterKey),
     ...createProjectRepository(database),
     ...createRunnerRepository(database),

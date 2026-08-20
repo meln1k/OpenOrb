@@ -3,12 +3,9 @@ import { createController } from "remix/router";
 import { parseSafe } from "remix/data-schema";
 
 import type { Administrator } from "@/app/data/administrator-repository.ts";
-import { type SessionEventPayload, sessionIdSchema } from "@openorb/protocol";
-import { trySync } from "@openorb/result";
+import { sessionIdSchema } from "@openorb/protocol";
+import { createSessionEventStream } from "@/app/actions/api/sessions/session-event-stream.ts";
 import { routes } from "@/app/routes.ts";
-
-const KEEPALIVE_INTERVAL_MS = 15_000;
-const encoder = new TextEncoder();
 
 export default createController(routes.api.sessions, {
   middleware: [requireAuth<Administrator>()],
@@ -28,61 +25,16 @@ export default createController(routes.api.sessions, {
       const afterCursor = parseCursor(context.request);
       if (afterCursor === null) return new Response("Invalid event cursor.", { status: 400 });
 
-      let unsubscribe = () => {};
-      let keepalive: ReturnType<typeof setInterval> | undefined;
-      let abort = () => {};
-      const stream = new ReadableStream<Uint8Array>({
-        start: (controller) => {
-          let closed = false;
-          const close = () => {
-            if (closed) return;
-            closed = true;
-            if (keepalive !== undefined) clearInterval(keepalive);
-            unsubscribe();
-            context.request.signal.removeEventListener("abort", abort);
-            // A peer may cancel immediately before the abort signal is delivered.
-            trySync(() => controller.close(), () => undefined);
-          };
-          const enqueue = (event: SessionEventPayload) => {
-            if (closed) return;
-            const [, enqueueError] = trySync(
-              () => controller.enqueue(encodeEvent(event)),
-              () => true,
-            );
-            if (enqueueError !== undefined) {
-              close();
-              return;
-            }
-          };
-          const subscription = context.services.runnerConnections.subscribeToSessionEvents(
+      const stream = createSessionEventStream(
+        context.request.signal,
+        (listener) =>
+          context.services.runnerConnections.subscribeToSessionEvents(
             userId,
             sessionId,
             afterCursor,
-            enqueue,
-          );
-          unsubscribe = subscription.unsubscribe;
-          for (const event of subscription.events) enqueue(event);
-          keepalive = setInterval(() => {
-            if (closed) return;
-            const [, enqueueError] = trySync(
-              () => controller.enqueue(encoder.encode(": keepalive\n\n")),
-              () => true,
-            );
-            if (enqueueError !== undefined) {
-              close();
-              return;
-            }
-          }, KEEPALIVE_INTERVAL_MS);
-          abort = close;
-          context.request.signal.addEventListener("abort", abort, { once: true });
-          if (context.request.signal.aborted) close();
-        },
-        cancel() {
-          if (keepalive !== undefined) clearInterval(keepalive);
-          unsubscribe();
-          context.request.signal.removeEventListener("abort", abort);
-        },
-      });
+            listener,
+          ),
+      );
 
       return new Response(stream, {
         headers: {
@@ -96,15 +48,8 @@ export default createController(routes.api.sessions, {
 });
 
 function parseCursor(request: Request): number | null {
-  const url = new URL(request.url);
-  const source = url.searchParams.get("after") ?? request.headers.get("last-event-id") ?? "0";
+  const source = request.headers.get("last-event-id") ?? "0";
   if (!/^\d+$/.test(source)) return null;
   const cursor = Number(source);
   return Number.isSafeInteger(cursor) ? cursor : null;
-}
-
-function encodeEvent(payload: SessionEventPayload): Uint8Array {
-  return encoder.encode(
-    `id: ${payload.cursor}\nevent: session\ndata: ${JSON.stringify(payload.event)}\n\n`,
-  );
 }

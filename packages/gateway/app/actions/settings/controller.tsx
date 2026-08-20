@@ -11,6 +11,7 @@ import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { isReservedGitCredentialSecretKey } from "@/app/data/git-configuration-repository.ts";
 import type { RunnerRecord } from "@/app/data/runner-repository.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
+import { MODEL_PROVIDER_OPTIONS } from "@/app/model-provider-catalog.ts";
 import type { AppContext } from "@/app/router.ts";
 import type { RunnerConnectionRegistry } from "@/app/runner-connection-gateway.ts";
 import { routes } from "@/app/routes.ts";
@@ -21,21 +22,24 @@ import {
   settingsTabHref,
 } from "@/app/actions/settings/page.tsx";
 
+const modelProviderIdSchema = s.string().refine(
+  (value) => MODEL_PROVIDER_OPTIONS.some((provider) => provider.id === value),
+  "Select a model provider from the list.",
+);
+
 const secretKeySchema = s.string().refine(
   (value) => {
     const key = value.trim();
-    return key.length > 0 &&
-      key.length <= 64 &&
-      /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
+    return key.length > 0 && key.length <= 64 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
       !isReservedGitCredentialSecretKey(key);
   },
-  'Start with a letter or underscore and use only letters, digits, and underscores, such as "OPENCODE_API_KEY". OPENORB_GITHUB_TOKEN_ names are reserved.',
+  'Start with a letter or underscore and use only letters, digits, and underscores, such as "SERVICE_TOKEN". OPENORB_GITHUB_TOKEN_ names are reserved.',
 );
 
 const saveSchema = f.object({
-  intent: f.field(s.literal("save")),
-  key: f.field(secretKeySchema),
-  value: f.field(
+  intent: f.field(s.literal("save-provider")),
+  providerId: f.field(modelProviderIdSchema),
+  apiKey: f.field(
     s
       .string()
       .refine((value) => value.trim().length > 0, "The API key is required.")
@@ -44,7 +48,23 @@ const saveSchema = f.object({
 });
 
 const deleteSchema = f.object({
-  intent: f.field(s.literal("delete")),
+  intent: f.field(s.literal("delete-provider")),
+  providerId: f.field(modelProviderIdSchema),
+});
+
+const saveSecretSchema = f.object({
+  intent: f.field(s.literal("save-secret")),
+  key: f.field(secretKeySchema),
+  value: f.field(
+    s
+      .string()
+      .refine((value) => value.trim().length > 0, "The secret value is required.")
+      .refine((value) => value.trim().length <= 4096, "The secret value is too long."),
+  ),
+});
+
+const deleteSecretSchema = f.object({
+  intent: f.field(s.literal("delete-secret")),
   key: f.field(secretKeySchema),
 });
 
@@ -93,8 +113,10 @@ const deleteRunnerSchema = f.object({
 });
 
 const settingsIntentSchema = s.union([
-  s.literal("save" as const),
-  s.literal("delete" as const),
+  s.literal("save-provider" as const),
+  s.literal("delete-provider" as const),
+  s.literal("save-secret" as const),
+  s.literal("delete-secret" as const),
   s.literal("save-github-credential" as const),
   s.literal("delete-github-credential" as const),
   s.literal("save-git-author" as const),
@@ -111,8 +133,10 @@ type SettingsIntent = InferOutput<typeof settingsIntentSchema>;
 type ActionHandler = (context: SettingsContext) => Promise<Response>;
 
 const actionHandlers = {
-  save: saveSecret,
-  delete: deleteSecret,
+  "save-provider": saveModelProvider,
+  "delete-provider": deleteModelProvider,
+  "save-secret": saveSecret,
+  "delete-secret": deleteSecret,
   "save-github-credential": saveGitHubCredential,
   "delete-github-credential": deleteGitHubCredential,
   "save-git-author": saveGitAuthor,
@@ -147,17 +171,21 @@ async function renderSettings(
 ): Promise<Response> {
   const userId = context.auth.identity.id;
   const { store } = context.services;
-  const [secrets, githubCredential, gitAuthor, enrollmentToken, runners] = await Promise.all([
-    store.listSecrets(userId),
-    store.getGitHubCredential(userId),
-    store.getGitAuthorConfiguration(userId),
-    store.getRunnerEnrollmentToken(userId),
-    store.listRunners(userId),
-  ]);
+  const [providers, secrets, githubCredential, gitAuthor, enrollmentToken, runners] = await Promise
+    .all([
+      store.listModelProviderCredentials(userId),
+      store.listSecrets(userId),
+      store.getGitHubCredential(userId),
+      store.getGitAuthorConfiguration(userId),
+      store.getRunnerEnrollmentToken(userId),
+      store.listRunners(userId),
+    ]);
   return context.render(
     <SettingsPage
       csrfToken={getCsrfToken(context)}
       gatewayUrl={runnerGatewayUrl(context.request)}
+      providerOptions={MODEL_PROVIDER_OPTIONS}
+      providers={providers}
       secrets={secrets}
       githubCredential={githubCredential}
       gitAuthor={gitAuthor}
@@ -170,14 +198,49 @@ async function renderSettings(
   );
 }
 
-async function saveSecret(context: SettingsContext): Promise<Response> {
+async function saveModelProvider(context: SettingsContext): Promise<Response> {
   const parsed = s.parseSafe(saveSchema, context.formData);
+  if (!parsed.success) {
+    return await renderSettings(
+      context,
+      parsed.issues[0]?.message ?? "Invalid model provider form submission.",
+      400,
+      "save-provider",
+    );
+  }
+  await context.services.store.saveModelProviderCredential(
+    context.auth.identity.id,
+    parsed.value.providerId,
+    parsed.value.apiKey.trim(),
+  );
+  return redirect(settingsTabHref("providers"), 303);
+}
+
+async function deleteModelProvider(context: SettingsContext): Promise<Response> {
+  const parsed = s.parseSafe(deleteSchema, context.formData);
+  if (!parsed.success) {
+    return await renderSettings(
+      context,
+      parsed.issues[0]?.message ?? "Invalid model provider deletion.",
+      400,
+      "delete-provider",
+    );
+  }
+  await context.services.store.deleteModelProviderCredential(
+    context.auth.identity.id,
+    parsed.value.providerId,
+  );
+  return redirect(settingsTabHref("providers"), 303);
+}
+
+async function saveSecret(context: SettingsContext): Promise<Response> {
+  const parsed = s.parseSafe(saveSecretSchema, context.formData);
   if (!parsed.success) {
     return await renderSettings(
       context,
       parsed.issues[0]?.message ?? "Invalid secret form submission.",
       400,
-      "save",
+      "save-secret",
     );
   }
   await context.services.store.saveSecret(
@@ -189,13 +252,13 @@ async function saveSecret(context: SettingsContext): Promise<Response> {
 }
 
 async function deleteSecret(context: SettingsContext): Promise<Response> {
-  const parsed = s.parseSafe(deleteSchema, context.formData);
+  const parsed = s.parseSafe(deleteSecretSchema, context.formData);
   if (!parsed.success) {
     return await renderSettings(
       context,
       parsed.issues[0]?.message ?? "Invalid secret deletion.",
       400,
-      "delete",
+      "delete-secret",
     );
   }
   await context.services.store.deleteSecret(context.auth.identity.id, parsed.value.key.trim());
@@ -316,16 +379,20 @@ async function deleteRunner(context: SettingsContext): Promise<Response> {
 
 function settingsTabFromRequest(request: Request, intent?: FormDataEntryValue | null): SettingsTab {
   const tab = new URL(request.url).searchParams.get("tab");
-  if (tab === "github" || tab === "git-author" || tab === "runners" || tab === "secrets") {
+  if (
+    tab === "github" || tab === "git-author" || tab === "runners" || tab === "providers" ||
+    tab === "secrets"
+  ) {
     return tab;
   }
+  if (intent === "save-secret" || intent === "delete-secret") return "secrets";
   if (intent === "save-github-credential" || intent === "delete-github-credential") return "github";
   if (intent === "save-git-author") return "git-author";
   if (
     intent === "regenerate-enrollment-token" || intent === "revoke-runner" ||
     intent === "delete-runner"
   ) return "runners";
-  return "secrets";
+  return "providers";
 }
 
 function runnerGatewayUrl(request: Request): string {

@@ -3,11 +3,13 @@
   "specifiers": {
     "jsr:@std/assert@1.0.19": "1.0.19",
     "jsr:@std/async@1.0.14": "1.0.14",
+    "jsr:@std/async@1.5.0": "1.5.0",
     "jsr:@std/bytes@^1.0.6": "1.0.6",
     "jsr:@std/cli@1.0.32": "1.0.32",
     "jsr:@std/cli@^1.0.32": "1.0.32",
     "jsr:@std/crypto@1.1.0": "1.1.0",
     "jsr:@std/crypto@^1.1.0": "1.1.0",
+    "jsr:@std/data-structures@^1.1.1": "1.1.2",
     "jsr:@std/encoding@1.0.11": "1.0.11",
     "jsr:@std/encoding@^1.0.11": "1.0.11",
     "jsr:@std/fmt@^1.0.10": "1.0.10",
@@ -47,6 +49,12 @@
     "@std/async@1.0.14": {
       "integrity": "62e954a418652c704d37563a3e54a37d4cf0268a9dcaeac1660cc652880b5326"
     },
+    "@std/async@1.5.0": {
+      "integrity": "4c1f22d287a17ad7d8643b1952bc5a4d21e5d8b68dc8c20d8268eecc69096e82",
+      "dependencies": [
+        "jsr:@std/data-structures"
+      ]
+    },
     "@std/bytes@1.0.6": {
       "integrity": "f6ac6adbd8ccd99314045f5703e23af0a68d7f7e58364b47d2c7f408aeb5820a"
     },
@@ -58,6 +66,9 @@
     },
     "@std/crypto@1.1.0": {
       "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
+    },
+    "@std/data-structures@1.1.2": {
+      "integrity": "2471377c9e0051f9ec34e57d0ebd0ad133a5a889677446ec6ba9938e4e102918"
     },
     "@std/encoding@1.0.11": {
       "integrity": "e7cef2f0b3153bccc17431e7c864a1de03a4b6d9647389c43e08aaa775d37385"
@@ -2404,12 +2415,14 @@
       "packages/gateway": {
         "dependencies": [
           "jsr:@std/assert@1.0.19",
+          "jsr:@std/async@1.5.0",
           "jsr:@std/crypto@1.1.0",
           "jsr:@std/encoding@1.0.11",
           "jsr:@std/http@1.1.3",
           "jsr:@std/path@1.1.6",
           "jsr:@std/streams@1.1.2",
           "jsr:@std/uuid@1.1.1",
+          "npm:@earendil-works/pi-ai@0.84.2",
           "npm:@opentelemetry/api@1.9.0",
           "npm:lucide@^1.31.0",
           "npm:pg@8.16.3",

@@ -8,7 +8,7 @@ Prove the core OpenOrb workflow with the smallest useful system:
 
 1. Deploy a gateway.
 2. Enroll outbound-only Linux runners.
-3. Configure an OpenCode Go API key and a public or private GitHub repository.
+3. Configure a Pi provider API key and a public or private GitHub repository.
 4. Start a session on an available runner.
 5. Clone the repository inside a Gondolin VM.
 6. Run host-side Pi with tools backed by Gondolin.
@@ -40,7 +40,7 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 - Single-administrator password authentication over a multi-row `users` schema
 - PostgreSQL as the gateway's only durable persistence, covering gateway configuration, the minimal live-session catalog, and deleted-session markers
 - Project configuration
-- Provider API-key configuration in key-value form (e.g. `OPENCODE_API_KEY`, `OPENAI_API_KEY`); sessions initially target `opencode-go/deepseek-v4-flash`
+- One encrypted API-key credential per configured Pi provider, with session model selection represented as one `provider/model` reference
 - GitHub token configuration using a mediated guest-visible `GH_TOKEN` placeholder
 - Per-user Git author name and email configuration
 - Runner enrollment and revocation
@@ -66,7 +66,7 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 - Gondolin-backed `read`, `write`, `edit`, and `bash` tools
 - Guest-side GitHub clone, status, diff, commit, fetch, and push using Git/`gh`
 - GitHub `GH_TOKEN` mediation; the real token remains outside the guest
-- Pi JSONL, transcript/event history, metadata, reports, and workspace persistence
+- Pi JSONL as the sole conversation transcript, plus metadata, reports, and workspace persistence
 - Idle VM destruction and cold recreation
 
 ### Conversation
@@ -100,7 +100,6 @@ A best-effort “Steer now” action may be added later if trivial, but it is no
 - Runner labels and draining workflows
 - Passkeys/WebAuthn
 - Project environment secrets
-- Provider and model support in sessions beyond `opencode-go/deepseek-v4-flash` (storing additional provider keys is supported)
 - Provider credential testing UI
 - Non-GitHub Git hosts and generic Git credentials
 - SSH repository credentials and transport
@@ -214,12 +213,12 @@ Guest assets are separate from the executable. Runner release metadata pins one 
 
 The gateway encrypts:
 
-- Provider API keys in key-value form (e.g. `OPENCODE_API_KEY`, `OPENAI_API_KEY`)
+- Provider API keys, stored as one separately encrypted credential per Pi provider
 - The GitHub token
 
 Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The gateway never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Import the 256-bit key with Web Crypto and use `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()` directly. Persist their returned bytes unchanged as one opaque value, store key version separately, and authenticate immutable user ID, credential key, and key version as AAD. Secret values are never returned to the browser after creation.
 
-Every `encrypted_secrets` row has an immutable `user_id` and explicit required purpose. Provider keys use `provider-api-key`; rows referenced by `git_credentials` use `git-credential`. Secret repositories select rows by user and purpose, not key-prefix conventions or lookups into another credential repository.
+Every `encrypted_secrets` row has an immutable `user_id` and explicit required purpose. Provider keys use `provider-api-key` and are referenced by provider ID through `model_provider_credentials`; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Secret repositories select rows by user and purpose, not key-prefix conventions. Provider credential records use opaque secret keys and do not derive identity from environment-variable names.
 
 ### Runner enrollment
 
@@ -328,7 +327,6 @@ Persist only on the runner:
 
 - Workspace and `.git`
 - Pi JSONL
-- Complete normalized transcript/event history
 - Complete session metadata and pinned-runner identity
 - Provisioning and operation logs
 - Last bounded Git status/diff report
@@ -444,18 +442,19 @@ This security rule remains mandatory even in the lean MVP:
 
 ### Model credentials
 
-- The gateway stores provider API keys as encrypted key-value credentials (credential key → encrypted value), each with a UUID row id and the unique credential key as authenticated metadata.
-- The MVP session run uses Pi's built-in `opencode-go/deepseek-v4-flash` model definition. Model selection is not part of project configuration, and provider/model support beyond the built-in session model remains deferred.
-- Gateway sends the selected credential only to the pinned trusted runner.
+- The gateway stores each Pi provider's API key as a separately encrypted credential referenced by that provider ID. Generic secrets remain independent and cannot be selected as model credentials.
+- The browser selects one opaque `provider/model` reference from the models belonging to configured Pi API-key providers. Split the reference only at its first `/`; model IDs may contain additional `/` characters.
+- Tests default to Pi's built-in `opencode-go/deepseek-v4-flash` model definition and thinking level `high`.
+- The browser sends only the selected model reference. The gateway resolves its provider and sends the model reference, thinking level, and selected provider credential only to the pinned trusted runner.
 - Runner supplies it through Pi runtime credential APIs.
 - Model credentials never enter Gondolin.
 
 ### Persistence
 
 - Pi JSONL lives in the session’s runner directory.
-- The runner also stores normalized completed user/assistant messages, tool calls/results, usage summaries, state transitions, and replayable event cursors.
+- Pi JSONL is the sole durable conversation transcript. The runner projects Pi's active branch into bounded wire/UI events and derives replay positions from that projection; it does not write an OpenOrb transcript or event log.
 - The gateway relays history and events but does not persist session content or state.
-- Token deltas may be streamed live; completed semantic events are persisted on the runner for reconnect replay.
+- Token deltas may be streamed live; completed conversation history is replayed from Pi JSONL.
 
 ## 13. Messaging semantics
 
@@ -645,7 +644,7 @@ type SessionEvent =
   | { type: "workspace.changed"; summary: DiffSummary }
 ```
 
-The runner persists completed semantic records and state transitions with a per-session cursor. The gateway proxies SSE and asks the runner to replay events after the browser’s cursor. It does not store event history.
+The runner derives completed conversation events and monotonic positions from the active Pi JSONL branch. The gateway proxies SSE and asks the runner to replay events after the browser’s cursor. Neither the runner nor gateway stores a second event history.
 
 If the runner is offline, session history and SSE replay are unavailable.
 
@@ -657,7 +656,7 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 - `password_credentials`
 - `browser_sessions` (the PostgreSQL backing store for Remix sessions, with nullable `user_id` for anonymous pre-login sessions and required owner consistency once authenticated)
 - `encrypted_secrets` (uuid id primary key, immutable user owner, per-user unique credential key, required purpose, encrypted value)
-- `models`
+- `model_provider_credentials`
 - `git_credentials`
 - Per-user Git author configuration
 - `projects`
@@ -668,7 +667,7 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 
 It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only user ownership, session identity, and deletion time. Session routing is a user-scoped in-memory index rebuilt from connected runner snapshots. Do not add Redis, another database/KV service, or application-owned durable gateway files.
 
-Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as conversation truth, atomic JSON for session metadata, an append-only OpenOrb `events.jsonl` for normalized replayable events/cursors, ordinary log files, and JSON/patch Git reports. Do not add a runner-local database for the MVP.
+Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as the sole durable conversation transcript, atomic JSON for session metadata, ordinary log files, and JSON/patch Git reports. Derive bounded replay/wire events from Pi JSONL instead of adding an OpenOrb event file. Do not add a runner-local database for the MVP.
 
 Do not add gateway tables for:
 
@@ -710,9 +709,8 @@ Do not add gateway tables for:
 
 ### Setup failure
 
-- Stop before prompting Pi.
 - Show setup stdout/stderr.
-- Permit retry after the repository is corrected.
+- Emit a visible warning and continue to Pi so the prompt can diagnose or repair the project.
 
 ### Gateway restart
 
@@ -740,7 +738,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 ### End-to-end path
 
 1. Enroll a runner behind NAT.
-2. Configure an OpenCode Go credential and a GitHub token.
+2. Configure a Pi provider credential and a GitHub token.
 3. Create a project.
 4. Start a session.
 5. Clone inside Gondolin.
@@ -787,7 +785,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 ### Milestone 1 — Gateway and runner connection
 
 - Remix-backed password setup/login and PostgreSQL browser sessions
-- Encrypted OpenCode Go and GitHub token credentials
+- Encrypted Pi provider and GitHub token credentials
 - Per-user Git author name/email configuration
 - Projects
 - Runner enrollment bearer token
@@ -817,7 +815,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 - Persistent Pi JSONL
 - HTTP prompt/abort
 - SSE event streaming
-- Runner-local transcript/event persistence and gateway live proxying
+- Pi JSONL conversation persistence and gateway live proxying
 - One-prompt-at-a-time UI
 
 **Exit:** The user can run and continue a streamed coding-agent conversation from desktop or mobile.
@@ -842,7 +840,7 @@ The lean MVP is complete when:
 1. A user can complete first-run password setup and use the Remix-backed password-protected gateway; valid sessions survive a gateway-process restart against the same PostgreSQL database.
 2. A Linux runner behind NAT enrolls using a URL and enrollment PSK.
 3. The runner needs no inbound port or VPN.
-4. The user can configure an OpenCode Go API key, GitHub token, and per-user Git author name/email.
+4. The user can configure Pi provider API keys, a GitHub token, and per-user Git author name/email.
 5. The user can create a project and start a session on an available runner.
 6. The repository is cloned inside Gondolin, never with host Git against the session workspace.
 7. `.agents/setup` runs inside Gondolin.

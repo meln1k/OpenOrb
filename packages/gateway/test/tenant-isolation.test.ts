@@ -10,17 +10,40 @@ Deno.test("configuration persistence separates users across every repository ope
     const firstUserId = await createTestUser(store);
     const secondUserId = await createTestUser(store);
 
-    await store.saveSecret(firstUserId, "OPENCODE_API_KEY", "first-provider-token");
-    await store.saveSecret(secondUserId, "OPENCODE_API_KEY", "second-provider-token");
+    await store.saveSecret(firstUserId, "SERVICE_TOKEN", "first-service-token");
+    await store.saveSecret(secondUserId, "SERVICE_TOKEN", "second-service-token");
     assertEquals((await store.listSecrets(firstUserId)).map((secret) => secret.key), [
-      "OPENCODE_API_KEY",
+      "SERVICE_TOKEN",
     ]);
     assertEquals((await store.listSecrets(secondUserId)).map((secret) => secret.key), [
-      "OPENCODE_API_KEY",
+      "SERVICE_TOKEN",
     ]);
-    assertEquals(await store.deleteSecret(firstUserId, "OPENCODE_API_KEY"), true);
-    assertEquals(await store.getSecret(firstUserId, "OPENCODE_API_KEY"), null);
-    assert(await store.getSecret(secondUserId, "OPENCODE_API_KEY"));
+    assertEquals(await store.deleteSecret(firstUserId, "SERVICE_TOKEN"), true);
+    assertEquals(await store.getSecret(firstUserId, "SERVICE_TOKEN"), null);
+    assert(await store.getSecret(secondUserId, "SERVICE_TOKEN"));
+
+    await store.saveModelProviderCredential(firstUserId, "opencode-go", "first-provider-token");
+    await store.saveModelProviderCredential(secondUserId, "opencode-go", "second-provider-token");
+    assertEquals(
+      (await store.listModelProviderCredentials(firstUserId)).map((credential) =>
+        credential.providerId
+      ),
+      ["opencode-go"],
+    );
+    assertEquals(
+      (await store.listModelProviderCredentials(secondUserId)).map((credential) =>
+        credential.providerId
+      ),
+      ["opencode-go"],
+    );
+    assertEquals(await store.deleteModelProviderCredential(firstUserId, "opencode-go"), {
+      status: "deleted",
+    });
+    assertEquals(await store.getModelProviderCredential(firstUserId, "opencode-go"), null);
+    assertEquals(await store.getModelProviderApiKey(secondUserId, "opencode-go"), [
+      "second-provider-token",
+      undefined,
+    ]);
 
     await store.saveGitAuthorConfiguration(firstUserId, {
       authorName: "First User",
@@ -135,6 +158,8 @@ Deno.test("configuration persistence separates users across every repository ope
 
     const ownership = await store.pool.query<{ table_name: string; user_id: string }>(
       `select 'encrypted_secrets' as table_name, user_id from encrypted_secrets
+       union all
+       select 'model_provider_credentials', user_id from model_provider_credentials
        union all
        select 'git_author_configuration', user_id from git_author_configuration
        union all

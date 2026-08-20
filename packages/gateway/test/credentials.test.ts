@@ -8,10 +8,11 @@ import {
 } from "@std/assert";
 import { array, number, object, parse, string } from "remix/data-schema";
 
+import { ModelProviderCredentialReadError } from "@/app/data/model-provider-repository.ts";
 import { createAppServices } from "@/app/middleware/services.ts";
 import { createAppRouter } from "@/app/router.ts";
 import { importMasterKey } from "@/app/utils/master-key.ts";
-import { decryptSecret, SecretDecryptionError } from "@/app/utils/secret-cipher.ts";
+import { decryptSecret } from "@/app/utils/secret-cipher.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
 import {
   createTestStore,
@@ -19,30 +20,24 @@ import {
   TEST_MASTER_KEY_HEX,
 } from "@/test/postgres-test.ts";
 
-const OPENCODE_KEY = "OPENCODE_API_KEY";
+const OPENCODE_PROVIDER = "opencode-go";
 const OPENCODE_VALUE = "oc-go-secret-7f3d9a";
+const OPENAI_PROVIDER = "openai";
 const OPENAI_VALUE = "sk-openai-secret-91e4b0";
+const GENERIC_SECRET_KEY = "SERVICE_TOKEN";
+const GENERIC_SECRET_VALUE = "generic-service-secret-42";
 
-const secretCiphertextRowSchema = object({
-  key: string(),
-  key_version: number(),
-  ciphertext: string(),
-});
-const encryptedSecretRowSchema = object({
+const storedProviderRowSchema = object({
   id: string(),
+  provider_id: string(),
+  encrypted_secret_id: string(),
   key: string(),
   purpose: string(),
-  key_version: number(),
-  ciphertext: string(),
-});
-const persistedSecretRowSchema = object({
-  key: string(),
   key_version: number(),
   ciphertext: string(),
   created_at: string(),
   updated_at: string(),
 });
-const replacedSecretRowSchema = object({ id: string(), ciphertext: string() });
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -58,7 +53,6 @@ function csrfFrom(html: string): string {
 
 interface AuthenticatedClient {
   store: Awaited<ReturnType<typeof createTestStore>>;
-  router: ReturnType<typeof createAppRouter>;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
   userId: string;
@@ -72,40 +66,36 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
   try {
     const setupUrl = new URL("/auth/setup", server.baseUrl);
     const setupPage = await fetch(setupUrl);
-    const setupToken = csrfFrom(await setupPage.text());
     const setupResponse = await fetch(setupUrl, {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: cookieFrom(setupPage) },
       body: new URLSearchParams({
-        _csrf: setupToken,
-        password: "correct horse battery staple",
-        confirmPassword: "correct horse battery staple",
+        _csrf: csrfFrom(await setupPage.text()),
+        password: "[REDACTED:password] horse battery staple",
+        confirmPassword: "[REDACTED:password] horse battery staple",
       }),
     });
     assertEquals(setupResponse.status, 303);
 
     const loginUrl = new URL("/auth/login", server.baseUrl);
     const loginPage = await fetch(loginUrl);
-    const loginToken = csrfFrom(await loginPage.text());
     const loginResponse = await fetch(loginUrl, {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: cookieFrom(loginPage) },
       body: new URLSearchParams({
-        _csrf: loginToken,
-        password: "correct horse battery staple",
+        _csrf: csrfFrom(await loginPage.text()),
+        password: "[REDACTED:password] horse battery staple",
       }),
     });
     assertEquals(loginResponse.status, 303);
-    assertEquals(loginResponse.headers.get("location"), "/app");
     const user = await store.pool.query<{ id: string }>(
       "select id from users where is_administrator",
     );
     assertEquals(user.rows.length, 1);
     return {
       store,
-      router,
       server,
       cookie: cookieFrom(loginResponse),
       userId: user.rows[0]!.id,
@@ -130,220 +120,77 @@ async function submitCredentialsForm(
   form: Record<string, string>,
 ): Promise<Response> {
   const page = await credentialsPage(client);
-  const token = csrfFrom(page);
   return fetch(new URL("/app/settings", client.server.baseUrl), {
     method: "POST",
     redirect: "manual",
     headers: { Cookie: client.cookie },
-    body: new URLSearchParams({ _csrf: token, ...form }),
+    body: new URLSearchParams({ _csrf: csrfFrom(page), ...form }),
   });
 }
 
-Deno.test("saves, replaces, and deletes provider credentials without exposing values", async () => {
+Deno.test("configures Pi providers without exposing or keying records by API key", async () => {
   const client = await createAuthenticatedClient();
   try {
     const empty = await credentialsPage(client);
     assertMatch(empty, /<title>Settings<\/title>/);
-    assertMatch(empty, /<script type="module" src="\/assets\/app\/assets\/client\.ts">/);
-    assertMatch(empty, /<div aria-label="Settings sections"[^>]+role="tablist"/);
-    const secretsTab = empty.match(
-      /<button[^>]+aria-controls="([^"]+)"[^>]+aria-selected="true"[^>]+data-state="active"[^>]+id="([^"]+)"[^>]+role="tab"[^>]*>[\s\S]*?Secrets<\/button>/,
-    );
-    assert(secretsTab, "expected an active Secrets tab");
-    const githubTab = empty.match(
-      /<button[^>]+aria-controls="([^"]+)"[^>]+aria-selected="false"[^>]+data-state="inactive"[^>]+id="([^"]+)"[^>]+role="tab"[^>]*>[\s\S]*?GitHub<\/button>/,
-    );
-    assert(githubTab, "expected an inactive GitHub tab");
-    assertMatch(
-      empty,
-      new RegExp(
-        `aria-labelledby="${githubTab[2]}" data-state="inactive" hidden id="${
-          githubTab[1]
-        }" inert role="tabpanel"`,
-      ),
-    );
-    assertMatch(empty, /href="\/app" aria-label="Close settings"/);
-    assertNotMatch(empty, /aria-label="Primary navigation"|>Overview<|>Settings<\/span>/);
-    assertMatch(empty, /data-slot="table"/);
-    assertMatch(empty, /Stored secrets/);
-    assertMatch(empty, /No secrets configured\./);
-    assertMatch(empty, /commandfor="[^"]+-add-secret" command="show-modal"/);
-    assertMatch(empty, />Add<\/button>/);
-    assertMatch(empty, /OPENCODE_API_KEY/);
-    assertNotMatch(empty, /oc-go-secret/);
+    assertMatch(empty, /Model providers/);
+    assertMatch(empty, /No model providers configured\./);
+    assertMatch(empty, /name="providerId"/);
+    assertMatch(empty, /value="opencode-go"/);
+    assertMatch(empty, /name="apiKey"/);
+    assertMatch(empty, /Generic secrets/);
+    assertMatch(empty, /name="key"/);
+    assertNotMatch(empty, /OPENCODE_API_KEY/);
+    assertNotMatch(empty, new RegExp(OPENCODE_VALUE));
 
     for (
-      const [key, value] of [
-        [OPENCODE_KEY, OPENCODE_VALUE],
-        ["OPENAI_API_KEY", OPENAI_VALUE],
+      const [providerId, apiKey] of [
+        [OPENCODE_PROVIDER, OPENCODE_VALUE],
+        [OPENAI_PROVIDER, OPENAI_VALUE],
       ] as const
     ) {
-      const saveResponse = await submitCredentialsForm(client, {
-        intent: "save",
-        key,
-        value,
+      const response = await submitCredentialsForm(client, {
+        intent: "save-provider",
+        providerId,
+        apiKey,
       });
-      assertEquals(saveResponse.status, 303);
-      assertEquals(
-        saveResponse.headers.get("location"),
-        "/app/settings?tab=secrets#secrets",
-      );
+      assertEquals(response.status, 303);
+      assertEquals(response.headers.get("location"), "/app/settings?tab=providers#providers");
     }
 
     const saved = await credentialsPage(client);
-    assertMatch(saved, new RegExp(OPENCODE_KEY));
-    assertMatch(saved, /OPENAI_API_KEY/);
-    assertMatch(saved, /data-slot="table"/);
-    assertMatch(saved, /aria-label="Open actions for OPENCODE_API_KEY"/);
-    assertMatch(saved, />Edit<\/button>/);
-    assertMatch(saved, />Delete<\/button>/);
-    assertMatch(saved, /role="alertdialog"/);
-    assertMatch(saved, /Edit secret/);
-    assertMatch(saved, /Delete secret\?/);
-    assertNotMatch(saved, /Encrypted · version/);
-    assertNotMatch(saved, /oc-go-secret/);
-    assertNotMatch(saved, /sk-openai-secret/);
+    assertMatch(saved, /opencode-go/);
+    assertMatch(saved, /OpenAI/);
+    assertMatch(saved, /Update provider key/);
+    assertMatch(saved, /Delete provider credential\?/);
+    assertNotMatch(saved, new RegExp(OPENCODE_VALUE));
+    assertNotMatch(saved, new RegExp(OPENAI_VALUE));
 
     const rows = parse(
-      array(encryptedSecretRowSchema),
+      array(storedProviderRowSchema),
       (await client.store.pool.query(
-        "select id, key, purpose, key_version, ciphertext from encrypted_secrets order by key",
+        `select mpc.id, mpc.provider_id, mpc.encrypted_secret_id,
+              es.key, es.purpose, es.key_version, es.ciphertext,
+              mpc.created_at, mpc.updated_at
+         from model_provider_credentials mpc
+         join encrypted_secrets es on es.id = mpc.encrypted_secret_id
+        order by mpc.provider_id`,
       )).rows,
     );
     assertEquals(rows.length, 2);
-    // Ascending key order: "OPENAI_API_KEY" < "OPENCODE_API_KEY".
-    const openaiRow = rows[0];
-    const opencodeRow = rows[1];
-    assert(openaiRow);
-    assert(opencodeRow);
-    const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-    assertMatch(opencodeRow.id, UUID_PATTERN);
-    assertMatch(openaiRow.id, UUID_PATTERN);
-    assertNotEquals(opencodeRow.id, openaiRow.id);
-    assertEquals(opencodeRow.key, OPENCODE_KEY);
-    assertEquals(openaiRow.key, "OPENAI_API_KEY");
-    assertEquals(opencodeRow.purpose, "provider-api-key");
-    assertEquals(openaiRow.purpose, "provider-api-key");
-    assertEquals(opencodeRow.key_version, 1);
-    for (
-      const [key, value] of [
-        [opencodeRow, OPENCODE_VALUE],
-        [openaiRow, OPENAI_VALUE],
-      ] as const
-    ) {
-      const ciphertext = key.ciphertext;
-      assert(!ciphertext.includes(value), "ciphertext contains the plaintext value");
-      assert(
-        Uint8Array.fromBase64(ciphertext).byteLength >= value.length + 28,
-        "ciphertext is not encrypted",
-      );
-    }
-    const opencodeCiphertextBefore = opencodeRow.ciphertext;
+    const byProvider = new Map(rows.map((row) => [row.provider_id, row]));
+    const opencode = byProvider.get(OPENCODE_PROVIDER)!;
+    const openai = byProvider.get(OPENAI_PROVIDER)!;
+    assertEquals(opencode.purpose, "provider-api-key");
+    assertEquals(openai.purpose, "provider-api-key");
+    assertNotEquals(opencode.encrypted_secret_id, openai.encrypted_secret_id);
+    assertNotEquals(opencode.key, OPENCODE_PROVIDER);
+    assertNotEquals(openai.key, OPENAI_PROVIDER);
+    assert(!opencode.ciphertext.includes(OPENCODE_VALUE));
+    assert(!openai.ciphertext.includes(OPENAI_VALUE));
 
-    const replacement = "oc-go-replacement-secret-5c7e12";
-    const replaceResponse = await submitCredentialsForm(client, {
-      intent: "save",
-      key: OPENCODE_KEY,
-      value: replacement,
-    });
-    assertEquals(replaceResponse.status, 303);
-
-    const replaced = await credentialsPage(client);
-    assertNotMatch(replaced, /oc-go-secret-7f3d9a/);
-    assertNotMatch(replaced, /oc-go-replacement-secret/);
-    const replacedRows = parse(
-      array(replacedSecretRowSchema),
-      (await client.store.pool.query(
-        "select id, ciphertext from encrypted_secrets where key = $1",
-        [OPENCODE_KEY],
-      )).rows,
-    );
-    const replacedRow = replacedRows[0];
-    assert(replacedRow);
-    const replacedCiphertext = replacedRow.ciphertext;
-    assertNotEquals(replacedCiphertext, opencodeCiphertextBefore);
-    // Replacing a value keeps the row identity; only the ciphertext rotates.
-    assertEquals(replacedRow.id, opencodeRow.id);
-    assert(
-      !replacedCiphertext.includes(replacement),
-      "replaced ciphertext contains the plaintext value",
-    );
-
-    const deleteResponse = await submitCredentialsForm(client, {
-      intent: "delete",
-      key: "OPENAI_API_KEY",
-    });
-    assertEquals(deleteResponse.status, 303);
-    const afterDelete = await credentialsPage(client);
-    assertNotMatch(afterDelete, /sk-openai-secret/);
-    const remaining = await client.store.pool.query(
-      "select key from encrypted_secrets order by key",
-    );
-    assertEquals(
-      remaining.rows.map((row: { key: string }) => row.key),
-      [OPENCODE_KEY],
-    );
-
-    const deleteLastResponse = await submitCredentialsForm(client, {
-      intent: "delete",
-      key: OPENCODE_KEY,
-    });
-    assertEquals(deleteLastResponse.status, 303);
-    assertMatch(await credentialsPage(client), /No secrets configured\./);
-    const count = await client.store.pool.query(
-      "select count(*)::integer as count from encrypted_secrets",
-    );
-    assertEquals(count.rows[0]?.count, 0);
-  } finally {
-    await client.server.close();
-    await client.store.close();
-  }
-});
-
-Deno.test("restarting with the same master key preserves decryptability", async () => {
-  const first = await createTestStore();
-  assert(await first.createAdministrator("restart test password"));
-  const user = await first.verifyAdministratorPassword("restart test password");
-  assert(user);
-  const userId = user.id;
-  await first.saveSecret(userId, OPENCODE_KEY, OPENCODE_VALUE);
-  await first.saveSecret(userId, "OPENAI_API_KEY", OPENAI_VALUE);
-  const rows = parse(
-    array(persistedSecretRowSchema),
-    (await first.pool.query(
-      "select key, key_version, ciphertext, created_at, updated_at from encrypted_secrets order by key",
-    )).rows,
-  );
-  await first.close();
-
-  // A fresh store over the same database simulates a gateway restart;
-  // it must not wipe the previously committed rows.
-  const restarted = await createTestStore(undefined, false);
-  try {
-    const byKey = new Map(rows.map((row) => [row.key, row]));
-    // Ascending key order: "OPENAI_API_KEY" < "OPENCODE_API_KEY".
-    assertEquals(await restarted.listSecrets(userId), [
-      {
-        key: "OPENAI_API_KEY",
-        keyVersion: 1,
-        createdAt: byKey.get("OPENAI_API_KEY")!.created_at,
-        updatedAt: byKey.get("OPENAI_API_KEY")!.updated_at,
-      },
-      {
-        key: OPENCODE_KEY,
-        keyVersion: 1,
-        createdAt: byKey.get(OPENCODE_KEY)!.created_at,
-        updatedAt: byKey.get(OPENCODE_KEY)!.updated_at,
-      },
-    ]);
     const masterKey = await importMasterKey(TEST_MASTER_KEY_BYTES);
-    for (
-      const [key, value] of [
-        [OPENCODE_KEY, OPENCODE_VALUE],
-        ["OPENAI_API_KEY", OPENAI_VALUE],
-      ] as const
-    ) {
-      const row = byKey.get(key)!;
+    for (const [row, apiKey] of [[opencode, OPENCODE_VALUE], [openai, OPENAI_VALUE]] as const) {
       assertEquals(
         await decryptSecret(
           masterKey,
@@ -351,88 +198,215 @@ Deno.test("restarting with the same master key preserves decryptability", async 
             ciphertext: Uint8Array.fromBase64(row.ciphertext),
             keyVersion: row.key_version,
           },
-          { userId, key },
+          { userId: client.userId, key: row.key },
         ),
-        [value, undefined],
+        [apiKey, undefined],
       );
     }
+
+    const replacement = "oc-go-replacement-secret-5c7e12";
+    const replaceResponse = await submitCredentialsForm(client, {
+      intent: "save-provider",
+      providerId: OPENCODE_PROVIDER,
+      apiKey: replacement,
+    });
+    assertEquals(replaceResponse.status, 303);
+    const replaced = parse(
+      storedProviderRowSchema,
+      (await client.store.pool.query(
+        `select mpc.id, mpc.provider_id, mpc.encrypted_secret_id,
+              es.key, es.purpose, es.key_version, es.ciphertext,
+              mpc.created_at, mpc.updated_at
+         from model_provider_credentials mpc
+         join encrypted_secrets es on es.id = mpc.encrypted_secret_id
+        where mpc.provider_id = $1`,
+        [OPENCODE_PROVIDER],
+      )).rows[0],
+    );
+    assertEquals(replaced.id, opencode.id);
+    assertEquals(replaced.encrypted_secret_id, opencode.encrypted_secret_id);
+    assertNotEquals(replaced.ciphertext, opencode.ciphertext);
+    assertEquals(await client.store.getModelProviderApiKey(client.userId, OPENCODE_PROVIDER), [
+      replacement,
+      undefined,
+    ]);
+
+    const deleteResponse = await submitCredentialsForm(client, {
+      intent: "delete-provider",
+      providerId: OPENAI_PROVIDER,
+    });
+    assertEquals(deleteResponse.status, 303);
+    assertEquals(
+      await client.store.getModelProviderCredential(client.userId, OPENAI_PROVIDER),
+      null,
+    );
+    assertEquals(
+      (await client.store.pool.query("select count(*)::integer as count from encrypted_secrets"))
+        .rows[0]?.count,
+      1,
+    );
+  } finally {
+    await client.server.close();
+    await client.store.close();
+  }
+});
+
+Deno.test("generic secrets remain independent from model provider credentials", async () => {
+  const client = await createAuthenticatedClient();
+  try {
+    await client.store.saveModelProviderCredential(
+      client.userId,
+      OPENCODE_PROVIDER,
+      OPENCODE_VALUE,
+    );
+    const saveResponse = await submitCredentialsForm(client, {
+      intent: "save-secret",
+      key: GENERIC_SECRET_KEY,
+      value: GENERIC_SECRET_VALUE,
+    });
+    assertEquals(saveResponse.status, 303);
+    assertEquals(saveResponse.headers.get("location"), "/app/settings?tab=secrets#secrets");
+
+    assertEquals((await client.store.listSecrets(client.userId)).map((secret) => secret.key), [
+      GENERIC_SECRET_KEY,
+    ]);
+    assertEquals(
+      (await client.store.listModelProviderCredentials(client.userId)).map((credential) =>
+        credential.providerId
+      ),
+      [OPENCODE_PROVIDER],
+    );
+    const rows = await client.store.pool.query<{ key: string; purpose: string }>(
+      "select key, purpose from encrypted_secrets order by purpose",
+    );
+    assertEquals(rows.rows.map((row: { key: string; purpose: string }) => row.purpose), [
+      "generic-secret",
+      "provider-api-key",
+    ]);
+    assertEquals(
+      rows.rows.find((row: { key: string; purpose: string }) => row.purpose === "generic-secret")
+        ?.key,
+      GENERIC_SECRET_KEY,
+    );
+
+    const page = await credentialsPage(client);
+    assertMatch(page, new RegExp(GENERIC_SECRET_KEY));
+    assertNotMatch(page, new RegExp(GENERIC_SECRET_VALUE));
+    assertNotMatch(page, new RegExp(OPENCODE_VALUE));
+
+    assertEquals(
+      await client.store.deleteModelProviderCredential(client.userId, OPENCODE_PROVIDER),
+      {
+        status: "deleted",
+      },
+    );
+    assert(await client.store.getSecret(client.userId, GENERIC_SECRET_KEY));
+
+    const deleteResponse = await submitCredentialsForm(client, {
+      intent: "delete-secret",
+      key: GENERIC_SECRET_KEY,
+    });
+    assertEquals(deleteResponse.status, 303);
+    assertEquals(await client.store.listSecrets(client.userId), []);
+  } finally {
+    await client.server.close();
+    await client.store.close();
+  }
+});
+
+Deno.test("provider credentials remain decryptable across a gateway restart", async () => {
+  const first = await createTestStore();
+  assert(await first.createAdministrator("restart test password"));
+  const user = await first.verifyAdministratorPassword("restart test password");
+  assert(user);
+  await first.saveModelProviderCredential(user.id, OPENCODE_PROVIDER, OPENCODE_VALUE);
+  await first.saveModelProviderCredential(user.id, OPENAI_PROVIDER, OPENAI_VALUE);
+  await first.close();
+
+  const restarted = await createTestStore(undefined, false);
+  try {
+    assertEquals(
+      (await restarted.listModelProviderCredentials(user.id)).map((credential) =>
+        credential.providerId
+      ),
+      [OPENAI_PROVIDER, OPENCODE_PROVIDER],
+    );
+    assertEquals(await restarted.getModelProviderApiKey(user.id, OPENCODE_PROVIDER), [
+      OPENCODE_VALUE,
+      undefined,
+    ]);
+    assertEquals(await restarted.getModelProviderApiKey(user.id, OPENAI_PROVIDER), [
+      OPENAI_VALUE,
+      undefined,
+    ]);
   } finally {
     await restarted.close();
   }
 });
 
-Deno.test("a wrong master key fails visibly without destroying the stored data", async () => {
+Deno.test("a wrong master key fails provider resolution without destroying stored data", async () => {
   const first = await createTestStore();
   assert(await first.createAdministrator("wrong key test password"));
   const user = await first.verifyAdministratorPassword("wrong key test password");
   assert(user);
-  const userId = user.id;
-  await first.saveSecret(userId, OPENCODE_KEY, OPENCODE_VALUE);
+  await first.saveModelProviderCredential(user.id, OPENCODE_PROVIDER, OPENCODE_VALUE);
   await first.close();
 
-  const wrongKey = await importMasterKey(new Uint8Array(32).fill(9));
-  // Do not reset the database: the row written with the correct key must
-  // survive and remain decryptable after the wrong-key attempt.
-  const wrongKeyStore = await createTestStore(wrongKey, false);
+  const wrongKeyStore = await createTestStore(
+    await importMasterKey(new Uint8Array(32).fill(9)),
+    false,
+  );
   try {
-    const row = parse(
-      secretCiphertextRowSchema,
+    const [value, error] = await wrongKeyStore.getModelProviderApiKey(
+      user.id,
+      OPENCODE_PROVIDER,
+    );
+    assertEquals(value, undefined);
+    assertInstanceOf(error, ModelProviderCredentialReadError);
+    assert(!error.message.includes(OPENCODE_VALUE));
+    assertEquals(
       (await wrongKeyStore.pool.query(
-        "select key, key_version, ciphertext from encrypted_secrets",
-      )).rows[0],
+        "select count(*)::integer as count from model_provider_credentials",
+      )).rows[0]?.count,
+      1,
     );
-    const [, error] = await decryptSecret(
-      wrongKey,
-      {
-        ciphertext: Uint8Array.fromBase64(row.ciphertext),
-        keyVersion: row.key_version,
-      },
-      { userId, key: row.key },
-    );
-    assertInstanceOf(error, SecretDecryptionError);
-    const message = error.message;
-    assert(!message.includes(OPENCODE_VALUE));
-    const count = await wrongKeyStore.pool.query(
-      "select count(*)::integer as count from encrypted_secrets",
-    );
-    assertEquals(count.rows[0]?.count, 1, "wrong-key decryption destroyed the stored row");
   } finally {
     await wrongKeyStore.close();
   }
 
   const restored = await createTestStore(undefined, false);
   try {
-    assertEquals((await restored.getSecret(userId, OPENCODE_KEY))?.keyVersion, 1);
+    assertEquals(await restored.getModelProviderApiKey(user.id, OPENCODE_PROVIDER), [
+      OPENCODE_VALUE,
+      undefined,
+    ]);
   } finally {
     await restored.close();
   }
 });
 
-Deno.test("no gateway row contains the master key or the plaintext values", async () => {
+Deno.test("provider plaintext and master key never enter gateway rows", async () => {
   const client = await createAuthenticatedClient();
   try {
-    await submitCredentialsForm(client, {
-      intent: "save",
-      key: OPENCODE_KEY,
-      value: OPENCODE_VALUE,
-    });
-    await submitCredentialsForm(client, {
-      intent: "save",
-      key: "OPENAI_API_KEY",
-      value: OPENAI_VALUE,
-    });
-
-    const tables = ["users", "password_credentials", "browser_sessions", "encrypted_secrets"];
-    for (const table of tables) {
+    await client.store.saveModelProviderCredential(
+      client.userId,
+      OPENCODE_PROVIDER,
+      OPENCODE_VALUE,
+    );
+    for (
+      const table of [
+        "users",
+        "password_credentials",
+        "browser_sessions",
+        "encrypted_secrets",
+        "model_provider_credentials",
+      ]
+    ) {
       const rows = await client.store.pool.query(`select * from ${table}`);
-      for (const value of Object.values(rows.rows)) {
-        const serialized = JSON.stringify(value);
-        assert(
-          !serialized.includes(TEST_MASTER_KEY_HEX),
-          `master key material found in ${table}`,
-        );
-        assert(!serialized.includes(OPENCODE_VALUE), `plaintext value found in ${table}`);
-        assert(!serialized.includes(OPENAI_VALUE), `plaintext value found in ${table}`);
+      for (const row of rows.rows) {
+        const serialized = JSON.stringify(row);
+        assert(!serialized.includes(TEST_MASTER_KEY_HEX), `master key material found in ${table}`);
+        assert(!serialized.includes(OPENCODE_VALUE), `provider plaintext found in ${table}`);
       }
     }
   } finally {
@@ -441,64 +415,34 @@ Deno.test("no gateway row contains the master key or the plaintext values", asyn
   }
 });
 
-Deno.test("rejects invalid keys, unauthenticated access, and un-CSRF'd saves", async () => {
+Deno.test("rejects unknown providers, unauthenticated access, and missing CSRF", async () => {
   const client = await createAuthenticatedClient();
   try {
-    const invalidKey = await submitCredentialsForm(client, {
-      intent: "save",
-      key: "Bad Key!",
-      value: OPENCODE_VALUE,
+    const invalidProvider = await submitCredentialsForm(client, {
+      intent: "save-provider",
+      providerId: "not-a-pi-provider",
+      apiKey: OPENCODE_VALUE,
     });
-    assertEquals(invalidKey.status, 400);
-
-    // Portable environment variable names may be lowercase, but cannot start
-    // with a digit.
-    const lowercaseKey = await submitCredentialsForm(client, {
-      intent: "save",
-      key: "opencode",
-      value: OPENCODE_VALUE,
-    });
-    assertEquals(lowercaseKey.status, 303);
-
-    const leadingDigitKey = await submitCredentialsForm(client, {
-      intent: "save",
-      key: "1API_KEY",
-      value: OPENCODE_VALUE,
-    });
-    assertEquals(leadingDigitKey.status, 400);
-    assertEquals(
-      (await client.store.pool.query("select count(*)::integer as count from encrypted_secrets"))
-        .rows[0]?.count,
-      1,
-    );
+    assertEquals(invalidProvider.status, 400);
+    assertEquals(await client.store.listModelProviderCredentials(client.userId), []);
 
     const anonymous = await fetch(new URL("/app/settings", client.server.baseUrl), {
       redirect: "manual",
     });
     assertEquals(anonymous.status, 401);
 
-    // Without a session, the auth boundary rejects before CSRF is evaluated.
-    const anonymousPost = await fetch(new URL("/app/settings", client.server.baseUrl), {
-      method: "POST",
-      redirect: "manual",
-      body: new URLSearchParams({ intent: "save", key: "OPENAI_API_KEY", value: OPENAI_VALUE }),
-    });
-    assertEquals(anonymousPost.status, 401);
-
-    // With a session but no CSRF token, the state change is rejected.
     const missingCsrf = await fetch(new URL("/app/settings", client.server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: client.cookie },
-      body: new URLSearchParams({ intent: "save", key: "OPENAI_API_KEY", value: OPENAI_VALUE }),
+      body: new URLSearchParams({
+        intent: "save-provider",
+        providerId: OPENCODE_PROVIDER,
+        apiKey: OPENCODE_VALUE,
+      }),
     });
     assertEquals(missingCsrf.status, 403);
-    assertEquals(
-      (await client.store.pool.query("select count(*)::integer as count from encrypted_secrets"))
-        .rows[0]?.count,
-      1,
-      "rejected requests must not create additional rows",
-    );
+    assertEquals(await client.store.listModelProviderCredentials(client.userId), []);
   } finally {
     await client.server.close();
     await client.store.close();

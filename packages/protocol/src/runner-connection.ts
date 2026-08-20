@@ -17,8 +17,14 @@ import {
 } from "@/src/runner-session-inventory.ts";
 import {
   SESSION_EVENT_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
   type SessionEventMessage,
   sessionEventPayloadSchema,
+  type SessionEventReplayCommand,
+  sessionEventReplayPayloadSchema,
+  type SessionEventReplayResultMessage,
+  sessionEventReplayResultPayloadSchema,
 } from "@/src/runner-session-events.ts";
 import {
   SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
@@ -52,13 +58,15 @@ export type RunnerClientMessage =
   })
   | SessionProvisionAcceptedMessage
   | SessionProvisionRejectedMessage
-  | SessionEventMessage;
+  | SessionEventMessage
+  | SessionEventReplayResultMessage;
 
 export type RunnerServerMessage =
   | (RunnerMessage<RunnerConnectedPayload> & {
     type: typeof RUNNER_CONNECTED_MESSAGE_TYPE;
   })
-  | SessionProvisionCommand;
+  | SessionProvisionCommand
+  | SessionEventReplayCommand;
 
 const helloPayloadSchema = object(
   { token: runnerTokenSchema },
@@ -182,6 +190,14 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
       payload: parse(sessionEventPayloadSchema, message.payload),
     };
   }
+  if (message.type === SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE) {
+    assertSessionResponseEnvelope(message);
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(sessionEventReplayResultPayloadSchema, message.payload),
+    };
+  }
   throw new TypeError(`Unsupported runner client message type: ${message.type}`);
 }
 
@@ -203,6 +219,15 @@ export function parseRunnerServerMessage(input: unknown): RunnerServerMessage {
       type: message.type,
       sessionId: message.sessionId,
       payload,
+    };
+  }
+  if (message.type === SESSION_EVENT_REPLAY_MESSAGE_TYPE) {
+    assertSessionCommandEnvelope(message);
+    return {
+      ...message,
+      type: message.type,
+      sessionId: message.sessionId,
+      payload: parse(sessionEventReplayPayloadSchema, message.payload),
     };
   }
   throw new TypeError(`Unsupported runner server message type: ${message.type}`);

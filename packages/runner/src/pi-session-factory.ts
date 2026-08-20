@@ -1,4 +1,5 @@
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { parseModelReference, type SessionModelRuntime } from "@openorb/protocol";
 import {
   createAgentSession,
   createExtensionRuntime,
@@ -14,8 +15,9 @@ export const OPENORB_SYSTEM_PROMPT =
   "You are OpenOrb's coding agent. Use only the tools provided by OpenOrb.";
 
 export interface OpenOrbPiSessionOptions {
-  runnerSessionDirectory: string;
+  runnerSessionFile: string;
   runnerAgentDirectory: string;
+  modelRuntime: SessionModelRuntime;
   tools: readonly ToolDefinition[];
 }
 
@@ -53,22 +55,43 @@ export class OpenOrbPiSessionFactory {
     const modelRuntime = await ModelRuntime.create({
       credentials: new InMemoryCredentialStore(),
       modelsPath: null,
-      allowModelNetwork: false,
+      allowModelNetwork: true,
       refreshOnCreate: false,
     });
+    const { providerId, modelId } = parseModelReference(options.modelRuntime.model);
+    await modelRuntime.setRuntimeApiKey(
+      providerId,
+      options.modelRuntime.credential.value,
+    );
+    const model = modelRuntime.getModel(
+      providerId,
+      modelId,
+    );
+    if (!model) throw new OpenOrbPiModelError();
+    const thinkingLevel = options.modelRuntime.thinkingLevel;
 
     return await createAgentSession({
       cwd: OPENORB_GUEST_WORKSPACE,
       agentDir: options.runnerAgentDirectory,
+      model,
       modelRuntime,
       resourceLoader,
-      sessionManager: SessionManager.create(
+      sessionManager: SessionManager.open(
+        options.runnerSessionFile,
+        undefined,
         OPENORB_GUEST_WORKSPACE,
-        options.runnerSessionDirectory,
       ),
       settingsManager,
+      thinkingLevel,
       tools: toolNames,
       customTools: [...options.tools],
     });
+  }
+}
+
+class OpenOrbPiModelError extends Error {
+  constructor() {
+    super("The configured Pi model is unavailable.");
+    this.name = "OpenOrbPiModelError";
   }
 }

@@ -167,6 +167,7 @@ Deno.test("validates bounded ordered runner reconciliation messages", () => {
     projectId: "01989d78-65ee-7f6a-a97e-0f16ad134c14",
     createdAt: "2026-08-17T12:00:00Z",
     initialPromptPreview: "Inspect the repository",
+    model: "opencode-go/deepseek-v4-flash",
     state: "created",
     lastEventCursor: 0,
   };

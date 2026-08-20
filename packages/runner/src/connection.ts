@@ -1,5 +1,6 @@
 import {
   parseRunnerServerMessage,
+  RUNNER_CONNECTED_MESSAGE_TYPE,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
   RUNNER_HELLO_MESSAGE_TYPE,
   RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
@@ -10,8 +11,11 @@ import {
   type RunnerClientMessage,
   type RunnerSessionSnapshot,
   SESSION_EVENT_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
   SESSION_PROVISION_MESSAGE_TYPE,
   type SessionEventPayload,
+  type SessionEventReplayCommand,
   type SessionProvisionCommand,
 } from "@openorb/protocol";
 import { parseSafe, string } from "@remix-run/data-schema";
@@ -156,21 +160,22 @@ async function connectOnce(
         return;
       }
       if (connected) {
-        if (
-          message.type !== SESSION_PROVISION_MESSAGE_TYPE ||
-          options.onProvisionCommand === undefined
-        ) {
-          socket.close(4400, "Unexpected server message");
+        if (message.type === SESSION_PROVISION_MESSAGE_TYPE && options.onProvisionCommand) {
+          void options.onProvisionCommand(message, send).then(([, commandError]) => {
+            if (commandError !== undefined) {
+              closeSocket(socket, 1011, "Runner provisioning command failed");
+            }
+          });
           return;
         }
-        void options.onProvisionCommand(message, send).then(([, commandError]) => {
-          if (commandError !== undefined) {
-            closeSocket(socket, 1011, "Runner provisioning command failed");
-          }
-        });
+        if (message.type === SESSION_EVENT_REPLAY_MESSAGE_TYPE && options.sessionEventRelay) {
+          void sendSessionEventReplay(message, options.sessionEventRelay, send);
+          return;
+        }
+        socket.close(4400, "Unexpected server message");
         return;
       }
-      if (message.type === SESSION_PROVISION_MESSAGE_TYPE) {
+      if (message.type !== RUNNER_CONNECTED_MESSAGE_TYPE) {
         socket.close(4400, "Runner handshake is incomplete");
         return;
       }
@@ -185,7 +190,7 @@ async function connectOnce(
         if (snapshotError !== undefined) return err(snapshotError);
         if (settled || socket.readyState !== WebSocket.OPEN) return ok(false);
 
-        const [sent, sendError] = trySync(
+        const [, sendError] = trySync(
           () => {
             const snapshotId = crypto.randomUUID();
             socket.send(JSON.stringify(reconcileStartMessage(snapshotId)));
@@ -206,25 +211,6 @@ async function connectOnce(
           (cause) => new RunnerConnectionError("Runner session inventory delivery failed.", cause),
         );
         if (sendError !== undefined) return err(sendError);
-        if (options.sessionEventRelay) {
-          for (const session of sessions) {
-            const [, replayError] = await options.sessionEventRelay.replayEvents(
-              session.id,
-              (event) => {
-                if (settled || socket.readyState !== WebSocket.OPEN) return;
-                socket.send(
-                  JSON.stringify(replayedSessionEventMessage(session.id, sent, event)),
-                );
-              },
-            );
-            if (replayError !== undefined) {
-              return err(
-                new RunnerConnectionError("Runner session event replay failed.", replayError),
-              );
-            }
-            if (settled || socket.readyState !== WebSocket.OPEN) return ok(false);
-          }
-        }
         return ok(true);
       };
       const sendHeartbeat = async () => {
@@ -340,16 +326,55 @@ function reconcileCompleteMessage(
 }
 
 function replayedSessionEventMessage(
-  sessionId: string,
-  snapshotId: string,
+  command: SessionEventReplayCommand,
   payload: SessionEventPayload,
 ): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
     type: SESSION_EVENT_MESSAGE_TYPE,
-    sessionId,
-    correlationId: snapshotId,
+    sessionId: command.sessionId,
+    correlationId: command.id,
+    payload,
+  };
+}
+
+async function sendSessionEventReplay(
+  command: SessionEventReplayCommand,
+  relay: SessionEventRelay,
+  send: (message: RunnerClientMessage) => void,
+): Promise<void> {
+  let completed = false;
+  const [, replayError] = await relay.replayEvents(
+    command.sessionId,
+    command.payload.afterCursor,
+    (event) => {
+      send(replayedSessionEventMessage(command, event));
+    },
+    (cursor) => {
+      send(sessionEventReplayResultMessage(command, { status: "completed", cursor }));
+      completed = true;
+    },
+  );
+  if (replayError !== undefined) {
+    send(sessionEventReplayResultMessage(command, { status: "failed" }));
+    return;
+  }
+  if (!completed) {
+    send(sessionEventReplayResultMessage(command, { status: "failed" }));
+  }
+}
+
+function sessionEventReplayResultMessage(
+  command: SessionEventReplayCommand,
+  payload: { status: "completed"; cursor: number } | { status: "failed" },
+): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
+    sessionId: command.sessionId,
+    correlationId: command.id,
     payload,
   };
 }

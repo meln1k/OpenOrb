@@ -293,7 +293,7 @@ Use envelope-style application encryption:
 - A gateway master key is supplied through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection.
 - The gateway never generates or persists the master key to local disk or PostgreSQL and fails startup if it is missing or invalid.
 - Import the 256-bit master key with Web Crypto and encrypt with `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()`. Persist the returned nonce/ciphertext/tag bytes unchanged as one opaque value, store key version separately, and authenticate immutable user ID, credential key, and key version as AAD.
-- Store each secret as an `encrypted_secrets` row with a UUID primary key, immutable `user_id`, a credential key unique within that user, an explicit required purpose, and the opaque ciphertext. Provider keys use purpose `provider-api-key`; rows referenced by `git_credentials` use `git-credential`. Repositories select rows by both user and purpose rather than key-prefix conventions or cross-repository lookups.
+- Store each secret as an `encrypted_secrets` row with a UUID primary key, immutable `user_id`, a credential key unique within that user, an explicit required purpose, and the opaque ciphertext. Provider keys use purpose `provider-api-key` and are referenced by provider ID through separate provider-credential records; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Repositories select rows by both user and purpose rather than key-prefix conventions. Provider identity never derives from an environment-variable-style secret name.
 - Never derive the server encryption key from the login password; the service must restart unattended.
 - Backups are incomplete without the PostgreSQL database and master key.
 - Secret values are never returned to the browser after creation; only metadata is returned.
@@ -388,7 +388,6 @@ Recommended layout:
         services/
         logs/
       spool/
-        events.jsonl
         command-journal/
       git/
         state.json
@@ -398,7 +397,6 @@ The runner is authoritative for all complete live-session data; the gateway dupl
 
 - Session metadata and pinned-runner identity
 - Raw Pi JSONL
-- Normalized conversation, tool, usage, and replayable event records
 - Runner-local pending message handoff records
 - Working tree and Git objects, treated as untrusted bytes by the host
 - Full file contents
@@ -449,8 +447,7 @@ interface Project {
     credentialId?: string
   }
   defaults: {
-    provider: string
-    modelId: string
+    model: string // provider/model, split only at the first slash
     thinkingLevel: ThinkingLevel
     cpuCount: number
     memoryMiB: number
@@ -513,7 +510,7 @@ interface Session {
   baseCommit?: string
   branchName: string
   branchPushed: boolean
-  model: ModelSelection
+  model: string // provider/model, split only at the first slash
   resources: {
     cpuCount: number
     memoryMiB: number
@@ -658,7 +655,7 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 
 ### 13.1 Draft and first prompt
 
-1. User chooses project, ref, model, thinking level, CPU, memory, and optional branch name in browser/gateway request state.
+1. User chooses project, ref, one `provider/model` reference, thinking level, CPU, memory, and optional branch name in browser/gateway request state.
 2. Scheduler displays the currently selected automatic runner.
 3. User may override the runner while drafting.
 4. Sending the first prompt reserves an online runner.
@@ -763,7 +760,7 @@ Delete:
 - Require explicit confirmation.
 - If the owning runner is online and any agent, provisioning, setup/resume, maintenance, terminal, or preview work is active, reject deletion until that work settles; do not interrupt it implicitly.
 - In one PostgreSQL transaction, write a durable deleted-session marker containing only user ID, session ID, and deletion time, remove the five-column catalog row, and remove any persisted gateway configuration that is scoped only to that session. Remove the ephemeral user-scoped route immediately afterward.
-- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, normalized events, checkpoint, logs, and reports.
+- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, checkpoint, logs, and reports.
 - If the runner is offline or permanently lost, deletion still succeeds at the control plane. The marker prevents a stale runner disk or backup from recreating the catalog entry.
 - If a runner later reports a tombstoned session, do not route or reinsert it. Repeatedly request runner cleanup; if the runner reports active work, wait for it to settle rather than interrupting it.
 - Retain the deleted-session marker after runner cleanup so a later stale snapshot cannot resurrect the ID.
@@ -910,7 +907,7 @@ Setup documentation must tell projects not to rely on checkpoint persistence und
 
 - Run executable `.agents/setup` once after a fresh clone and initial boot.
 - Capture stdout/stderr into session logs and stream them as provisioning events.
-- Fail provisioning visibly on non-zero exit.
+- Surface a non-zero setup exit as a visible warning, then continue to Pi so the prompt can diagnose or repair the project.
 - Run executable `.agents/resume` on every wake before Pi continues.
 - Use a bounded blocking period; surface failure rather than silently continuing.
 - Hooks execute inside Gondolin from `/workspace`.
@@ -967,7 +964,7 @@ Defer OAuth/subscription credentials because refresh-token concurrency and provi
 
 1. Gateway stores encrypted provider configuration.
 2. Browser lists only redacted metadata.
-3. On run start, gateway sends only the selected provider/model configuration to the pinned runner over the authenticated control channel.
+3. The browser submits one `provider/model` reference and no credential value. On run start, the gateway splits the reference only at its first `/`, resolves that provider's configured credential, and sends the model reference, thinking level, and credential only to the pinned runner over the authenticated control channel.
 4. Runner keeps credentials in memory.
 5. Runner configures Pi `ModelRuntime` at runtime.
 6. Model credentials never enter Gondolin.
@@ -1284,7 +1281,7 @@ interface CreateSessionInput {
   projectId: string
   ref?: string
   runnerId?: string
-  model: ModelSelection
+  model: string // provider/model, split only at the first slash
   resources: { cpuCount: number; memoryMiB: number }
   branchName?: string
 }
@@ -1365,14 +1362,14 @@ Accept: text/event-stream
 
 Requirements:
 
-- Runner-owned monotonic per-session durable event cursor
+- Runner-owned monotonic conversation position derived from the active Pi JSONL branch
 - Support `Last-Event-ID`
 - Send periodic keepalives
-- Ask the runner to reload completed state after cursor expiration/compaction
+- Ask the runner to project completed conversation state from Pi JSONL after cursor expiration/compaction
 - Do not persist event history in the gateway
 - Do not persist every token delta
 - Coalesce high-frequency live deltas
-- Runner persists completed messages, tool results, lifecycle transitions, pending-delivery transitions, previews, and usage summaries
+- Pi JSONL is the sole durable conversation transcript. The runner projects bounded wire/UI events from it and stores lifecycle, pending-delivery, preview, and other non-conversation state only in their owning metadata/journals.
 - Relay Pi queue updates live without treating them as durable history
 - Browser reconnect must not duplicate completed messages
 
@@ -1830,14 +1827,13 @@ Session-scoped audit records remain on the owning runner:
 
 ### Setup/resume failure
 
-- Stop before dispatching the prompt.
 - Stream logs and show the exact failed hook.
-- Permit terminal access when safe for repair.
-- User may retry provisioning/resume.
+- A failed `.agents/setup` emits a visible warning and continues to Pi so the prompt can repair the project.
+- A failed `.agents/resume` stops before dispatching the next prompt; permit terminal access when safe and allow an explicit resume retry.
 
 ### Pi/model failure
 
-- Preserve Pi JSONL and normalized completed events.
+- Preserve Pi JSONL; no second normalized conversation log exists.
 - Surface provider errors and retry status.
 - Respect Pi’s retry/compaction lifecycle before declaring the run settled.
 
@@ -1891,10 +1887,10 @@ Session-scoped audit records remain on the owning runner:
 - Gateway ↔ runner handshake across protocol versions
 - Idempotent command replay after dropped acknowledgments
 - Non-idempotent message handoff transitions to `delivery-uncertain` rather than replay
-- Runner-local event replay/deduplication through an unpersisted gateway proxy
+- Pi JSONL conversation projection/replay and deduplication through an unpersisted gateway proxy
 - Runner snapshot reconciliation and in-memory route rebuilding, including tombstoned-entry rejection and cleanup request
 - Binary open/data/window/end/reset behavior
-- SSE cursor reconnect using runner-owned event history through the gateway proxy
+- SSE cursor reconnect using runner-owned Pi history through the gateway proxy
 - Preview HTTP header/body streaming
 - Preview WebSocket tunneling
 
@@ -2016,7 +2012,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Milestone 0’s allowlist-only Pi resource loader and in-memory settings, with no workspace discovery
 - Gondolin-backed Pi tools
 - Persistent Pi JSONL
-- Event normalization and runner spool
+- Bounded Pi-to-wire event projection with no second durable transcript
 - HTTP prompt API and SSE stream
 - Pi-native follow-up, direct steering, and abort
 - Runner-local pre-handoff pending delivery while connected/waking
@@ -2025,7 +2021,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Model/thinking controls
 - Edit-last conversation semantics
 
-**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with transcript/event state replayed from the runner and only the user owner plus four live-session catalog fields and minimal user/session/time deletion markers stored by the gateway.
+**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with conversation state replayed from runner-owned Pi JSONL and only the user owner plus four live-session catalog fields and minimal user/session/time deletion markers stored by the gateway.
 
 ### Milestone 5 — Review surfaces
 
@@ -2033,7 +2029,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Hostile `.git/config` regression tests
 - Changed-file navigation
 - Read-only file browser
-- Runner-owned transcript/event replay through the gateway proxy
+- Runner-owned Pi conversation replay through the gateway proxy
 - Explicit unavailable state while the runner is offline
 - Session archive on the online owning runner, online/offline deletion with durable anti-resurrection markers, and disk reporting
 

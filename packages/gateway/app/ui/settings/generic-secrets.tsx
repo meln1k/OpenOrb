@@ -34,10 +34,10 @@ import {
   sectionHeaderStyle,
   sectionHeadingStyle,
   settingsSectionStyle,
-} from "./settings-shared.ts";
-import type { SettingsSecret } from "./settings-tabs.tsx";
+} from "@/app/ui/settings/settings-shared.ts";
+import type { SettingsSecret } from "@/app/ui/settings/settings-tabs.tsx";
 
-export function ProviderSecrets(
+export function GenericSecrets(
   handle: Handle<
     { actionHref: string; csrfToken: string; dialogId: string; secrets: SettingsSecret[] }
   >,
@@ -46,13 +46,13 @@ export function ProviderSecrets(
   return () => (
     <section aria-labelledby="secrets-heading" mix={settingsSectionStyle}>
       <header mix={sectionHeaderStyle}>
-        <h2 id="secrets-heading" mix={sectionHeadingStyle}>Secrets</h2>
+        <h2 id="secrets-heading" mix={sectionHeadingStyle}>Generic secrets</h2>
         <p mix={sectionCopyStyle}>
-          Provider API keys are encrypted with the gateway master key and are never shown again
-          after they are saved.
+          Key-value secrets are encrypted with the gateway master key and stored independently from
+          model provider credentials. Values are never shown again after they are saved.
         </p>
       </header>
-      <section aria-label="Stored provider secrets" mix={listStyle}>
+      <section aria-label="Stored generic secrets" mix={listStyle}>
         <div mix={tableFrameStyle}>
           <header mix={tableToolbarStyle}>
             <h3 mix={tableTitleStyle}>Stored secrets</h3>
@@ -74,7 +74,9 @@ export function ProviderSecrets(
               {secrets.length === 0
                 ? (
                   <TableRow>
-                    <TableCell colSpan={3} mix={emptyCellStyle}>No secrets configured.</TableCell>
+                    <TableCell colSpan={3} mix={emptyCellStyle}>
+                      No generic secrets configured.
+                    </TableCell>
                   </TableRow>
                 )
                 : secrets.map((secret) => (
@@ -109,26 +111,26 @@ function AddSecretDialog(
       aria-describedby={descriptionId}
     >
       <AlertDialogHeader>
-        <AlertDialogTitle id={titleId}>Add provider secret</AlertDialogTitle>
+        <AlertDialogTitle id={titleId}>Add generic secret</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
-          Use the environment variable expected by the provider, such as OPENCODE_API_KEY.
+          Store a named secret independently from model and Git credentials.
         </AlertDialogDescription>
       </AlertDialogHeader>
       <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
-        <input type="hidden" name="intent" value="save" />
+        <input type="hidden" name="intent" value="save-secret" />
         <Field>
           <FieldLabel for="secret-key">Key</FieldLabel>
           <Input
             id="secret-key"
             type="text"
             name="key"
-            placeholder="OPENCODE_API_KEY"
+            placeholder="SERVICE_TOKEN"
             required
           />
         </Field>
         <Field>
-          <FieldLabel for="secret-value">API key</FieldLabel>
+          <FieldLabel for="secret-value">Secret value</FieldLabel>
           <Input
             id="secret-value"
             type="password"
@@ -138,12 +140,7 @@ function AddSecretDialog(
           />
         </Field>
         <AlertDialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            commandFor={dialogId}
-            command="close"
-          >
+          <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
           <Button type="submit">Save secret</Button>
@@ -224,7 +221,7 @@ function EditSecretDialog(
   return () => (
     <AlertDialog id={dialogId} aria-labelledby={titleId} aria-describedby={descriptionId}>
       <AlertDialogHeader>
-        <AlertDialogTitle id={titleId}>Edit secret</AlertDialogTitle>
+        <AlertDialogTitle id={titleId}>Edit generic secret</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
           Replace the stored value for{" "}
           <strong>{secret.key}</strong>. The new value will be encrypted and cannot be shown again.
@@ -232,10 +229,10 @@ function EditSecretDialog(
       </AlertDialogHeader>
       <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
-        <input type="hidden" name="intent" value="save" />
+        <input type="hidden" name="intent" value="save-secret" />
         <input type="hidden" name="key" value={secret.key} />
         <Field>
-          <FieldLabel for={`${dialogId}-value`}>New API key</FieldLabel>
+          <FieldLabel for={`${dialogId}-value`}>New secret value</FieldLabel>
           <Input
             id={`${dialogId}-value`}
             type="password"
@@ -245,12 +242,7 @@ function EditSecretDialog(
           />
         </Field>
         <AlertDialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            commandFor={dialogId}
-            command="close"
-          >
+          <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
           <Button type="submit">Save changes</Button>
@@ -275,22 +267,17 @@ function DeleteSecretDialog(
   return () => (
     <AlertDialog id={dialogId} aria-labelledby={titleId} aria-describedby={descriptionId}>
       <AlertDialogHeader>
-        <AlertDialogTitle id={titleId}>Delete secret?</AlertDialogTitle>
+        <AlertDialogTitle id={titleId}>Delete generic secret?</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
           This will permanently delete <strong>{secret.key}</strong>. This action cannot be undone.
         </AlertDialogDescription>
       </AlertDialogHeader>
       <form method="post" action={actionHref} rmx-document>
         <input type="hidden" name="_csrf" value={csrfToken} />
-        <input type="hidden" name="intent" value="delete" />
+        <input type="hidden" name="intent" value="delete-secret" />
         <input type="hidden" name="key" value={secret.key} />
         <AlertDialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            commandFor={dialogId}
-            command="close"
-          >
+          <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
           <Button type="submit" variant="destructive">Delete secret</Button>

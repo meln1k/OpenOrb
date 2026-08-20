@@ -126,9 +126,16 @@ Deno.test({
         sessionLabel: "openorb OO-008 integration test",
       }),
     );
+    const piSessionFile = `${temporaryDirectory}/pi-session.jsonl`;
+    await Deno.writeTextFile(piSessionFile, "");
     const pi = await OpenOrbPiSessionFactory.create({
-      runnerSessionDirectory: `${temporaryDirectory}/pi-sessions`,
+      runnerSessionFile: piSessionFile,
       runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
+      modelRuntime: {
+        model: "opencode-go/deepseek-v4-flash",
+        thinkingLevel: "high",
+        credential: { type: "api_key", value: "test-model-provider-key" },
+      },
       tools: runtime.tools,
     });
 

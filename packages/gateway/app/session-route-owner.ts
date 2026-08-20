@@ -5,21 +5,22 @@ import {
 } from "@openorb/protocol";
 import { trySync } from "@openorb/result";
 
-const MAX_CACHED_SESSION_EVENTS = 1_024;
-
 export interface SessionRouteConnection {
   readonly runner: { id: string; userId: string };
   readonly sessionIds: Set<string>;
 }
 
 interface SessionEventChannel {
-  events: SessionEventPayload[];
-  listeners: Set<(event: SessionEventPayload) => void>;
+  listeners: Set<SessionEventListener>;
   snapshot?: RunnerSessionSnapshot;
 }
 
+interface SessionEventListener {
+  publish(event: SessionEventPayload): void;
+  close(): void;
+}
+
 export interface OwnedSessionEventSubscription {
-  events: SessionEventPayload[];
   unsubscribe(): void;
 }
 
@@ -68,7 +69,14 @@ export class SessionRouteOwner<Connection extends SessionRouteConnection> {
   remove(connection: Connection): void {
     for (const sessionId of connection.sessionIds) {
       const key = sessionKey(connection.runner.userId, sessionId);
-      if (this.#routes.get(key) === connection) this.#routes.delete(key);
+      if (this.#routes.get(key) !== connection) continue;
+      this.#routes.delete(key);
+      const channel = this.#eventChannels.get(key);
+      if (!channel) continue;
+      for (const listener of channel.listeners) {
+        trySync(listener.close, () => undefined);
+      }
+      channel.listeners.clear();
     }
     connection.sessionIds.clear();
   }
@@ -89,20 +97,25 @@ export class SessionRouteOwner<Connection extends SessionRouteConnection> {
     const key = sessionKey(connection.runner.userId, sessionId);
     if (this.#routes.get(key) !== connection) return false;
     const channel = this.#getEventChannel(key);
-    const lastCursor = channel.events.at(-1)?.cursor ?? 0;
-    if (event.cursor <= lastCursor) return true;
-    channel.events.push(event);
-    if (channel.events.length > MAX_CACHED_SESSION_EVENTS) channel.events.shift();
-    if (channel.snapshot && event.event.type === "session.state") {
-      channel.snapshot = {
-        ...channel.snapshot,
-        state: runnerSessionStateForProvisioningStage(event.event.stage),
-        lastEventCursor: event.cursor,
-      };
+    if (event.event.type === "session.state") {
+      if (channel.snapshot) {
+        channel.snapshot = {
+          ...channel.snapshot,
+          state: runnerSessionStateForProvisioningStage(event.event.stage),
+        };
+      }
+    }
+    if ("cursor" in event) {
+      if (channel.snapshot) {
+        channel.snapshot = {
+          ...channel.snapshot,
+          lastEventCursor: event.cursor,
+        };
+      }
     }
     for (const listener of channel.listeners) {
       // A disconnected browser stream must not disrupt the runner connection.
-      trySync(() => listener(event), () => undefined);
+      trySync(() => listener.publish(event), () => undefined);
     }
     return true;
   }
@@ -110,14 +123,14 @@ export class SessionRouteOwner<Connection extends SessionRouteConnection> {
   subscribe(
     userId: string,
     sessionId: string,
-    afterCursor: number,
-    listener: (event: SessionEventPayload) => void,
+    publish: (event: SessionEventPayload) => void,
+    close: () => void,
   ): OwnedSessionEventSubscription {
     const channel = this.#getEventChannel(sessionKey(userId, sessionId));
+    const listener = { publish, close };
     channel.listeners.add(listener);
     let subscribed = true;
     return {
-      events: channel.events.filter((entry) => entry.cursor > afterCursor),
       unsubscribe() {
         if (!subscribed) return;
         subscribed = false;
@@ -127,6 +140,12 @@ export class SessionRouteOwner<Connection extends SessionRouteConnection> {
   }
 
   clear(): void {
+    for (const channel of this.#eventChannels.values()) {
+      for (const listener of channel.listeners) {
+        trySync(listener.close, () => undefined);
+      }
+      channel.listeners.clear();
+    }
     this.#routes.clear();
     this.#eventChannels.clear();
   }
@@ -134,7 +153,7 @@ export class SessionRouteOwner<Connection extends SessionRouteConnection> {
   #getEventChannel(key: string): SessionEventChannel {
     let channel = this.#eventChannels.get(key);
     if (!channel) {
-      channel = { events: [], listeners: new Set() };
+      channel = { listeners: new Set() };
       this.#eventChannels.set(key, channel);
     }
     return channel;

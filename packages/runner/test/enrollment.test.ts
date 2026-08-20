@@ -10,8 +10,11 @@ import {
   reconnectDelayMs,
   RUNNER_HEARTBEAT_INTERVAL_MS,
 } from "@/src/connection.ts";
+import { SessionEventRelay } from "@/src/session-event-relay.ts";
+import { RunnerSessionStore } from "@/src/session-store.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
+const SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c10";
 const ENROLLMENT_PSK = `openorb_enroll_${"a".repeat(43)}`;
 const RUNNER_TOKEN = `openorb_runner_${"b".repeat(43)}`;
 
@@ -266,6 +269,7 @@ Deno.test("sends a complete session inventory in bounded reconciliation chunks",
     projectId: "01989d78-65ee-7f6a-a97e-0f16ad134c11",
     createdAt: "2026-08-17T12:00:00Z",
     initialPromptPreview: `Session ${index}`,
+    model: "opencode-go/deepseek-v4-flash",
     state: "created" as const,
     lastEventCursor: index,
   }));
@@ -314,6 +318,112 @@ Deno.test("sends a complete session inventory in bounded reconciliation chunks",
     abortController.abort();
     await server.shutdown();
     await server.finished;
+  }
+});
+
+Deno.test("replays Pi history only after a correlated gateway request", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  let resolveAddress: (address: Deno.NetAddr) => void;
+  let resolveReplay: () => void;
+  const listening = new Promise<Deno.NetAddr>((resolve) => {
+    resolveAddress = resolve;
+  });
+  const replayComplete = new Promise<void>((resolve) => {
+    resolveReplay = resolve;
+  });
+  const replayCommandId = crypto.randomUUID();
+  const replayMessages: ReturnType<typeof parseRunnerClientMessage>[] = [];
+  const server = Deno.serve(
+    { hostname: "127.0.0.1", port: 0, onListen: resolveAddress! },
+    (request) => {
+      const { socket, response } = Deno.upgradeWebSocket(request);
+      socket.onmessage = (event) => {
+        const message = parseRunnerClientMessage(JSON.parse(String(event.data)));
+        if (message.type === "runner.hello") {
+          socket.send(JSON.stringify({
+            version: 1,
+            id: crypto.randomUUID(),
+            type: "runner.connected",
+            payload: { runnerId: RUNNER_ID },
+          }));
+          return;
+        }
+        if (message.type === "runner.reconcile.complete") {
+          assertEquals(replayMessages, []);
+          socket.send(JSON.stringify({
+            version: 1,
+            id: replayCommandId,
+            type: "session.event.replay",
+            sessionId: SESSION_ID,
+            payload: { afterCursor: 0 },
+          }));
+          return;
+        }
+        if (message.type === "session.event" || message.type === "session.event.replay.result") {
+          replayMessages.push(message);
+          if (message.type === "session.event.replay.result") resolveReplay();
+        }
+      };
+      return response;
+    },
+  );
+  const address = await listening;
+  const abortController = new AbortController();
+
+  try {
+    const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
+    success(await store.initialize());
+    success(
+      await store.createSession({
+        id: SESSION_ID,
+        projectId: "01989d78-65ee-7f6a-a97e-0f16ad134c11",
+        repositoryUrl: "https://github.com/meln1k/openorb.git",
+        ref: "main",
+        branchName: "openorb/replay-test",
+        initialPrompt: "Inspect the repository",
+        model: "opencode-go/deepseek-v4-flash",
+      }),
+    );
+    const relay = new SessionEventRelay(store);
+    const connection = maintainRunnerConnection({
+      gatewayUrl: `http://${address.hostname}:${address.port}`,
+      runnerId: RUNNER_ID,
+      runnerToken: RUNNER_TOKEN,
+      signal: abortController.signal,
+      getCapacity: () =>
+        Promise.resolve({
+          activeSessions: 1,
+          vmCpuCount: 4,
+          vmMemoryMiB: 8192,
+          diskFreeMiB: 20_480,
+        }),
+      getSessionSnapshot: async () => [
+        [success(await store.getSessionSnapshot(SESSION_ID))],
+        undefined,
+      ],
+      sessionEventRelay: relay,
+    });
+
+    await replayComplete;
+    abortController.abort();
+    await connection;
+
+    assertEquals(replayMessages.map((message) => message.type), [
+      "session.event",
+      "session.event.replay.result",
+    ]);
+    const [reset, result] = replayMessages;
+    assert(reset?.type === "session.event");
+    assertEquals(reset.correlationId, replayCommandId);
+    assertEquals(reset.payload, { event: { type: "conversation.reset" } });
+    assert(result?.type === "session.event.replay.result");
+    assertEquals(result.correlationId, replayCommandId);
+    assertEquals(result.payload, { status: "completed", cursor: 0 });
+  } finally {
+    abortController.abort();
+    await server.shutdown();
+    await server.finished;
+    await Deno.remove(workingDirectory, { recursive: true });
   }
 });
 
