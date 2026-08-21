@@ -1,5 +1,6 @@
 import { type SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
+  MAX_ACTIVITY_EVENT_TEXT_BYTES,
   MAX_SESSION_MESSAGE_TEXT_BYTES,
   MAX_TOOL_EVENT_TEXT_BYTES,
   MAX_USER_MESSAGE_TEXT_BYTES,
@@ -7,8 +8,8 @@ import {
 } from "@openorb/protocol";
 
 import {
+  boundedCount,
   messageContentText,
-  piMessageId,
   sessionUsage,
   stringify,
   truncateUtf8,
@@ -23,6 +24,15 @@ export async function readPiSessionEvents(
 
 export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionConversationEvent[] {
   return entries.flatMap((entry): SessionConversationEvent[] => {
+    if (entry.type === "compaction") {
+      return [{
+        type: "context.compacted",
+        compactionId: entry.id,
+        summary: truncateUtf8(entry.summary, MAX_ACTIVITY_EVENT_TEXT_BYTES),
+        tokensBefore: boundedCount(entry.tokensBefore),
+        usage: entry.usage === undefined ? undefined : sessionUsage(entry.usage),
+      }];
+    }
     if (entry.type !== "message") return [];
     const message = entry.message;
     if (message.role === "user") {
@@ -30,7 +40,7 @@ export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionCo
       return text
         ? [{
           type: "user.message" as const,
-          messageId: piMessageId("user", message.timestamp),
+          messageId: entry.id,
           text: truncateUtf8(text, MAX_USER_MESSAGE_TEXT_BYTES),
         }]
         : [];
@@ -39,7 +49,7 @@ export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionCo
       return [
         {
           type: "assistant.completed" as const,
-          messageId: piMessageId("assistant", message.timestamp),
+          messageId: entry.id,
           text: truncateUtf8(
             message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join(""),
             MAX_SESSION_MESSAGE_TEXT_BYTES,

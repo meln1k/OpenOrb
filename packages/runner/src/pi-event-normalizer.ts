@@ -22,7 +22,11 @@ const toolResultSchema = object({
   ])),
 });
 
+type PiMessage = Extract<AgentSessionEvent, { type: "message_end" }>["message"];
+
 export interface PiEventNormalizerOptions {
+  getCompactionEntryId(): string | undefined;
+  getMessageEntryId(message: PiMessage): string | undefined;
   publishConversation(event: SessionConversationEvent): Promise<void>;
   publishLive(event: SessionLiveEvent): Promise<void>;
   secrets?: readonly string[];
@@ -30,7 +34,6 @@ export interface PiEventNormalizerOptions {
 
 export class PiEventNormalizer {
   readonly #options: PiEventNormalizerOptions;
-  #activeAssistantMessageId?: string;
   #publications: Promise<void> = Promise.resolve();
   #publicationError?: unknown;
 
@@ -58,40 +61,43 @@ export class PiEventNormalizer {
           toolResultCount: event.toolResults.length,
         });
         return;
-      case "message_start": {
-        if (event.message.role === "assistant") {
-          this.#activeAssistantMessageId = piMessageId("assistant", event.message.timestamp);
-        }
+      case "message_start":
         this.#publishLive({
           type: "message.started",
-          messageId: piMessageId(event.message.role, event.message.timestamp),
           role: event.message.role,
         });
         return;
-      }
       case "message_update":
         this.#handleAssistantUpdate(event);
         return;
       case "message_end": {
-        const messageId = event.message.role === "assistant"
-          ? this.#assistantMessageId()
-          : piMessageId(event.message.role, event.message.timestamp);
         if (event.message.role === "user") {
           const text = messageContentText(event.message.content);
           if (text) {
-            this.#enqueue(() =>
-              this.#options.publishConversation({
+            const entryId = this.#captureMessageEntryId(event.message);
+            this.#enqueue(async () => {
+              const messageId = await entryId;
+              if (messageId === undefined) {
+                throw new PiEventNormalizationError(
+                  "Pi completed a user message without a durable session entry.",
+                  undefined,
+                );
+              }
+              await this.#options.publishConversation({
                 type: "user.message",
                 messageId,
                 text: truncateUtf8(text, MAX_USER_MESSAGE_TEXT_BYTES),
-              })
-            );
+              });
+            });
           }
         } else if (event.message.role === "assistant") {
           const message = event.message;
           const content = message.content;
-          this.#enqueue(() =>
-            this.#options.publishConversation({
+          const entryId = this.#captureMessageEntryId(message);
+          this.#enqueue(async () => {
+            const messageId = await entryId;
+            if (messageId === undefined) return;
+            await this.#options.publishConversation({
               type: "assistant.completed",
               messageId,
               text: this.#safeText(
@@ -107,15 +113,13 @@ export class PiEventNormalizer {
               ),
               stopReason: message.stopReason,
               usage: sessionUsage(message.usage),
-            })
-          );
+            });
+          });
         }
         this.#publishLive({
           type: "message.completed",
-          messageId,
           role: event.message.role,
         });
-        this.#activeAssistantMessageId = undefined;
         return;
       }
       case "tool_execution_start":
@@ -163,26 +167,51 @@ export class PiEventNormalizer {
       case "compaction_start":
         this.#publishLive({ type: "compaction.started", reason: event.reason });
         return;
-      case "compaction_end":
+      case "compaction_end": {
+        const result = event.result;
+        const summary = result === undefined
+          ? undefined
+          : this.#safeText(result.summary, MAX_ACTIVITY_EVENT_TEXT_BYTES);
+        const tokensBefore = result === undefined ? undefined : boundedCount(result.tokensBefore);
+        if (result !== undefined) {
+          const entryId = this.#options.getCompactionEntryId();
+          if (entryId === undefined) {
+            this.#enqueue(() =>
+              Promise.reject(
+                new PiEventNormalizationError(
+                  "Pi completed compaction without a durable session entry.",
+                  undefined,
+                ),
+              )
+            );
+          } else {
+            this.#enqueue(() =>
+              this.#options.publishConversation({
+                type: "context.compacted",
+                compactionId: entryId,
+                summary: summary ?? "",
+                tokensBefore: tokensBefore ?? 0,
+                usage: result.usage === undefined ? undefined : sessionUsage(result.usage),
+              })
+            );
+          }
+        }
         this.#publishLive({
           type: "compaction.completed",
           reason: event.reason,
           aborted: event.aborted,
           willRetry: event.willRetry,
-          summary: event.result === undefined
+          summary,
+          tokensBefore,
+          estimatedTokensAfter: result?.estimatedTokensAfter === undefined
             ? undefined
-            : this.#safeText(event.result.summary, MAX_ACTIVITY_EVENT_TEXT_BYTES),
-          tokensBefore: event.result === undefined
-            ? undefined
-            : boundedCount(event.result.tokensBefore),
-          estimatedTokensAfter: event.result?.estimatedTokensAfter === undefined
-            ? undefined
-            : boundedCount(event.result.estimatedTokensAfter),
+            : boundedCount(result.estimatedTokensAfter),
           errorMessage: event.errorMessage === undefined
             ? undefined
             : this.#safeError(event.errorMessage),
         });
         return;
+      }
       case "auto_retry_start":
         this.#publishLive({
           type: "model.retry.started",
@@ -225,13 +254,15 @@ export class PiEventNormalizer {
       case "summarization_retry_finished":
         this.#publishLive({ type: "summarization.retry.completed" });
         return;
-      case "entry_appended":
+      case "entry_appended": {
+        const entryId = this.#safeIdentifier(event.entry.id, "entry");
         this.#publishLive({
           type: "session.entry.appended",
-          entryId: this.#safeIdentifier(event.entry.id, "entry"),
+          entryId,
           entryType: event.entry.type,
         });
         return;
+      }
       case "session_info_changed":
         this.#publishLive({
           type: "session.info.changed",
@@ -260,29 +291,39 @@ export class PiEventNormalizer {
     if (this.#publicationError !== undefined) throw this.#publicationError;
   }
 
-  #assistantMessageId(): string {
-    return this.#activeAssistantMessageId ??= crypto.randomUUID();
+  #captureMessageEntryId(message: PiMessage): Promise<string | undefined> {
+    const captured = Promise.withResolvers<string | undefined>();
+    queueMicrotask(() => {
+      const [entryId, captureError] = trySync(
+        () => this.#options.getMessageEntryId(message),
+        (cause) =>
+          new PiEventNormalizationError("Could not inspect Pi's durable message entry.", cause),
+      );
+      if (captureError !== undefined) {
+        captured.reject(captureError);
+        return;
+      }
+      captured.resolve(entryId);
+    });
+    return captured.promise;
   }
 
   #handleAssistantUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
     if (event.message.role !== "assistant") return;
-    const messageId = this.#assistantMessageId();
     const update = event.assistantMessageEvent;
     this.#publishLive({
       type: "assistant.usage.updated",
-      messageId,
       usage: sessionUsage(event.message.usage),
     });
 
     switch (update.type) {
       case "start":
-        this.#publishLive({ type: "assistant.stream.started", messageId });
+        this.#publishLive({ type: "assistant.stream.started" });
         return;
       case "text_start":
       case "thinking_start":
         this.#publishLive({
           type: "assistant.content.started",
-          messageId,
           contentIndex: boundedCount(update.contentIndex),
           contentType: update.type === "text_start" ? "text" : "thinking",
         });
@@ -293,8 +334,8 @@ export class PiEventNormalizer {
         if (!delta) return;
         this.#publishLive(
           update.type === "text_delta"
-            ? { type: "assistant.text.delta", messageId, delta }
-            : { type: "assistant.thinking.delta", messageId, delta },
+            ? { type: "assistant.text.delta", delta }
+            : { type: "assistant.thinking.delta", delta },
         );
         return;
       }
@@ -302,7 +343,6 @@ export class PiEventNormalizer {
       case "thinking_end":
         this.#publishLive({
           type: "assistant.content.completed",
-          messageId,
           contentIndex: boundedCount(update.contentIndex),
           contentType: update.type === "text_end" ? "text" : "thinking",
         });
@@ -310,7 +350,6 @@ export class PiEventNormalizer {
       case "toolcall_start":
         this.#publishLive({
           type: "assistant.tool-call.started",
-          messageId,
           contentIndex: boundedCount(update.contentIndex),
         });
         return;
@@ -319,7 +358,6 @@ export class PiEventNormalizer {
         if (!delta) return;
         this.#publishLive({
           type: "assistant.tool-call.delta",
-          messageId,
           contentIndex: boundedCount(update.contentIndex),
           delta,
         });
@@ -328,7 +366,6 @@ export class PiEventNormalizer {
       case "toolcall_end":
         this.#publishLive({
           type: "assistant.tool-call.completed",
-          messageId,
           contentIndex: boundedCount(update.contentIndex),
           toolCallId: this.#safeIdentifier(update.toolCall.id, "tool"),
           toolName: this.#safeIdentifier(update.toolCall.name, "unknown"),
@@ -341,14 +378,12 @@ export class PiEventNormalizer {
       case "done":
         this.#publishLive({
           type: "assistant.stream.completed",
-          messageId,
           reason: update.reason,
         });
         return;
       case "error":
         this.#publishLive({
           type: "assistant.stream.failed",
-          messageId,
           reason: update.reason,
           errorMessage: update.error.errorMessage === undefined
             ? undefined
@@ -397,8 +432,11 @@ export class PiEventNormalizer {
   }
 }
 
-export function piMessageId(role: string, timestamp: number): string {
-  return `pi:${role}:${timestamp}`;
+class PiEventNormalizationError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "PiEventNormalizationError";
+  }
 }
 
 export function truncateUtf8(value: string, maxBytes: number): string {
@@ -464,7 +502,7 @@ function boundedIdentifier(value: string, fallback: string): string {
   return result;
 }
 
-function boundedCount(value: number): number {
+export function boundedCount(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(value)));
 }

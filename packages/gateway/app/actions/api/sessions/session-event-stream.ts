@@ -32,12 +32,13 @@ export function createSessionEventStream(
   const abort = () => close();
   cleanup.defer(() => signal.removeEventListener("abort", abort));
   const subscription = subscribe((event) => {
-    if (closed || buffer.trySend(encodeEvent(event))) return;
+    const browserEvent = eventForBrowser(event);
+    if (browserEvent === null || closed || buffer.trySend(encodeEvent(browserEvent))) return;
     // Live deltas are best-effort under backpressure. A dropped durable event or reset would leave
     // a cursor gap, so drain accepted events and let EventSource resume from the last delivered ID.
-    if ("cursor" in event || event.event.type === "conversation.reset") close(true);
+    if ("cursor" in browserEvent || browserEvent.event.type === "conversation.reset") close(true);
   });
-  cleanup.defer(subscription.unsubscribe);
+  cleanup.defer(() => subscription.unsubscribe());
   void subscription.replay.catch(() => close());
   const subscriptionClosed = () => close();
   cleanup.defer(() => subscription.signal.removeEventListener("abort", subscriptionClosed));
@@ -82,6 +83,13 @@ export function createSessionEventStream(
       close();
     },
   }, { highWaterMark: 0 });
+}
+
+function eventForBrowser(payload: SessionEventPayload): SessionEventPayload | null {
+  if (payload.event.type === "tool.updated" && payload.event.toolName === "read") return null;
+  if (payload.event.type !== "tool.completed" || payload.event.toolName !== "read") return payload;
+  if (!("cursor" in payload)) return payload;
+  return { cursor: payload.cursor, event: { ...payload.event, result: "" } };
 }
 
 function encodeEvent(payload: SessionEventPayload): Uint8Array {

@@ -104,7 +104,6 @@ Deno.test("requests Pi replay for each subscriber and relays only subsequent liv
       payload: {
         event: {
           type: "assistant.text.delta",
-          messageId: "assistant-1",
           delta: "stale",
         },
       },
@@ -163,7 +162,6 @@ Deno.test("requests Pi replay for each subscriber and relays only subsequent liv
       payload: {
         event: {
           type: "assistant.text.delta",
-          messageId: "assistant-1",
           delta: "Hello",
         },
       },

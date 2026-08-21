@@ -13,7 +13,7 @@ import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 import type { DeveloperImage } from "@/src/developer-image.ts";
 import { PiEventNormalizer } from "@/src/pi-event-normalizer.ts";
 import { OpenOrbPiSessionFactory, type OpenOrbPiSessionOptions } from "@/src/pi-session-factory.ts";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   createOpenOrbGondolinToolRuntime,
   type GondolinRuntimeError,
@@ -54,6 +54,7 @@ export interface ProvisioningRuntime {
 }
 
 interface ProvisioningPiSession {
+  sessionManager: Pick<SessionManager, "getLeafEntry">;
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
   prompt(input: string): Promise<void>;
   dispose(): void;
@@ -529,6 +530,14 @@ export class SessionProvisioner {
 
     const normalizer = new PiEventNormalizer({
       secrets: [modelRuntime.credential.value],
+      getCompactionEntryId: () => {
+        const entry = pi.session.sessionManager.getLeafEntry();
+        return entry?.type === "compaction" ? entry.id : undefined;
+      },
+      getMessageEntryId: (message) => {
+        const entry = pi.session.sessionManager.getLeafEntry();
+        return entry?.type === "message" && entry.message === message ? entry.id : undefined;
+      },
       publishConversation: async (event) => {
         const [, relayError] = mapRelayResult(
           metadata.id,

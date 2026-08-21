@@ -7,6 +7,7 @@ export interface ModelProviderOption {
 }
 
 export interface ModelOption {
+  contextWindow: number;
   id: string;
   name: string;
   providerId: string;
@@ -24,6 +25,7 @@ export const MODEL_PROVIDER_OPTIONS: readonly ModelProviderOption[] = MODEL_PROV
 export const MODEL_OPTIONS: readonly ModelOption[] = MODEL_PROVIDERS.flatMap((provider) =>
   provider.getModels()
     .map((model) => ({
+      contextWindow: model.contextWindow,
       id: modelReference(provider.id, model.id),
       name: model.name,
       providerId: provider.id,
@@ -41,6 +43,10 @@ export function isModelProviderId(value: string): boolean {
 
 export function isModelReference(value: string): boolean {
   return MODEL_IDS.has(value);
+}
+
+export function modelContextWindow(value: string): number | undefined {
+  return MODEL_OPTIONS.find((model) => model.id === value)?.contextWindow;
 }
 
 export function modelProviderName(providerId: string): string {

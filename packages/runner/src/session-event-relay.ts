@@ -258,5 +258,7 @@ function eventKey(event: SessionConversationEvent): string {
     case "tool.started":
     case "tool.completed":
       return `${event.type}:${event.toolCallId}`;
+    case "context.compacted":
+      return `${event.type}:${event.compactionId}`;
   }
 }

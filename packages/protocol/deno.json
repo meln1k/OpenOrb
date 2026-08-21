@@ -1,7 +1,10 @@
 {
   "name": "@openorb/protocol",
   "version": "0.0.0",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./runner-session-events": "./src/runner-session-events.ts"
+  },
   "imports": {
     "@/": "./",
     "@remix-run/data-schema": "npm:@remix-run/data-schema@0.3.0",

@@ -10,6 +10,8 @@ export * from "@/app/ui/components/field.tsx";
 export * from "@/app/ui/components/icons.tsx";
 export * from "@/app/ui/components/input.tsx";
 export * from "@/app/ui/components/item.tsx";
+export * from "@/app/ui/components/marker.tsx";
+export * from "@/app/ui/components/message-scroller.tsx";
 export * from "@/app/ui/components/progress.tsx";
 export * from "@/app/ui/components/separator.tsx";
 export * from "@/app/ui/components/sidebar.tsx";

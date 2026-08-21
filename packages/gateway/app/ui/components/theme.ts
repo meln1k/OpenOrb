@@ -32,6 +32,8 @@ export const designSystemStyle = css({
   "--radius-md": "calc(var(--radius) * 0.8)",
   "--radius-lg": "var(--radius)",
   "--radius-xl": "calc(var(--radius) * 1.4)",
+  "--font-mono":
+    "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
   "--font-sans":
     "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
   color: "var(--foreground)",

@@ -79,6 +79,50 @@ Deno.test("encodes durable cursors and clears the EventSource cursor on reset", 
   abort.abort();
 });
 
+Deno.test("does not send read tool output to the browser", async () => {
+  const abort = new AbortController();
+  let listener: ((event: SessionEventPayload) => void) | undefined;
+  const stream = createSessionEventStream(abort.signal, (publish) => {
+    listener = publish;
+    return {
+      replay: Promise.resolve(),
+      signal: new AbortController().signal,
+      unsubscribe() {},
+    };
+  });
+  assert(listener);
+  listener({
+    event: {
+      type: "tool.updated",
+      toolCallId: "read-1",
+      toolName: "read",
+      partialResult: "live file contents",
+    },
+  });
+  listener({
+    cursor: 8,
+    event: {
+      type: "tool.completed",
+      toolCallId: "read-1",
+      toolName: "read",
+      result: "durable file contents",
+      isError: false,
+    },
+  });
+
+  const result = await stream.getReader().read();
+  assert(result.value);
+  const event = new TextDecoder().decode(result.value);
+
+  assertEquals(
+    event,
+    'id: 8\nevent: session\ndata: {"type":"tool.completed","toolCallId":"read-1","toolName":"read","result":"","isError":false}\n\n',
+  );
+  assert(!event.includes("live file contents"));
+  assert(!event.includes("durable file contents"));
+  abort.abort();
+});
+
 Deno.test("closes on a dropped durable event so EventSource can resume it", async () => {
   const abort = new AbortController();
   let listener: ((event: SessionEventPayload) => void) | undefined;
@@ -143,11 +187,36 @@ Deno.test("closes and unsubscribes when the runner route disconnects", async () 
   assertEquals(unsubscribes, 1);
 });
 
+Deno.test("preserves the subscription receiver when the request closes", async () => {
+  class ReceiverSensitiveSubscription {
+    readonly replay = Promise.resolve();
+    readonly signal = new AbortController().signal;
+    #active = true;
+
+    unsubscribe() {
+      this.#active = false;
+    }
+
+    isActive() {
+      return this.#active;
+    }
+  }
+
+  const requestAbort = new AbortController();
+  const subscription = new ReceiverSensitiveSubscription();
+  const stream = createSessionEventStream(requestAbort.signal, () => subscription);
+  const reader = stream.getReader();
+
+  requestAbort.abort();
+
+  assertEquals(await reader.read(), { value: undefined, done: true });
+  assertEquals(subscription.isActive(), false);
+});
+
 function liveEvent(index: number): SessionEventPayload {
   return {
     event: {
       type: "assistant.text.delta",
-      messageId: "assistant-1",
       delta: `delta-${index}`,
     },
   };

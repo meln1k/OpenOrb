@@ -94,6 +94,34 @@ Deno.test("validates provisioning commands, acknowledgements, and events", () =>
   assert(parsedEvent.type === "session.event");
   assertEquals(parsedEvent.payload, event.payload);
 
+  const compactedEvent = {
+    version: 1,
+    id: "event-2",
+    type: "session.event",
+    sessionId: SESSION_ID,
+    correlationId: command.id,
+    payload: {
+      cursor: 1,
+      event: {
+        type: "context.compacted",
+        compactionId: "compaction-1",
+        summary: "Inspected the repository.",
+        tokensBefore: 42_000,
+        usage: {
+          inputTokens: 2_000,
+          outputTokens: 200,
+          cacheReadTokens: 100,
+          cacheWriteTokens: 0,
+          totalTokens: 2_300,
+          totalCost: 0.01,
+        },
+      },
+    },
+  } satisfies SessionEventMessage;
+  const parsedCompactedEvent = parseRunnerClientMessage(compactedEvent);
+  assert(parsedCompactedEvent.type === "session.event");
+  assertEquals(parsedCompactedEvent.payload, compactedEvent.payload);
+
   const replay = {
     version: 1,
     id: "replay-1",

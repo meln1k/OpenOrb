@@ -289,7 +289,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(detail.status, 200);
     const detailHtml = await detail.text();
-    assertMatch(detailHtml, /Provisioning output/);
+    assertMatch(detailHtml, /title="Context window use"/);
+    assertMatch(detailHtml, /\?\/1\.0M/);
+    assertNotMatch(detailHtml, /Session <code>/);
+    assertNotMatch(detailHtml, /<span>Repository<\/span>/);
     assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/events`));
     assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-event-view\.tsx/);
     assertNotMatch(detailHtml, /data-session-events/);

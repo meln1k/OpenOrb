@@ -246,6 +246,7 @@ Deno.test("a terminal Pi error marks the session failed and disposes Pi", async 
         let listener: (event: AgentSessionEvent) => void = () => {};
         return Promise.resolve({
           session: {
+            sessionManager: EMPTY_PI_SESSION_MANAGER,
             subscribe(nextListener: (event: AgentSessionEvent) => void) {
               listener = nextListener;
               return () => {
@@ -440,7 +441,7 @@ Deno.test("resumes Pi replay after a known cursor and resets a stale cursor", as
     const paths = success(await store.getSessionPiPaths(SESSION_ID));
     const pi = SessionManager.open(paths.sessionFile, undefined, "/workspace");
     pi.appendMessage({ role: "user", content: "First", timestamp: 1 });
-    pi.appendMessage({ role: "user", content: "Second", timestamp: 2 });
+    const secondMessageId = pi.appendMessage({ role: "user", content: "Second", timestamp: 2 });
     const relay = new SessionEventRelay(store);
 
     const resumed: SessionEventPayload[] = [];
@@ -454,7 +455,7 @@ Deno.test("resumes Pi replay after a known cursor and resets a stale cursor", as
     );
     assertEquals(resumed, [{
       cursor: 2,
-      event: { type: "user.message", messageId: "pi:user:2", text: "Second" },
+      event: { type: "user.message", messageId: secondMessageId, text: "Second" },
     }]);
 
     const reset: SessionEventPayload[] = [];
@@ -552,6 +553,7 @@ Deno.test("continues to Pi when repository setup fails", async () => {
       createPiSession: () => {
         return Promise.resolve({
           session: {
+            sessionManager: EMPTY_PI_SESSION_MANAGER,
             subscribe() {
               return () => {};
             },
@@ -717,6 +719,7 @@ async function waitForEventType(
 function createFakePiSession(_options: OpenOrbPiSessionOptions) {
   return Promise.resolve({
     session: {
+      sessionManager: EMPTY_PI_SESSION_MANAGER,
       subscribe(_listener: (event: AgentSessionEvent) => void) {
         return () => {};
       },
@@ -727,6 +730,10 @@ function createFakePiSession(_options: OpenOrbPiSessionOptions) {
     },
   });
 }
+
+const EMPTY_PI_SESSION_MANAGER = {
+  getLeafEntry: () => undefined,
+};
 
 function assistantMessage(
   content: AssistantMessage["content"],

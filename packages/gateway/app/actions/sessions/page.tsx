@@ -3,6 +3,7 @@ import { css, type Handle } from "remix/ui";
 
 import type { Project } from "@/app/data/project-repository.ts";
 import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
+import { modelContextWindow } from "@/app/model-provider-catalog.ts";
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import { SessionEventView } from "@/app/ui/session/session-event-view.tsx";
 import { AppShell } from "@/app/ui/shell.tsx";
@@ -44,28 +45,19 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
       sessions={sidebarSessions}
       title={`${project.name} session · OpenOrb`}
       eyebrow="Sessions"
-      heading={project.name}
-      copy={session.initialPromptPreview}
     >
       {error ? <p role="alert" mix={errorStyle}>{error}</p> : null}
       <SessionEventView
         canRetry={canRetry}
-        createdAt={formatInstant(session.createdAt)}
+        contextWindow={snapshot === null ? 0 : modelContextWindow(snapshot.model) ?? 0}
         csrfToken={csrfToken}
         eventsHref={eventsHref}
         initialState={state}
-        projectName={project.name}
-        repositoryUrl={project.repositoryUrl}
         retryHref={retryHref}
-        runnerLabel={runnerId ?? "Offline"}
         sessionId={session.id}
       />
     </AppShell>
   );
-}
-
-function formatInstant(value: string): string {
-  return new Date(value).toISOString().replace("T", " ").replace(".000Z", "Z");
 }
 
 const errorStyle = css({

@@ -173,6 +173,17 @@ const toolCompletedEventSchema = object(
   { unknownKeys: "error" },
 );
 
+const contextCompactedEventSchema = object(
+  {
+    type: literal("context.compacted" as const),
+    compactionId: eventIdentifierSchema("Compaction identifiers"),
+    summary: boundedTextSchema(MAX_ACTIVITY_EVENT_TEXT_BYTES, "Compaction summaries"),
+    tokensBefore: nonNegativeIntegerSchema,
+    usage: optional(sessionUsageSchema),
+  },
+  { unknownKeys: "error" },
+);
+
 const provisioningLogEventSchema = object(
   {
     type: literal("provisioning.log" as const),
@@ -193,7 +204,6 @@ const conversationResetEventSchema = object(
 const assistantTextDeltaEventSchema = object(
   {
     type: literal("assistant.text.delta" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     delta: boundedTextSchema(MAX_PROVISIONING_EVENT_TEXT_BYTES, "Assistant text deltas"),
   },
   { unknownKeys: "error" },
@@ -202,7 +212,6 @@ const assistantTextDeltaEventSchema = object(
 const assistantThinkingDeltaEventSchema = object(
   {
     type: literal("assistant.thinking.delta" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     delta: boundedTextSchema(MAX_PROVISIONING_EVENT_TEXT_BYTES, "Assistant thinking deltas"),
   },
   { unknownKeys: "error" },
@@ -242,7 +251,6 @@ const turnCompletedEventSchema = object(
 const messageStartedEventSchema = object(
   {
     type: literal("message.started" as const),
-    messageId: eventIdentifierSchema("Message identifiers"),
     role: messageRoleSchema,
   },
   { unknownKeys: "error" },
@@ -251,24 +259,19 @@ const messageStartedEventSchema = object(
 const messageCompletedEventSchema = object(
   {
     type: literal("message.completed" as const),
-    messageId: eventIdentifierSchema("Message identifiers"),
     role: messageRoleSchema,
   },
   { unknownKeys: "error" },
 );
 
 const assistantStreamStartedEventSchema = object(
-  {
-    type: literal("assistant.stream.started" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
-  },
+  { type: literal("assistant.stream.started" as const) },
   { unknownKeys: "error" },
 );
 
 const assistantContentStartedEventSchema = object(
   {
     type: literal("assistant.content.started" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     contentIndex: nonNegativeIntegerSchema,
     contentType: union([literal("text" as const), literal("thinking" as const)]),
   },
@@ -278,7 +281,6 @@ const assistantContentStartedEventSchema = object(
 const assistantContentCompletedEventSchema = object(
   {
     type: literal("assistant.content.completed" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     contentIndex: nonNegativeIntegerSchema,
     contentType: union([literal("text" as const), literal("thinking" as const)]),
   },
@@ -288,7 +290,6 @@ const assistantContentCompletedEventSchema = object(
 const assistantToolCallStartedEventSchema = object(
   {
     type: literal("assistant.tool-call.started" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     contentIndex: nonNegativeIntegerSchema,
   },
   { unknownKeys: "error" },
@@ -297,7 +298,6 @@ const assistantToolCallStartedEventSchema = object(
 const assistantToolCallDeltaEventSchema = object(
   {
     type: literal("assistant.tool-call.delta" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     contentIndex: nonNegativeIntegerSchema,
     delta: boundedTextSchema(MAX_ACTIVITY_EVENT_TEXT_BYTES, "Assistant tool call deltas"),
   },
@@ -307,7 +307,6 @@ const assistantToolCallDeltaEventSchema = object(
 const assistantToolCallCompletedEventSchema = object(
   {
     type: literal("assistant.tool-call.completed" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     contentIndex: nonNegativeIntegerSchema,
     toolCallId: eventIdentifierSchema("Tool call identifiers"),
     toolName: eventIdentifierSchema("Tool names"),
@@ -319,7 +318,6 @@ const assistantToolCallCompletedEventSchema = object(
 const assistantStreamCompletedEventSchema = object(
   {
     type: literal("assistant.stream.completed" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     reason: union([
       literal("stop" as const),
       literal("length" as const),
@@ -333,7 +331,6 @@ const assistantStreamCompletedEventSchema = object(
 const assistantStreamFailedEventSchema = object(
   {
     type: literal("assistant.stream.failed" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     reason: union([literal("aborted" as const), literal("error" as const)]),
     errorMessage: optional(boundedTextSchema(MAX_ACTIVITY_EVENT_TEXT_BYTES, "Model errors")),
   },
@@ -343,7 +340,6 @@ const assistantStreamFailedEventSchema = object(
 const assistantUsageUpdatedEventSchema = object(
   {
     type: literal("assistant.usage.updated" as const),
-    messageId: eventIdentifierSchema("Assistant message identifiers"),
     usage: sessionUsageSchema,
   },
   { unknownKeys: "error" },
@@ -492,6 +488,7 @@ export const sessionConversationEventSchema = union([
   assistantCompletedEventSchema,
   toolStartedEventSchema,
   toolCompletedEventSchema,
+  contextCompactedEventSchema,
 ]);
 
 export const sessionLiveEventSchema = union([

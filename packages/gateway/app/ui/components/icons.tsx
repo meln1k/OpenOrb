@@ -1,8 +1,12 @@
 import type { Handle } from "remix/ui";
 import type { IconNode } from "lucide";
+import Activity from "lucide/dist/esm/icons/activity.mjs";
+import ArrowDown from "lucide/dist/esm/icons/arrow-down.mjs";
 import ArrowRight from "lucide/dist/esm/icons/arrow-right.mjs";
 import BadgeCheck from "lucide/dist/esm/icons/badge-check.mjs";
 import Bell from "lucide/dist/esm/icons/bell.mjs";
+import BookOpenText from "lucide/dist/esm/icons/book-open-text.mjs";
+import Brain from "lucide/dist/esm/icons/brain.mjs";
 import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
 import ChevronsUpDown from "lucide/dist/esm/icons/chevrons-up-down.mjs";
 import Cpu from "lucide/dist/esm/icons/cpu.mjs";
@@ -20,13 +24,19 @@ import Plus from "lucide/dist/esm/icons/plus.mjs";
 import Server from "lucide/dist/esm/icons/server.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import Sparkles from "lucide/dist/esm/icons/sparkles.mjs";
+import Terminal from "lucide/dist/esm/icons/terminal.mjs";
 import User from "lucide/dist/esm/icons/user.mjs";
+import Wrench from "lucide/dist/esm/icons/wrench.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 
 export type IconName =
   | "account"
+  | "activity"
+  | "arrow-down"
   | "arrow-right"
   | "bell"
+  | "book-open-text"
+  | "brain"
   | "chevron-down"
   | "chevrons-up-down"
   | "cpu"
@@ -44,7 +54,9 @@ export type IconName =
   | "server"
   | "settings"
   | "sparkles"
+  | "terminal"
   | "user"
+  | "wrench"
   | "x";
 
 export function Icon(handle: Handle<{ name: IconName; size?: number }>) {
@@ -94,8 +106,12 @@ function LucideNode(handle: Handle<{ node: IconNode[number] }>) {
 
 const iconNodes = {
   account: BadgeCheck,
+  activity: Activity,
+  "arrow-down": ArrowDown,
   "arrow-right": ArrowRight,
   bell: Bell,
+  "book-open-text": BookOpenText,
+  brain: Brain,
   "chevron-down": ChevronDown,
   "chevrons-up-down": ChevronsUpDown,
   cpu: Cpu,
@@ -113,7 +129,9 @@ const iconNodes = {
   server: Server,
   settings: Settings,
   sparkles: Sparkles,
+  terminal: Terminal,
   user: User,
+  wrench: Wrench,
   x: X,
 } satisfies Record<IconName, IconNode>;
 
