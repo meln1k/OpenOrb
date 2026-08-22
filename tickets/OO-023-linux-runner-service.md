@@ -13,7 +13,7 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 - Implement `doctor` checks for architecture/kernel, glibc (with actionable musl rejection), QEMU/KVM, virtualization access, CPU/memory/disk, gateway reachability, verified pinned image availability, and writable data directory.
 - Add systemd unit/install instructions under a dedicated service user. Set `WorkingDirectory=/var/lib/openorb-runner`, preserve the no-`--data-dir` rule, and secure runner data/token permissions.
 - Apply systemd hardening compatible with KVM/QEMU, including `NoNewPrivileges`, narrowly selected `ProtectSystem`/`ReadWritePaths`, and explicit device access. QEMU children are outside Deno's permission sandbox.
-- Configure runner-wide VM CPU/memory and maximum concurrent sessions.
+- Configure runner-wide maximum per-VM CPU/memory and maximum concurrent sessions.
 - Ensure service reconnect and session inventory behavior matches the tested harness.
 - Keep macOS code as an explicitly temporary development harness, not a release artifact.
 

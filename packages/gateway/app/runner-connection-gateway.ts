@@ -1,4 +1,6 @@
 import {
+  type OrbSize,
+  orbSizeResources,
   parseRunnerClientMessage,
   RUNNER_CONNECTED_MESSAGE_TYPE,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
@@ -438,6 +440,15 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         message: "Runner has reached its concurrent session limit.",
       });
     }
+    if (
+      input.payload.mode === "create" &&
+      !runnerSupportsOrbSize(liveState.capacity, input.payload.orbSize)
+    ) {
+      return Promise.resolve({
+        status: "unavailable",
+        message: `Runner cannot provision the ${input.payload.orbSize} orb size.`,
+      });
+    }
 
     if (this.#provisionCommands.hasSession(input.userId, input.sessionId)) {
       return Promise.resolve({
@@ -647,7 +658,8 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       (pending.expectedProjectId !== message.payload.session.projectId ||
         pending.expectedRef !== message.payload.ref ||
         pending.expectedBranchName !== message.payload.branchName ||
-        pending.expectedInitialPromptPreview !== message.payload.session.initialPromptPreview)
+        pending.expectedInitialPromptPreview !== message.payload.session.initialPromptPreview ||
+        pending.expectedOrbSize !== message.payload.session.orbSize)
     ) {
       closeSocket(connection.socket, 4400, "Provisioning acceptance does not match the command");
       return;
@@ -745,6 +757,12 @@ function byteLength(value: string): number {
 
 function runnerKey(userId: string, runnerId: string): string {
   return `${userId}:${runnerId}`;
+}
+
+function runnerSupportsOrbSize(capacity: RunnerCapacity, orbSize: OrbSize): boolean {
+  const resources = orbSizeResources(orbSize);
+  return resources.cpuCount <= capacity.vmCpuCount &&
+    resources.memoryMiB <= capacity.vmMemoryMiB;
 }
 
 function closeSocket(socket: WebSocket, code: number, reason: string): void {

@@ -1,4 +1,10 @@
-import { DEFAULT_SESSION_MODEL } from "@openorb/protocol";
+import {
+  DEFAULT_ORB_SIZE,
+  DEFAULT_SESSION_MODEL,
+  ORB_SIZE_RESOURCES,
+  ORB_SIZES,
+  type OrbSize,
+} from "@openorb/protocol";
 import { css, type Handle } from "remix/ui";
 
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
@@ -12,7 +18,7 @@ export interface SessionComposerValues {
   projectId: string;
   model: string;
   ref: string;
-  runnerId: string;
+  orbSize: string;
   branchName: string;
   initialPrompt: string;
 }
@@ -26,7 +32,16 @@ export interface SessionComposerProps extends SessionComposerData {
 }
 
 export function SessionComposer(handle: Handle<SessionComposerProps>) {
-  const { autoOpen, csrfToken, dialogId, error, models, projects, runners, values } = handle.props;
+  const {
+    autoOpen,
+    csrfToken,
+    dialogId,
+    error,
+    hasConnectedRunner,
+    models,
+    projects,
+    values,
+  } = handle.props;
   const titleId = `${dialogId}-title`;
   const firstProject = projects[0];
   const selectedProjectId = values?.projectId ?? firstProject?.id ?? "";
@@ -34,10 +49,10 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
     models.find((model) => model.id === DEFAULT_SESSION_MODEL)?.id ??
     models[0]?.id ??
     "";
-  const selectedRunnerId = values?.runnerId || runners[0]?.id || "";
+  const selectedOrbSize = values?.orbSize || DEFAULT_ORB_SIZE;
   const ref = values?.ref ?? firstProject?.defaultRef ?? "main";
   const branchName = values?.branchName ?? "openorb/session";
-  const canSubmit = projects.length > 0 && models.length > 0 && runners.length > 0;
+  const canSubmit = projects.length > 0 && models.length > 0 && hasConnectedRunner;
 
   return () => (
     <dialog
@@ -50,6 +65,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
     >
       <form method="post" action={routes.app.sessions.create.href()} mix={formStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
+        <input type="hidden" name="runnerId" value="" />
         <input type="hidden" name="ref" value={ref} />
         <input type="hidden" name="branchName" value={branchName} />
         <header mix={headerStyle}>
@@ -84,7 +100,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
                 before starting a session.
               </p>
             )
-            : runners.length === 0
+            : !hasConnectedRunner
             ? <p mix={noticeStyle}>Connect an available runner before starting a session.</p>
             : models.length === 0
             ? <p mix={noticeStyle}>Configure a model provider before starting a session.</p>
@@ -109,21 +125,18 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
               </select>
               <Icon name="chevron-down" />
             </label>
-            <label aria-label="Gondolin VM size" mix={selectControlStyle}>
+            <label aria-label="Orb size" mix={selectControlStyle}>
               <Icon name="server" />
-              <select
-                name="runnerId"
-                value={selectedRunnerId}
-                disabled={runners.length === 0}
-                mix={selectStyle}
-              >
-                {runners.length === 0 ? <option value="">No VM available</option> : (
-                  runners.map((runner) => (
-                    <option key={runner.id} value={runner.id}>
-                      {formatVmSize(runner.vmCpuCount, runner.vmMemoryMiB)}
-                    </option>
-                  ))
-                )}
+              <select name="orbSize" value={selectedOrbSize} required mix={selectStyle}>
+                {ORB_SIZES.map((orbSize) => (
+                  <option
+                    key={orbSize}
+                    value={orbSize}
+                    selected={orbSize === selectedOrbSize || undefined}
+                  >
+                    {formatOrbSize(orbSize)}
+                  </option>
+                ))}
               </select>
               <Icon name="chevron-down" />
             </label>
@@ -163,11 +176,11 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
   );
 }
 
-function formatVmSize(cpuCount: number, memoryMiB: number): string {
-  const memory = memoryMiB < 1024
-    ? `${memoryMiB} MiB`
-    : `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(memoryMiB / 1024)} GiB`;
-  return `${cpuCount} CPU · ${memory}`;
+function formatOrbSize(orbSize: OrbSize): string {
+  const resources = ORB_SIZE_RESOURCES[orbSize];
+  return `${orbSize} · ${resources.cpuCount} CPU${resources.cpuCount === 1 ? "" : "s"} · ${
+    resources.memoryMiB / 1024
+  } GB memory`;
 }
 
 const dialogStyle = css({

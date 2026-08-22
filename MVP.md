@@ -61,6 +61,7 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 - One persistent outbound WebSocket
 - Heartbeat and basic capacity reporting
 - Automatic or manual runner selection before provisioning
+- Predefined per-session orb sizes, defaulting to `medium`
 - One Gondolin VM and checkout per session
 - Host-side Pi SDK runtime
 - Gondolin-backed `read`, `write`, `edit`, and `bash` tools
@@ -95,8 +96,8 @@ A best-effort “Steer now” action may be added later if trivial, but it is no
 - Exactly-once message delivery
 - Gondolin checkpoints
 - `.agents/resume`
-- Per-session CPU and memory selection
-- Reservation handshakes and resource scoring
+- Aggregate CPU/memory reservation accounting and free-resource scoring
+- Custom CPU and memory values outside the predefined orb sizes
 - Runner labels and draining workflows
 - Passkeys/WebAuthn
 - Project environment secrets
@@ -286,12 +287,24 @@ interface RunnerCapacity {
 }
 ```
 
-The VM size is configured runner-wide rather than per session. `activeSessions` counts provisioned VMs currently consuming a concurrency slot, including VMs that are provisioning or running. Stopped sessions with no VM do not count.
+The user selects one predefined orb size per session. `medium` is the default:
+
+| Size | CPUs | Memory |
+|---|---:|---:|
+| `tiny` | 1 | 2 GB |
+| `small` | 2 | 4 GB |
+| `medium` | 4 | 8 GB |
+| `large` | 8 | 16 GB |
+| `xxlarge` | 16 | 32 GB |
+
+The runner durably owns the selected size in its session metadata. The gateway carries it in validated provisioning traffic and live runner snapshots but does not add resource columns to the `sessions` catalog. A retry uses the original stored size.
+
+`vmCpuCount` and `vmMemoryMiB` advertise the largest single-session request the runner can accept. The gateway rejects a selected size above those limits, and the runner re-checks the same limits authoritatively before creating durable session state. `activeSessions` counts provisioned VMs currently consuming a concurrency slot, including VMs that are provisioning or running. Stopped sessions with no VM do not count.
 
 Selection algorithm:
 
 1. Consider connected runners with `activeSessions < maxConcurrentSessions`.
-2. Reject runners below a disk safety threshold.
+2. Reject runners below a disk safety threshold or unable to host the selected orb size.
 3. Honor a manually selected runner if available.
 4. Otherwise choose the runner with the fewest active sessions.
 5. Pin the session after provisioning begins.
@@ -327,7 +340,7 @@ Persist only on the runner:
 
 - Workspace and `.git`
 - Pi JSONL
-- Complete session metadata and pinned-runner identity
+- Complete session metadata, including the selected orb size, and pinned-runner identity
 - Provisioning and operation logs
 - Last bounded Git status/diff report
 
@@ -362,7 +375,7 @@ Do not persist:
 2. Runner creates the session locally and stores the full initial prompt.
 3. After runner confirmation, gateway stores the immutable user owner and four catalog data fields with the trimmed prompt preview.
 4. Create an empty session workspace.
-5. Start a fresh Gondolin VM using the runner’s fixed CPU/memory configuration.
+5. Resolve the session's selected predefined size and start a fresh Gondolin VM with its CPU/memory values.
 6. Mount the workspace at `/workspace` with `RealFSProvider`.
 7. Configure mediated network and Git credentials.
 8. Clone the repository from inside Gondolin.
@@ -799,7 +812,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 
 - Session storage
 - Gondolin developer image
-- Fixed runner-wide VM resources
+- Predefined per-session orb sizes
 - Guest-side public/private GitHub clone through mediated `GH_TOKEN`
 - Session branch
 - `.agents/setup`
@@ -868,7 +881,7 @@ After the lean MVP is stable, add major features in this order:
 6. Private live-only previews
 7. Managed previews with restart commands
 8. Project secret mediation
-9. Per-session resource scheduling and reservations
+9. Aggregate resource reservations and free-resource scoring
 10. Gondolin checkpoints if cold restarts prove inadequate
 11. Archive/retention workflows
 12. Centrally managed trusted Agent Profiles

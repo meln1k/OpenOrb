@@ -1,5 +1,7 @@
 import {
   MAX_PROVISIONING_EVENT_TEXT_BYTES,
+  type OrbSize,
+  orbSizeResources,
   type RunnerClientMessage,
   SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
   SESSION_PROVISION_REJECTED_MESSAGE_TYPE,
@@ -134,6 +136,12 @@ export class SessionProvisioner {
         rejectedMessage(command, "This session is already provisioning."),
       );
     }
+    if (command.payload.mode === "create" && !this.#supportsOrbSize(command.payload.orbSize)) {
+      return sendProvisioningMessage(
+        send,
+        rejectedMessage(command, unsupportedOrbSizeMessage(command.payload.orbSize)),
+      );
+    }
 
     const [metadata, preparationError] = command.payload.mode === "create"
       ? await this.#sessionStore.createSession({
@@ -144,6 +152,7 @@ export class SessionProvisioner {
         branchName: command.payload.branchName,
         initialPrompt: command.payload.initialPrompt,
         model: command.payload.modelRuntime.model,
+        orbSize: command.payload.orbSize,
       })
       : await this.#prepareRetry(
         command.sessionId,
@@ -222,6 +231,9 @@ export class SessionProvisioner {
     if (metadata.model !== model) {
       return err(new RetryRejected("A session retry must use its original model."));
     }
+    if (!this.#supportsOrbSize(metadata.orbSize)) {
+      return err(new RetryRejected(unsupportedOrbSizeMessage(metadata.orbSize)));
+    }
     const runtime = this.#runtimes.get(sessionId);
     if (runtime) {
       const [, closeError] = await runtime.close();
@@ -291,6 +303,7 @@ export class SessionProvisioner {
         await this.#sessionStore.getSessionWorkspacePath(sessionId),
       );
       if (workspaceError !== undefined) return err(workspaceError);
+      const resources = orbSizeResources(metadata.orbSize);
       const [runtime, runtimeError] = await this.#createRuntime({
         workspacePath,
         sessionLabel: `openorb session ${sessionId}`,
@@ -298,8 +311,8 @@ export class SessionProvisioner {
           repositoryUrl: metadata.repositoryUrl,
           ...(githubToken === undefined ? {} : { token: githubToken }),
         },
-        cpuCount: this.#cpuCount,
-        memoryMiB: this.#memoryMiB,
+        cpuCount: resources.cpuCount,
+        memoryMiB: resources.memoryMiB,
       });
       if (runtimeError !== undefined) {
         return err(
@@ -682,6 +695,11 @@ export class SessionProvisioner {
       ),
     );
   }
+
+  #supportsOrbSize(orbSize: OrbSize): boolean {
+    const resources = orbSizeResources(orbSize);
+    return resources.cpuCount <= this.#cpuCount && resources.memoryMiB <= this.#memoryMiB;
+  }
 }
 
 export class SessionProvisioningError extends Error {
@@ -769,6 +787,13 @@ function commandRejectionMessage(command: SessionProvisionCommand, error: unknow
 function hasAlreadyExistsCause(error: unknown): boolean {
   if (error instanceof Deno.errors.AlreadyExists) return true;
   return error instanceof Error && hasAlreadyExistsCause(error.cause);
+}
+
+function unsupportedOrbSizeMessage(orbSize: OrbSize): string {
+  const resources = orbSizeResources(orbSize);
+  return `The runner cannot provision the ${orbSize} orb size (${resources.cpuCount} CPU${
+    resources.cpuCount === 1 ? "" : "s"
+  } and ${resources.memoryMiB / 1024} GB memory).`;
 }
 
 async function clearWorkspace(workspacePath: string): Promise<void> {

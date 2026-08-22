@@ -175,8 +175,13 @@ class MessageScrollerController {
     this.#setSpacerHeight(0);
     this.#anchoredMessageId = null;
     this.#mode = this.autoScroll ? "following-bottom" : "free-scrolling";
-    this.#markAutoscrolling();
-    viewport.scrollTo({ top: viewport.scrollHeight - viewport.clientHeight, behavior });
+    const scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (Math.abs(viewport.scrollTop - scrollTop) > POSITION_EPSILON) {
+      this.#markAutoscrolling();
+      viewport.scrollTo({ top: scrollTop, behavior });
+    } else {
+      viewport.scrollTop = scrollTop;
+    }
     this.#previousScrollTop = viewport.scrollTop;
     this.#updateScrollState();
   }
@@ -230,7 +235,6 @@ class MessageScrollerController {
     this.#anchoredMessageId = messageId;
     const desiredScrollTop = this.#anchorScrollTop(anchor);
     this.#resizeSpacerFor(desiredScrollTop);
-    this.#markAutoscrolling();
     viewport.scrollTop = desiredScrollTop;
     this.#previousScrollTop = viewport.scrollTop;
     this.#updateScrollState();
@@ -259,7 +263,6 @@ class MessageScrollerController {
 
     const viewport = this.#viewport;
     if (!viewport) return;
-    this.#markAutoscrolling();
     viewport.scrollTop = desiredScrollTop;
     this.#previousScrollTop = viewport.scrollTop;
     this.#updateScrollState();
@@ -564,8 +567,6 @@ const messageScrollerViewportStyle = css({
   "&:focus-visible": {
     boxShadow: "inset 0 0 0 2px var(--ring)",
   },
-  "&[data-autoscrolling]": { scrollbarWidth: "none" },
-  "&[data-autoscrolling]::-webkit-scrollbar": { display: "none" },
 });
 
 const messageScrollerContentStyle = css({

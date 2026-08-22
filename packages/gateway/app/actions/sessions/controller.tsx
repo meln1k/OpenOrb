@@ -2,6 +2,7 @@ import {
   DEFAULT_SESSION_THINKING_LEVEL,
   MAX_INITIAL_PROMPT_BYTES,
   modelReferenceSchema,
+  orbSizeSchema,
   parseModelReference,
   sessionBranchNameSchema,
   sessionGitRefSchema,
@@ -43,6 +44,7 @@ const createSessionSchema = f.object({
   model: f.field(modelReferenceSchema),
   ref: f.field(sessionGitRefSchema),
   runnerId: f.field(s.string()),
+  orbSize: f.field(orbSizeSchema),
   branchName: f.field(sessionBranchNameSchema),
   initialPrompt: f.field(promptSchema),
 });
@@ -93,6 +95,7 @@ export default createController(routes.app.sessions, {
       const selected = await selectRunnerForUser(
         userId,
         runnerId,
+        parsed.value.orbSize,
         store,
         context.services.runnerConnections,
       );
@@ -141,6 +144,7 @@ export default createController(routes.app.sessions, {
           repositoryUrl: project.repositoryUrl,
           ref: parsed.value.ref,
           branchName: parsed.value.branchName,
+          orbSize: parsed.value.orbSize,
           initialPrompt: parsed.value.initialPrompt,
           modelRuntime: sessionModelRuntime(parsed.value.model, modelApiKey),
           githubToken: githubToken ?? undefined,
@@ -290,7 +294,7 @@ function submittedValues(formData: FormData): SessionComposerValues {
     projectId: stringField(formData, "projectId"),
     model: stringField(formData, "model"),
     ref: stringField(formData, "ref"),
-    runnerId: stringField(formData, "runnerId"),
+    orbSize: stringField(formData, "orbSize"),
     branchName: stringField(formData, "branchName"),
     initialPrompt: stringField(formData, "initialPrompt"),
   };

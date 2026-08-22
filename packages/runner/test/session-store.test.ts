@@ -28,10 +28,12 @@ Deno.test("creates private runner session files and atomically reloads metadata"
         branchName: BRANCH_NAME,
         initialPrompt: prompt,
         model: MODEL,
+        orbSize: "small",
         createdAt: CREATED_AT,
       }),
     );
     assertEquals(metadata.state, "created");
+    assertEquals(metadata.orbSize, "small");
 
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
     for (const directory of ["workspace", "pi", "logs", "reports"]) {
@@ -62,6 +64,7 @@ Deno.test("creates private runner session files and atomically reloads metadata"
       createdAt: CREATED_AT,
       initialPromptPreview: `inspect this ${"😀".repeat(187)}`,
       model: MODEL,
+      orbSize: "small",
       state: "error",
       lastEventCursor: 0,
     });
@@ -84,6 +87,7 @@ Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () 
         branchName: BRANCH_NAME,
         initialPrompt: "Inspect the repository",
         model: MODEL,
+        orbSize: "medium",
         createdAt: CREATED_AT,
       }),
     );
@@ -129,6 +133,35 @@ Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () 
     assertEquals(inventory.sessions[0]?.state, "created");
     assertEquals(inventory.sessions[0]?.lastEventCursor, 4);
     assertEquals(inventory.errors, []);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("rejects session metadata without an orb size", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
+    success(
+      await store.createSession({
+        id: SESSION_ID,
+        projectId: PROJECT_ID,
+        repositoryUrl: REPOSITORY_URL,
+        ref: REF,
+        branchName: BRANCH_NAME,
+        initialPrompt: "Inspect the repository",
+        model: MODEL,
+        orbSize: "small",
+        createdAt: CREATED_AT,
+      }),
+    );
+    const metadataPath = join(workingDirectory, "sessions", SESSION_ID, "metadata.json");
+    const { orbSize: _orbSize, ...invalid } = success(await store.readMetadata(SESSION_ID));
+    await Deno.writeTextFile(metadataPath, `${JSON.stringify(invalid)}\n`);
+
+    const [metadata, error] = await store.readMetadata(SESSION_ID);
+    assertEquals(metadata, undefined);
+    assertEquals(error?.operation, "read-metadata");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }

@@ -3,6 +3,7 @@ import type { InferOutput } from "@remix-run/data-schema";
 import { trySync } from "@openorb/result";
 import { validate as validateUuid } from "@std/uuid";
 import { modelReferenceSchema } from "@/src/model-provider.ts";
+import { orbSizeSchema } from "@/src/orb-size.ts";
 
 export const RUNNER_RECONCILE_START_MESSAGE_TYPE = "runner.reconcile.start";
 export const RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE = "runner.reconcile.chunk";
@@ -43,6 +44,7 @@ export const runnerSessionSnapshotSchema = object(
     createdAt: runnerSessionCreatedAtSchema,
     initialPromptPreview: initialPromptPreviewSchema,
     model: modelReferenceSchema,
+    orbSize: orbSizeSchema,
     state: runnerSessionStateSchema,
     lastEventCursor: nonNegativeIntegerSchema,
   },
@@ -87,7 +89,7 @@ export type RunnerReconcileCompletePayload = InferOutput<
 >;
 
 export function initialPromptPreview(prompt: string): string {
-  return Array.from(collapseWhitespace(prompt)).slice(0, 200).join("");
+  return Array.from(collapseWhitespace(prompt)).slice(0, 200).join("").trimEnd();
 }
 
 function collapseWhitespace(value: string): string {

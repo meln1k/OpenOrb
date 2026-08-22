@@ -355,6 +355,7 @@ function snapshot(id: string, projectId: string): RunnerSessionSnapshot {
     createdAt: "2026-08-17T12:00:00Z",
     initialPromptPreview: "Inspect the repository",
     model: "opencode-go/deepseek-v4-flash",
+    orbSize: "medium",
     state: "created",
     lastEventCursor: 2,
   };

@@ -50,6 +50,7 @@ Deno.test("requests Pi replay for each subscriber and relays only subsequent liv
         repositoryUrl: "https://github.com/meln1k/openorb.git",
         ref: "main",
         branchName: "openorb/session-test",
+        orbSize: "medium",
         initialPrompt: INITIAL_PROMPT,
         modelRuntime: MODEL_RUNTIME,
         githubToken: "memory-only-token",
@@ -274,6 +275,40 @@ Deno.test("catalog failure rejects acceptance before installing the session rout
   }
 });
 
+Deno.test("rejects an orb size that exceeds the runner's advertised capacity", async () => {
+  const gateway = new RunnerConnectionGateway({
+    authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
+    reconcileSessionSnapshotEntries: (_userId, entries) =>
+      Promise.resolve(ok({
+        acceptedSessionIds: entries.map((entry) => entry.id),
+        tombstonedSessionIds: [],
+        rejected: [],
+      })),
+  });
+  const server = await createTestServer((request) => gateway.handleUpgrade(request));
+  let socket: WebSocket | undefined;
+
+  try {
+    socket = await connectRunner(server.baseUrl);
+    await publishEmptyInventory(socket, gateway);
+    const input = provisionInput(SESSION_ID);
+    const result = await gateway.provisionSession({
+      ...input,
+      payload: { ...input.payload, orbSize: "large" },
+    });
+
+    assertEquals(result, {
+      status: "unavailable",
+      message: "Runner cannot provision the large orb size.",
+    });
+    assertEquals(gateway.getRunnerLiveState(USER_ID, RUNNER_ID)?.capacity.activeSessions, 0);
+  } finally {
+    socket?.close();
+    gateway.close();
+    await server.close();
+  }
+});
+
 Deno.test("times out unacknowledged provisioning and releases reserved capacity", async () => {
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
@@ -301,6 +336,7 @@ Deno.test("times out unacknowledged provisioning and releases reserved capacity"
         repositoryUrl: "https://github.com/meln1k/openorb.git",
         ref: "main",
         branchName: "openorb/session-test",
+        orbSize: "medium",
         initialPrompt: INITIAL_PROMPT,
         modelRuntime: MODEL_RUNTIME,
       },
@@ -470,6 +506,7 @@ function provisionInput(sessionId: string) {
       repositoryUrl: "https://github.com/meln1k/openorb.git",
       ref: "main",
       branchName: "openorb/session-test",
+      orbSize: "medium" as const,
       initialPrompt: INITIAL_PROMPT,
       modelRuntime: MODEL_RUNTIME,
     },
@@ -501,6 +538,7 @@ function sessionSnapshot() {
     createdAt: "2026-08-17T12:00:00Z",
     initialPromptPreview: INITIAL_PROMPT,
     model: "opencode-go/deepseek-v4-flash",
+    orbSize: "medium" as const,
     state: "created" as const,
     lastEventCursor: 0,
   };

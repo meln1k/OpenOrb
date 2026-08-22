@@ -546,7 +546,7 @@ function hasValidContextUsage(
 function activityForEvent(event: SessionEvent): ActivityUpdate | null {
   switch (event.type) {
     case "agent.started":
-      return { label: "Agent started", status: "Agent running", inProgress: true };
+      return null;
     case "agent.ended":
       return event.willRetry
         ? {
@@ -557,15 +557,9 @@ function activityForEvent(event: SessionEvent): ActivityUpdate | null {
         }
         : null;
     case "agent.settled":
-      return { label: "Agent settled", status: "Agent settled" };
     case "turn.started":
-      return { label: "Turn started", status: "Model responding", inProgress: true };
     case "turn.completed":
-      return {
-        label: "Turn completed",
-        detail: `${event.toolResultCount} tool result${event.toolResultCount === 1 ? "" : "s"}`,
-        status: "Agent running",
-      };
+      return null;
     case "assistant.stream.failed":
       return {
         label: event.reason === "aborted" ? "Model stream aborted" : "Model stream failed",

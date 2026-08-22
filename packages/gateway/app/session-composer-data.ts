@@ -2,17 +2,10 @@ import type { Project } from "@/app/data/project-repository.ts";
 import type { AppServices } from "@/app/middleware/services.ts";
 import { MODEL_OPTIONS } from "@/app/model-provider-catalog.ts";
 
-export interface SessionComposerRunner {
-  id: string;
-  name: string;
-  vmCpuCount: number;
-  vmMemoryMiB: number;
-}
-
 export interface SessionComposerData {
   projects: Project[];
   models: { id: string; name: string; providerId: string; providerName: string }[];
-  runners: SessionComposerRunner[];
+  hasConnectedRunner: boolean;
 }
 
 export async function loadSessionComposerData(
@@ -29,16 +22,9 @@ export async function loadSessionComposerData(
     models: MODEL_OPTIONS.filter((model) =>
       providers.some((provider) => provider.providerId === model.providerId)
     ),
-    runners: runners.flatMap((runner) => {
+    hasConnectedRunner: runners.some((runner) => {
       const live = services.runnerConnections.getRunnerLiveState(userId, runner.id);
-      return live && runner.revokedAt === null
-        ? [{
-          id: runner.id,
-          name: runner.name,
-          vmCpuCount: live.capacity.vmCpuCount,
-          vmMemoryMiB: live.capacity.vmMemoryMiB,
-        }]
-        : [];
+      return live !== null && runner.revokedAt === null;
     }),
   };
 }

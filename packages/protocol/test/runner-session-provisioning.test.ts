@@ -2,6 +2,8 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 
 import {
   modelReference,
+  ORB_SIZE_RESOURCES,
+  ORB_SIZES,
   parseModelReference,
   parseRunnerClientMessage,
   parseRunnerServerMessage,
@@ -19,6 +21,17 @@ const MODEL_RUNTIME = {
   thinkingLevel: "high" as const,
   credential: { type: "api_key" as const, value: "model-provider-key" },
 };
+
+Deno.test("defines the fixed orb provisioning sizes", () => {
+  assertEquals(ORB_SIZES, ["tiny", "small", "medium", "large", "xxlarge"]);
+  assertEquals(ORB_SIZE_RESOURCES, {
+    tiny: { cpuCount: 1, memoryMiB: 2048 },
+    small: { cpuCount: 2, memoryMiB: 4096 },
+    medium: { cpuCount: 4, memoryMiB: 8192 },
+    large: { cpuCount: 8, memoryMiB: 16_384 },
+    xxlarge: { cpuCount: 16, memoryMiB: 32_768 },
+  });
+});
 
 Deno.test("treats provider and model as one reference split only at the first slash", () => {
   const reference = modelReference("openai", "organization/model/version");
@@ -42,6 +55,7 @@ Deno.test("validates provisioning commands, acknowledgements, and events", () =>
       repositoryUrl: "https://github.com/meln1k/openorb.git",
       ref: "main",
       branchName: "openorb/session-1234",
+      orbSize: "medium",
       initialPrompt: "Inspect the repository",
       modelRuntime: MODEL_RUNTIME,
       githubToken: "github-token",
@@ -64,6 +78,7 @@ Deno.test("validates provisioning commands, acknowledgements, and events", () =>
         createdAt: "2026-08-17T12:00:00Z",
         initialPromptPreview: "Inspect the repository",
         model: "opencode-go/deepseek-v4-flash",
+        orbSize: "medium",
         state: "created",
         lastEventCursor: 0,
       },
@@ -166,6 +181,7 @@ Deno.test("rejects malformed or oversized provisioning traffic", () => {
       repositoryUrl: "https://github.com/meln1k/openorb.git",
       ref: "main",
       branchName: "openorb/session-1234",
+      orbSize: "medium",
       initialPrompt: "Inspect the repository",
       modelRuntime: MODEL_RUNTIME,
     },
@@ -189,6 +205,14 @@ Deno.test("rejects malformed or oversized provisioning traffic", () => {
       payload: { ...command.payload, initialPrompt: "x".repeat(32 * 1024 + 1) },
     })
   );
+  assertThrows(() =>
+    parseRunnerServerMessage({
+      ...command,
+      payload: { ...command.payload, orbSize: "enormous" },
+    })
+  );
+  const { orbSize: _orbSize, ...missingOrbSize } = command.payload;
+  assertThrows(() => parseRunnerServerMessage({ ...command, payload: missingOrbSize }));
   for (
     const modelRuntime of [
       { ...MODEL_RUNTIME, model: "invalid" },
@@ -217,6 +241,7 @@ Deno.test("rejects malformed or oversized provisioning traffic", () => {
           createdAt: "2026-08-17T12:00:00Z",
           initialPromptPreview: "Inspect the repository",
           model: "opencode-go/deepseek-v4-flash",
+          orbSize: "medium",
           state: "created",
           lastEventCursor: 0,
         },

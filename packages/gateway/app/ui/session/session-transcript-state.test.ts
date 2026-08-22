@@ -146,6 +146,19 @@ Deno.test("duplicate durable events are idempotent", () => {
   assertEquals(totalSessionUsage(state), usage(8, 3));
 });
 
+Deno.test("agent and turn boundaries do not add transcript activity", () => {
+  const state = reduce([
+    { type: "agent.started" },
+    { type: "turn.started" },
+    { type: "turn.completed", toolResultCount: 2 },
+    { type: "agent.settled" },
+  ]);
+
+  assertEquals(state.entries, []);
+  assertEquals(state.nextActivityId, 1);
+  assertEquals(state.status, "Agent running");
+});
+
 function reduce(events: SessionEvent[]) {
   return events.reduce(
     reduceSessionTranscriptState,

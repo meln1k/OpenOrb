@@ -2,6 +2,7 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 import { parse } from "@remix-run/data-schema";
 
 import {
+  initialPromptPreview,
   parseRunnerClientMessage,
   parseRunnerServerMessage,
   runnerEnrollmentRequestSchema,
@@ -168,6 +169,7 @@ Deno.test("validates bounded ordered runner reconciliation messages", () => {
     createdAt: "2026-08-17T12:00:00Z",
     initialPromptPreview: "Inspect the repository",
     model: "opencode-go/deepseek-v4-flash",
+    orbSize: "medium",
     state: "created",
     lastEventCursor: 0,
   };
@@ -193,6 +195,17 @@ Deno.test("validates bounded ordered runner reconciliation messages", () => {
   assertEquals(parseRunnerClientMessage(start).type, "runner.reconcile.start");
   assertEquals(parseRunnerClientMessage(chunk).payload, chunk.payload);
   assertEquals(parseRunnerClientMessage(complete).payload, complete.payload);
+  const boundaryPreview = initialPromptPreview(`${"a".repeat(199)} ${"b".repeat(10)}`);
+  assertEquals(boundaryPreview, "a".repeat(199));
+  const boundaryChunk = parseRunnerClientMessage({
+    ...chunk,
+    payload: {
+      ...chunk.payload,
+      sessions: [{ ...session, initialPromptPreview: boundaryPreview }],
+    },
+  });
+  assert(boundaryChunk.type === "runner.reconcile.chunk");
+  assertEquals(boundaryChunk.payload.sessions[0]?.initialPromptPreview, boundaryPreview);
   assertThrows(() =>
     parseRunnerClientMessage({
       ...chunk,

@@ -119,7 +119,7 @@ Deno.test("configuration persistence separates users across every repository ope
     assert(firstRunner);
     assertEquals(await store.listRunners(secondUserId), []);
     assertEquals(
-      await selectRunnerForUser(secondUserId, firstRunner.runnerId, store, {
+      await selectRunnerForUser(secondUserId, firstRunner.runnerId, "medium", store, {
         getRunnerLiveState() {
           throw new Error("Foreign-user runner must not reach live-state lookup.");
         },

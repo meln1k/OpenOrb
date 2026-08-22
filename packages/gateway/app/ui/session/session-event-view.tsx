@@ -69,11 +69,20 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
   let connectionInterrupted = false;
 
   handle.queueTask(() => {
+    let updateTimer: ReturnType<typeof setTimeout> | undefined;
+    // Remix flushes updates in microtasks, so use a timer task to coalesce replay bursts.
+    const scheduleUpdate = () => {
+      if (updateTimer !== undefined) return;
+      updateTimer = setTimeout(() => {
+        updateTimer = undefined;
+        if (!handle.signal.aborted) void handle.update();
+      }, 0);
+    };
     const stream = new EventSource(handle.props.eventsHref);
     stream.addEventListener("open", () => {
       if (!connectionInterrupted) return;
       connectionInterrupted = false;
-      void handle.update();
+      scheduleUpdate();
     });
     stream.addEventListener("session", (message) => {
       if (!(message instanceof MessageEvent)) return;
@@ -84,7 +93,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
       const next = reduceSessionTranscriptState(transcriptState, event);
       if (next === transcriptState) return;
       transcriptState = next;
-      void handle.update();
+      scheduleUpdate();
     });
     stream.addEventListener("error", () => {
       const next = settleSessionTranscriptState(transcriptState);
@@ -93,9 +102,14 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
       if (next === transcriptState && interrupted === connectionInterrupted) return;
       transcriptState = next;
       connectionInterrupted = interrupted;
-      void handle.update();
+      scheduleUpdate();
     });
-    handle.signal.addEventListener("abort", () => stream.close(), { once: true });
+    handle.signal.addEventListener("abort", () => {
+      stream.close();
+      if (updateTimer !== undefined) clearTimeout(updateTimer);
+    }, {
+      once: true,
+    });
   });
 
   return () => {
@@ -249,7 +263,7 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
                       : <span data-slot="spinner" mix={spinnerStyle} />}
                   </MarkerIcon>
                   <MarkerContent mix={markerDetailStyle}>
-                    <details open={entry.completed ? undefined : true}>
+                    <details>
                       <summary>Thinking</summary>
                       <pre>{entry.thinking}</pre>
                     </details>
@@ -269,6 +283,7 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
         <MessageScrollerItem
           key={`tool:${entry.toolCallId}`}
           messageId={`tool:${entry.toolCallId}`}
+          mix={toolItemStyle}
         >
           <Marker
             role={entry.active ? "status" : undefined}
@@ -542,6 +557,7 @@ const assistantMessageStyle = css({
     overflowWrap: "anywhere",
   },
 });
+const toolItemStyle = css({ marginTop: "-16px" });
 const richMarkerStyle = css({ alignItems: "flex-start" });
 const markerDetailStyle = css({
   display: "grid",

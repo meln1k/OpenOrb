@@ -7,6 +7,7 @@ import type { RunnerMessage } from "@/src/runner-message.ts";
 import { runnerCheckoutStateSchema } from "@/src/runner-session-events.ts";
 import type { OptionalSchemaProperties } from "@/src/schema-output.ts";
 import { modelReferenceSchema } from "@/src/model-provider.ts";
+import { orbSizeSchema } from "@/src/orb-size.ts";
 
 export const SESSION_PROVISION_MESSAGE_TYPE = "session.provision";
 export const SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE = "session.provision.accepted";
@@ -75,6 +76,7 @@ const createPayloadSchema = object(
     repositoryUrl: sessionRepositoryUrlSchema,
     ref: sessionGitRefSchema,
     branchName: sessionBranchNameSchema,
+    orbSize: orbSizeSchema,
     initialPrompt: initialPromptSchema,
     modelRuntime: sessionModelRuntimeSchema,
     githubToken: optional(githubTokenSchema),

@@ -86,6 +86,7 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
       createdAt: "2026-08-17T12:00:00Z",
       initialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
       model: input.payload.modelRuntime.model,
+      orbSize: input.payload.orbSize,
       state: "created",
       lastEventCursor: 0,
     };
@@ -184,13 +185,23 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(createHtml, /<dialog[^>]*id="openorb-new-session"/);
     assertNotMatch(createHtml, /<dialog[^>]*id="openorb-new-session"[^>]* open/);
     assertMatch(createHtml, /Write prompt…/);
-    assertMatch(createHtml, /4 CPU · 8 GiB/);
+    assertMatch(createHtml, /tiny · 1 CPU · 2 GB memory/);
+    assertMatch(createHtml, /small · 2 CPUs · 4 GB memory/);
+    assertMatch(
+      createHtml,
+      /<option[^>]*value="medium"[^>]*selected[^>]*>medium · 4 CPUs · 8 GB memory<\/option>/,
+    );
+    assertMatch(createHtml, /large · 8 CPUs · 16 GB memory/);
+    assertMatch(createHtml, /xxlarge · 16 CPUs · 32 GB memory/);
+    assertNotMatch(createHtml, /aria-label="Runner"/);
+    assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="runnerId"[^>]*value=""/);
+    assertMatch(createHtml, /aria-label="Orb size"/);
     assertMatch(createHtml, /deepseek-v4-flash/);
     assertNotMatch(createHtml, /name="apiKey"/);
     const projectControl = createHtml.indexOf('name="projectId"');
-    const vmControl = createHtml.indexOf('name="runnerId"');
+    const orbControl = createHtml.indexOf('name="orbSize"');
     const modelControl = createHtml.indexOf('aria-label="Model"');
-    assert(projectControl !== -1 && projectControl < vmControl && vmControl < modelControl);
+    assert(projectControl !== -1 && projectControl < orbControl && orbControl < modelControl);
     assert(!createHtml.includes(GITHUB_TOKEN));
     assert(!createHtml.includes(MODEL_PROVIDER_KEY));
 
@@ -203,7 +214,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         projectId: projectResult.project.id,
         model: MODEL,
         ref: "main",
-        runnerId: connections.runnerId,
+        runnerId: "",
+        orbSize: "small",
         branchName: "openorb/browser-test",
         initialPrompt: INITIAL_PROMPT,
       }),
@@ -215,8 +227,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
     const provision = connections.provisions[0];
     assert(provision?.payload.mode === "create");
+    assertEquals(provision.runnerId, connections.runnerId);
     assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
     assertEquals(provision.payload.initialPrompt, INITIAL_PROMPT);
+    assertEquals(provision.payload.orbSize, "small");
     assertEquals(provision.payload.modelRuntime, {
       model: MODEL,
       thinkingLevel: "high",
@@ -260,6 +274,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         createdAt: "2026-08-17T11:00:00Z",
         initialPromptPreview: "Older sidebar session",
         model: MODEL,
+        orbSize: "medium",
         state: "ready",
         lastEventCursor: 1,
       },
@@ -269,6 +284,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         createdAt: "2026-08-17T13:00:00Z",
         initialPromptPreview: "Newer sidebar session",
         model: MODEL,
+        orbSize: "medium",
         state: "ready",
         lastEventCursor: 1,
       },
@@ -498,6 +514,33 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     assertEquals(unavailableRunner.status, 409);
     assertEquals(connections.provisions.length, 0);
 
+    const unsupportedOrbSize = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: connections.runnerId,
+      orbSize: "large",
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(unsupportedOrbSize.status, 409);
+    assertMatch(await unsupportedOrbSize.text(), /cannot provision the large orb size/);
+    assertEquals(connections.provisions.length, 0);
+
+    const invalidOrbSize = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: connections.runnerId,
+      orbSize: "enormous",
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(invalidOrbSize.status, 400);
+    assertEquals(connections.provisions.length, 0);
+
     const alternateProvider = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
       projectId: project.project.id,
@@ -614,7 +657,7 @@ function submitSession(
     method: "POST",
     redirect: "manual",
     headers: { Cookie: cookie },
-    body: new URLSearchParams(body),
+    body: new URLSearchParams({ orbSize: "medium", ...body }),
   });
 }
 

@@ -46,7 +46,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Multiple outbound-only Linux runners
 - Reusable or one-time runner enrollment tokens
 - Automatic runner selection with an optional user override before the first prompt
-- Per-session CPU and memory requests
+- Predefined per-session CPU and memory requests
 - Runner resource reporting and reservation
 - One fresh repository checkout and Gondolin VM per session
 - Host-side Pi SDK integration
@@ -124,7 +124,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Workspace storage | Host directory mounted into Gondolin with `RealFSProvider`; all contents including `.git` are untrusted |
 | Git execution boundary | Never run native host Git against a session checkout; all clone/status/diff/fetch/commit/push operations execute inside Gondolin |
 | Session placement | Auto-select runner; user may override before first prompt; immutable afterward |
-| Resource scheduling | Sessions request CPU and memory; runners advertise total/reserved/free resources |
+| Resource scheduling | Sessions select `tiny`, `small`, `medium`, `large`, or `xxlarge`; runners advertise total/reserved/free resources |
 | Idle lifecycle | Stop/checkpoint after 15 minutes without relevant activity |
 | Conversation | Linear UI; Pi tree remains an internal implementation detail |
 | Edit last | Conversation-only rewind; do not roll back files or VM state |
@@ -449,8 +449,7 @@ interface Project {
   defaults: {
     model: string // provider/model, split only at the first slash
     thinkingLevel: ThinkingLevel
-    cpuCount: number
-    memoryMiB: number
+    orbSize: "tiny" | "small" | "medium" | "large" | "xxlarge"
   }
   git: {
     authorName?: string
@@ -511,10 +510,7 @@ interface Session {
   branchName: string
   branchPushed: boolean
   model: string // provider/model, split only at the first slash
-  resources: {
-    cpuCount: number
-    memoryMiB: number
-  }
+  orbSize: "tiny" | "small" | "medium" | "large" | "xxlarge"
   runtime: SessionRuntimeState
   createdAt: string
   updatedAt: string
@@ -604,6 +600,8 @@ Pending messages live only in the assigned runner’s local session store. A wai
 
 ## 12. Resource scheduling
 
+Orb sizes resolve to fixed resources: `tiny` is 1 CPU/2 GB, `small` is 2 CPUs/4 GB, `medium` is 4 CPUs/8 GB, `large` is 8 CPUs/16 GB, and `xxlarge` is 16 CPUs/32 GB. `medium` is the default. The runner persists the selected size and resolves it authoritatively whenever it creates or recreates the VM.
+
 ### 12.1 Heartbeat
 
 Runners periodically report actual allocatable capacity:
@@ -655,7 +653,7 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 
 ### 13.1 Draft and first prompt
 
-1. User chooses project, ref, one `provider/model` reference, thinking level, CPU, memory, and optional branch name in browser/gateway request state.
+1. User chooses project, ref, one `provider/model` reference, thinking level, a predefined orb size, and optional branch name in browser/gateway request state.
 2. Scheduler displays the currently selected automatic runner.
 3. User may override the runner while drafting.
 4. Sending the first prompt reserves an online runner.
@@ -1282,7 +1280,7 @@ interface CreateSessionInput {
   ref?: string
   runnerId?: string
   model: string // provider/model, split only at the first slash
-  resources: { cpuCount: number; memoryMiB: number }
+  orbSize: "tiny" | "small" | "medium" | "large" | "xxlarge"
   branchName?: string
 }
 ```
@@ -1646,7 +1644,7 @@ Gateway PostgreSQL guidelines:
 - Conversation is the primary screen.
 - Session list is a drawer.
 - Bottom navigation: Chat, Changes, Files, Terminal, Preview.
-- Model, thinking level, CPU/memory, and draft runner selection live in a composer/settings sheet.
+- Model, thinking level, predefined orb size, and draft runner selection live in a composer/settings sheet.
 - Runner selector becomes read-only after first send.
 - Terminal can enter dedicated full-screen mode.
 - Runner-local pending messages remain visible and cancellable through the proxy before handoff while the runner is connected.

@@ -111,3 +111,12 @@ export {
   sessionProvisionRejectedPayloadSchema,
   sessionRepositoryUrlSchema,
 } from "@/src/runner-session-provisioning.ts";
+export {
+  DEFAULT_ORB_SIZE,
+  ORB_SIZE_RESOURCES,
+  ORB_SIZES,
+  type OrbSize,
+  type OrbSizeResources,
+  orbSizeResources,
+  orbSizeSchema,
+} from "@/src/orb-size.ts";

@@ -1,6 +1,8 @@
 import {
   initialPromptPreview,
   modelReferenceSchema,
+  type OrbSize,
+  orbSizeSchema,
   projectIdSchema,
   type RunnerCheckoutState,
   runnerCheckoutStateSchema,
@@ -39,6 +41,7 @@ const metadataSchema = object(
       "The initial prompt must contain non-whitespace text.",
     ),
     model: modelReferenceSchema,
+    orbSize: orbSizeSchema,
     state: runnerSessionStateSchema,
     checkoutState: runnerCheckoutStateSchema,
     baseCommit: optional(
@@ -61,6 +64,7 @@ export interface CreateRunnerSessionInput {
   branchName: string;
   initialPrompt: string;
   model: string;
+  orbSize: OrbSize;
   createdAt?: string;
 }
 
@@ -144,6 +148,7 @@ export class RunnerSessionStore {
       branchName: input.branchName,
       initialPrompt: input.initialPrompt,
       model: input.model,
+      orbSize: input.orbSize,
       state: "created",
       checkoutState: "pending",
     });
@@ -380,6 +385,7 @@ function snapshotFrom(
     createdAt: metadata.createdAt,
     initialPromptPreview: initialPromptPreview(metadata.initialPrompt),
     model: metadata.model,
+    orbSize: metadata.orbSize,
     state,
     lastEventCursor,
   };

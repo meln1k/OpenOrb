@@ -270,6 +270,7 @@ Deno.test("sends a complete session inventory in bounded reconciliation chunks",
     createdAt: "2026-08-17T12:00:00Z",
     initialPromptPreview: `Session ${index}`,
     model: "opencode-go/deepseek-v4-flash",
+    orbSize: "medium" as const,
     state: "created" as const,
     lastEventCursor: index,
   }));
@@ -382,6 +383,7 @@ Deno.test("replays Pi history only after a correlated gateway request", async ()
         branchName: "openorb/replay-test",
         initialPrompt: "Inspect the repository",
         model: "opencode-go/deepseek-v4-flash",
+        orbSize: "medium",
       }),
     );
     const relay = new SessionEventRelay(store);

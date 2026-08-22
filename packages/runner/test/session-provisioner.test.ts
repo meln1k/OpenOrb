@@ -103,6 +103,8 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
     const eventRelay = new SessionEventRelay(store);
     const runtime = new FakeRuntime({ outputSecret: GITHUB_TOKEN });
     let receivedToken: string | undefined;
+    let receivedCpuCount: number | undefined;
+    let receivedMemoryMiB: number | undefined;
     const provisioner = new SessionProvisioner({
       sessionStore: store,
       eventRelay,
@@ -110,6 +112,8 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
       memoryMiB: 8192,
       createRuntime(options) {
         receivedToken = options.github?.token;
+        receivedCpuCount = options.cpuCount;
+        receivedMemoryMiB = options.memoryMiB;
         return Promise.resolve(ok(runtime));
       },
       createPiSession: createFakePiSession,
@@ -136,6 +140,8 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
     const metadata = await waitForState(store, "ready");
     await waitForEventType(events, "session.state", "ready");
     assertEquals(receivedToken, GITHUB_TOKEN);
+    assertEquals(receivedCpuCount, 2);
+    assertEquals(receivedMemoryMiB, 4096);
     assertEquals(metadata.checkoutState, "available");
     assertEquals(metadata.baseCommit, BASE_COMMIT);
     assertEquals(runtime.commands, [
@@ -182,6 +188,92 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
     detach();
     success(await provisioner.close());
     assert(runtime.closed);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("rejects an orb size above runner capacity before creating session state", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    let runtimeCreated = false;
+    const provisioner = new SessionProvisioner({
+      sessionStore: store,
+      eventRelay: new SessionEventRelay(store),
+      cpuCount: 1,
+      memoryMiB: 2048,
+      createRuntime: () => {
+        runtimeCreated = true;
+        return Promise.resolve(ok(new FakeRuntime()));
+      },
+      createPiSession: createFakePiSession,
+    });
+    const messages: RunnerClientMessage[] = [];
+
+    success(await provisioner.handleCommand(createCommand(), (message) => messages.push(message)));
+
+    assertEquals(messages[0]?.type, "session.provision.rejected");
+    assert(
+      messages[0]?.type === "session.provision.rejected" &&
+        messages[0].payload.message.includes("small orb size"),
+    );
+    assertEquals(runtimeCreated, false);
+    assertEquals(provisioner.activeSessionCount, 0);
+    const [, metadataError] = await store.readMetadata(SESSION_ID);
+    assert(metadataError);
+    success(await provisioner.close());
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("retries with the orb size stored by the original create command", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    const runtime = new FakeRuntime();
+    const resources: Array<{ cpuCount: number | undefined; memoryMiB: number | undefined }> = [];
+    let attempt = 0;
+    const provisioner = new SessionProvisioner({
+      sessionStore: store,
+      eventRelay: new SessionEventRelay(store),
+      cpuCount: 4,
+      memoryMiB: 8192,
+      createRuntime: (options) => {
+        resources.push({ cpuCount: options.cpuCount, memoryMiB: options.memoryMiB });
+        attempt++;
+        return attempt === 1
+          ? Promise.resolve(
+            err(new GondolinRuntimeError("Could not create the first runtime.", undefined)),
+          )
+          : Promise.resolve(ok(runtime));
+      },
+      createPiSession: createFakePiSession,
+    });
+
+    success(await provisioner.handleCommand(createCommand(), () => {}));
+    await waitForState(store, "error");
+    await delay(0);
+    success(
+      await provisioner.handleCommand({
+        ...createCommand(),
+        id: "retry-command",
+        payload: {
+          mode: "retry",
+          modelRuntime: MODEL_RUNTIME,
+          githubToken: GITHUB_TOKEN,
+        },
+      }, () => {}),
+    );
+    const metadata = await waitForState(store, "ready");
+
+    assertEquals(metadata.orbSize, "small");
+    assertEquals(resources, [
+      { cpuCount: 2, memoryMiB: 4096 },
+      { cpuCount: 2, memoryMiB: 4096 },
+    ]);
+    success(await provisioner.close());
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -406,6 +498,7 @@ Deno.test("maps replay callback failures to a relay domain error", async () => {
         branchName: BRANCH_NAME,
         initialPrompt: INITIAL_PROMPT,
         model: "opencode-go/deepseek-v4-flash",
+        orbSize: "medium",
       }),
     );
     const relay = new SessionEventRelay(store);
@@ -436,6 +529,7 @@ Deno.test("resumes Pi replay after a known cursor and resets a stale cursor", as
         branchName: BRANCH_NAME,
         initialPrompt: INITIAL_PROMPT,
         model: "opencode-go/deepseek-v4-flash",
+        orbSize: "medium",
       }),
     );
     const paths = success(await store.getSessionPiPaths(SESSION_ID));
@@ -490,6 +584,7 @@ Deno.test("delivers live activity only after an in-flight Pi replay completes", 
         branchName: BRANCH_NAME,
         initialPrompt: INITIAL_PROMPT,
         model: "opencode-go/deepseek-v4-flash",
+        orbSize: "medium",
       }),
     );
     const relay = new SessionEventRelay(store);
@@ -605,7 +700,7 @@ Deno.test({
         eventRelay: new SessionEventRelay(store),
         developerImage: await installLocalDeveloperImage(workingDirectory),
         cpuCount: 1,
-        memoryMiB: 512,
+        memoryMiB: 2048,
         createPiSession: createFakePiSession,
       });
       const branchName = `openorb/oo-012-${crypto.randomUUID()}`;
@@ -620,6 +715,7 @@ Deno.test({
           repositoryUrl: "https://github.com/octocat/Hello-World.git",
           ref: "master",
           branchName,
+          orbSize: "tiny",
           initialPrompt: INITIAL_PROMPT,
           modelRuntime: MODEL_RUNTIME,
         },
@@ -659,6 +755,7 @@ function createCommand(): SessionProvisionCommand {
       repositoryUrl: REPOSITORY_URL,
       ref: "main",
       branchName: BRANCH_NAME,
+      orbSize: "small",
       initialPrompt: INITIAL_PROMPT,
       modelRuntime: MODEL_RUNTIME,
       githubToken: GITHUB_TOKEN,
