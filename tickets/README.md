@@ -59,7 +59,7 @@ Unless a ticket explicitly says otherwise:
 
 | Ticket | Outcome |
 |---|---|
-| [OO-011](OO-011-runner-session-files-and-inventory.md) | Runner-owned session files and reconnect inventory |
+| [OO-011](OO-011-runner-session-files-and-manifest.md) | Runner-owned session files and reconnect manifest |
 | [OO-012](OO-012-browser-to-gondolin-provisioning.md) | Browser creates a session that clones and sets up a real repository |
 
 **Slice exit:** From the browser, a user provisions a public or private GitHub repository inside Gondolin and sees real setup logs.

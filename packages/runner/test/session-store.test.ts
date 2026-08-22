@@ -55,10 +55,10 @@ Deno.test("creates private runner session files and atomically reloads metadata"
     assertEquals(success(await restarted.updateSessionState(SESSION_ID, "error")).state, "error");
     assertEquals(success(await restarted.readMetadata(SESSION_ID)).state, "error");
 
-    const inventory = success(await restarted.loadInventory());
-    assertEquals(inventory.errors, []);
-    assertEquals(inventory.sessions.length, 1);
-    assertEquals(inventory.sessions[0], {
+    const manifest = success(await restarted.loadSessionManifest());
+    assertEquals(manifest.errors, []);
+    assertEquals(manifest.sessions.length, 1);
+    assertEquals(manifest.sessions[0], {
       id: SESSION_ID,
       projectId: PROJECT_ID,
       createdAt: CREATED_AT,
@@ -68,7 +68,7 @@ Deno.test("creates private runner session files and atomically reloads metadata"
       state: "error",
       lastEventCursor: 0,
     });
-    assertEquals(Array.from(inventory.sessions[0]!.initialPromptPreview).length, 200);
+    assertEquals(Array.from(manifest.sessions[0]!.initialPromptPreview).length, 200);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -129,10 +129,10 @@ Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () 
     );
 
     await Deno.writeTextFile(sessionFile, "{", { append: true });
-    const inventory = success(await store.loadInventory());
-    assertEquals(inventory.sessions[0]?.state, "created");
-    assertEquals(inventory.sessions[0]?.lastEventCursor, 4);
-    assertEquals(inventory.errors, []);
+    const manifest = success(await store.loadSessionManifest());
+    assertEquals(manifest.sessions[0]?.state, "created");
+    assertEquals(manifest.sessions[0]?.lastEventCursor, 4);
+    assertEquals(manifest.errors, []);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -167,16 +167,16 @@ Deno.test("rejects session metadata without an orb size", async () => {
   }
 });
 
-Deno.test("returns inventory-root access failures as the outer Result error", async () => {
+Deno.test("returns session-manifest access failures as the outer Result error", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(join(workingDirectory, "sessions"), "not a directory");
     const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
-    const [inventory, error] = await store.loadInventory();
-    assertEquals(inventory, undefined);
+    const [manifest, error] = await store.loadSessionManifest();
+    assertEquals(manifest, undefined);
     assertEquals(error?.name, "RunnerSessionStoreError");
-    assertEquals(error?.operation, "load-inventory");
-    assertStringIncludes(error?.message ?? "", "inventory root");
+    assertEquals(error?.operation, "load-session-manifest");
+    assertStringIncludes(error?.message ?? "", "session manifest");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }

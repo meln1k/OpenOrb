@@ -13,10 +13,10 @@ const OTHER_RUNNER_TOKEN = `openorb_runner_${"b".repeat(43)}`;
 const SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c11";
 const TOMBSTONED_SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c12";
 const FOREIGN_PROJECT_SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c13";
-const SNAPSHOT_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c14";
+const MANIFEST_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c14";
 const ROLLED_BACK_SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c20";
 
-Deno.test("reconciles runner inventory into only catalog rows and in-memory tenant routes", async () => {
+Deno.test("reconciles a runner session manifest into catalog rows and tenant routes", async () => {
   const store = await createTestStore();
   const userId = await createTestUser(store);
   const otherUserId = await createTestUser(store);
@@ -30,7 +30,7 @@ Deno.test("reconciles runner inventory into only catalog rows and in-memory tena
       }
       return Promise.resolve(null);
     },
-    reconcileSessionSnapshotEntries: store.reconcileSessionSnapshotEntries,
+    reconcileSessionManifestEntries: store.reconcileSessionManifestEntries,
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;
@@ -39,13 +39,13 @@ Deno.test("reconciles runner inventory into only catalog rows and in-memory tena
   try {
     socket = await authenticateRunner(server.baseUrl, RUNNER_TOKEN);
     const session = snapshot(SESSION_ID, project.id);
-    sendReconcileStart(socket, SNAPSHOT_ID);
-    sendReconcileChunk(socket, SNAPSHOT_ID, 0, [session]);
+    sendSessionSyncStart(socket, MANIFEST_ID);
+    sendSessionSyncChunk(socket, MANIFEST_ID, 0, [session]);
     sendHeartbeat(socket);
     await waitFor(() => gateway.getRunnerLiveState(userId, RUNNER_ID) !== null);
     assertEquals(await catalogCount(store, userId, SESSION_ID), 0);
     assertEquals(gateway.getSessionRunner(userId, SESSION_ID), null);
-    sendReconcileComplete(socket, SNAPSHOT_ID, 1, 1);
+    sendSessionSyncComplete(socket, MANIFEST_ID, 1, 1);
     await waitFor(() => gateway.getSessionRunner(userId, SESSION_ID) === RUNNER_ID);
 
     assertEquals(gateway.getSessionRunner(otherUserId, SESSION_ID), null);
@@ -74,10 +74,10 @@ Deno.test("reconciles runner inventory into only catalog rows and in-memory tena
     await disconnected;
     socket = await authenticateRunner(server.baseUrl, RUNNER_TOKEN);
     const tombstoned = snapshot(TOMBSTONED_SESSION_ID, project.id);
-    const tombstoneSnapshotId = "01989d78-65ee-7f6a-a97e-0f16ad134c15";
-    sendReconcileStart(socket, tombstoneSnapshotId);
-    sendReconcileChunk(socket, tombstoneSnapshotId, 0, [tombstoned]);
-    sendReconcileComplete(socket, tombstoneSnapshotId, 1, 1);
+    const tombstoneManifestId = "01989d78-65ee-7f6a-a97e-0f16ad134c15";
+    sendSessionSyncStart(socket, tombstoneManifestId);
+    sendSessionSyncChunk(socket, tombstoneManifestId, 0, [tombstoned]);
+    sendSessionSyncComplete(socket, tombstoneManifestId, 1, 1);
     sendHeartbeat(socket);
     await waitFor(() => gateway.getRunnerLiveState(userId, RUNNER_ID) !== null);
     assertEquals(await catalogCount(store, userId, TOMBSTONED_SESSION_ID), 0);
@@ -85,28 +85,28 @@ Deno.test("reconciles runner inventory into only catalog rows and in-memory tena
 
     otherSocket = await authenticateRunner(server.baseUrl, OTHER_RUNNER_TOKEN);
     const sameIdInOtherTenant = snapshot(TOMBSTONED_SESSION_ID, otherProject.id);
-    const otherSnapshotId = "01989d78-65ee-7f6a-a97e-0f16ad134c16";
-    sendReconcileStart(otherSocket, otherSnapshotId);
-    sendReconcileChunk(otherSocket, otherSnapshotId, 0, [sameIdInOtherTenant]);
-    sendReconcileComplete(otherSocket, otherSnapshotId, 1, 1);
+    const otherManifestId = "01989d78-65ee-7f6a-a97e-0f16ad134c16";
+    sendSessionSyncStart(otherSocket, otherManifestId);
+    sendSessionSyncChunk(otherSocket, otherManifestId, 0, [sameIdInOtherTenant]);
+    sendSessionSyncComplete(otherSocket, otherManifestId, 1, 1);
     await waitFor(() =>
       gateway.getSessionRunner(otherUserId, TOMBSTONED_SESSION_ID) === OTHER_RUNNER_ID
     );
     assertEquals(await catalogCount(store, otherUserId, TOMBSTONED_SESSION_ID), 1);
     assertEquals(await catalogCount(store, userId, TOMBSTONED_SESSION_ID), 0);
 
-    const rejectedSnapshotId = "01989d78-65ee-7f6a-a97e-0f16ad134c17";
+    const rejectedManifestId = "01989d78-65ee-7f6a-a97e-0f16ad134c17";
     const reconciledConnectionClosed = closed(socket);
     socket.close();
     await reconciledConnectionClosed;
     socket = await authenticateRunner(server.baseUrl, RUNNER_TOKEN);
-    sendReconcileStart(socket, rejectedSnapshotId);
+    sendSessionSyncStart(socket, rejectedManifestId);
     const rejectedClose = closed(socket);
-    sendReconcileChunk(socket, rejectedSnapshotId, 0, [
+    sendSessionSyncChunk(socket, rejectedManifestId, 0, [
       snapshot(ROLLED_BACK_SESSION_ID, project.id),
       snapshot(FOREIGN_PROJECT_SESSION_ID, otherProject.id),
     ]);
-    sendReconcileComplete(socket, rejectedSnapshotId, 1, 2);
+    sendSessionSyncComplete(socket, rejectedManifestId, 1, 2);
     assertEquals((await rejectedClose).code, 4400);
     assertEquals(await catalogCount(store, userId, ROLLED_BACK_SESSION_ID), 0);
     assertEquals(await catalogCount(store, userId, FOREIGN_PROJECT_SESSION_ID), 0);
@@ -132,7 +132,7 @@ Deno.test("a reconnect rebuilds routes without deleting absent catalog rows", as
   const project = await createProject(store, userId, "Reconnect project");
   const repository = {
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId }),
-    reconcileSessionSnapshotEntries: store.reconcileSessionSnapshotEntries,
+    reconcileSessionManifestEntries: store.reconcileSessionManifestEntries,
   };
   let gateway = new RunnerConnectionGateway(repository);
   let server = await createTestServer((request) => gateway.handleUpgrade(request));
@@ -140,7 +140,7 @@ Deno.test("a reconnect rebuilds routes without deleting absent catalog rows", as
 
   try {
     socket = await authenticateRunner(server.baseUrl, RUNNER_TOKEN);
-    sendCompleteSnapshot(socket, SNAPSHOT_ID, [snapshot(SESSION_ID, project.id)]);
+    sendSessionManifest(socket, MANIFEST_ID, [snapshot(SESSION_ID, project.id)]);
     await waitFor(() => gateway.getSessionRunner(userId, SESSION_ID) === RUNNER_ID);
 
     socket.close();
@@ -152,19 +152,19 @@ Deno.test("a reconnect rebuilds routes without deleting absent catalog rows", as
     gateway = new RunnerConnectionGateway(repository);
     server = await createTestServer((request) => gateway.handleUpgrade(request));
     socket = await authenticateRunner(server.baseUrl, RUNNER_TOKEN);
-    const emptySnapshotId = "01989d78-65ee-7f6a-a97e-0f16ad134c18";
-    sendCompleteSnapshot(socket, emptySnapshotId, []);
+    const emptyManifestId = "01989d78-65ee-7f6a-a97e-0f16ad134c18";
+    sendSessionManifest(socket, emptyManifestId, []);
     sendHeartbeat(socket);
     await waitFor(() => gateway.getRunnerLiveState(userId, RUNNER_ID) !== null);
     assertEquals(gateway.getSessionRunner(userId, SESSION_ID), null);
     assertEquals(await catalogCount(store, userId, SESSION_ID), 1);
 
-    const emptySnapshotConnectionClosed = closed(socket);
+    const emptyManifestConnectionClosed = closed(socket);
     socket.close();
-    await emptySnapshotConnectionClosed;
+    await emptyManifestConnectionClosed;
     socket = await authenticateRunner(server.baseUrl, RUNNER_TOKEN);
-    const reconnectSnapshotId = "01989d78-65ee-7f6a-a97e-0f16ad134c19";
-    sendCompleteSnapshot(socket, reconnectSnapshotId, [snapshot(SESSION_ID, project.id)]);
+    const reconnectManifestId = "01989d78-65ee-7f6a-a97e-0f16ad134c19";
+    sendSessionManifest(socket, reconnectManifestId, [snapshot(SESSION_ID, project.id)]);
     await waitFor(() => gateway.getSessionRunner(userId, SESSION_ID) === RUNNER_ID);
     assertEquals(await catalogCount(store, userId, SESSION_ID), 1);
   } finally {
@@ -175,24 +175,24 @@ Deno.test("a reconnect rebuilds routes without deleting absent catalog rows", as
   }
 });
 
-Deno.test("rejects a second snapshot on the same authenticated connection", async () => {
+Deno.test("rejects a second session sync on the same authenticated connection", async () => {
   const store = await createTestStore();
   const userId = await createTestUser(store);
   const project = await createProject(store, userId, "Replay project");
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId }),
-    reconcileSessionSnapshotEntries: store.reconcileSessionSnapshotEntries,
+    reconcileSessionManifestEntries: store.reconcileSessionManifestEntries,
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;
 
   try {
     socket = await authenticateRunner(server.baseUrl, RUNNER_TOKEN);
-    sendCompleteSnapshot(socket, SNAPSHOT_ID, [snapshot(SESSION_ID, project.id)]);
+    sendSessionManifest(socket, MANIFEST_ID, [snapshot(SESSION_ID, project.id)]);
     await waitFor(() => gateway.getSessionRunner(userId, SESSION_ID) === RUNNER_ID);
 
     const replayClosed = closed(socket);
-    sendReconcileStart(socket, crypto.randomUUID());
+    sendSessionSyncStart(socket, crypto.randomUUID());
     assertEquals((await replayClosed).code, 4400);
     assertEquals(await catalogCount(store, userId, SESSION_ID), 1);
     assertEquals(await catalogCount(store, userId, ROLLED_BACK_SESSION_ID), 0);
@@ -204,7 +204,7 @@ Deno.test("rejects a second snapshot on the same authenticated connection", asyn
   }
 });
 
-Deno.test("concurrent same-user snapshots cannot take over an active runner route", async () => {
+Deno.test("concurrent same-user manifests cannot take over an active runner route", async () => {
   const userId = crypto.randomUUID();
   const projectId = crypto.randomUUID();
   let reconciliationCalls = 0;
@@ -228,7 +228,7 @@ Deno.test("concurrent same-user snapshots cannot take over an active runner rout
       }
       return Promise.resolve(null);
     },
-    async reconcileSessionSnapshotEntries(_reconciledUserId, entries) {
+    async reconcileSessionManifestEntries(_reconciledUserId, entries) {
       reconciliationCalls++;
       if (reconciliationCalls === 2) bothReconciliationsStarted();
       await (entries.length === 1 ? firstReconciliationPending : secondReconciliationPending);
@@ -246,16 +246,16 @@ Deno.test("concurrent same-user snapshots cannot take over an active runner rout
   try {
     firstSocket = await authenticateRunner(server.baseUrl, RUNNER_TOKEN);
     secondSocket = await authenticateRunner(server.baseUrl, OTHER_RUNNER_TOKEN);
-    sendCompleteSnapshot(firstSocket, SNAPSHOT_ID, [snapshot(SESSION_ID, projectId)]);
+    sendSessionManifest(firstSocket, MANIFEST_ID, [snapshot(SESSION_ID, projectId)]);
 
-    const conflictingSnapshotId = crypto.randomUUID();
-    sendReconcileStart(secondSocket, conflictingSnapshotId);
-    sendReconcileChunk(secondSocket, conflictingSnapshotId, 0, [
+    const conflictingManifestId = crypto.randomUUID();
+    sendSessionSyncStart(secondSocket, conflictingManifestId);
+    sendSessionSyncChunk(secondSocket, conflictingManifestId, 0, [
       snapshot(ROLLED_BACK_SESSION_ID, projectId),
       snapshot(SESSION_ID, projectId),
     ]);
     const conflictingRunnerClosed = closed(secondSocket);
-    sendReconcileComplete(secondSocket, conflictingSnapshotId, 1, 2);
+    sendSessionSyncComplete(secondSocket, conflictingManifestId, 1, 2);
     await bothReconciliationsStart;
 
     releaseFirstReconciliation();
@@ -283,7 +283,7 @@ Deno.test("serializes reconciliation with a concurrent tombstone transaction", a
   const blocker = await store.pool.connect();
   const deletion = await store.pool.connect();
   let reconciliation:
-    | ReturnType<typeof store.reconcileSessionSnapshotEntries>
+    | ReturnType<typeof store.reconcileSessionManifestEntries>
     | undefined;
   let deletionTransaction: Promise<void> | undefined;
 
@@ -307,7 +307,7 @@ Deno.test("serializes reconciliation with a concurrent tombstone transaction", a
     await blocker.query("begin");
     await blocker.query("select pg_advisory_xact_lock(11011, 1)");
 
-    reconciliation = store.reconcileSessionSnapshotEntries(userId, [
+    reconciliation = store.reconcileSessionManifestEntries(userId, [
       snapshot(SESSION_ID, project.id),
     ]);
     await waitForDatabaseLock(store, "insert into sessions");
@@ -396,50 +396,50 @@ async function authenticateRunner(baseUrl: URL, token: string): Promise<WebSocke
   return socket;
 }
 
-function sendCompleteSnapshot(
+function sendSessionManifest(
   socket: WebSocket,
-  snapshotId: string,
+  manifestId: string,
   sessions: RunnerSessionSnapshot[],
 ): void {
-  sendReconcileStart(socket, snapshotId);
-  if (sessions.length > 0) sendReconcileChunk(socket, snapshotId, 0, sessions);
-  sendReconcileComplete(socket, snapshotId, sessions.length > 0 ? 1 : 0, sessions.length);
+  sendSessionSyncStart(socket, manifestId);
+  if (sessions.length > 0) sendSessionSyncChunk(socket, manifestId, 0, sessions);
+  sendSessionSyncComplete(socket, manifestId, sessions.length > 0 ? 1 : 0, sessions.length);
 }
 
-function sendReconcileStart(socket: WebSocket, snapshotId: string): void {
+function sendSessionSyncStart(socket: WebSocket, manifestId: string): void {
   socket.send(JSON.stringify({
     version: 1,
     id: crypto.randomUUID(),
-    type: "runner.reconcile.start",
-    payload: { snapshotId },
+    type: "runner.session-sync.start",
+    payload: { manifestId },
   }));
 }
 
-function sendReconcileChunk(
+function sendSessionSyncChunk(
   socket: WebSocket,
-  snapshotId: string,
+  manifestId: string,
   sequence: number,
   sessions: RunnerSessionSnapshot[],
 ): void {
   socket.send(JSON.stringify({
     version: 1,
     id: crypto.randomUUID(),
-    type: "runner.reconcile.chunk",
-    payload: { snapshotId, sequence, sessions },
+    type: "runner.session-sync.chunk",
+    payload: { manifestId, sequence, sessions },
   }));
 }
 
-function sendReconcileComplete(
+function sendSessionSyncComplete(
   socket: WebSocket,
-  snapshotId: string,
+  manifestId: string,
   chunkCount: number,
   sessionCount: number,
 ): void {
   socket.send(JSON.stringify({
     version: 1,
     id: crypto.randomUUID(),
-    type: "runner.reconcile.complete",
-    payload: { snapshotId, chunkCount, sessionCount },
+    type: "runner.session-sync.complete",
+    payload: { manifestId, chunkCount, sessionCount },
   }));
 }
 
@@ -548,7 +548,7 @@ async function assertSessionSchemas(
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (!(await predicate())) {
-    assert(Date.now() < deadline, "timed out waiting for session inventory state");
+    assert(Date.now() < deadline, "timed out waiting for session sync state");
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
 }

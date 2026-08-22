@@ -25,7 +25,7 @@ The user explicitly deletes a session while its runner is online or offline. The
 - Online or offline deletion atomically records the marker and removes the catalog card.
 - Offline deletion succeeds even if the runner host has been permanently lost.
 - A failed or interrupted runner cleanup remains hidden by the marker and is retried idempotently when that runner reports the session again.
-- A runner snapshot cannot recreate or route a tombstoned session.
+- A runner session manifest cannot recreate or route a tombstoned session.
 - A user cannot inspect or delete another user's session, and one user's tombstone cannot suppress or clean up another user's session.
 - Successful online cleanup removes all session-owned runner paths; deleted session IDs are not advertised after runner restart.
 - The gateway retains no deleted-session data beyond `user_id`, `session_id`, and `deleted_at`.

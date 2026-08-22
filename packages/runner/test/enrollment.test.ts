@@ -198,7 +198,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
       runnerToken: RUNNER_TOKEN,
       signal: abortController.signal,
       getCapacity: () => Promise.reject(new Error("Connection never authenticates")),
-      getSessionSnapshot: () => Promise.resolve([[], undefined] as const),
+      getSessionManifest: () => Promise.resolve([[], undefined] as const),
       random: () => 0,
       sleep(milliseconds) {
         delays.push(milliseconds);
@@ -216,7 +216,7 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
       runnerToken: RUNNER_TOKEN,
       signal: delayAbortController.signal,
       getCapacity: () => Promise.reject(new Error("Connection never authenticates")),
-      getSessionSnapshot: () => Promise.resolve([[], undefined] as const),
+      getSessionManifest: () => Promise.resolve([[], undefined] as const),
       handshakeTimeoutMs: 20,
       onReconnectScheduled() {
         delayAbortController.abort();
@@ -230,13 +230,13 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
   }
 });
 
-Deno.test("sends a complete session inventory in bounded reconciliation chunks", async () => {
+Deno.test("sends a complete session manifest in bounded session sync chunks", async () => {
   let resolveAddress: (address: Deno.NetAddr) => void;
   let resolveComplete: () => void;
   const listening = new Promise<Deno.NetAddr>((resolve) => {
     resolveAddress = resolve;
   });
-  const reconciliationComplete = new Promise<void>((resolve) => {
+  const sessionSyncComplete = new Promise<void>((resolve) => {
     resolveComplete = resolve;
   });
   const received: unknown[] = [];
@@ -257,7 +257,7 @@ Deno.test("sends a complete session inventory in bounded reconciliation chunks",
           return;
         }
         received.push(input);
-        if (message.type === "runner.reconcile.complete") resolveComplete();
+        if (message.type === "runner.session-sync.complete") resolveComplete();
       };
       return response;
     },
@@ -288,30 +288,30 @@ Deno.test("sends a complete session inventory in bounded reconciliation chunks",
           vmMemoryMiB: 8192,
           diskFreeMiB: 20_480,
         }),
-      getSessionSnapshot: () => Promise.resolve([sessions, undefined] as const),
+      getSessionManifest: () => Promise.resolve([sessions, undefined] as const),
       onConnected() {
         abortController.abort();
       },
     });
-    await reconciliationComplete;
+    await sessionSyncComplete;
     await connection;
 
     const messages = received.map(parseRunnerClientMessage);
     assertEquals(messages.map((message) => message.type), [
-      "runner.reconcile.start",
-      "runner.reconcile.chunk",
-      "runner.reconcile.chunk",
-      "runner.reconcile.complete",
+      "runner.session-sync.start",
+      "runner.session-sync.chunk",
+      "runner.session-sync.chunk",
+      "runner.session-sync.complete",
     ]);
     const [start, firstChunk, secondChunk, complete] = messages;
-    assert(start?.type === "runner.reconcile.start");
-    assert(firstChunk?.type === "runner.reconcile.chunk");
-    assert(secondChunk?.type === "runner.reconcile.chunk");
-    assert(complete?.type === "runner.reconcile.complete");
+    assert(start?.type === "runner.session-sync.start");
+    assert(firstChunk?.type === "runner.session-sync.chunk");
+    assert(secondChunk?.type === "runner.session-sync.chunk");
+    assert(complete?.type === "runner.session-sync.complete");
     assertEquals([firstChunk.payload.sequence, firstChunk.payload.sessions.length], [0, 25]);
     assertEquals([secondChunk.payload.sequence, secondChunk.payload.sessions.length], [1, 1]);
     assertEquals(complete.payload, {
-      snapshotId: start.payload.snapshotId,
+      manifestId: start.payload.manifestId,
       chunkCount: 2,
       sessionCount: 26,
     });
@@ -349,7 +349,7 @@ Deno.test("replays Pi history only after a correlated gateway request", async ()
           }));
           return;
         }
-        if (message.type === "runner.reconcile.complete") {
+        if (message.type === "runner.session-sync.complete") {
           assertEquals(replayMessages, []);
           socket.send(JSON.stringify({
             version: 1,
@@ -399,7 +399,7 @@ Deno.test("replays Pi history only after a correlated gateway request", async ()
           vmMemoryMiB: 8192,
           diskFreeMiB: 20_480,
         }),
-      getSessionSnapshot: async () => [
+      getSessionManifest: async () => [
         [success(await store.getSessionSnapshot(SESSION_ID))],
         undefined,
       ],

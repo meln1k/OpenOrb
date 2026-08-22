@@ -130,7 +130,7 @@ Gateway
           │ one outbound authenticated WebSocket
           │
 Runner behind NAT
-  ├── Heartbeat, session inventory, and command handling
+  ├── Heartbeat, session manifest sync, and command handling
   ├── Complete session metadata, transcripts, events, reports, workspaces, and Pi JSONL
   ├── Host-side Pi SDK
   └── Gondolin manager
@@ -297,7 +297,7 @@ The user selects one predefined orb size per session. `medium` is the default:
 | `large` | 8 | 16 GB |
 | `xxlarge` | 16 | 32 GB |
 
-The runner durably owns the selected size in its session metadata. The gateway carries it in validated provisioning traffic and live runner snapshots but does not add resource columns to the `sessions` catalog. A retry uses the original stored size.
+The runner durably owns the selected size in its session metadata. The gateway carries it in validated provisioning traffic and live runner manifest entries but does not add resource columns to the `sessions` catalog. A retry uses the original stored size.
 
 `vmCpuCount` and `vmMemoryMiB` advertise the largest single-session request the runner can accept. The gateway rejects a selected size above those limits, and the runner re-checks the same limits authoritatively before creating durable session state. `activeSessions` counts provisioned VMs currently consuming a concurrency slot, including VMs that are provisioning or running. Stopped sessions with no VM do not count.
 
@@ -358,7 +358,7 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is the initial textual prompt with whitespace collapsed and truncated to at most 200 Unicode code points. It excludes attachments and is never used to replay a prompt. No runner ID, title, status, branch, model, transcript, tool data, event cursor, diff, or other runtime state is persisted in the gateway.
 
-On connect and reconnect, the runner sends a complete snapshot of its sessions, including the four catalog data fields and live routing/state data. The gateway derives ownership from the authenticated runner record rather than accepting a snapshot-supplied tenant, runtime-validates the snapshot, upserts any missing five-column catalog rows that are not marked deleted, and rebuilds its user-scoped in-memory routing index. This recovers a runner-local session created before a gateway crash could commit its catalog row. Existing catalog entries remain visible while their runner is offline. Snapshot absence alone does not delete a catalog row because the gateway does not persist runner assignment. A snapshot entry whose `(user_id, session_id)` has a gateway deletion marker is never reinserted or routed; the runner is instructed to remove it once any active work settles.
+On connect and reconnect, the runner sends a complete session manifest, including the four catalog data fields and live routing/state data. The gateway derives ownership from the authenticated runner record rather than accepting a manifest-supplied tenant, runtime-validates the manifest, upserts any missing five-column catalog rows that are not marked deleted, and rebuilds its user-scoped in-memory routing index. This recovers a runner-local session created before a gateway crash could commit its catalog row. Existing catalog entries remain visible while their runner is offline. Manifest absence alone does not delete a catalog row because the gateway does not persist runner assignment. A manifest entry whose `(user_id, session_id)` has a gateway deletion marker is never reinserted or routed; the runner is instructed to remove it once any active work settles.
 
 Do not persist:
 
@@ -421,7 +421,7 @@ Deletion requires explicit confirmation. In one PostgreSQL transaction, the gate
 - If the runner is online and idle, it removes the workspace, Pi JSONL, metadata, events, reports, and logs.
 - If the runner is online but active, deletion is rejected; the user must wait for the work to settle. An offline deletion cannot determine live state, so if the runner later reconnects with active work, cleanup waits until that work settles rather than interrupting it.
 - If the runner is offline or its host has been lost, the catalog card is still removed and the marker remains.
-- If any runner later reports the deleted session ID in a complete snapshot, the gateway does not recreate the catalog row and repeatedly requests idempotent cleanup until the runner confirms removal.
+- If any runner later reports the deleted session ID in a complete manifest, the gateway does not recreate the catalog row and repeatedly requests idempotent cleanup until the runner confirms removal.
 - Deleted-session markers are retained so a stale runner disk or backup cannot resurrect a deleted session.
 
 ## 12. Pi integration
@@ -678,7 +678,7 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 - `sessions`, restricted to `user_id`, `id`, `project_id`, `created_at`, and `initial_prompt_preview`
 - `deleted_sessions`, restricted to `user_id`, `session_id`, and `deleted_at`
 
-It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only user ownership, session identity, and deletion time. Session routing is a user-scoped in-memory index rebuilt from connected runner snapshots. Do not add Redis, another database/KV service, or application-owned durable gateway files.
+It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only user ownership, session identity, and deletion time. Session routing is a user-scoped in-memory index rebuilt from connected runner manifests. Do not add Redis, another database/KV service, or application-owned durable gateway files.
 
 Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as the sole durable conversation transcript, atomic JSON for session metadata, ordinary log files, and JSON/patch Git reports. Derive bounded replay/wire events from Pi JSONL instead of adding an OpenOrb event file. Do not add a runner-local database for the MVP.
 
@@ -705,7 +705,7 @@ Do not add gateway tables for:
 - Session transcript, diff, files, status, Stop, and other runner-backed actions are unavailable because no gateway copy exists. Explicit deletion remains available because it records a gateway deletion marker and removes the catalog card without waiting for the runner.
 - Disable prompt submission.
 - Do not move sessions to another runner.
-- Restore the session inventory and access after the same runner reconnects.
+- Restore the session manifest and access after the same runner reconnects.
 
 ### Runner process crash
 
@@ -728,7 +728,7 @@ Do not add gateway tables for:
 ### Gateway restart
 
 - Minimal catalog rows remain available.
-- Runners reconnect automatically and send complete session snapshots; the gateway derives ownership from the authenticated runner, upserts missing non-deleted five-column catalog rows, rejects user-scoped tombstoned entries, and rebuilds user-scoped live routes.
+- Runners reconnect automatically and send complete session manifests; the gateway derives ownership from the authenticated runner, upserts missing non-deleted five-column catalog rows, rejects user-scoped tombstoned entries, and rebuilds user-scoped live routes.
 - Browsers reload full history/state through the reconnected runner.
 - No full session reconstruction occurs from gateway storage.
 - In-flight operations may be marked failed and manually retried.
@@ -867,7 +867,7 @@ The lean MVP is complete when:
 15. Idle VMs are destroyed while workspace and Pi JSONL remain.
 16. The session can cold-start and continue with the same checkout and conversation.
 17. A pinned session remains unavailable rather than migrating while its runner is offline.
-18. The user can stop and explicitly delete a session; offline deletion removes its catalog card and prevents a stale runner snapshot from resurrecting it.
+18. The user can stop and explicitly delete a session; offline deletion removes its catalog card and prevents a stale runner manifest from resurrecting it.
 
 ## 23. Post-MVP order
 

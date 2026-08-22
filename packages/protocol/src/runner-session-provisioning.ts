@@ -1,7 +1,7 @@
 import { literal, object, optional, string, union } from "@remix-run/data-schema";
 import { trySync } from "@openorb/result";
 
-import { projectIdSchema, runnerSessionSnapshotSchema } from "@/src/runner-session-inventory.ts";
+import { projectIdSchema, runnerSessionSnapshotSchema } from "@/src/runner-session-manifest.ts";
 import type { InferOutput } from "@remix-run/data-schema";
 import type { RunnerMessage } from "@/src/runner-message.ts";
 import { runnerCheckoutStateSchema } from "@/src/runner-session-events.ts";

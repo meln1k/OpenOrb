@@ -219,22 +219,22 @@ export async function main(args: string[] = Deno.args): Promise<number> {
           runnerToken: identity.runnerToken,
           signal: shutdownController.signal,
           getCapacity,
-          async getSessionSnapshot() {
-            const [inventory, inventoryError] = await sessionStore.loadInventory();
-            if (inventoryError !== undefined) {
+          async getSessionManifest() {
+            const [manifest, manifestError] = await sessionStore.loadSessionManifest();
+            if (manifestError !== undefined) {
               return err(
                 new RunnerRuntimeError(
-                  "The durable runner session inventory could not be loaded.",
-                  inventoryError,
+                  "The durable runner session manifest could not be loaded.",
+                  manifestError,
                 ),
               );
             }
-            for (const error of inventory.errors) {
+            for (const error of manifest.errors) {
               console.error(
                 `[openorb-runner] session ${error.sessionDirectory}: ${error.message}`,
               );
             }
-            return ok(inventory.sessions);
+            return ok(manifest.sessions);
           },
           sessionEventRelay,
           onProvisionCommand(command, send) {

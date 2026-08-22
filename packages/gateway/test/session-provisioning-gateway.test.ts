@@ -23,7 +23,7 @@ Deno.test("requests Pi replay for each subscriber and relays only subsequent liv
   let reconciliationCalls = 0;
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-    reconcileSessionSnapshotEntries(_userId, entries) {
+    reconcileSessionManifestEntries(_userId, entries) {
       reconciliationCalls++;
       return Promise.resolve(ok({
         acceptedSessionIds: entries.map((entry) => entry.id),
@@ -37,7 +37,7 @@ Deno.test("requests Pi replay for each subscriber and relays only subsequent liv
 
   try {
     socket = await connectRunner(server.baseUrl);
-    await publishEmptyInventory(socket, gateway);
+    await publishEmptySessionManifest(socket, gateway);
 
     const commandFrame = nextMessage(socket);
     const provisioning = gateway.provisionSession({
@@ -224,7 +224,7 @@ Deno.test("catalog failure rejects acceptance before installing the session rout
   let reconciliationCalls = 0;
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-    reconcileSessionSnapshotEntries(_userId, entries) {
+    reconcileSessionManifestEntries(_userId, entries) {
       reconciliationCalls++;
       if (entries.length > 0) {
         return Promise.resolve(err(new SessionCatalogPersistenceError("database unavailable")));
@@ -241,7 +241,7 @@ Deno.test("catalog failure rejects acceptance before installing the session rout
 
   try {
     socket = await connectRunner(server.baseUrl);
-    await publishEmptyInventory(socket, gateway);
+    await publishEmptySessionManifest(socket, gateway);
     const commandFrame = nextMessage(socket);
     const provisioning = gateway.provisionSession(provisionInput(SESSION_ID));
     const command = parseRunnerServerMessage(JSON.parse(await commandFrame));
@@ -278,7 +278,7 @@ Deno.test("catalog failure rejects acceptance before installing the session rout
 Deno.test("rejects an orb size that exceeds the runner's advertised capacity", async () => {
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-    reconcileSessionSnapshotEntries: (_userId, entries) =>
+    reconcileSessionManifestEntries: (_userId, entries) =>
       Promise.resolve(ok({
         acceptedSessionIds: entries.map((entry) => entry.id),
         tombstonedSessionIds: [],
@@ -290,7 +290,7 @@ Deno.test("rejects an orb size that exceeds the runner's advertised capacity", a
 
   try {
     socket = await connectRunner(server.baseUrl);
-    await publishEmptyInventory(socket, gateway);
+    await publishEmptySessionManifest(socket, gateway);
     const input = provisionInput(SESSION_ID);
     const result = await gateway.provisionSession({
       ...input,
@@ -312,7 +312,7 @@ Deno.test("rejects an orb size that exceeds the runner's advertised capacity", a
 Deno.test("times out unacknowledged provisioning and releases reserved capacity", async () => {
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-    reconcileSessionSnapshotEntries: (_userId, entries) =>
+    reconcileSessionManifestEntries: (_userId, entries) =>
       Promise.resolve(ok({
         acceptedSessionIds: entries.map((entry) => entry.id),
         tombstonedSessionIds: [],
@@ -324,7 +324,7 @@ Deno.test("times out unacknowledged provisioning and releases reserved capacity"
 
   try {
     socket = await connectRunner(server.baseUrl);
-    await publishEmptyInventory(socket, gateway);
+    await publishEmptySessionManifest(socket, gateway);
     const commandFrame = nextMessage(socket);
     const result = gateway.provisionSession({
       userId: USER_ID,
@@ -357,7 +357,7 @@ Deno.test("times out while accepted provisioning waits for catalog persistence",
   const catalogWriteStarted = Promise.withResolvers<void>();
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-    reconcileSessionSnapshotEntries(_userId, entries) {
+    reconcileSessionManifestEntries(_userId, entries) {
       if (entries.length === 0) {
         return Promise.resolve(ok({
           acceptedSessionIds: [],
@@ -374,7 +374,7 @@ Deno.test("times out while accepted provisioning waits for catalog persistence",
 
   try {
     socket = await connectRunner(server.baseUrl);
-    await publishEmptyInventory(socket, gateway);
+    await publishEmptySessionManifest(socket, gateway);
     const commandFrame = nextMessage(socket);
     const result = gateway.provisionSession(provisionInput(SESSION_ID));
     const command = parseRunnerServerMessage(JSON.parse(await commandFrame));
@@ -412,7 +412,7 @@ Deno.test("times out while accepted provisioning waits for catalog persistence",
 Deno.test("an in-flight create reserves capacity across runner heartbeats", async () => {
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-    reconcileSessionSnapshotEntries: (_userId, entries) =>
+    reconcileSessionManifestEntries: (_userId, entries) =>
       Promise.resolve(ok({
         acceptedSessionIds: entries.map((entry) => entry.id),
         tombstonedSessionIds: [],
@@ -424,7 +424,7 @@ Deno.test("an in-flight create reserves capacity across runner heartbeats", asyn
 
   try {
     socket = await connectRunner(server.baseUrl);
-    await publishEmptyInventory(socket, gateway, 1);
+    await publishEmptySessionManifest(socket, gateway, 1);
     const commandFrame = nextMessage(socket);
     const first = gateway.provisionSession(provisionInput(SESSION_ID));
     await commandFrame;
@@ -473,23 +473,23 @@ async function connectRunner(baseUrl: URL): Promise<WebSocket> {
   return socket;
 }
 
-async function publishEmptyInventory(
+async function publishEmptySessionManifest(
   socket: WebSocket,
   gateway: RunnerConnectionGateway,
   maxConcurrentSessions = 2,
 ): Promise<void> {
-  const snapshotId = crypto.randomUUID();
+  const manifestId = crypto.randomUUID();
   socket.send(JSON.stringify({
     version: 1,
     id: crypto.randomUUID(),
-    type: "runner.reconcile.start",
-    payload: { snapshotId },
+    type: "runner.session-sync.start",
+    payload: { manifestId },
   }));
   socket.send(JSON.stringify({
     version: 1,
     id: crypto.randomUUID(),
-    type: "runner.reconcile.complete",
-    payload: { snapshotId, chunkCount: 0, sessionCount: 0 },
+    type: "runner.session-sync.complete",
+    payload: { manifestId, chunkCount: 0, sessionCount: 0 },
   }));
   socket.send(JSON.stringify(heartbeatMessage(maxConcurrentSessions, 0)));
   await waitFor(() => gateway.getRunnerLiveState(USER_ID, RUNNER_ID) !== null);

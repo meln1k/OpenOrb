@@ -4,17 +4,17 @@ import type { InferOutput } from "@remix-run/data-schema";
 import { runnerIdSchema, runnerTokenSchema } from "@/src/runner-enrollment.ts";
 import { parseRunnerMessage, type RunnerMessage } from "@/src/runner-message.ts";
 import {
-  RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
-  RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
-  RUNNER_RECONCILE_START_MESSAGE_TYPE,
-  type RunnerReconcileChunkPayload,
-  runnerReconcileChunkPayloadSchema,
-  type RunnerReconcileCompletePayload,
-  runnerReconcileCompletePayloadSchema,
-  type RunnerReconcileStartPayload,
-  runnerReconcileStartPayloadSchema,
+  RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_START_MESSAGE_TYPE,
+  type RunnerSessionSyncChunkPayload,
+  runnerSessionSyncChunkPayloadSchema,
+  type RunnerSessionSyncCompletePayload,
+  runnerSessionSyncCompletePayloadSchema,
+  type RunnerSessionSyncStartPayload,
+  runnerSessionSyncStartPayloadSchema,
   sessionIdSchema,
-} from "@/src/runner-session-inventory.ts";
+} from "@/src/runner-session-manifest.ts";
 import {
   SESSION_EVENT_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_MESSAGE_TYPE,
@@ -47,14 +47,14 @@ export const RUNNER_CONNECTED_MESSAGE_TYPE = "runner.connected";
 export type RunnerClientMessage =
   | (RunnerMessage<RunnerHelloPayload> & { type: typeof RUNNER_HELLO_MESSAGE_TYPE })
   | (RunnerMessage<RunnerHeartbeatPayload> & { type: typeof RUNNER_HEARTBEAT_MESSAGE_TYPE })
-  | (RunnerMessage<RunnerReconcileStartPayload> & {
-    type: typeof RUNNER_RECONCILE_START_MESSAGE_TYPE;
+  | (RunnerMessage<RunnerSessionSyncStartPayload> & {
+    type: typeof RUNNER_SESSION_SYNC_START_MESSAGE_TYPE;
   })
-  | (RunnerMessage<RunnerReconcileChunkPayload> & {
-    type: typeof RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE;
+  | (RunnerMessage<RunnerSessionSyncChunkPayload> & {
+    type: typeof RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE;
   })
-  | (RunnerMessage<RunnerReconcileCompletePayload> & {
-    type: typeof RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE;
+  | (RunnerMessage<RunnerSessionSyncCompletePayload> & {
+    type: typeof RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE;
   })
   | SessionProvisionAcceptedMessage
   | SessionProvisionRejectedMessage
@@ -142,28 +142,28 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
       payload: parse(heartbeatPayloadSchema, message.payload),
     };
   }
-  if (message.type === RUNNER_RECONCILE_START_MESSAGE_TYPE) {
+  if (message.type === RUNNER_SESSION_SYNC_START_MESSAGE_TYPE) {
     assertConnectionEnvelope(message);
     return {
       ...message,
       type: message.type,
-      payload: parse(runnerReconcileStartPayloadSchema, message.payload),
+      payload: parse(runnerSessionSyncStartPayloadSchema, message.payload),
     };
   }
-  if (message.type === RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE) {
+  if (message.type === RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE) {
     assertConnectionEnvelope(message);
     return {
       ...message,
       type: message.type,
-      payload: parse(runnerReconcileChunkPayloadSchema, message.payload),
+      payload: parse(runnerSessionSyncChunkPayloadSchema, message.payload),
     };
   }
-  if (message.type === RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE) {
+  if (message.type === RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE) {
     assertConnectionEnvelope(message);
     return {
       ...message,
       type: message.type,
-      payload: parse(runnerReconcileCompletePayloadSchema, message.payload),
+      payload: parse(runnerSessionSyncCompletePayloadSchema, message.payload),
     };
   }
   if (message.type === SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE) {

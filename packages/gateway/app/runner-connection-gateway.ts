@@ -5,9 +5,9 @@ import {
   RUNNER_CONNECTED_MESSAGE_TYPE,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
   RUNNER_HELLO_MESSAGE_TYPE,
-  RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
-  RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
-  RUNNER_RECONCILE_START_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_START_MESSAGE_TYPE,
   type RunnerCapacity,
   type RunnerServerMessage,
   type RunnerSessionSnapshot,
@@ -85,14 +85,14 @@ interface ActiveRunnerConnection {
   heartbeatTimeout: ReturnType<typeof setTimeout>;
   sessionIds: Set<string>;
   reservedCreateSessions: number;
-  reconciliationStarted: boolean;
-  reconciliation?: ReconciliationState;
+  sessionSyncStarted: boolean;
+  sessionSync?: SessionSyncState;
   capacity?: RunnerCapacity;
   lastHeartbeatAt?: number;
 }
 
-interface ReconciliationState {
-  snapshotId: string;
+interface SessionSyncState {
+  manifestId: string;
   nextSequence: number;
   receivedSessionCount: number;
   seenSessionIds: Set<string>;
@@ -101,7 +101,7 @@ interface ReconciliationState {
 
 type GatewayRepository =
   & Pick<RunnerRepository, "authenticateRunner">
-  & Pick<SessionCatalogRepository, "reconcileSessionSnapshotEntries">;
+  & Pick<SessionCatalogRepository, "reconcileSessionManifestEntries">;
 
 export class RunnerConnectionGateway implements RunnerConnectionRegistry {
   readonly #repository: GatewayRepository;
@@ -219,7 +219,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
               heartbeatTimeout: this.#createHeartbeatTimeout(runner.id, socket),
               sessionIds: new Set(),
               reservedCreateSessions: 0,
-              reconciliationStarted: false,
+              sessionSyncStarted: false,
             };
             this.#connections.set(runner.id, activeConnection);
             socket.send(JSON.stringify(connectedMessage(runner.id)));
@@ -238,14 +238,14 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             return;
           }
 
-          if (message.type === RUNNER_RECONCILE_START_MESSAGE_TYPE) {
-            if (activeConnection.reconciliationStarted) {
-              closeSocket(socket, 4400, "Session reconciliation already started");
+          if (message.type === RUNNER_SESSION_SYNC_START_MESSAGE_TYPE) {
+            if (activeConnection.sessionSyncStarted) {
+              closeSocket(socket, 4400, "Session sync already started");
               return;
             }
-            activeConnection.reconciliationStarted = true;
-            activeConnection.reconciliation = {
-              snapshotId: message.payload.snapshotId,
+            activeConnection.sessionSyncStarted = true;
+            activeConnection.sessionSync = {
+              manifestId: message.payload.manifestId,
               nextSequence: 0,
               receivedSessionCount: 0,
               seenSessionIds: new Set(),
@@ -255,43 +255,41 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             return;
           }
 
-          if (message.type === RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE) {
-            const reconciliation = activeConnection.reconciliation;
+          if (message.type === RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE) {
+            const sessionSync = activeConnection.sessionSync;
             if (
-              !reconciliation ||
-              reconciliation.snapshotId !== message.payload.snapshotId ||
-              reconciliation.nextSequence !== message.payload.sequence ||
-              message.payload.sessions.some((session) =>
-                reconciliation.seenSessionIds.has(session.id)
-              )
+              !sessionSync ||
+              sessionSync.manifestId !== message.payload.manifestId ||
+              sessionSync.nextSequence !== message.payload.sequence ||
+              message.payload.sessions.some((session) => sessionSync.seenSessionIds.has(session.id))
             ) {
-              closeSocket(socket, 4400, "Invalid session reconciliation chunk");
+              closeSocket(socket, 4400, "Invalid session sync chunk");
               return;
             }
 
             this.#refreshHeartbeatTimeout(activeConnection);
             for (const session of message.payload.sessions) {
-              reconciliation.seenSessionIds.add(session.id);
-              reconciliation.sessions.push(session);
+              sessionSync.seenSessionIds.add(session.id);
+              sessionSync.sessions.push(session);
             }
-            reconciliation.receivedSessionCount += message.payload.sessions.length;
-            reconciliation.nextSequence++;
+            sessionSync.receivedSessionCount += message.payload.sessions.length;
+            sessionSync.nextSequence++;
             return;
           }
 
-          if (message.type === RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE) {
-            const reconciliation = activeConnection.reconciliation;
+          if (message.type === RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE) {
+            const sessionSync = activeConnection.sessionSync;
             if (
-              !reconciliation ||
-              reconciliation.snapshotId !== message.payload.snapshotId ||
-              reconciliation.nextSequence !== message.payload.chunkCount ||
-              reconciliation.receivedSessionCount !== message.payload.sessionCount
+              !sessionSync ||
+              sessionSync.manifestId !== message.payload.manifestId ||
+              sessionSync.nextSequence !== message.payload.chunkCount ||
+              sessionSync.receivedSessionCount !== message.payload.sessionCount
             ) {
-              closeSocket(socket, 4400, "Invalid session reconciliation completion");
+              closeSocket(socket, 4400, "Invalid session sync completion");
               return;
             }
             this.#refreshHeartbeatTimeout(activeConnection);
-            await this.#publishReconciliation(activeConnection, reconciliation);
+            await this.#publishSessionManifest(activeConnection, sessionSync);
             return;
           }
 
@@ -603,19 +601,19 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     );
   }
 
-  async #publishReconciliation(
+  async #publishSessionManifest(
     connection: ActiveRunnerConnection,
-    reconciliation: ReconciliationState,
+    sessionSync: SessionSyncState,
   ): Promise<void> {
     if (!this.#isActive(connection)) return;
-    if (this.#sessionRoutes.hasConflict(connection, reconciliation.sessions)) {
+    if (this.#sessionRoutes.hasConflict(connection, sessionSync.sessions)) {
       closeSocket(connection.socket, 4400, "Session is already routed through another runner");
       return;
     }
 
-    const [reconciled, persistenceError] = await this.#repository.reconcileSessionSnapshotEntries(
+    const [reconciled, persistenceError] = await this.#repository.reconcileSessionManifestEntries(
       connection.runner.userId,
-      reconciliation.sessions,
+      sessionSync.sessions,
     );
     if (persistenceError !== undefined) {
       closeSocket(connection.socket, 1011, "Session catalog persistence failed");
@@ -623,21 +621,21 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     }
     if (!this.#isActive(connection)) return;
     if (reconciled.rejected.length > 0) {
-      closeSocket(connection.socket, 4400, "Session reconciliation was rejected");
+      closeSocket(connection.socket, 4400, "Session manifest reconciliation was rejected");
       return;
     }
-    if (this.#sessionRoutes.hasConflict(connection, reconciliation.sessions)) {
+    if (this.#sessionRoutes.hasConflict(connection, sessionSync.sessions)) {
       closeSocket(connection.socket, 4400, "Session is already routed through another runner");
       return;
     }
 
     this.#sessionRoutes.replace(connection, new Set(reconciled.acceptedSessionIds));
-    for (const session of reconciliation.sessions) {
+    for (const session of sessionSync.sessions) {
       if (reconciled.acceptedSessionIds.includes(session.id)) {
         this.#sessionRoutes.setSnapshot(connection.runner.userId, session);
       }
     }
-    connection.reconciliation = undefined;
+    connection.sessionSync = undefined;
   }
 
   async #acceptProvisionedSession(
@@ -672,7 +670,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     }
 
     if (pending.mode === "create") {
-      const [reconciled, persistenceError] = await this.#repository.reconcileSessionSnapshotEntries(
+      const [reconciled, persistenceError] = await this.#repository.reconcileSessionManifestEntries(
         connection.runner.userId,
         [message.payload.session],
       );

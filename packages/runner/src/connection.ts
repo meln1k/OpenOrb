@@ -3,10 +3,10 @@ import {
   RUNNER_CONNECTED_MESSAGE_TYPE,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
   RUNNER_HELLO_MESSAGE_TYPE,
-  RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
-  RUNNER_RECONCILE_CHUNK_SESSION_LIMIT,
-  RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
-  RUNNER_RECONCILE_START_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT,
+  RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_START_MESSAGE_TYPE,
   type RunnerCapacity,
   type RunnerClientMessage,
   type RunnerSessionSnapshot,
@@ -34,7 +34,7 @@ export interface MaintainRunnerConnectionOptions {
   runnerToken: string;
   signal: AbortSignal;
   getCapacity: () => Promise<RunnerCapacity>;
-  getSessionSnapshot: () => Promise<Result<RunnerSessionSnapshot[], Error>>;
+  getSessionManifest: () => Promise<Result<RunnerSessionSnapshot[], Error>>;
   sessionEventRelay?: SessionEventRelay;
   handshakeTimeoutMs?: number;
   random?: () => number;
@@ -185,30 +185,30 @@ async function connectOnce(
       }
       connected = true;
       handshakeDeadline.removeEventListener("abort", handshakeTimedOut);
-      const sendSnapshot = async (): Promise<Result<boolean, Error>> => {
-        const [sessions, snapshotError] = await options.getSessionSnapshot();
-        if (snapshotError !== undefined) return err(snapshotError);
+      const sendSessionManifest = async (): Promise<Result<boolean, Error>> => {
+        const [sessions, manifestError] = await options.getSessionManifest();
+        if (manifestError !== undefined) return err(manifestError);
         if (settled || socket.readyState !== WebSocket.OPEN) return ok(false);
 
         const [, sendError] = trySync(
           () => {
-            const snapshotId = crypto.randomUUID();
-            socket.send(JSON.stringify(reconcileStartMessage(snapshotId)));
+            const manifestId = crypto.randomUUID();
+            socket.send(JSON.stringify(sessionSyncStartMessage(manifestId)));
             let sequence = 0;
             for (
               let index = 0;
               index < sessions.length;
-              index += RUNNER_RECONCILE_CHUNK_SESSION_LIMIT
+              index += RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT
             ) {
-              const chunk = sessions.slice(index, index + RUNNER_RECONCILE_CHUNK_SESSION_LIMIT);
-              socket.send(JSON.stringify(reconcileChunkMessage(snapshotId, sequence++, chunk)));
+              const chunk = sessions.slice(index, index + RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT);
+              socket.send(JSON.stringify(sessionSyncChunkMessage(manifestId, sequence++, chunk)));
             }
             socket.send(
-              JSON.stringify(reconcileCompleteMessage(snapshotId, sequence, sessions.length)),
+              JSON.stringify(sessionSyncCompleteMessage(manifestId, sequence, sessions.length)),
             );
-            return snapshotId;
+            return manifestId;
           },
-          (cause) => new RunnerConnectionError("Runner session inventory delivery failed.", cause),
+          (cause) => new RunnerConnectionError("Runner session manifest delivery failed.", cause),
         );
         if (sendError !== undefined) return err(sendError);
         return ok(true);
@@ -239,15 +239,15 @@ async function connectOnce(
         heartbeatInFlight = false;
       };
       void (async () => {
-        const [detach, inventoryError] = options.sessionEventRelay
-          ? await options.sessionEventRelay.attach(send, sendSnapshot)
-          : await sendSnapshot().then(([sent, error]) =>
+        const [detach, manifestError] = options.sessionEventRelay
+          ? await options.sessionEventRelay.attach(send, sendSessionManifest)
+          : await sendSessionManifest().then(([sent, error]) =>
             error === undefined
               ? ok(sent ? () => {} : undefined)
-              : err(new SessionEventRelayError("Runner session inventory failed.", error))
+              : err(new SessionEventRelayError("Runner session manifest sync failed.", error))
           );
-        if (inventoryError !== undefined) {
-          closeSocket(socket, 1011, "Runner session inventory failed");
+        if (manifestError !== undefined) {
+          closeSocket(socket, 1011, "Runner session manifest sync failed");
           return;
         }
         if (!detach || settled || socket.readyState !== WebSocket.OPEN) {
@@ -290,38 +290,38 @@ function heartbeatMessage(capacity: RunnerCapacity): RunnerClientMessage {
   };
 }
 
-function reconcileStartMessage(snapshotId: string): RunnerClientMessage {
+function sessionSyncStartMessage(manifestId: string): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
-    type: RUNNER_RECONCILE_START_MESSAGE_TYPE,
-    payload: { snapshotId },
+    type: RUNNER_SESSION_SYNC_START_MESSAGE_TYPE,
+    payload: { manifestId },
   };
 }
 
-function reconcileChunkMessage(
-  snapshotId: string,
+function sessionSyncChunkMessage(
+  manifestId: string,
   sequence: number,
   sessions: RunnerSessionSnapshot[],
 ): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
-    type: RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
-    payload: { snapshotId, sequence, sessions },
+    type: RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE,
+    payload: { manifestId, sequence, sessions },
   };
 }
 
-function reconcileCompleteMessage(
-  snapshotId: string,
+function sessionSyncCompleteMessage(
+  manifestId: string,
   chunkCount: number,
   sessionCount: number,
 ): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
-    type: RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
-    payload: { snapshotId, chunkCount, sessionCount },
+    type: RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE,
+    payload: { manifestId, chunkCount, sessionCount },
   };
 }
 

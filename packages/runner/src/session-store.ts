@@ -79,14 +79,14 @@ export interface UpdateRunnerSessionProvisioningInput {
   baseCommit?: string;
 }
 
-export interface RunnerSessionInventoryError {
+export interface RunnerSessionManifestError {
   sessionDirectory: string;
   message: string;
 }
 
-export interface RunnerSessionInventory {
+export interface RunnerSessionManifest {
   sessions: RunnerSessionSnapshot[];
-  errors: RunnerSessionInventoryError[];
+  errors: RunnerSessionManifestError[];
 }
 
 export type RunnerSessionStoreOperation =
@@ -98,7 +98,7 @@ export type RunnerSessionStoreOperation =
   | "get-workspace-path"
   | "get-pi-paths"
   | "get-session-snapshot"
-  | "load-inventory";
+  | "load-session-manifest";
 
 export class RunnerSessionStoreError extends Error {
   constructor(
@@ -299,17 +299,17 @@ export class RunnerSessionStore {
     return snapshotFrom(metadata, history.length);
   }
 
-  loadInventory(): Promise<Result<RunnerSessionInventory, RunnerSessionStoreError>> {
+  loadSessionManifest(): Promise<Result<RunnerSessionManifest, RunnerSessionStoreError>> {
     return tryAsync(
-      this.#loadInventory(),
-      storeError("load-inventory", "Could not access the runner session inventory root"),
+      this.#loadSessionManifest(),
+      storeError("load-session-manifest", "Could not load the runner session manifest"),
     );
   }
 
-  async #loadInventory(): Promise<RunnerSessionInventory> {
+  async #loadSessionManifest(): Promise<RunnerSessionManifest> {
     await ensurePrivateDirectory(this.sessionsPath());
     const sessions: RunnerSessionSnapshot[] = [];
-    const errors: RunnerSessionInventoryError[] = [];
+    const errors: RunnerSessionManifestError[] = [];
     const entries = [];
     for await (const entry of Deno.readDir(this.sessionsPath())) entries.push(entry);
     entries.sort((left, right) => left.name.localeCompare(right.name));

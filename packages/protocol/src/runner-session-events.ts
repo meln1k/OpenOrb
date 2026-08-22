@@ -2,7 +2,7 @@ import { array, literal, number, object, optional, string, union } from "@remix-
 
 import type { InferOutput } from "@remix-run/data-schema";
 import type { RunnerMessage } from "@/src/runner-message.ts";
-import type { RunnerSessionState } from "@/src/runner-session-inventory.ts";
+import type { RunnerSessionState } from "@/src/runner-session-manifest.ts";
 
 export const SESSION_EVENT_MESSAGE_TYPE = "session.event";
 export const SESSION_EVENT_REPLAY_MESSAGE_TYPE = "session.event.replay";

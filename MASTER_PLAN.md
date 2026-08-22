@@ -429,7 +429,7 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is derived from the initial textual prompt by collapsing whitespace and truncating to at most 200 Unicode code points. It excludes attachments and is display-only; it must never be used to reconstruct or replay a prompt.
 
-No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the gateway. The only session record outside the live five-column catalog is a deleted-session marker containing immutable user ID, session ID, and deletion time. Connected runners send complete session snapshots containing the four catalog data fields plus live routing/state data. The gateway derives the owner from the authenticated runner record, never from a snapshot-supplied tenant value; it upserts missing non-deleted catalog rows, builds a user-scoped in-memory routing index, and proxies full session reads/events only after matching the authenticated user. Snapshot absence alone does not delete a catalog row because runner assignment is not persisted. A tombstoned snapshot entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
+No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the gateway. The only session record outside the live five-column catalog is a deleted-session marker containing immutable user ID, session ID, and deletion time. Connected runners send complete session manifests containing the four catalog data fields plus live routing/state data. The gateway derives the owner from the authenticated runner record, never from a manifest-supplied tenant value; it upserts missing non-deleted catalog rows, builds a user-scoped in-memory routing index, and proxies full session reads/events only after matching the authenticated user. Manifest absence alone does not delete a catalog row because runner assignment is not persisted. A tombstoned manifest entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
 
 ## 11. Domain model
 
@@ -1396,7 +1396,7 @@ Handshake includes protocol range and feature capabilities. Reject incompatible 
 ```text
 runner.hello
 runner.heartbeat
-runner.reconcile
+runner.session-sync.*
 runner.event.batch
 runner.command.result
 runner.preview.register
@@ -1447,11 +1447,11 @@ preview.wake
 - Replayed push commands must not push twice unintentionally; ambiguous non-idempotent operations require reconciliation or user action.
 - Gateway automatically retries only commands classified as idempotent.
 
-### 22.5 Offline reconciliation
+### 22.5 Offline session sync
 
 On reconnect, runner reports:
 
-- A complete snapshot of known sessions, including the four catalog data fields and local states; tenant ownership is derived from the authenticated runner
+- A complete manifest of known sessions, including the four catalog data fields and local states; tenant ownership is derived from the authenticated runner
 - Active VM IDs
 - Pi session file identity and last durable event cursor
 - Pending/finished command journal entries
@@ -1461,11 +1461,11 @@ On reconnect, runner reports:
 
 Gateway then:
 
-- Runtime-validates the complete runner snapshot
+- Runtime-validates the complete runner session manifest
 - Upserts missing five-column catalog rows for valid, non-tombstoned runner-local sessions under the authenticated runner's user, recovering sessions created before a gateway catalog commit
-- Rejects tombstoned snapshot entries, does not route them, and requests idempotent runner cleanup once active work settles
-- Rebuilds its in-memory session-to-runner routing index from the runner snapshot
-- Does not recreate runner-local sessions from gateway data and does not remove catalog rows based only on snapshot absence
+- Rejects tombstoned manifest entries, does not route them, and requests idempotent runner cleanup once active work settles
+- Rebuilds its in-memory session-to-runner routing index from the runner session manifest
+- Does not recreate runner-local sessions from gateway data and does not remove catalog rows based only on manifest absence
 - Proxies browser history requests and SSE replay to the runner
 - Does not reconstruct or replay Pi’s process-local queue
 - Leaves runner-local ambiguous handoffs marked `delivery-uncertain`
@@ -1610,7 +1610,7 @@ Each runner owns a file-backed local session metadata/event store in addition to
 - Preview definitions/capability hashes
 - Git reports and session lifecycle state
 
-The gateway keeps a user-scoped in-memory session routing index populated by complete connected-runner snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the user-owned control-plane marker without waiting for the runner.
+The gateway keeps a user-scoped in-memory session routing index populated by complete connected-runner manifests. After a restart the route index starts empty and is rebuilt as runners reconnect; a manifest entry also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the user-owned control-plane marker without waiting for the runner.
 
 Gateway PostgreSQL guidelines:
 
@@ -1807,12 +1807,12 @@ Session-scoped audit records remain on the owning runner:
 - Transcript, status, pending messages, diffs, files, terminals, previews, and other runner-backed actions become unavailable because the gateway has no full session copy. Explicit deletion remains available through a control-plane deletion marker.
 - Do not reassign pinned sessions.
 - Return runner-offline status for session and preview requests.
-- Rebuild inventory/routes and resume runner-backed event replay after reconnect.
+- Sync the session manifest, rebuild routes, and resume runner-backed event replay after reconnect.
 
 ### Gateway restart
 
-- Runner reconnects automatically with exponential backoff and jitter and sends a complete session snapshot.
-- Gateway retains minimal user-owned catalog rows and deleted-session markers, upserts a missing five-column row under the authenticated runner's owner from a valid non-tombstoned runner snapshot, rejects tombstoned entries, and rebuilds all user-scoped in-memory routes/live session state; it recovers no full sessions or commands from PostgreSQL.
+- Runner reconnects automatically with exponential backoff and jitter and sends a complete session manifest.
+- Gateway retains minimal user-owned catalog rows and deleted-session markers, upserts a missing five-column row under the authenticated runner's owner from a valid non-tombstoned manifest entry, rejects tombstoned entries, and rebuilds all user-scoped in-memory routes/live session state; it recovers no full sessions or commands from PostgreSQL.
 - Browser SSE reconnects through the runner-owned cursor after the runner is available.
 - Runner-local journals handle reconciliation and surface ambiguous message handoffs.
 
@@ -1886,7 +1886,7 @@ Session-scoped audit records remain on the owning runner:
 - Idempotent command replay after dropped acknowledgments
 - Non-idempotent message handoff transitions to `delivery-uncertain` rather than replay
 - Pi JSONL conversation projection/replay and deduplication through an unpersisted gateway proxy
-- Runner snapshot reconciliation and in-memory route rebuilding, including tombstoned-entry rejection and cleanup request
+- Runner session manifest reconciliation and in-memory route rebuilding, including tombstoned-entry rejection and cleanup request
 - Binary open/data/window/end/reset behavior
 - SSE cursor reconnect using runner-owned Pi history through the gateway proxy
 - Preview HTTP header/body streaming
@@ -1933,7 +1933,7 @@ Scenarios:
 - A test process monitor confirms no native host Git process is launched with a session workspace in its arguments, environment, repository/work-tree options, or current working directory
 - Internal/cloud metadata addresses blocked
 - Replayed enrollment/control messages rejected
-- A stale or restored runner snapshot cannot recreate or route a tombstoned session
+- A stale or restored runner session manifest cannot recreate or route a tombstoned session
 
 ### 30.5 UI tests
 
@@ -2108,7 +2108,7 @@ A release is MVP-complete when all of the following are true:
 16. Agent can publish a private managed preview that supports HTTP/WebSockets over the outbound tunnel.
 17. Managed preview wakes and restarts after sleep; live-only preview clearly expires.
 18. Capability preview links are revocable and do not expose gateway authentication to the guest.
-19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the five-column user-owned catalog row, stores only a user/session/time deletion marker, and causes any later stale runner snapshot to be cleaned up rather than resurrected.
+19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the five-column user-owned catalog row, stores only a user/session/time deletion marker, and causes any later stale runner manifest entry to be cleaned up rather than resurrected.
 20. Pi never discovers project settings, packages, extensions, skills, prompts, themes, context files, or system-prompt fragments on the runner host; Pi/the model accesses project files and scripts only through Gondolin-backed tools.
 
 ## 33. Known risks and mitigations

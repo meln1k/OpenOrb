@@ -14,7 +14,7 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 - Add systemd unit/install instructions under a dedicated service user. Set `WorkingDirectory=/var/lib/openorb-runner`, preserve the no-`--data-dir` rule, and secure runner data/token permissions.
 - Apply systemd hardening compatible with KVM/QEMU, including `NoNewPrivileges`, narrowly selected `ProtectSystem`/`ReadWritePaths`, and explicit device access. QEMU children are outside Deno's permission sandbox.
 - Configure runner-wide maximum per-VM CPU/memory and maximum concurrent sessions.
-- Ensure service reconnect and session inventory behavior matches the tested harness.
+- Ensure service reconnect and session manifest sync behavior matches the tested harness.
 - Keep macOS code as an explicitly temporary development harness, not a release artifact.
 
 ## Acceptance criteria
@@ -30,7 +30,7 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 
 - Linux x86-64 and ARM64 no-Node/no-Deno artifact startup tests on glibc 2.27+ hosts where CI capacity exists.
 - Checksum, architecture, glibc baseline, and `doctor` success/failed-prerequisite tests, including musl rejection.
-- systemd restart/reconnect/inventory and QEMU/KVM smoke tests.
+- systemd restart/reconnect/session-sync and QEMU/KVM smoke tests.
 - File ownership/mode, working-directory, systemd sandbox, and permitted-subprocess checks.
 
 ## Not included

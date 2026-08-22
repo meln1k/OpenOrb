@@ -43,7 +43,7 @@ export class SessionEventRelay {
 
   attach(
     send: SendRunnerMessage,
-    replay: () => Promise<Result<boolean, Error>>,
+    syncManifest: () => Promise<Result<boolean, Error>>,
   ): Promise<Result<() => void, SessionEventRelayError>> {
     const token = {};
     return this.#enqueueAttachment(async () => {
@@ -59,21 +59,21 @@ export class SessionEventRelay {
       cleanup.defer(() => handoff.resolve());
 
       await Promise.all(existingOperations);
-      const [replayResult, replayBoundaryError] = await tryAsync(
-        Promise.resolve().then(replay),
-        (cause) => new SessionEventRelayError("Could not replay runner session state.", cause),
+      const [syncResult, syncBoundaryError] = await tryAsync(
+        Promise.resolve().then(syncManifest),
+        (cause) => new SessionEventRelayError("Could not sync the runner session manifest.", cause),
       );
-      if (replayBoundaryError !== undefined) return err(replayBoundaryError);
-      const [replayed, replayError] = replayResult;
-      if (replayError !== undefined) {
+      if (syncBoundaryError !== undefined) return err(syncBoundaryError);
+      const [synced, syncError] = syncResult;
+      if (syncError !== undefined) {
         return err(
-          replayError instanceof SessionEventRelayError ? replayError : new SessionEventRelayError(
-            "Could not replay Pi session history.",
-            replayError,
+          syncError instanceof SessionEventRelayError ? syncError : new SessionEventRelayError(
+            "Could not sync the runner session manifest.",
+            syncError,
           ),
         );
       }
-      if (!replayed) return ok(() => {});
+      if (!synced) return ok(() => {});
 
       this.#consumer = { token, send };
       return ok(() => {

@@ -11,7 +11,7 @@ After provisioning, the stored initial prompt runs through host-side Pi with the
 
 - Store one encrypted credential per configured Pi provider. The browser selects one opaque `provider/model` reference and never receives or submits the credential value.
 - Let the browser select the `tiny` (1 CPU/2 GB), `small` (2 CPUs/4 GB), `medium` (4 CPUs/8 GB), `large` (8 CPUs/16 GB), or `xxlarge` (16 CPUs/32 GB) orb size, defaulting to `medium`.
-- Carry the selected orb size in validated provisioning traffic and runner snapshots, persist it only in runner-owned session metadata, and reuse it on retry. Reject sizes above the selected runner's advertised limits without adding gateway session columns.
+- Carry the selected orb size in validated provisioning traffic and runner session manifests, persist it only in runner-owned session metadata, and reuse it on retry. Reject sizes above the selected runner's advertised limits without adding gateway session columns.
 - Resolve the provider from the model reference at the gateway and deliver that provider's credential, the complete model reference, and the thinking level to the pinned trusted runner only for the active session.
 - Configure Pi's model runtime in memory without writing an auth file or falling back to runner-global credentials.
 - Create persistent Pi JSONL through the audited factory and enable only Gondolin-backed `read`, `write`, `edit`, and `bash`.

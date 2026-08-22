@@ -10,7 +10,7 @@ The lean MVP has one repeatable supported-Linux acceptance run, enforced securit
 ## Scope
 
 - Automate the complete `MVP.md` end-to-end path with real Gondolin, Pi, OpenCode Go, and a disposable GitHub repository; secret-required jobs must fail/skip transparently according to documented CI policy.
-- Run the full hostile workspace/Git/token security suite, verify no host Git consumes a session workspace, and verify a deleted-session marker prevents stale runner snapshots from resurrecting a session.
+- Run the full hostile workspace/Git/token security suite, verify no host Git consumes a session workspace, and verify a deleted-session marker prevents stale runner manifests from resurrecting a session.
 - Add deployment, HTTPS, PostgreSQL backup/restore, external `OPENORB_MASTER_KEY` and session-cookie signing-secret backup/restore, runner session-file backup limitations, runner installation, GitHub token scope, OpenCode Go key, and troubleshooting documentation. The gateway must require no persistent local volume and no Redis/secondary persistence service.
 - Document pinned gateway/runner/protocol/Gondolin/image/Pi/Remix versions and intentional upgrade process.
 - Verify all explicit MVP deferrals remain absent.
