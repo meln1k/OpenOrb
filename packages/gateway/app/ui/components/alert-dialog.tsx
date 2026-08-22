@@ -2,6 +2,12 @@ import { clientEntry, css, type Handle, type Props } from "remix/ui";
 
 import { media } from "@/app/ui/responsive.ts";
 
+type DialogBehaviorProps = {
+  dialogId: string;
+  keepOpenWhileSubmitting?: boolean;
+  open?: boolean;
+};
+
 export function AlertDialog(handle: Handle<Props<"dialog">>) {
   return () => {
     const { children, id = handle.id, mix, role = "alertdialog", ...props } = handle.props;
@@ -14,16 +20,29 @@ export function AlertDialog(handle: Handle<Props<"dialog">>) {
         mix={[contentStyle, mix]}
       >
         {children}
-        <DialogSubmitBehavior dialogId={id} open={Boolean(props.open)} />
+        <DialogBehavior dialogId={id} open={Boolean(props.open)} />
       </dialog>
     );
   };
 }
 
-export const DialogSubmitBehavior = clientEntry<{ dialogId: string; open?: boolean }>(
+export const DialogBehavior = clientEntry<DialogBehaviorProps>(
   import.meta.url,
-  function DialogSubmitBehavior(handle: Handle<{ dialogId: string; open?: boolean }>) {
+  function DialogBehavior(handle: Handle<DialogBehaviorProps>) {
     let wasOpenRequested = false;
+    let submittedAction: string | undefined;
+    let submittedButton: HTMLButtonElement | undefined;
+    const settleSubmission = () => {
+      submittedAction = undefined;
+      if (!submittedButton) return;
+      submittedButton.disabled = submittedButton.dataset.submitEnabled !== "true";
+      submittedButton.removeAttribute("aria-busy");
+      const label = submittedButton.dataset.submitLabel;
+      if (label) submittedButton.setAttribute("aria-label", label);
+      submittedButton.querySelector("[data-slot='submit-idle']")?.removeAttribute("hidden");
+      submittedButton.querySelector("[data-slot='spinner']")?.setAttribute("hidden", "");
+      submittedButton = undefined;
+    };
 
     handle.queueTask(() => {
       const dialog = document.getElementById(handle.props.dialogId);
@@ -31,10 +50,44 @@ export const DialogSubmitBehavior = clientEntry<{ dialogId: string; open?: boole
       const signal = handle.signal;
 
       dialog.addEventListener("submit", (event) => {
+        if (handle.props.keepOpenWhileSubmitting && event.target instanceof HTMLFormElement) {
+          if (submittedAction !== undefined) {
+            event.preventDefault();
+            return;
+          }
+          submittedAction = event.target.action;
+          const submitter = event instanceof SubmitEvent &&
+              event.submitter instanceof HTMLButtonElement
+            ? event.submitter
+            : event.target.querySelector<HTMLButtonElement>("button[type='submit']");
+          if (submitter) {
+            submittedButton = submitter;
+            submitter.disabled = true;
+            submitter.setAttribute("aria-busy", "true");
+            const pendingLabel = submitter.dataset.submitPendingLabel;
+            if (pendingLabel) submitter.setAttribute("aria-label", pendingLabel);
+            submitter.querySelector("[data-slot='submit-idle']")?.setAttribute("hidden", "");
+            submitter.querySelector("[data-slot='spinner']")?.removeAttribute("hidden");
+          }
+          setTimeout(() => {
+            if (!signal.aborted && event.defaultPrevented) settleSubmission();
+          }, 0);
+          return;
+        }
+
         setTimeout(() => {
           if (!signal.aborted && !event.defaultPrevented && dialog.open) dialog.close();
         }, 0);
       }, { signal });
+
+      globalThis.navigation.addEventListener("navigate", (event) => {
+        if (event.downloadRequest !== null) return;
+        if (submittedAction === event.destination.url) return;
+        settleSubmission();
+        if (dialog.open) dialog.close();
+      }, { signal });
+      globalThis.navigation.addEventListener("navigatesuccess", settleSubmission, { signal });
+      globalThis.navigation.addEventListener("navigateerror", settleSubmission, { signal });
     });
 
     return () => {

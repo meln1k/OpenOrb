@@ -97,6 +97,7 @@ async function connectOnce(
 ): Promise<"connected" | "disconnected" | "unauthorized"> {
   const url = new URL("/api/runners/connect", options.gatewayUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  using cleanup = new DisposableStack();
 
   return await new Promise((resolve) => {
     const socket = new WebSocket(url);
@@ -104,10 +105,8 @@ async function connectOnce(
       options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS,
     );
     let connected = false;
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
     let heartbeatInFlight = false;
     let settled = false;
-    let detachSessionEvents: (() => void) | undefined;
 
     const send = (message: RunnerClientMessage) => {
       if (!settled && socket.readyState === WebSocket.OPEN) {
@@ -118,11 +117,6 @@ async function connectOnce(
     const finish = (outcome: "connected" | "disconnected" | "unauthorized") => {
       if (settled) return;
       settled = true;
-      detachSessionEvents?.();
-      detachSessionEvents = undefined;
-      if (heartbeat !== undefined) clearInterval(heartbeat);
-      handshakeDeadline.removeEventListener("abort", handshakeTimedOut);
-      options.signal.removeEventListener("abort", shutDown);
       resolve(outcome);
     };
     const shutDown = () => {
@@ -134,7 +128,9 @@ async function connectOnce(
       finish("disconnected");
     };
     options.signal.addEventListener("abort", shutDown, { once: true });
+    cleanup.defer(() => options.signal.removeEventListener("abort", shutDown));
     handshakeDeadline.addEventListener("abort", handshakeTimedOut, { once: true });
+    cleanup.defer(() => handshakeDeadline.removeEventListener("abort", handshakeTimedOut));
     if (options.signal.aborted) shutDown();
 
     socket.addEventListener("open", () => {
@@ -254,11 +250,12 @@ async function connectOnce(
           detach?.();
           return;
         }
-        detachSessionEvents = detach;
+        cleanup.defer(detach);
         void sendHeartbeat();
-        heartbeat = setInterval(() => {
+        const heartbeat = setInterval(() => {
           void sendHeartbeat();
         }, RUNNER_HEARTBEAT_INTERVAL_MS);
+        cleanup.defer(() => clearInterval(heartbeat));
         options.onConnected?.();
       })();
     });

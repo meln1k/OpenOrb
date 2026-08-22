@@ -230,6 +230,85 @@ Deno.test("reconnects with bounded timers and aborts a stalled handshake", async
   }
 });
 
+Deno.test("detaches session event relay before reconnecting", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  const listening = Promise.withResolvers<Deno.NetAddr>();
+  const secondSessionSync = Promise.withResolvers<void>();
+  const sockets = new Set<WebSocket>();
+  let connectionCount = 0;
+  const server = Deno.serve(
+    { hostname: "127.0.0.1", port: 0, onListen: listening.resolve },
+    (request) => {
+      const attempt = ++connectionCount;
+      const { socket, response } = Deno.upgradeWebSocket(request);
+      sockets.add(socket);
+      socket.onmessage = (event) => {
+        const message = parseRunnerClientMessage(JSON.parse(String(event.data)));
+        if (message.type === "runner.hello") {
+          socket.send(JSON.stringify({
+            version: 1,
+            id: crypto.randomUUID(),
+            type: "runner.connected",
+            payload: { runnerId: RUNNER_ID },
+          }));
+          return;
+        }
+        if (message.type !== "runner.session-sync.complete") return;
+        if (attempt === 1) {
+          socket.close(1012, "Reconnect test");
+          return;
+        }
+        secondSessionSync.resolve();
+      };
+      socket.onclose = () => sockets.delete(socket);
+      return response;
+    },
+  );
+  const address = await listening.promise;
+  const abortController = new AbortController();
+  const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
+  success(await store.initialize());
+  const relay = new SessionEventRelay(store);
+  const connection = maintainRunnerConnection({
+    gatewayUrl: `http://${address.hostname}:${address.port}`,
+    runnerId: RUNNER_ID,
+    runnerToken: RUNNER_TOKEN,
+    signal: abortController.signal,
+    getCapacity: () =>
+      Promise.resolve({
+        activeSessions: 0,
+        vmCpuCount: 4,
+        vmMemoryMiB: 8192,
+        diskFreeMiB: 20_480,
+      }),
+    getSessionManifest: () => Promise.resolve([[], undefined] as const),
+    sessionEventRelay: relay,
+    sleep: () => Promise.resolve(),
+  });
+
+  try {
+    const timeout = setTimeout(
+      () => secondSessionSync.reject(new Error("Runner did not synchronize after reconnecting.")),
+      2_000,
+    );
+    try {
+      await secondSessionSync.promise;
+    } finally {
+      clearTimeout(timeout);
+    }
+    assertEquals(connectionCount, 2);
+    abortController.abort();
+    success(await connection);
+  } finally {
+    abortController.abort();
+    await connection;
+    for (const socket of sockets) socket.close(1001, "Test shutting down");
+    await server.shutdown();
+    await server.finished;
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
 Deno.test("sends a complete session manifest in bounded session sync chunks", async () => {
   let resolveAddress: (address: Deno.NetAddr) => void;
   let resolveComplete: () => void;

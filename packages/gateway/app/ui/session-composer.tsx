@@ -9,7 +9,7 @@ import { css, type Handle } from "remix/ui";
 
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import { routes } from "@/app/routes.ts";
-import { DialogSubmitBehavior } from "@/app/ui/components/alert-dialog.tsx";
+import { DialogBehavior } from "@/app/ui/components/alert-dialog.tsx";
 import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
 import { media } from "@/app/ui/responsive.ts";
@@ -165,13 +165,23 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
             size="icon-lg"
             aria-label="Start session"
             title={canSubmit ? "Start session" : "Project, model, and runner required"}
+            data-submit-enabled={canSubmit ? "true" : "false"}
+            data-submit-label="Start session"
+            data-submit-pending-label="Starting session"
             disabled={!canSubmit}
           >
-            <Icon name="arrow-right" size={20} />
+            <span aria-hidden="true" data-slot="submit-idle" mix={submitIdleStyle}>
+              <Icon name="arrow-right" size={20} />
+            </span>
+            <span aria-hidden="true" data-slot="spinner" hidden mix={submitSpinnerStyle} />
           </Button>
         </footer>
       </form>
-      <DialogSubmitBehavior dialogId={dialogId} open={Boolean(autoOpen)} />
+      <DialogBehavior
+        dialogId={dialogId}
+        keepOpenWhileSubmitting
+        open={Boolean(autoOpen)}
+      />
     </dialog>
   );
 }
@@ -334,6 +344,22 @@ const selectStyle = css({
   fontWeight: "inherit",
   cursor: "inherit",
   textOverflow: "ellipsis",
+});
+const submitIdleStyle = css({
+  display: "inline-flex",
+  "&[hidden]": { display: "none" },
+});
+const submitSpinnerStyle = css({
+  display: "block",
+  width: "18px",
+  height: "18px",
+  border: "2px solid color-mix(in oklab, currentColor 35%, transparent)",
+  borderTopColor: "currentColor",
+  borderRadius: "999px",
+  animation: "openorb-composer-submit-spin 800ms linear infinite",
+  "&[hidden]": { display: "none" },
+  "@keyframes openorb-composer-submit-spin": { to: { transform: "rotate(360deg)" } },
+  "@media (prefers-reduced-motion: reduce)": { animation: "none" },
 });
 const screenReaderOnlyStyle = css({
   position: "absolute",
