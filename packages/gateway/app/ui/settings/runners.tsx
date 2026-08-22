@@ -33,12 +33,12 @@ import {
   sectionHeaderStyle,
   sectionHeadingStyle,
   settingsSectionStyle,
-} from "./settings-shared.ts";
+} from "@/app/ui/settings/settings-shared.ts";
 import type {
   SettingsEnrollmentCommand,
   SettingsRunner,
   SettingsRunnerCapacity,
-} from "./settings-tabs.tsx";
+} from "@/app/ui/settings/settings-tabs.tsx";
 
 export function RunnersSection(
   handle: Handle<

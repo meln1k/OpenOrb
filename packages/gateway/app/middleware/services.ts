@@ -55,7 +55,11 @@ const disconnectedRunnerRegistry: RunnerConnectionRegistry = {
   getSessionSnapshot: () => null,
   provisionSession: () =>
     Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  subscribeToSessionEvents: () => ({ events: [], unsubscribe() {} }),
+  subscribeToSessionEvents: () => ({
+    replay: Promise.resolve(),
+    signal: AbortSignal.abort(),
+    unsubscribe() {},
+  }),
   disconnectRunner: () => false,
 };
 

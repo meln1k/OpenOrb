@@ -27,7 +27,7 @@ Deno.test("heartbeat capacity is tenant scoped and times out the connection", as
   const gateway = new RunnerConnectionGateway(
     {
       authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-      reconcileSessionSnapshotEntries: emptyReconciliation,
+      reconcileSessionManifestEntries: emptyReconciliation,
     },
     { heartbeatTimeoutMs: 50 },
   );
@@ -67,7 +67,7 @@ Deno.test("heartbeat capacity is tenant scoped and times out the connection", as
 Deno.test("invalid heartbeat capacity is rejected", async () => {
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-    reconcileSessionSnapshotEntries: emptyReconciliation,
+    reconcileSessionManifestEntries: emptyReconciliation,
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;
@@ -109,6 +109,7 @@ Deno.test("selects deterministically by active sessions and runner id", async ()
   const result = await selectRunnerForUser(
     USER_ID,
     undefined,
+    "medium",
     { listRunners: () => Promise.resolve(runners) },
     liveConnections(capacities),
   );
@@ -133,33 +134,37 @@ Deno.test("manual selection reports unavailable, full, low-disk, and foreign run
   );
 
   assertEquals(
-    (await selectRunnerForUser(USER_ID, "available", repository, connections)).status,
+    (await selectRunnerForUser(USER_ID, "available", "medium", repository, connections)).status,
     "selected",
   );
   assertEquals(
-    await selectRunnerForUser(USER_ID, "full", repository, connections),
+    await selectRunnerForUser(USER_ID, "full", "medium", repository, connections),
     {
       status: "rejected",
       message: "Runner has reached its concurrent session limit.",
     },
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "low-disk", repository, connections),
+    await selectRunnerForUser(USER_ID, "low-disk", "medium", repository, connections),
     `Runner has less than ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "revoked", repository, connections),
+    await selectRunnerForUser(USER_ID, "revoked", "medium", repository, connections),
     "Runner has been revoked.",
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "foreign-runner", repository, connections),
+    await selectRunnerForUser(USER_ID, "foreign-runner", "medium", repository, connections),
     "Runner is unavailable or does not exist.",
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "offline", {
+    await selectRunnerForUser(USER_ID, "offline", "medium", {
       listRunners: () => Promise.resolve([...runners, runnerRecord("offline")]),
     }, connections),
     "Runner is offline.",
+  );
+  assertSelectionRejected(
+    await selectRunnerForUser(USER_ID, "available", "xxlarge", repository, connections),
+    "Runner cannot provision the xxlarge orb size.",
   );
 });
 

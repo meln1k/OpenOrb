@@ -75,7 +75,7 @@ Deno.test("allows only one in-flight runner authentication per socket", async ()
       await authenticationPending;
       return null;
     },
-    reconcileSessionSnapshotEntries: emptyReconciliation,
+    reconcileSessionManifestEntries: emptyReconciliation,
   });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;
@@ -350,7 +350,7 @@ Deno.test("creates one reusable PSK and enrolls an authenticated outbound runner
           vmMemoryMiB: 8192,
           diskFreeMiB: 20_480,
         }),
-      getSessionSnapshot: () => Promise.resolve([[], undefined] as const),
+      getSessionManifest: () => Promise.resolve([[], undefined] as const),
       onConnected() {
         harnessConnections++;
         harnessShutdown.abort();

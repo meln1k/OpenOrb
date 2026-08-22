@@ -2,6 +2,7 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 import { parse } from "@remix-run/data-schema";
 
 import {
+  initialPromptPreview,
   parseRunnerClientMessage,
   parseRunnerServerMessage,
   runnerEnrollmentRequestSchema,
@@ -160,38 +161,51 @@ Deno.test("validates runner heartbeat capacity", () => {
   );
 });
 
-Deno.test("validates bounded ordered runner reconciliation messages", () => {
-  const snapshotId = "01989d78-65ee-7f6a-a97e-0f16ad134c12";
+Deno.test("validates bounded ordered runner session sync messages", () => {
+  const manifestId = "01989d78-65ee-7f6a-a97e-0f16ad134c12";
   const session = {
     id: "01989d78-65ee-7f6a-a97e-0f16ad134c13",
     projectId: "01989d78-65ee-7f6a-a97e-0f16ad134c14",
     createdAt: "2026-08-17T12:00:00Z",
     initialPromptPreview: "Inspect the repository",
+    model: "opencode-go/deepseek-v4-flash",
+    orbSize: "medium",
     state: "created",
     lastEventCursor: 0,
   };
   const start = {
     version: 1,
-    id: "reconcile-start-1",
-    type: "runner.reconcile.start",
-    payload: { snapshotId },
+    id: "session-sync-start-1",
+    type: "runner.session-sync.start",
+    payload: { manifestId },
   };
   const chunk = {
     version: 1,
-    id: "reconcile-chunk-1",
-    type: "runner.reconcile.chunk",
-    payload: { snapshotId, sequence: 0, sessions: [session] },
+    id: "session-sync-chunk-1",
+    type: "runner.session-sync.chunk",
+    payload: { manifestId, sequence: 0, sessions: [session] },
   };
   const complete = {
     version: 1,
-    id: "reconcile-complete-1",
-    type: "runner.reconcile.complete",
-    payload: { snapshotId, chunkCount: 1, sessionCount: 1 },
+    id: "session-sync-complete-1",
+    type: "runner.session-sync.complete",
+    payload: { manifestId, chunkCount: 1, sessionCount: 1 },
   };
 
-  assertEquals(parseRunnerClientMessage(start).type, "runner.reconcile.start");
+  assertEquals(parseRunnerClientMessage(start).type, "runner.session-sync.start");
   assertEquals(parseRunnerClientMessage(chunk).payload, chunk.payload);
   assertEquals(parseRunnerClientMessage(complete).payload, complete.payload);
+  const boundaryPreview = initialPromptPreview(`${"a".repeat(199)} ${"b".repeat(10)}`);
+  assertEquals(boundaryPreview, "a".repeat(199));
+  const boundaryChunk = parseRunnerClientMessage({
+    ...chunk,
+    payload: {
+      ...chunk.payload,
+      sessions: [{ ...session, initialPromptPreview: boundaryPreview }],
+    },
+  });
+  assert(boundaryChunk.type === "runner.session-sync.chunk");
+  assertEquals(boundaryChunk.payload.sessions[0]?.initialPromptPreview, boundaryPreview);
   assertThrows(() =>
     parseRunnerClientMessage({
       ...chunk,

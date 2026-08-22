@@ -14,10 +14,12 @@ export const assetServer = createAssetServer({
     "result/*path": "packages/result/src/*path",
   },
   allowFiles: [
-    "packages/gateway/app/actions/settings/{git-author,github-credential,provider-secrets,runners,settings-shared,settings-tabs}.{ts,tsx}",
     "packages/gateway/app/assets/**",
     "packages/gateway/app/ui/components/**",
     "packages/gateway/app/ui/responsive.ts",
+    "packages/gateway/app/ui/session/session-event-view.tsx",
+    "packages/gateway/app/ui/session/session-transcript-state.ts",
+    "packages/gateway/app/ui/settings/**",
     "packages/protocol/src/runner-session-events.ts",
     "packages/result/src/index.ts",
     "node_modules/.deno/@remix-run+data-schema@0.3.0/node_modules/@remix-run/data-schema/dist/**/*.js",

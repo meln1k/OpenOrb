@@ -1,3 +1,5 @@
+import { type OrbSize, orbSizeResources } from "@openorb/protocol";
+
 import type { RunnerRecord, RunnerRepository } from "@/app/data/runner-repository.ts";
 import type { RunnerConnectionRegistry, RunnerLiveState } from "@/app/runner-connection-gateway.ts";
 
@@ -17,6 +19,7 @@ export type RunnerSelectionResult =
 export async function selectRunnerForUser(
   userId: string,
   manualRunnerId: string | undefined,
+  orbSize: OrbSize,
   repository: Pick<RunnerRepository, "listRunners">,
   connections: Pick<RunnerConnectionRegistry, "getRunnerLiveState">,
 ): Promise<RunnerSelectionResult> {
@@ -25,12 +28,12 @@ export async function selectRunnerForUser(
   if (manualRunnerId !== undefined) {
     const runner = runners.find((candidate) => candidate.id === manualRunnerId);
     if (!runner) return rejected("Runner is unavailable or does not exist.");
-    return assessRunner(userId, runner, connections);
+    return assessRunner(userId, runner, orbSize, connections);
   }
 
   const available: Array<Extract<RunnerSelectionResult, { status: "selected" }>> = [];
   for (const runner of runners) {
-    const assessed = assessRunner(userId, runner, connections);
+    const assessed = assessRunner(userId, runner, orbSize, connections);
     if (assessed.status === "selected") available.push(assessed);
   }
   available.sort((left, right) =>
@@ -46,6 +49,7 @@ export async function selectRunnerForUser(
 function assessRunner(
   userId: string,
   runner: RunnerRecord,
+  orbSize: OrbSize,
   connections: Pick<RunnerConnectionRegistry, "getRunnerLiveState">,
 ): RunnerSelectionResult {
   if (runner.revokedAt !== null) return rejected("Runner has been revoked.");
@@ -60,6 +64,13 @@ function assessRunner(
     return rejected(
       `Runner has less than ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,
     );
+  }
+  const resources = orbSizeResources(orbSize);
+  if (
+    resources.cpuCount > liveState.capacity.vmCpuCount ||
+    resources.memoryMiB > liveState.capacity.vmMemoryMiB
+  ) {
+    return rejected(`Runner cannot provision the ${orbSize} orb size.`);
   }
   return { status: "selected", runner, liveState };
 }

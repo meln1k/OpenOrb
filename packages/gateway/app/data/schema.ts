@@ -1,6 +1,7 @@
 import { column as c, table, type TableRow } from "remix/data-table";
 
 export const encryptedSecretPurposes = {
+  genericSecret: "generic-secret",
   gitCredential: "git-credential",
   providerApiKey: "provider-api-key",
 } as const;
@@ -42,6 +43,26 @@ export const encryptedSecrets = table({
     purpose: c.text().notNull(),
     key_version: c.integer().notNull(),
     ciphertext: c.text().notNull(),
+    created_at: c.text().notNull(),
+    updated_at: c.text().notNull(),
+  },
+});
+
+export const modelProviderCredentials = table({
+  name: "model_provider_credentials",
+  columns: {
+    id: c.uuid().primaryKey(),
+    user_id: c
+      .uuid()
+      .notNull()
+      .references("users", "id", "model_provider_credentials_user_fk")
+      .onDelete("cascade"),
+    provider_id: c.text().notNull(),
+    encrypted_secret_id: c
+      .uuid()
+      .notNull()
+      .references("encrypted_secrets", "id", "model_provider_credentials_secret_fk")
+      .onDelete("restrict"),
     created_at: c.text().notNull(),
     updated_at: c.text().notNull(),
   },
@@ -168,6 +189,7 @@ export const deletedSessions = table({
 export type User = TableRow<typeof users>;
 export type PasswordCredential = TableRow<typeof passwordCredentials>;
 export type EncryptedSecretRow = TableRow<typeof encryptedSecrets>;
+export type ModelProviderCredentialRow = TableRow<typeof modelProviderCredentials>;
 export type GitAuthorConfigurationRow = TableRow<typeof gitAuthorConfiguration>;
 export type GitCredentialRow = TableRow<typeof gitCredentials>;
 export type ProjectRow = TableRow<typeof projects>;

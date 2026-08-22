@@ -4,17 +4,17 @@ import type { Database } from "remix/data-table";
 
 import { deletedSessions, type SessionRow, sessions } from "@/app/data/schema.ts";
 
-export type RejectedSessionSnapshotReason = "catalog-conflict" | "project-not-found";
+export type RejectedSessionManifestEntryReason = "catalog-conflict" | "project-not-found";
 
-export interface RejectedSessionSnapshot {
+export interface RejectedSessionManifestEntry {
   sessionId: string;
-  reason: RejectedSessionSnapshotReason;
+  reason: RejectedSessionManifestEntryReason;
 }
 
-export interface ReconciledSessionSnapshots {
+export interface ReconciledSessionManifest {
   acceptedSessionIds: string[];
   tombstonedSessionIds: string[];
-  rejected: RejectedSessionSnapshot[];
+  rejected: RejectedSessionManifestEntry[];
 }
 
 export class SessionCatalogPersistenceError extends Error {
@@ -34,15 +34,15 @@ export interface SessionCatalogEntry {
 export interface SessionCatalogRepository {
   listSessionCatalogEntries(userId: string): Promise<SessionCatalogEntry[]>;
   getSessionCatalogEntry(userId: string, sessionId: string): Promise<SessionCatalogEntry | null>;
-  reconcileSessionSnapshotEntries(
+  reconcileSessionManifestEntries(
     userId: string,
     entries: RunnerSessionSnapshot[],
-  ): Promise<Result<ReconciledSessionSnapshots, SessionCatalogPersistenceError>>;
+  ): Promise<Result<ReconciledSessionManifest, SessionCatalogPersistenceError>>;
 }
 
-class SessionSnapshotReconciliationRejected extends Error {
-  constructor(readonly result: ReconciledSessionSnapshots) {
-    super("Session snapshot reconciliation rejected.");
+class SessionManifestReconciliationRejected extends Error {
+  constructor(readonly result: ReconciledSessionManifest) {
+    super("Session manifest reconciliation rejected.");
   }
 }
 
@@ -63,7 +63,7 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
       return row ? mapSessionCatalogEntry(row) : null;
     },
 
-    async reconcileSessionSnapshotEntries(userId, entries) {
+    async reconcileSessionManifestEntries(userId, entries) {
       const [result, transactionError] = await tryAsync(
         database.transaction(async (transaction) => {
           // Tombstone inserts take a key-share lock on this referenced user row. Holding the
@@ -74,7 +74,7 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
             [userId],
           );
 
-          const result: ReconciledSessionSnapshots = {
+          const result: ReconciledSessionManifest = {
             acceptedSessionIds: [],
             tombstonedSessionIds: [],
             rejected: [],
@@ -129,7 +129,7 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
           }
 
           if (result.rejected.length > 0) {
-            throw new SessionSnapshotReconciliationRejected({
+            throw new SessionManifestReconciliationRejected({
               ...result,
               acceptedSessionIds: [],
             });
@@ -139,7 +139,7 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
         (cause) => new SessionCatalogPersistenceError(cause),
       );
       if (transactionError !== undefined) {
-        if (transactionError.cause instanceof SessionSnapshotReconciliationRejected) {
+        if (transactionError.cause instanceof SessionManifestReconciliationRejected) {
           return ok(transactionError.cause.result);
         }
         return err(transactionError);

@@ -1,4 +1,8 @@
-import { initialPromptPreview, type SessionProvisionCommandPayload } from "@openorb/protocol";
+import {
+  initialPromptPreview,
+  type OrbSize,
+  type SessionProvisionCommandPayload,
+} from "@openorb/protocol";
 
 import type { ProvisionSessionResult } from "@/app/runner-connection-gateway.ts";
 
@@ -24,6 +28,7 @@ export type PendingProvisionCommand<Connection> =
       expectedRef: string;
       expectedBranchName: string;
       expectedInitialPromptPreview: string;
+      expectedOrbSize: OrbSize;
     }
     | { mode: "retry" }
   );
@@ -69,6 +74,7 @@ export class ProvisionCommandOwner<Connection extends ProvisionCommandConnection
           expectedRef: payload.ref,
           expectedBranchName: payload.branchName,
           expectedInitialPromptPreview: initialPromptPreview(payload.initialPrompt),
+          expectedOrbSize: payload.orbSize,
         }
         : { mode: payload.mode }),
       resolve,

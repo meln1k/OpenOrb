@@ -1,8 +1,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Result } from "@openorb/result";
 import { join } from "node:path";
 
-import type { SessionProvisioningEvent } from "@openorb/protocol";
 import { RunnerSessionStore } from "@/src/session-store.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
@@ -12,6 +12,7 @@ const CREATED_AT = "2026-08-17T12:00:00Z";
 const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
 const REF = "main";
 const BRANCH_NAME = "openorb/session-test";
+const MODEL = "opencode-go/deepseek-v4-flash";
 
 Deno.test("creates private runner session files and atomically reloads metadata", async () => {
   const workingDirectory = await Deno.makeTempDir();
@@ -26,10 +27,13 @@ Deno.test("creates private runner session files and atomically reloads metadata"
         ref: REF,
         branchName: BRANCH_NAME,
         initialPrompt: prompt,
+        model: MODEL,
+        orbSize: "small",
         createdAt: CREATED_AT,
       }),
     );
     assertEquals(metadata.state, "created");
+    assertEquals(metadata.orbSize, "small");
 
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
     for (const directory of ["workspace", "pi", "logs", "reports"]) {
@@ -38,7 +42,7 @@ Deno.test("creates private runner session files and atomically reloads metadata"
       assertEquals(info.isSymlink, false);
       assertPrivateMode(info.mode, 0o700);
     }
-    for (const file of ["metadata.json", "events.jsonl", join("pi", "session.jsonl")]) {
+    for (const file of ["metadata.json", join("pi", "session.jsonl")]) {
       const info = await Deno.lstat(join(sessionPath, file));
       assert(info.isFile);
       assertEquals(info.isSymlink, false);
@@ -51,24 +55,26 @@ Deno.test("creates private runner session files and atomically reloads metadata"
     assertEquals(success(await restarted.updateSessionState(SESSION_ID, "error")).state, "error");
     assertEquals(success(await restarted.readMetadata(SESSION_ID)).state, "error");
 
-    const inventory = success(await restarted.loadInventory());
-    assertEquals(inventory.errors, []);
-    assertEquals(inventory.sessions.length, 1);
-    assertEquals(inventory.sessions[0], {
+    const manifest = success(await restarted.loadSessionManifest());
+    assertEquals(manifest.errors, []);
+    assertEquals(manifest.sessions.length, 1);
+    assertEquals(manifest.sessions[0], {
       id: SESSION_ID,
       projectId: PROJECT_ID,
       createdAt: CREATED_AT,
       initialPromptPreview: `inspect this ${"😀".repeat(187)}`,
+      model: MODEL,
+      orbSize: "small",
       state: "error",
       lastEventCursor: 0,
     });
-    assertEquals(Array.from(inventory.sessions[0]!.initialPromptPreview).length, 200);
+    assertEquals(Array.from(manifest.sessions[0]!.initialPromptPreview).length, 200);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("appends monotonic events and exposes a corrupt final append without guessing", async () => {
+Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
@@ -80,65 +86,59 @@ Deno.test("appends monotonic events and exposes a corrupt final append without g
         ref: REF,
         branchName: BRANCH_NAME,
         initialPrompt: "Inspect the repository",
+        model: MODEL,
+        orbSize: "medium",
         createdAt: CREATED_AT,
       }),
     );
+    const sessionFile = join(workingDirectory, "sessions", SESSION_ID, "pi", "session.jsonl");
+    const pi = SessionManager.open(sessionFile, undefined, "/workspace");
+    pi.appendMessage({ role: "user", content: "Inspect the repository", timestamp: 1 });
+    pi.appendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }],
+      api: "openai-completions",
+      provider: "opencode-go",
+      model: "deepseek-v4-flash",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "toolUse",
+      timestamp: 2,
+    });
+    pi.appendMessage({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "read",
+      content: [{ type: "text", text: "README" }],
+      isError: false,
+      timestamp: 3,
+    });
 
+    assertEquals(success(await store.getSessionSnapshot(SESSION_ID)).lastEventCursor, 4);
     assertEquals(
-      (await Promise.all([
-        store.appendEvent(SESSION_ID, {
-          type: "session.state",
-          stage: "created",
-          checkoutState: "pending",
-        }),
-        store.appendEvent(SESSION_ID, {
-          type: "provisioning.log",
-          stream: "stdout",
-          text: "starting",
-        }),
-      ])).map(success),
-      [1, 2],
+      (await Array.fromAsync(Deno.readDir(workingDirectory + "/sessions/" + SESSION_ID))).some(
+        (entry) => entry.name === "events.jsonl",
+      ),
+      false,
     );
-    const restarted = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
-    assertEquals(success(await restarted.readEvents(SESSION_ID)), [
-      {
-        cursor: 1,
-        event: { type: "session.state", stage: "created", checkoutState: "pending" },
-      },
-      {
-        cursor: 2,
-        event: { type: "provisioning.log", stream: "stdout", text: "starting" },
-      },
-    ]);
 
-    await Deno.writeTextFile(
-      join(workingDirectory, "sessions", SESSION_ID, "events.jsonl"),
-      '{"cursor":3,"event":{"type":"session.state"}',
-      { append: true },
-    );
-    const inventory = success(await restarted.loadInventory());
-    assertEquals(inventory.sessions[0]?.state, "error");
-    assertEquals(inventory.sessions[0]?.lastEventCursor, 2);
-    assertEquals(inventory.errors.length, 1);
-    assertStringIncludes(inventory.errors[0]!.message, "final append is incomplete");
-    const [, appendError] = await restarted.appendEvent(SESSION_ID, {
-      type: "session.state",
-      stage: "ready",
-      checkoutState: "available",
-    });
-    assertEquals(appendError?.name, "RunnerSessionStoreError");
-    assertEquals(appendError?.operation, "append-event");
-    assertStringIncludes(appendError?.message ?? "", "event log is corrupt");
-    const [, readError] = await restarted.readEvents(SESSION_ID);
-    assertEquals(readError?.name, "RunnerSessionStoreError");
-    assertEquals(readError?.operation, "read-events");
-    assertStringIncludes(readError?.message ?? "", "event log is corrupt");
+    await Deno.writeTextFile(sessionFile, "{", { append: true });
+    const manifest = success(await store.loadSessionManifest());
+    assertEquals(manifest.sessions[0]?.state, "created");
+    assertEquals(manifest.sessions[0]?.lastEventCursor, 4);
+    assertEquals(manifest.errors, []);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("continues serialized appends after a failed prior append", async () => {
+Deno.test("rejects session metadata without an orb size", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
@@ -150,34 +150,33 @@ Deno.test("continues serialized appends after a failed prior append", async () =
         ref: REF,
         branchName: BRANCH_NAME,
         initialPrompt: "Inspect the repository",
+        model: MODEL,
+        orbSize: "small",
         createdAt: CREATED_AT,
       }),
     );
+    const metadataPath = join(workingDirectory, "sessions", SESSION_ID, "metadata.json");
+    const { orbSize: _orbSize, ...invalid } = success(await store.readMetadata(SESSION_ID));
+    await Deno.writeTextFile(metadataPath, `${JSON.stringify(invalid)}\n`);
 
-    // SAFETY: This intentionally bypasses the event type to exercise durable schema rejection.
-    const failed = store.appendEvent(SESSION_ID, {} as SessionProvisioningEvent);
-    const succeeded = store.appendEvent(SESSION_ID, {
-      type: "provisioning.log",
-      stream: "stdout",
-      text: "continued",
-    });
-    assertEquals((await failed)[1]?.operation, "append-event");
-    assertEquals(success(await succeeded), 1);
+    const [metadata, error] = await store.readMetadata(SESSION_ID);
+    assertEquals(metadata, undefined);
+    assertEquals(error?.operation, "read-metadata");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("returns inventory-root access failures as the outer Result error", async () => {
+Deno.test("returns session-manifest access failures as the outer Result error", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(join(workingDirectory, "sessions"), "not a directory");
     const store = new RunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID });
-    const [inventory, error] = await store.loadInventory();
-    assertEquals(inventory, undefined);
+    const [manifest, error] = await store.loadSessionManifest();
+    assertEquals(manifest, undefined);
     assertEquals(error?.name, "RunnerSessionStoreError");
-    assertEquals(error?.operation, "load-inventory");
-    assertStringIncludes(error?.message ?? "", "inventory root");
+    assertEquals(error?.operation, "load-session-manifest");
+    assertStringIncludes(error?.message ?? "", "session manifest");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }

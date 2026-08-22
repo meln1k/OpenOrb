@@ -228,9 +228,16 @@ Deno.test({
 });
 
 async function createPiSession(runtime: OpenOrbGondolinToolRuntime, temporaryDirectory: string) {
+  const sessionFile = `${temporaryDirectory}/pi-session.jsonl`;
+  await Deno.writeTextFile(sessionFile, "");
   return await OpenOrbPiSessionFactory.create({
-    runnerSessionDirectory: `${temporaryDirectory}/pi-sessions`,
+    runnerSessionFile: sessionFile,
     runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
+    modelRuntime: {
+      model: "opencode-go/deepseek-v4-flash",
+      thinkingLevel: "high",
+      credential: { type: "api_key", value: "test-model-provider-key" },
+    },
     tools: runtime.tools,
   });
 }

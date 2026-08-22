@@ -19,8 +19,8 @@ import {
   sectionHeaderStyle,
   sectionHeadingStyle,
   settingsSectionStyle,
-} from "./settings-shared.ts";
-import type { SettingsGitHubCredential } from "./settings-tabs.tsx";
+} from "@/app/ui/settings/settings-shared.ts";
+import type { SettingsGitHubCredential } from "@/app/ui/settings/settings-tabs.tsx";
 
 export function GitHubCredentialSection(
   handle: Handle<

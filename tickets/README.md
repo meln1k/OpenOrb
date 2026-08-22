@@ -12,7 +12,7 @@ These tickets split `MVP.md` into dependency-ordered vertical slices. The first 
 - Every ticket must merge with the repository runnable and tests passing.
 - The temporary macOS harness is for local iteration only. Linux remains the release runner target.
 - MVP Git support is GitHub HTTPS only. Public repositories require no credential; private operations use a guest placeholder `GH_TOKEN` mediated by Gondolin. SSH and non-GitHub hosts are deferred.
-- The initial real model is Pi's `opencode-go/deepseek-v4-flash`, configured through the browser with an OpenCode Go API key.
+- Sessions select one `provider/model` reference from configured Pi API-key providers. Tests default to Pi's `opencode-go/deepseek-v4-flash` with thinking level `high`.
 
 ## Remix gateway conventions
 
@@ -59,7 +59,7 @@ Unless a ticket explicitly says otherwise:
 
 | Ticket | Outcome |
 |---|---|
-| [OO-011](OO-011-runner-session-files-and-inventory.md) | Runner-owned session files and reconnect inventory |
+| [OO-011](OO-011-runner-session-files-and-manifest.md) | Runner-owned session files and reconnect manifest |
 | [OO-012](OO-012-browser-to-gondolin-provisioning.md) | Browser creates a session that clones and sets up a real repository |
 
 **Slice exit:** From the browser, a user provisions a public or private GitHub repository inside Gondolin and sees real setup logs.

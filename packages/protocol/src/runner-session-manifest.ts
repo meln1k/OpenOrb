@@ -2,17 +2,20 @@ import { array, literal, number, object, string, union } from "@remix-run/data-s
 import type { InferOutput } from "@remix-run/data-schema";
 import { trySync } from "@openorb/result";
 import { validate as validateUuid } from "@std/uuid";
+import { modelReferenceSchema } from "@/src/model-provider.ts";
+import { orbSizeSchema } from "@/src/orb-size.ts";
 
-export const RUNNER_RECONCILE_START_MESSAGE_TYPE = "runner.reconcile.start";
-export const RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE = "runner.reconcile.chunk";
-export const RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE = "runner.reconcile.complete";
-export const RUNNER_RECONCILE_CHUNK_SESSION_LIMIT = 25;
+export const RUNNER_SESSION_SYNC_START_MESSAGE_TYPE = "runner.session-sync.start";
+export const RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE = "runner.session-sync.chunk";
+export const RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE = "runner.session-sync.complete";
+export const RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT = 25;
 
 export const sessionIdSchema = string().refine(validateUuid, "Expected a session UUID.");
 export const projectIdSchema = string().refine(validateUuid, "Expected a project UUID.");
 export const runnerSessionStateSchema = union([
   literal("created" as const),
   literal("provisioning" as const),
+  literal("running" as const),
   literal("ready" as const),
   literal("error" as const),
 ]);
@@ -21,7 +24,7 @@ export const runnerSessionCreatedAtSchema = string().refine(
   "Expected an ISO 8601 instant.",
 );
 
-const snapshotIdSchema = string().refine(validateUuid, "Expected a snapshot UUID.");
+const manifestIdSchema = string().refine(validateUuid, "Expected a manifest UUID.");
 const nonNegativeIntegerSchema = number().refine(
   (value) => Number.isSafeInteger(value) && value >= 0,
   "Expected a non-negative safe integer.",
@@ -40,35 +43,37 @@ export const runnerSessionSnapshotSchema = object(
     projectId: projectIdSchema,
     createdAt: runnerSessionCreatedAtSchema,
     initialPromptPreview: initialPromptPreviewSchema,
+    model: modelReferenceSchema,
+    orbSize: orbSizeSchema,
     state: runnerSessionStateSchema,
     lastEventCursor: nonNegativeIntegerSchema,
   },
   { unknownKeys: "error" },
 );
 
-export const runnerReconcileStartPayloadSchema = object(
-  { snapshotId: snapshotIdSchema },
+export const runnerSessionSyncStartPayloadSchema = object(
+  { manifestId: manifestIdSchema },
   { unknownKeys: "error" },
 );
 
-export const runnerReconcileChunkPayloadSchema = object(
+export const runnerSessionSyncChunkPayloadSchema = object(
   {
-    snapshotId: snapshotIdSchema,
+    manifestId: manifestIdSchema,
     sequence: nonNegativeIntegerSchema,
     sessions: array(runnerSessionSnapshotSchema).refine(
       (sessions) =>
         sessions.length > 0 &&
-        sessions.length <= RUNNER_RECONCILE_CHUNK_SESSION_LIMIT &&
+        sessions.length <= RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT &&
         new Set(sessions.map((session) => session.id)).size === sessions.length,
-      `Reconcile chunks must contain 1 to ${RUNNER_RECONCILE_CHUNK_SESSION_LIMIT} unique sessions.`,
+      `Session sync chunks must contain 1 to ${RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT} unique sessions.`,
     ),
   },
   { unknownKeys: "error" },
 );
 
-export const runnerReconcileCompletePayloadSchema = object(
+export const runnerSessionSyncCompletePayloadSchema = object(
   {
-    snapshotId: snapshotIdSchema,
+    manifestId: manifestIdSchema,
     chunkCount: nonNegativeIntegerSchema,
     sessionCount: nonNegativeIntegerSchema,
   },
@@ -77,14 +82,18 @@ export const runnerReconcileCompletePayloadSchema = object(
 
 export type RunnerSessionState = InferOutput<typeof runnerSessionStateSchema>;
 export type RunnerSessionSnapshot = InferOutput<typeof runnerSessionSnapshotSchema>;
-export type RunnerReconcileStartPayload = InferOutput<typeof runnerReconcileStartPayloadSchema>;
-export type RunnerReconcileChunkPayload = InferOutput<typeof runnerReconcileChunkPayloadSchema>;
-export type RunnerReconcileCompletePayload = InferOutput<
-  typeof runnerReconcileCompletePayloadSchema
+export type RunnerSessionSyncStartPayload = InferOutput<
+  typeof runnerSessionSyncStartPayloadSchema
+>;
+export type RunnerSessionSyncChunkPayload = InferOutput<
+  typeof runnerSessionSyncChunkPayloadSchema
+>;
+export type RunnerSessionSyncCompletePayload = InferOutput<
+  typeof runnerSessionSyncCompletePayloadSchema
 >;
 
 export function initialPromptPreview(prompt: string): string {
-  return Array.from(collapseWhitespace(prompt)).slice(0, 200).join("");
+  return Array.from(collapseWhitespace(prompt)).slice(0, 200).join("").trimEnd();
 }
 
 function collapseWhitespace(value: string): string {

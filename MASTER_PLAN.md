@@ -46,7 +46,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Multiple outbound-only Linux runners
 - Reusable or one-time runner enrollment tokens
 - Automatic runner selection with an optional user override before the first prompt
-- Per-session CPU and memory requests
+- Predefined per-session CPU and memory requests
 - Runner resource reporting and reservation
 - One fresh repository checkout and Gondolin VM per session
 - Host-side Pi SDK integration
@@ -124,7 +124,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Workspace storage | Host directory mounted into Gondolin with `RealFSProvider`; all contents including `.git` are untrusted |
 | Git execution boundary | Never run native host Git against a session checkout; all clone/status/diff/fetch/commit/push operations execute inside Gondolin |
 | Session placement | Auto-select runner; user may override before first prompt; immutable afterward |
-| Resource scheduling | Sessions request CPU and memory; runners advertise total/reserved/free resources |
+| Resource scheduling | Sessions select `tiny`, `small`, `medium`, `large`, or `xxlarge`; runners advertise total/reserved/free resources |
 | Idle lifecycle | Stop/checkpoint after 15 minutes without relevant activity |
 | Conversation | Linear UI; Pi tree remains an internal implementation detail |
 | Edit last | Conversation-only rewind; do not roll back files or VM state |
@@ -293,7 +293,7 @@ Use envelope-style application encryption:
 - A gateway master key is supplied through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection.
 - The gateway never generates or persists the master key to local disk or PostgreSQL and fails startup if it is missing or invalid.
 - Import the 256-bit master key with Web Crypto and encrypt with `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()`. Persist the returned nonce/ciphertext/tag bytes unchanged as one opaque value, store key version separately, and authenticate immutable user ID, credential key, and key version as AAD.
-- Store each secret as an `encrypted_secrets` row with a UUID primary key, immutable `user_id`, a credential key unique within that user, an explicit required purpose, and the opaque ciphertext. Provider keys use purpose `provider-api-key`; rows referenced by `git_credentials` use `git-credential`. Repositories select rows by both user and purpose rather than key-prefix conventions or cross-repository lookups.
+- Store each secret as an `encrypted_secrets` row with a UUID primary key, immutable `user_id`, a credential key unique within that user, an explicit required purpose, and the opaque ciphertext. Provider keys use purpose `provider-api-key` and are referenced by provider ID through separate provider-credential records; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Repositories select rows by both user and purpose rather than key-prefix conventions. Provider identity never derives from an environment-variable-style secret name.
 - Never derive the server encryption key from the login password; the service must restart unattended.
 - Backups are incomplete without the PostgreSQL database and master key.
 - Secret values are never returned to the browser after creation; only metadata is returned.
@@ -388,7 +388,6 @@ Recommended layout:
         services/
         logs/
       spool/
-        events.jsonl
         command-journal/
       git/
         state.json
@@ -398,7 +397,6 @@ The runner is authoritative for all complete live-session data; the gateway dupl
 
 - Session metadata and pinned-runner identity
 - Raw Pi JSONL
-- Normalized conversation, tool, usage, and replayable event records
 - Runner-local pending message handoff records
 - Working tree and Git objects, treated as untrusted bytes by the host
 - Full file contents
@@ -431,7 +429,7 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is derived from the initial textual prompt by collapsing whitespace and truncating to at most 200 Unicode code points. It excludes attachments and is display-only; it must never be used to reconstruct or replay a prompt.
 
-No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the gateway. The only session record outside the live five-column catalog is a deleted-session marker containing immutable user ID, session ID, and deletion time. Connected runners send complete session snapshots containing the four catalog data fields plus live routing/state data. The gateway derives the owner from the authenticated runner record, never from a snapshot-supplied tenant value; it upserts missing non-deleted catalog rows, builds a user-scoped in-memory routing index, and proxies full session reads/events only after matching the authenticated user. Snapshot absence alone does not delete a catalog row because runner assignment is not persisted. A tombstoned snapshot entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
+No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the gateway. The only session record outside the live five-column catalog is a deleted-session marker containing immutable user ID, session ID, and deletion time. Connected runners send complete session manifests containing the four catalog data fields plus live routing/state data. The gateway derives the owner from the authenticated runner record, never from a manifest-supplied tenant value; it upserts missing non-deleted catalog rows, builds a user-scoped in-memory routing index, and proxies full session reads/events only after matching the authenticated user. Manifest absence alone does not delete a catalog row because runner assignment is not persisted. A tombstoned manifest entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
 
 ## 11. Domain model
 
@@ -449,11 +447,9 @@ interface Project {
     credentialId?: string
   }
   defaults: {
-    provider: string
-    modelId: string
+    model: string // provider/model, split only at the first slash
     thinkingLevel: ThinkingLevel
-    cpuCount: number
-    memoryMiB: number
+    orbSize: "tiny" | "small" | "medium" | "large" | "xxlarge"
   }
   git: {
     authorName?: string
@@ -513,11 +509,8 @@ interface Session {
   baseCommit?: string
   branchName: string
   branchPushed: boolean
-  model: ModelSelection
-  resources: {
-    cpuCount: number
-    memoryMiB: number
-  }
+  model: string // provider/model, split only at the first slash
+  orbSize: "tiny" | "small" | "medium" | "large" | "xxlarge"
   runtime: SessionRuntimeState
   createdAt: string
   updatedAt: string
@@ -607,6 +600,8 @@ Pending messages live only in the assigned runner’s local session store. A wai
 
 ## 12. Resource scheduling
 
+Orb sizes resolve to fixed resources: `tiny` is 1 CPU/2 GB, `small` is 2 CPUs/4 GB, `medium` is 4 CPUs/8 GB, `large` is 8 CPUs/16 GB, and `xxlarge` is 16 CPUs/32 GB. `medium` is the default. The runner persists the selected size and resolves it authoritatively whenever it creates or recreates the VM.
+
 ### 12.1 Heartbeat
 
 Runners periodically report actual allocatable capacity:
@@ -658,7 +653,7 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 
 ### 13.1 Draft and first prompt
 
-1. User chooses project, ref, model, thinking level, CPU, memory, and optional branch name in browser/gateway request state.
+1. User chooses project, ref, one `provider/model` reference, thinking level, a predefined orb size, and optional branch name in browser/gateway request state.
 2. Scheduler displays the currently selected automatic runner.
 3. User may override the runner while drafting.
 4. Sending the first prompt reserves an online runner.
@@ -763,7 +758,7 @@ Delete:
 - Require explicit confirmation.
 - If the owning runner is online and any agent, provisioning, setup/resume, maintenance, terminal, or preview work is active, reject deletion until that work settles; do not interrupt it implicitly.
 - In one PostgreSQL transaction, write a durable deleted-session marker containing only user ID, session ID, and deletion time, remove the five-column catalog row, and remove any persisted gateway configuration that is scoped only to that session. Remove the ephemeral user-scoped route immediately afterward.
-- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, normalized events, checkpoint, logs, and reports.
+- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, checkpoint, logs, and reports.
 - If the runner is offline or permanently lost, deletion still succeeds at the control plane. The marker prevents a stale runner disk or backup from recreating the catalog entry.
 - If a runner later reports a tombstoned session, do not route or reinsert it. Repeatedly request runner cleanup; if the runner reports active work, wait for it to settle rather than interrupting it.
 - Retain the deleted-session marker after runner cleanup so a later stale snapshot cannot resurrect the ID.
@@ -910,7 +905,7 @@ Setup documentation must tell projects not to rely on checkpoint persistence und
 
 - Run executable `.agents/setup` once after a fresh clone and initial boot.
 - Capture stdout/stderr into session logs and stream them as provisioning events.
-- Fail provisioning visibly on non-zero exit.
+- Surface a non-zero setup exit as a visible warning, then continue to Pi so the prompt can diagnose or repair the project.
 - Run executable `.agents/resume` on every wake before Pi continues.
 - Use a bounded blocking period; surface failure rather than silently continuing.
 - Hooks execute inside Gondolin from `/workspace`.
@@ -967,7 +962,7 @@ Defer OAuth/subscription credentials because refresh-token concurrency and provi
 
 1. Gateway stores encrypted provider configuration.
 2. Browser lists only redacted metadata.
-3. On run start, gateway sends only the selected provider/model configuration to the pinned runner over the authenticated control channel.
+3. The browser submits one `provider/model` reference and no credential value. On run start, the gateway splits the reference only at its first `/`, resolves that provider's configured credential, and sends the model reference, thinking level, and credential only to the pinned runner over the authenticated control channel.
 4. Runner keeps credentials in memory.
 5. Runner configures Pi `ModelRuntime` at runtime.
 6. Model credentials never enter Gondolin.
@@ -1284,8 +1279,8 @@ interface CreateSessionInput {
   projectId: string
   ref?: string
   runnerId?: string
-  model: ModelSelection
-  resources: { cpuCount: number; memoryMiB: number }
+  model: string // provider/model, split only at the first slash
+  orbSize: "tiny" | "small" | "medium" | "large" | "xxlarge"
   branchName?: string
 }
 ```
@@ -1365,14 +1360,14 @@ Accept: text/event-stream
 
 Requirements:
 
-- Runner-owned monotonic per-session durable event cursor
+- Runner-owned monotonic conversation position derived from the active Pi JSONL branch
 - Support `Last-Event-ID`
 - Send periodic keepalives
-- Ask the runner to reload completed state after cursor expiration/compaction
+- Ask the runner to project completed conversation state from Pi JSONL after cursor expiration/compaction
 - Do not persist event history in the gateway
 - Do not persist every token delta
 - Coalesce high-frequency live deltas
-- Runner persists completed messages, tool results, lifecycle transitions, pending-delivery transitions, previews, and usage summaries
+- Pi JSONL is the sole durable conversation transcript. The runner projects bounded wire/UI events from it and stores lifecycle, pending-delivery, preview, and other non-conversation state only in their owning metadata/journals.
 - Relay Pi queue updates live without treating them as durable history
 - Browser reconnect must not duplicate completed messages
 
@@ -1401,7 +1396,7 @@ Handshake includes protocol range and feature capabilities. Reject incompatible 
 ```text
 runner.hello
 runner.heartbeat
-runner.reconcile
+runner.session-sync.*
 runner.event.batch
 runner.command.result
 runner.preview.register
@@ -1452,11 +1447,11 @@ preview.wake
 - Replayed push commands must not push twice unintentionally; ambiguous non-idempotent operations require reconciliation or user action.
 - Gateway automatically retries only commands classified as idempotent.
 
-### 22.5 Offline reconciliation
+### 22.5 Offline session sync
 
 On reconnect, runner reports:
 
-- A complete snapshot of known sessions, including the four catalog data fields and local states; tenant ownership is derived from the authenticated runner
+- A complete manifest of known sessions, including the four catalog data fields and local states; tenant ownership is derived from the authenticated runner
 - Active VM IDs
 - Pi session file identity and last durable event cursor
 - Pending/finished command journal entries
@@ -1466,11 +1461,11 @@ On reconnect, runner reports:
 
 Gateway then:
 
-- Runtime-validates the complete runner snapshot
+- Runtime-validates the complete runner session manifest
 - Upserts missing five-column catalog rows for valid, non-tombstoned runner-local sessions under the authenticated runner's user, recovering sessions created before a gateway catalog commit
-- Rejects tombstoned snapshot entries, does not route them, and requests idempotent runner cleanup once active work settles
-- Rebuilds its in-memory session-to-runner routing index from the runner snapshot
-- Does not recreate runner-local sessions from gateway data and does not remove catalog rows based only on snapshot absence
+- Rejects tombstoned manifest entries, does not route them, and requests idempotent runner cleanup once active work settles
+- Rebuilds its in-memory session-to-runner routing index from the runner session manifest
+- Does not recreate runner-local sessions from gateway data and does not remove catalog rows based only on manifest absence
 - Proxies browser history requests and SSE replay to the runner
 - Does not reconstruct or replay Pi’s process-local queue
 - Leaves runner-local ambiguous handoffs marked `delivery-uncertain`
@@ -1615,7 +1610,7 @@ Each runner owns a file-backed local session metadata/event store in addition to
 - Preview definitions/capability hashes
 - Git reports and session lifecycle state
 
-The gateway keeps a user-scoped in-memory session routing index populated by complete connected-runner snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the user-owned control-plane marker without waiting for the runner.
+The gateway keeps a user-scoped in-memory session routing index populated by complete connected-runner manifests. After a restart the route index starts empty and is rebuilt as runners reconnect; a manifest entry also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the user-owned control-plane marker without waiting for the runner.
 
 Gateway PostgreSQL guidelines:
 
@@ -1649,7 +1644,7 @@ Gateway PostgreSQL guidelines:
 - Conversation is the primary screen.
 - Session list is a drawer.
 - Bottom navigation: Chat, Changes, Files, Terminal, Preview.
-- Model, thinking level, CPU/memory, and draft runner selection live in a composer/settings sheet.
+- Model, thinking level, predefined orb size, and draft runner selection live in a composer/settings sheet.
 - Runner selector becomes read-only after first send.
 - Terminal can enter dedicated full-screen mode.
 - Runner-local pending messages remain visible and cancellable through the proxy before handoff while the runner is connected.
@@ -1812,12 +1807,12 @@ Session-scoped audit records remain on the owning runner:
 - Transcript, status, pending messages, diffs, files, terminals, previews, and other runner-backed actions become unavailable because the gateway has no full session copy. Explicit deletion remains available through a control-plane deletion marker.
 - Do not reassign pinned sessions.
 - Return runner-offline status for session and preview requests.
-- Rebuild inventory/routes and resume runner-backed event replay after reconnect.
+- Sync the session manifest, rebuild routes, and resume runner-backed event replay after reconnect.
 
 ### Gateway restart
 
-- Runner reconnects automatically with exponential backoff and jitter and sends a complete session snapshot.
-- Gateway retains minimal user-owned catalog rows and deleted-session markers, upserts a missing five-column row under the authenticated runner's owner from a valid non-tombstoned runner snapshot, rejects tombstoned entries, and rebuilds all user-scoped in-memory routes/live session state; it recovers no full sessions or commands from PostgreSQL.
+- Runner reconnects automatically with exponential backoff and jitter and sends a complete session manifest.
+- Gateway retains minimal user-owned catalog rows and deleted-session markers, upserts a missing five-column row under the authenticated runner's owner from a valid non-tombstoned manifest entry, rejects tombstoned entries, and rebuilds all user-scoped in-memory routes/live session state; it recovers no full sessions or commands from PostgreSQL.
 - Browser SSE reconnects through the runner-owned cursor after the runner is available.
 - Runner-local journals handle reconciliation and surface ambiguous message handoffs.
 
@@ -1830,14 +1825,13 @@ Session-scoped audit records remain on the owning runner:
 
 ### Setup/resume failure
 
-- Stop before dispatching the prompt.
 - Stream logs and show the exact failed hook.
-- Permit terminal access when safe for repair.
-- User may retry provisioning/resume.
+- A failed `.agents/setup` emits a visible warning and continues to Pi so the prompt can repair the project.
+- A failed `.agents/resume` stops before dispatching the next prompt; permit terminal access when safe and allow an explicit resume retry.
 
 ### Pi/model failure
 
-- Preserve Pi JSONL and normalized completed events.
+- Preserve Pi JSONL; no second normalized conversation log exists.
 - Surface provider errors and retry status.
 - Respect Pi’s retry/compaction lifecycle before declaring the run settled.
 
@@ -1891,10 +1885,10 @@ Session-scoped audit records remain on the owning runner:
 - Gateway ↔ runner handshake across protocol versions
 - Idempotent command replay after dropped acknowledgments
 - Non-idempotent message handoff transitions to `delivery-uncertain` rather than replay
-- Runner-local event replay/deduplication through an unpersisted gateway proxy
-- Runner snapshot reconciliation and in-memory route rebuilding, including tombstoned-entry rejection and cleanup request
+- Pi JSONL conversation projection/replay and deduplication through an unpersisted gateway proxy
+- Runner session manifest reconciliation and in-memory route rebuilding, including tombstoned-entry rejection and cleanup request
 - Binary open/data/window/end/reset behavior
-- SSE cursor reconnect using runner-owned event history through the gateway proxy
+- SSE cursor reconnect using runner-owned Pi history through the gateway proxy
 - Preview HTTP header/body streaming
 - Preview WebSocket tunneling
 
@@ -1939,7 +1933,7 @@ Scenarios:
 - A test process monitor confirms no native host Git process is launched with a session workspace in its arguments, environment, repository/work-tree options, or current working directory
 - Internal/cloud metadata addresses blocked
 - Replayed enrollment/control messages rejected
-- A stale or restored runner snapshot cannot recreate or route a tombstoned session
+- A stale or restored runner session manifest cannot recreate or route a tombstoned session
 
 ### 30.5 UI tests
 
@@ -2016,7 +2010,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Milestone 0’s allowlist-only Pi resource loader and in-memory settings, with no workspace discovery
 - Gondolin-backed Pi tools
 - Persistent Pi JSONL
-- Event normalization and runner spool
+- Bounded Pi-to-wire event projection with no second durable transcript
 - HTTP prompt API and SSE stream
 - Pi-native follow-up, direct steering, and abort
 - Runner-local pre-handoff pending delivery while connected/waking
@@ -2025,7 +2019,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Model/thinking controls
 - Edit-last conversation semantics
 
-**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with transcript/event state replayed from the runner and only the user owner plus four live-session catalog fields and minimal user/session/time deletion markers stored by the gateway.
+**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with conversation state replayed from runner-owned Pi JSONL and only the user owner plus four live-session catalog fields and minimal user/session/time deletion markers stored by the gateway.
 
 ### Milestone 5 — Review surfaces
 
@@ -2033,7 +2027,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Hostile `.git/config` regression tests
 - Changed-file navigation
 - Read-only file browser
-- Runner-owned transcript/event replay through the gateway proxy
+- Runner-owned Pi conversation replay through the gateway proxy
 - Explicit unavailable state while the runner is offline
 - Session archive on the online owning runner, online/offline deletion with durable anti-resurrection markers, and disk reporting
 
@@ -2114,7 +2108,7 @@ A release is MVP-complete when all of the following are true:
 16. Agent can publish a private managed preview that supports HTTP/WebSockets over the outbound tunnel.
 17. Managed preview wakes and restarts after sleep; live-only preview clearly expires.
 18. Capability preview links are revocable and do not expose gateway authentication to the guest.
-19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the five-column user-owned catalog row, stores only a user/session/time deletion marker, and causes any later stale runner snapshot to be cleaned up rather than resurrected.
+19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the five-column user-owned catalog row, stores only a user/session/time deletion marker, and causes any later stale runner manifest entry to be cleaned up rather than resurrected.
 20. Pi never discovers project settings, packages, extensions, skills, prompts, themes, context files, or system-prompt fragments on the runner host; Pi/the model accesses project files and scripts only through Gondolin-backed tools.
 
 ## 33. Known risks and mitigations

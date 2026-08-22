@@ -1,8 +1,13 @@
 import {
+  DEFAULT_SESSION_THINKING_LEVEL,
   MAX_INITIAL_PROMPT_BYTES,
+  modelReferenceSchema,
+  orbSizeSchema,
+  parseModelReference,
   sessionBranchNameSchema,
   sessionGitRefSchema,
   sessionIdSchema,
+  type SessionModelRuntime,
 } from "@openorb/protocol";
 import { v7 } from "@std/uuid";
 import * as s from "remix/data-schema";
@@ -20,6 +25,7 @@ import type { AppContext } from "@/app/router.ts";
 import { selectRunnerForUser } from "@/app/runner-selection.ts";
 import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
+import { isModelReference } from "@/app/model-provider-catalog.ts";
 import type { SessionComposerValues } from "@/app/ui/session-composer.tsx";
 
 const projectIdSchema = s.string().refine(
@@ -35,8 +41,10 @@ const promptSchema = s.string().refine(
 
 const createSessionSchema = f.object({
   projectId: f.field(projectIdSchema),
+  model: f.field(modelReferenceSchema),
   ref: f.field(sessionGitRefSchema),
   runnerId: f.field(s.string()),
+  orbSize: f.field(orbSizeSchema),
   branchName: f.field(sessionBranchNameSchema),
   initialPrompt: f.field(promptSchema),
 });
@@ -73,11 +81,21 @@ export default createController(routes.app.sessions, {
           submitted,
         );
       }
+      if (!isModelReference(parsed.value.model)) {
+        return await renderCreateError(
+          context,
+          "The selected Pi model is unavailable.",
+          400,
+          submitted,
+        );
+      }
+      const { providerId } = parseModelReference(parsed.value.model);
 
       const runnerId = parsed.value.runnerId.trim() || undefined;
       const selected = await selectRunnerForUser(
         userId,
         runnerId,
+        parsed.value.orbSize,
         store,
         context.services.runnerConnections,
       );
@@ -85,12 +103,32 @@ export default createController(routes.app.sessions, {
         return await renderCreateError(context, selected.message, 409, submitted);
       }
 
-      const [githubToken, credentialError] = await store.getGitHubToken(userId);
-      if (credentialError !== undefined) {
+      const [[githubToken, gitCredentialError], [modelApiKey, modelCredentialError]] = await Promise
+        .all([
+          store.getGitHubToken(userId),
+          store.getModelProviderApiKey(userId, providerId),
+        ]);
+      if (gitCredentialError !== undefined) {
         return await renderCreateError(
           context,
           "The saved GitHub credential could not be read.",
           500,
+          submitted,
+        );
+      }
+      if (modelCredentialError !== undefined) {
+        return await renderCreateError(
+          context,
+          "The saved model provider credential could not be read.",
+          500,
+          submitted,
+        );
+      }
+      if (modelApiKey === null) {
+        return await renderCreateError(
+          context,
+          "Configure the selected model provider before starting a session.",
+          409,
           submitted,
         );
       }
@@ -106,7 +144,9 @@ export default createController(routes.app.sessions, {
           repositoryUrl: project.repositoryUrl,
           ref: parsed.value.ref,
           branchName: parsed.value.branchName,
+          orbSize: parsed.value.orbSize,
           initialPrompt: parsed.value.initialPrompt,
+          modelRuntime: sessionModelRuntime(parsed.value.model, modelApiKey),
           githubToken: githubToken ?? undefined,
         },
       });
@@ -141,12 +181,33 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      const [githubToken, credentialError] = await context.services.store.getGitHubToken(userId);
-      if (credentialError !== undefined) {
+      const [[githubToken, gitCredentialError], [modelApiKey, modelCredentialError]] = await Promise
+        .all([
+          context.services.store.getGitHubToken(userId),
+          context.services.store.getModelProviderApiKey(
+            userId,
+            parseModelReference(snapshot.model).providerId,
+          ),
+        ]);
+      if (gitCredentialError !== undefined) {
         return await renderDetailPage(
           context,
           "The saved GitHub credential could not be read.",
           500,
+        );
+      }
+      if (modelCredentialError !== undefined) {
+        return await renderDetailPage(
+          context,
+          "The saved model provider credential could not be read.",
+          500,
+        );
+      }
+      if (modelApiKey === null) {
+        return await renderDetailPage(
+          context,
+          "Reconfigure this session's model provider before retrying.",
+          409,
         );
       }
       const provisioned = await context.services.runnerConnections.provisionSession({
@@ -155,6 +216,7 @@ export default createController(routes.app.sessions, {
         sessionId,
         payload: {
           mode: "retry",
+          modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
           githubToken: githubToken ?? undefined,
         },
       });
@@ -230,10 +292,19 @@ function parseSessionId(value: string): string | null {
 function submittedValues(formData: FormData): SessionComposerValues {
   return {
     projectId: stringField(formData, "projectId"),
+    model: stringField(formData, "model"),
     ref: stringField(formData, "ref"),
-    runnerId: stringField(formData, "runnerId"),
+    orbSize: stringField(formData, "orbSize"),
     branchName: stringField(formData, "branchName"),
     initialPrompt: stringField(formData, "initialPrompt"),
+  };
+}
+
+function sessionModelRuntime(model: string, apiKey: string): SessionModelRuntime {
+  return {
+    model,
+    thinkingLevel: DEFAULT_SESSION_THINKING_LEVEL,
+    credential: { type: "api_key" as const, value: apiKey },
   };
 }
 

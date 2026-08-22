@@ -20,6 +20,13 @@ import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 
 const PASSWORD = "[REDACTED:password] horse battery staple";
 const GITHUB_TOKEN = "browser-provisioning-github-token";
+const MODEL_PROVIDER_KEY = "browser-provisioning-model-key";
+const RETRY_MODEL_PROVIDER_KEY = "browser-provisioning-retry-model-key";
+const PROVIDER_ID = "opencode-go";
+const MODEL = `${PROVIDER_ID}/deepseek-v4-flash`;
+const OPENAI_PROVIDER_ID = "openai";
+const OPENAI_MODEL = `${OPENAI_PROVIDER_ID}/gpt-4.1`;
+const OPENAI_PROVIDER_KEY = "browser-provisioning-openai-key";
 const INITIAL_PROMPT = "  Inspect\nthis repository and explain the architecture.  ";
 
 class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
@@ -29,6 +36,8 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
   snapshot: RunnerSessionSnapshot | null = null;
   provisions: ProvisionSessionInput[] = [];
   events: SessionEventPayload[] = [];
+  afterCursors: number[] = [];
+  subscriptionUnsubscribes = 0;
   beforeAcceptance?: (input: ProvisionSessionInput) => Promise<void>;
   reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
 
@@ -76,6 +85,8 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
       projectId: input.payload.projectId,
       createdAt: "2026-08-17T12:00:00Z",
       initialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
+      model: input.payload.modelRuntime.model,
+      orbSize: input.payload.orbSize,
       state: "created",
       lastEventCursor: 0,
     };
@@ -97,13 +108,28 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
     userId: string,
     sessionId: string,
     afterCursor: number,
-    _listener: (event: SessionEventPayload) => void,
+    listener: (event: SessionEventPayload) => void,
   ): SessionEventSubscription {
+    const abort = new AbortController();
+    this.afterCursors.push(afterCursor);
     return {
-      events: userId === this.userId && sessionId === this.sessionId
-        ? this.events.filter((event) => event.cursor > afterCursor)
-        : [],
-      unsubscribe() {},
+      replay: Promise.resolve().then(() => {
+        if (userId !== this.userId || sessionId !== this.sessionId) return;
+        const lastCursor = this.events.reduce(
+          (cursor, event) => "cursor" in event ? Math.max(cursor, event.cursor) : cursor,
+          0,
+        );
+        const reset = afterCursor === 0 || afterCursor > lastCursor;
+        if (reset) listener({ event: { type: "conversation.reset" } });
+        for (const event of this.events) {
+          if (reset || !("cursor" in event) || event.cursor > afterCursor) listener(event);
+        }
+      }),
+      signal: abort.signal,
+      unsubscribe: () => {
+        this.subscriptionUnsubscribes += 1;
+        abort.abort();
+      },
     };
   }
 
@@ -127,6 +153,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assert(projectResult.status === "saved");
     await store.saveGitHubCredential(client.userId, GITHUB_TOKEN);
+    await store.saveModelProviderCredential(client.userId, PROVIDER_ID, MODEL_PROVIDER_KEY);
     const enrolled = await enrollRunner(store, client.userId);
     connections.runnerId = enrolled.runnerId;
     connections.beforeAcceptance = async (input) => {
@@ -137,7 +164,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       assertEquals(count.rows[0]?.count, 0);
     };
     connections.reconcileAcceptance = async (snapshot) => {
-      const [reconciled] = await store.reconcileSessionSnapshotEntries(client.userId, [snapshot]);
+      const [reconciled] = await store.reconcileSessionManifestEntries(client.userId, [snapshot]);
       assert(reconciled);
       assertEquals(reconciled.acceptedSessionIds, [snapshot.id]);
     };
@@ -158,13 +185,25 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(createHtml, /<dialog[^>]*id="openorb-new-session"/);
     assertNotMatch(createHtml, /<dialog[^>]*id="openorb-new-session"[^>]* open/);
     assertMatch(createHtml, /Write prompt…/);
-    assertMatch(createHtml, /4 CPU · 8 GiB/);
+    assertMatch(createHtml, /tiny · 1 CPU · 2 GB memory/);
+    assertMatch(createHtml, /small · 2 CPUs · 4 GB memory/);
+    assertMatch(
+      createHtml,
+      /<option[^>]*value="medium"[^>]*selected[^>]*>medium · 4 CPUs · 8 GB memory<\/option>/,
+    );
+    assertMatch(createHtml, /large · 8 CPUs · 16 GB memory/);
+    assertMatch(createHtml, /xxlarge · 16 CPUs · 32 GB memory/);
+    assertNotMatch(createHtml, /aria-label="Runner"/);
+    assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="runnerId"[^>]*value=""/);
+    assertMatch(createHtml, /aria-label="Orb size"/);
     assertMatch(createHtml, /deepseek-v4-flash/);
+    assertNotMatch(createHtml, /name="apiKey"/);
     const projectControl = createHtml.indexOf('name="projectId"');
-    const vmControl = createHtml.indexOf('name="runnerId"');
-    const modelControl = createHtml.indexOf('aria-label="Model:');
-    assert(projectControl !== -1 && projectControl < vmControl && vmControl < modelControl);
+    const orbControl = createHtml.indexOf('name="orbSize"');
+    const modelControl = createHtml.indexOf('aria-label="Model"');
+    assert(projectControl !== -1 && projectControl < orbControl && orbControl < modelControl);
     assert(!createHtml.includes(GITHUB_TOKEN));
+    assert(!createHtml.includes(MODEL_PROVIDER_KEY));
 
     const response = await fetch(new URL(routes.app.sessions.create.href(), server.baseUrl), {
       method: "POST",
@@ -173,8 +212,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       body: new URLSearchParams({
         _csrf: csrfFrom(createHtml),
         projectId: projectResult.project.id,
+        model: MODEL,
         ref: "main",
-        runnerId: connections.runnerId,
+        runnerId: "",
+        orbSize: "small",
         branchName: "openorb/browser-test",
         initialPrompt: INITIAL_PROMPT,
       }),
@@ -186,8 +227,15 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
     const provision = connections.provisions[0];
     assert(provision?.payload.mode === "create");
+    assertEquals(provision.runnerId, connections.runnerId);
     assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
     assertEquals(provision.payload.initialPrompt, INITIAL_PROMPT);
+    assertEquals(provision.payload.orbSize, "small");
+    assertEquals(provision.payload.modelRuntime, {
+      model: MODEL,
+      thinkingLevel: "high",
+      credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
+    });
     const catalog = await store.pool.query<{
       user_id: string;
       id: string;
@@ -205,17 +253,28 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const storedSecrets = await store.pool.query<{ ciphertext: string }>(
       "select ciphertext from encrypted_secrets",
     );
-    assertEquals(storedSecrets.rows.length, 1);
-    assert(!storedSecrets.rows[0]?.ciphertext.includes(GITHUB_TOKEN));
+    assertEquals(storedSecrets.rows.length, 2);
+    assert(
+      storedSecrets.rows.every((row: { ciphertext: string }) =>
+        !row.ciphertext.includes(GITHUB_TOKEN)
+      ),
+    );
+    assert(
+      storedSecrets.rows.every((row: { ciphertext: string }) =>
+        !row.ciphertext.includes(MODEL_PROVIDER_KEY)
+      ),
+    );
 
     const olderSessionId = crypto.randomUUID();
     const newerSessionId = crypto.randomUUID();
-    const [additionalCatalog] = await store.reconcileSessionSnapshotEntries(client.userId, [
+    const [additionalCatalog] = await store.reconcileSessionManifestEntries(client.userId, [
       {
         id: olderSessionId,
         projectId: projectResult.project.id,
         createdAt: "2026-08-17T11:00:00Z",
         initialPromptPreview: "Older sidebar session",
+        model: MODEL,
+        orbSize: "medium",
         state: "ready",
         lastEventCursor: 1,
       },
@@ -224,6 +283,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         projectId: projectResult.project.id,
         createdAt: "2026-08-17T13:00:00Z",
         initialPromptPreview: "Newer sidebar session",
+        model: MODEL,
+        orbSize: "medium",
         state: "ready",
         lastEventCursor: 1,
       },
@@ -237,16 +298,22 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
     connections.events = [{
       cursor: 1,
-      event: { type: "session.state", stage: "cloning", checkoutState: "pending" },
+      event: { type: "user.message", messageId: "pi:user:1", text: INITIAL_PROMPT },
     }];
     const detail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
     assertEquals(detail.status, 200);
     const detailHtml = await detail.text();
-    assertMatch(detailHtml, /Provisioning output/);
+    assertMatch(detailHtml, /title="Context window use"/);
+    assertMatch(detailHtml, /\?\/1\.0M/);
+    assertNotMatch(detailHtml, /Session <code>/);
+    assertNotMatch(detailHtml, /<span>Repository<\/span>/);
     assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/events`));
+    assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-event-view\.tsx/);
+    assertNotMatch(detailHtml, /data-session-events/);
     assert(!detailHtml.includes(GITHUB_TOKEN));
+    assert(!detailHtml.includes(MODEL_PROVIDER_KEY));
     assertNotMatch(detailHtml, /<a href="\/app\/"[^>]*>[\s\S]*?Overview[\s\S]*?<\/a>/);
     assertNotMatch(
       detailHtml,
@@ -275,6 +342,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       headers: { Cookie: client.cookie },
     });
     const failedHtml = await failedDetail.text();
+    await store.saveModelProviderCredential(
+      client.userId,
+      PROVIDER_ID,
+      RETRY_MODEL_PROVIDER_KEY,
+    );
     const retryResponse = await fetch(
       new URL(routes.app.sessions.retry.href({ sessionId: provision.sessionId }), server.baseUrl),
       {
@@ -288,6 +360,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const retryProvision = connections.provisions[1];
     assertEquals(retryProvision?.sessionId, provision.sessionId);
     assertEquals(retryProvision?.payload.mode, "retry");
+    assertEquals(
+      retryProvision?.payload.mode === "retry" ? retryProvision.payload.modelRuntime : undefined,
+      {
+        ...provision.payload.modelRuntime,
+        credential: { type: "api_key", value: RETRY_MODEL_PROVIDER_KEY },
+      },
+    );
 
     const abort = new AbortController();
     const eventResponse = await fetch(
@@ -297,9 +376,45 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(eventResponse.status, 200);
     const reader = eventResponse.body?.getReader();
     assert(reader);
-    const firstEvent = await reader.read();
+    let replayText = "";
+    while (!replayText.includes("id: 1\nevent: session")) {
+      const replayChunk = await reader.read();
+      assertEquals(replayChunk.done, false);
+      replayText += new TextDecoder().decode(replayChunk.value);
+    }
     abort.abort();
-    assertString(new TextDecoder().decode(firstEvent.value), "id: 1\nevent: session");
+    assertString(
+      replayText,
+      'id:\nevent: session\ndata: {"type":"conversation.reset"}',
+    );
+    assertString(replayText, "id: 1\nevent: session");
+    assertEquals(connections.afterCursors, [0]);
+    await waitFor(() => connections.subscriptionUnsubscribes === 1);
+
+    const keepaliveAbort = new AbortController();
+    const keepaliveUrl = new URL(
+      routes.api.sessions.events.href({ sessionId: provision.sessionId }),
+      server.baseUrl,
+    );
+    const keepaliveResponse = await fetch(keepaliveUrl, {
+      headers: { Cookie: client.cookie, "Last-Event-ID": "1" },
+      signal: keepaliveAbort.signal,
+    });
+    const keepaliveReader = keepaliveResponse.body?.getReader();
+    assert(keepaliveReader);
+    try {
+      const keepalive = await Promise.race([
+        keepaliveReader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Session SSE keepalive timed out.")), 17_000)
+        ),
+      ]);
+      assertEquals(new TextDecoder().decode(keepalive.value), ": keepalive\n\n");
+    } finally {
+      keepaliveAbort.abort();
+    }
+    assertEquals(connections.afterCursors, [0, 1]);
+    await waitFor(() => connections.subscriptionUnsubscribes === 2);
 
     connections.sessionId = null;
     const offlineEvents = await fetch(
@@ -327,6 +442,12 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       repositoryUrl: "https://github.com/openorb/owner.git",
     });
     assert(project.status === "saved");
+    await store.saveModelProviderCredential(client.userId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+    await store.saveModelProviderCredential(
+      client.userId,
+      OPENAI_PROVIDER_ID,
+      OPENAI_PROVIDER_KEY,
+    );
     const otherUserId = await createTestUser(store);
     const foreignProject = await store.saveProject(otherUserId, {
       name: "Foreign project",
@@ -341,8 +462,11 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       headers: { Cookie: client.cookie },
     });
     const html = await page.text();
+    assertMatch(html, /DeepSeek V4 Flash/);
+    assertMatch(html, /GPT-4\.1/);
     const unCsrf = await submitSession(server.baseUrl, client.cookie, {
       projectId: project.project.id,
+      model: MODEL,
       ref: "main",
       runnerId: connections.runnerId,
       branchName: "openorb/browser-test",
@@ -353,6 +477,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     const foreign = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
       projectId: foreignProject.project.id,
+      model: MODEL,
       ref: "main",
       runnerId: connections.runnerId,
       branchName: "openorb/browser-test",
@@ -364,15 +489,91 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     assertMatch(foreignHtml, /Project is unavailable or does not exist/);
     assertEquals(connections.provisions.length, 0);
 
+    const unsupportedProvider = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: "openai/not-a-pi-model",
+      ref: "main",
+      runnerId: connections.runnerId,
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(unsupportedProvider.status, 400);
+    assertMatch(await unsupportedProvider.text(), /selected Pi model is unavailable/);
+    assertEquals(connections.provisions.length, 0);
+
     const unavailableRunner = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
       projectId: project.project.id,
+      model: MODEL,
       ref: "main",
       runnerId: crypto.randomUUID(),
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(unavailableRunner.status, 409);
+    assertEquals(connections.provisions.length, 0);
+
+    const unsupportedOrbSize = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: connections.runnerId,
+      orbSize: "large",
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(unsupportedOrbSize.status, 409);
+    assertMatch(await unsupportedOrbSize.text(), /cannot provision the large orb size/);
+    assertEquals(connections.provisions.length, 0);
+
+    const invalidOrbSize = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: connections.runnerId,
+      orbSize: "enormous",
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(invalidOrbSize.status, 400);
+    assertEquals(connections.provisions.length, 0);
+
+    const alternateProvider = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: OPENAI_MODEL,
+      ref: "main",
+      runnerId: connections.runnerId,
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(alternateProvider.status, 303);
+    const alternateProvision = connections.provisions[0];
+    assert(alternateProvision?.payload.mode === "create");
+    assertEquals(alternateProvision.payload.modelRuntime, {
+      model: OPENAI_MODEL,
+      thinkingLevel: "high",
+      credential: { type: "api_key", value: OPENAI_PROVIDER_KEY },
+    });
+    connections.provisions = [];
+
+    assertEquals(await store.deleteModelProviderCredential(client.userId, PROVIDER_ID), {
+      status: "deleted",
+    });
+    const unconfiguredProvider = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: connections.runnerId,
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(unconfiguredProvider.status, 409);
+    assertMatch(await unconfiguredProvider.text(), /Configure the selected model provider/);
     assertEquals(connections.provisions.length, 0);
   } finally {
     await server.close();
@@ -456,10 +657,18 @@ function submitSession(
     method: "POST",
     redirect: "manual",
     headers: { Cookie: cookie },
-    body: new URLSearchParams(body),
+    body: new URLSearchParams({ orbSize: "medium", ...body }),
   });
 }
 
 function assertString(source: string, expected: string): void {
   assert(source.includes(expected), `Expected ${JSON.stringify(source)} to include ${expected}.`);
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for the expected test state.");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }

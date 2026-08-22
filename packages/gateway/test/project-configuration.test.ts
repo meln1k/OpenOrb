@@ -174,6 +174,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals(firstStorage.secret_purpose, "git-credential");
     assert(!firstStorage.ciphertext.includes(FIRST_TOKEN));
     assertEquals(await client.store.listSecrets(client.userId), []);
+    assertEquals(await client.store.listModelProviderCredentials(client.userId), []);
 
     const configuredSettings = await getPage(client, settingsPath);
     assertMatch(configuredSettings, /Configured · updated/);

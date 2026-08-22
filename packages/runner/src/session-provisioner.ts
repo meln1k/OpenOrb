@@ -1,8 +1,12 @@
 import {
-  MAX_PROVISIONING_EVENT_TEXT_BYTES,
+  MAX_PROVISIONING_LOG_BYTES,
+  MAX_SESSION_EVENT_TEXT_BYTES,
+  type OrbSize,
+  orbSizeResources,
   type RunnerClientMessage,
   SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
   SESSION_PROVISION_REJECTED_MESSAGE_TYPE,
+  type SessionModelRuntime,
   type SessionProvisionCommand,
   type SessionProvisioningStage,
 } from "@openorb/protocol";
@@ -10,6 +14,9 @@ import { join } from "node:path";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
 import type { DeveloperImage } from "@/src/developer-image.ts";
+import { PiEventNormalizer } from "@/src/pi-event-normalizer.ts";
+import { OpenOrbPiSessionFactory, type OpenOrbPiSessionOptions } from "@/src/pi-session-factory.ts";
+import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   createOpenOrbGondolinToolRuntime,
   type GondolinRuntimeError,
@@ -27,7 +34,6 @@ import type {
   RunnerSessionStoreError,
 } from "@/src/session-store.ts";
 
-const MAX_PROVISIONING_LOG_BYTES = 256 * 1024;
 const MAX_CAPTURED_COMMAND_BYTES = 4 * 1024;
 const OUTPUT_TRUNCATED_MESSAGE = "\n[Provisioning output was truncated.]\n";
 
@@ -40,17 +46,30 @@ export interface SessionProvisionerOptions {
   createRuntime?: (
     options: Omit<OpenOrbGondolinToolRuntimeOptions, "developerImage">,
   ) => Promise<Result<ProvisioningRuntime, GondolinRuntimeError>>;
+  createPiSession?: CreatePiSession;
 }
 
 export interface ProvisioningRuntime {
+  tools: OpenOrbGondolinToolRuntime["tools"];
   run: OpenOrbGondolinToolRuntime["run"];
   close(): Promise<Result<void, GondolinRuntimeError>>;
 }
 
+interface ProvisioningPiSession {
+  sessionManager: Pick<SessionManager, "getLeafEntry">;
+  subscribe(listener: (event: AgentSessionEvent) => void): () => void;
+  prompt(input: string): Promise<void>;
+  dispose(): void;
+}
+
+type CreatePiSession = (
+  options: OpenOrbPiSessionOptions,
+) => Promise<{ session: ProvisioningPiSession }>;
+
 interface ProvisioningLogBudget {
   remainingBytes: number;
   truncated: boolean;
-  secret?: string;
+  secrets: string[];
 }
 
 interface CommandOutput {
@@ -70,6 +89,7 @@ export class SessionProvisioner {
   readonly #cpuCount: number;
   readonly #memoryMiB: number;
   readonly #createRuntime: NonNullable<SessionProvisionerOptions["createRuntime"]>;
+  readonly #createPiSession: CreatePiSession;
   readonly #jobs = new Map<string, Promise<Result<void, SessionProvisioningError>>>();
   readonly #runtimes = new Map<string, ProvisioningRuntime>();
   readonly #activeSessionIds = new Set<string>();
@@ -80,6 +100,7 @@ export class SessionProvisioner {
     this.#eventRelay = options.eventRelay;
     this.#cpuCount = options.cpuCount;
     this.#memoryMiB = options.memoryMiB;
+    this.#createPiSession = options.createPiSession ?? OpenOrbPiSessionFactory.create;
     if (options.createRuntime) {
       this.#createRuntime = options.createRuntime;
     } else {
@@ -115,6 +136,12 @@ export class SessionProvisioner {
         rejectedMessage(command, "This session is already provisioning."),
       );
     }
+    if (command.payload.mode === "create" && !this.#supportsOrbSize(command.payload.orbSize)) {
+      return sendProvisioningMessage(
+        send,
+        rejectedMessage(command, unsupportedOrbSizeMessage(command.payload.orbSize)),
+      );
+    }
 
     const [metadata, preparationError] = command.payload.mode === "create"
       ? await this.#sessionStore.createSession({
@@ -124,8 +151,13 @@ export class SessionProvisioner {
         ref: command.payload.ref,
         branchName: command.payload.branchName,
         initialPrompt: command.payload.initialPrompt,
+        model: command.payload.modelRuntime.model,
+        orbSize: command.payload.orbSize,
       })
-      : await this.#prepareRetry(command.sessionId);
+      : await this.#prepareRetry(
+        command.sessionId,
+        command.payload.modelRuntime.model,
+      );
     if (preparationError !== undefined) {
       const [, sendError] = sendProvisioningMessage(
         send,
@@ -160,7 +192,7 @@ export class SessionProvisioner {
     if (sendError !== undefined) return err(sendError);
 
     const githubToken = command.payload.githubToken;
-    const job = this.#provision(metadata, githubToken, command.id);
+    const job = this.#provision(metadata, githubToken, command.payload.modelRuntime, command.id);
     this.#jobs.set(metadata.id, job);
     void job.then(() => {
       if (this.#jobs.get(metadata.id) === job) this.#jobs.delete(metadata.id);
@@ -189,11 +221,18 @@ export class SessionProvisioner {
 
   async #prepareRetry(
     sessionId: string,
+    model: string,
   ): Promise<Result<RunnerSessionMetadata, SessionProvisioningError>> {
     const [metadata, metadataError] = await this.#sessionStore.readMetadata(sessionId);
     if (metadataError !== undefined) return err(provisioningStoreError(sessionId, metadataError));
     if (metadata.state !== "error") {
       return err(new RetryRejected("Only a failed provisioning attempt can be retried."));
+    }
+    if (metadata.model !== model) {
+      return err(new RetryRejected("A session retry must use its original model."));
+    }
+    if (!this.#supportsOrbSize(metadata.orbSize)) {
+      return err(new RetryRejected(unsupportedOrbSizeMessage(metadata.orbSize)));
     }
     const runtime = this.#runtimes.get(sessionId);
     if (runtime) {
@@ -221,13 +260,16 @@ export class SessionProvisioner {
   async #provision(
     initialMetadata: RunnerSessionMetadata,
     githubToken: string | undefined,
+    modelRuntime: SessionModelRuntime,
     correlationId: string,
   ): Promise<Result<void, SessionProvisioningError>> {
     const sessionId = initialMetadata.id;
     const logBudget: ProvisioningLogBudget = {
       remainingBytes: MAX_PROVISIONING_LOG_BYTES,
       truncated: false,
-      ...(githubToken === undefined ? {} : { secret: githubToken }),
+      secrets: [githubToken, modelRuntime.credential.value].filter((value): value is string =>
+        value !== undefined
+      ),
     };
     let metadata = initialMetadata;
 
@@ -261,6 +303,7 @@ export class SessionProvisioner {
         await this.#sessionStore.getSessionWorkspacePath(sessionId),
       );
       if (workspaceError !== undefined) return err(workspaceError);
+      const resources = orbSizeResources(metadata.orbSize);
       const [runtime, runtimeError] = await this.#createRuntime({
         workspacePath,
         sessionLabel: `openorb session ${sessionId}`,
@@ -268,8 +311,8 @@ export class SessionProvisioner {
           repositoryUrl: metadata.repositoryUrl,
           ...(githubToken === undefined ? {} : { token: githubToken }),
         },
-        cpuCount: this.#cpuCount,
-        memoryMiB: this.#memoryMiB,
+        cpuCount: resources.cpuCount,
+        memoryMiB: resources.memoryMiB,
       });
       if (runtimeError !== undefined) {
         return err(
@@ -318,7 +361,7 @@ export class SessionProvisioner {
           const [unavailable, updateError] = mapStoreResult(
             sessionId,
             await this.#sessionStore.updateProvisioning(sessionId, {
-              state: "ready",
+              state: "provisioning",
               checkoutState: "unavailable",
             }),
           );
@@ -331,96 +374,107 @@ export class SessionProvisioner {
             "Repository clone failed. The checkout is unavailable; the stored prompt remains ready for Pi.\n",
           );
           if (logError !== undefined) return err(logError);
-          return await this.#emitState(metadata, "ready", correlationId);
-        }
-
-        const [revision, revisionError] = await this.#runCommand(
-          runtime,
-          ["/usr/bin/git", "rev-parse", "HEAD"],
-          sessionId,
-          correlationId,
-          logBudget,
-          true,
-        );
-        if (revisionError !== undefined) return err(revisionError);
-        if (revision.exitCode !== 0) {
-          return err(
-            new SessionProvisioningError(
-              "Git could not report the cloned base commit.",
-              undefined,
-            ),
+        } else {
+          const [revision, revisionError] = await this.#runCommand(
+            runtime,
+            ["/usr/bin/git", "rev-parse", "HEAD"],
+            sessionId,
+            correlationId,
+            logBudget,
+            true,
           );
-        }
-        const baseCommit = revision.stdout.trim();
+          if (revisionError !== undefined) return err(revisionError);
+          if (revision.exitCode !== 0) {
+            return err(
+              new SessionProvisioningError(
+                "Git could not report the cloned base commit.",
+                undefined,
+              ),
+            );
+          }
+          const baseCommit = revision.stdout.trim();
 
-        const [, branchEventError] = await this.#emitState(
-          metadata,
-          "creating-branch",
-          correlationId,
-        );
-        if (branchEventError !== undefined) return err(branchEventError);
-        const [branch, branchError] = await this.#runCommand(
-          runtime,
-          ["/usr/bin/git", "switch", "-c", metadata.branchName],
-          sessionId,
-          correlationId,
-          logBudget,
-        );
-        if (branchError !== undefined) return err(branchError);
-        if (branch.exitCode !== 0) {
-          return err(
-            new SessionProvisioningError(
-              "Git could not create the session branch.",
-              undefined,
-            ),
+          const [, branchEventError] = await this.#emitState(
+            metadata,
+            "creating-branch",
+            correlationId,
           );
+          if (branchEventError !== undefined) return err(branchEventError);
+          const [branch, branchError] = await this.#runCommand(
+            runtime,
+            ["/usr/bin/git", "switch", "-c", metadata.branchName],
+            sessionId,
+            correlationId,
+            logBudget,
+          );
+          if (branchError !== undefined) return err(branchError);
+          if (branch.exitCode !== 0) {
+            return err(
+              new SessionProvisioningError(
+                "Git could not create the session branch.",
+                undefined,
+              ),
+            );
+          }
+          const [available, updateError] = mapStoreResult(
+            sessionId,
+            await this.#sessionStore.updateProvisioning(sessionId, {
+              state: "provisioning",
+              checkoutState: "available",
+              baseCommit,
+            }),
+          );
+          if (updateError !== undefined) return err(updateError);
+          metadata = available;
         }
-        const [available, updateError] = mapStoreResult(
-          sessionId,
-          await this.#sessionStore.updateProvisioning(sessionId, {
-            state: "provisioning",
-            checkoutState: "available",
-            baseCommit,
-          }),
-        );
-        if (updateError !== undefined) return err(updateError);
-        metadata = available;
       }
 
-      const [, setupEventError] = await this.#emitState(metadata, "setup", correlationId);
-      if (setupEventError !== undefined) return err(setupEventError);
-      const [setup, setupError] = await this.#runCommand(
-        runtime,
-        [
-          "/bin/sh",
-          "-lc",
-          "if [ -x .agents/setup ]; then exec ./.agents/setup; fi",
-        ],
+      if (metadata.checkoutState === "available") {
+        const [, setupEventError] = await this.#emitState(metadata, "setup", correlationId);
+        if (setupEventError !== undefined) return err(setupEventError);
+        const [setup, setupError] = await this.#runCommand(
+          runtime,
+          [
+            "/bin/sh",
+            "-lc",
+            "if [ -x .agents/setup ]; then exec ./.agents/setup; fi",
+          ],
+          sessionId,
+          correlationId,
+          logBudget,
+        );
+        if (setupError !== undefined) return err(setupError);
+        if (setup.exitCode !== 0) {
+          const [, logError] = await this.#emitLog(
+            sessionId,
+            correlationId,
+            "stderr",
+            `.agents/setup exited with status ${setup.exitCode}; continuing to Pi so it can repair the project.\n`,
+          );
+          if (logError !== undefined) return err(logError);
+        }
+      }
+
+      const [running, runningError] = mapStoreResult(
         sessionId,
-        correlationId,
-        logBudget,
+        await this.#sessionStore.updateProvisioning(sessionId, {
+          state: "running",
+          checkoutState: metadata.checkoutState,
+          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+        }),
       );
-      if (setupError !== undefined) return err(setupError);
-      if (setup.exitCode !== 0) {
-        const [failed, updateError] = mapStoreResult(
-          sessionId,
-          await this.#sessionStore.updateProvisioning(sessionId, {
-            state: "error",
-            checkoutState: metadata.checkoutState,
-            ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-          }),
-        );
-        if (updateError !== undefined) return err(updateError);
-        metadata = failed;
-        const [, logError] = await this.#emitLog(
-          sessionId,
-          correlationId,
-          "stderr",
-          `.agents/setup exited with status ${setup.exitCode}; the initial prompt was not dispatched.\n`,
-        );
-        if (logError !== undefined) return err(logError);
-        return await this.#emitState(metadata, "failed", correlationId);
-      }
+      if (runningError !== undefined) return err(runningError);
+      metadata = running;
+      const [, runningEventError] = await this.#emitState(metadata, "running", correlationId);
+      if (runningEventError !== undefined) return err(runningEventError);
+
+      const [, piRunError] = await this.#runInitialPrompt(
+        metadata,
+        runtime,
+        modelRuntime,
+        correlationId,
+      );
+      if (piRunError !== undefined) return err(piRunError);
 
       const [ready, readyError] = mapStoreResult(
         sessionId,
@@ -450,12 +504,91 @@ export class SessionProvisioner {
         sessionId,
         correlationId,
         "stderr",
-        `Provisioning failed: ${redactedErrorMessage(provisionError, githubToken)}\n`,
+        `Provisioning failed: ${
+          redactedErrorMessage(
+            provisionError,
+            logBudget.secrets,
+          )
+        }\n`,
       );
       if (logError !== undefined) return err(provisionError);
       const [, stateError] = await this.#emitState(failed, "failed", correlationId);
       if (stateError !== undefined) return err(provisionError);
       return err(provisionError);
+    }
+    return ok(undefined);
+  }
+
+  async #runInitialPrompt(
+    metadata: RunnerSessionMetadata,
+    runtime: ProvisioningRuntime,
+    modelRuntime: SessionModelRuntime,
+    correlationId: string,
+  ): Promise<Result<void, SessionProvisioningError>> {
+    const [piPaths, pathsError] = mapStoreResult(
+      metadata.id,
+      await this.#sessionStore.getSessionPiPaths(metadata.id),
+    );
+    if (pathsError !== undefined) return err(pathsError);
+    const [pi, creationError] = await tryAsync(
+      this.#createPiSession({
+        runnerSessionFile: piPaths.sessionFile,
+        runnerAgentDirectory: piPaths.agentDirectory,
+        modelRuntime,
+        tools: runtime.tools,
+      }),
+      (cause) => new SessionProvisioningError("Could not create the Pi session.", cause),
+    );
+    if (creationError !== undefined) return err(creationError);
+
+    const normalizer = new PiEventNormalizer({
+      secrets: [modelRuntime.credential.value],
+      getCompactionEntryId: () => {
+        const entry = pi.session.sessionManager.getLeafEntry();
+        return entry?.type === "compaction" ? entry.id : undefined;
+      },
+      getMessageEntryId: (message) => {
+        const entry = pi.session.sessionManager.getLeafEntry();
+        return entry?.type === "message" && entry.message === message ? entry.id : undefined;
+      },
+      publishConversation: async (event) => {
+        const [, relayError] = mapRelayResult(
+          metadata.id,
+          await this.#eventRelay.publish(metadata.id, correlationId, event),
+        );
+        if (relayError !== undefined) throw relayError;
+      },
+      publishLive: async (event) => {
+        const [, relayError] = mapRelayResult(
+          metadata.id,
+          await this.#eventRelay.publishLive(metadata.id, correlationId, event),
+        );
+        if (relayError !== undefined) throw relayError;
+      },
+    });
+    using cleanup = new DisposableStack();
+    cleanup.defer(() => pi.session.dispose());
+    let finalPiError: Error | undefined;
+    const unsubscribe = pi.session.subscribe((event) => {
+      normalizer.handle(event);
+      if (event.type !== "message_end" || event.message.role !== "assistant") return;
+      finalPiError = event.message.stopReason === "error" || event.message.stopReason === "aborted"
+        ? new Error(event.message.errorMessage ?? `Pi stopped with ${event.message.stopReason}.`)
+        : undefined;
+    });
+    cleanup.defer(unsubscribe);
+    const [, promptError] = await tryAsync(
+      pi.session.prompt(metadata.initialPrompt),
+      (cause) => new SessionProvisioningError("The initial Pi run failed.", cause),
+    );
+    if (promptError !== undefined) return err(promptError);
+    const [, eventError] = await tryAsync(
+      normalizer.flush(),
+      (cause) => new SessionProvisioningError("Could not publish Pi session events.", cause),
+    );
+    if (eventError !== undefined) return err(eventError);
+    if (finalPiError !== undefined) {
+      return err(new SessionProvisioningError("The initial Pi run failed.", finalPiError));
     }
     return ok(undefined);
   }
@@ -509,9 +642,9 @@ export class SessionProvisioner {
     budget: ProvisioningLogBudget,
   ): Promise<Result<void, SessionProvisioningError>> {
     let text = sanitizeOutput(rawText);
-    if (budget.secret !== undefined) text = text.replaceAll(budget.secret, "[REDACTED]");
+    for (const secret of budget.secrets) text = text.replaceAll(secret, "[REDACTED]");
     while (text.length > 0 && budget.remainingBytes > 0) {
-      const limit = Math.min(budget.remainingBytes, MAX_PROVISIONING_EVENT_TEXT_BYTES);
+      const limit = Math.min(budget.remainingBytes, MAX_SESSION_EVENT_TEXT_BYTES);
       const { head, tail, bytes } = takeUtf8(text, limit);
       if (head.length === 0) break;
       const [, logError] = await this.#emitLog(sessionId, correlationId, stream, head);
@@ -539,7 +672,7 @@ export class SessionProvisioner {
   ): Promise<Result<void, SessionProvisioningError>> {
     return mapRelayResult(
       metadata.id,
-      await this.#eventRelay.publish(
+      await this.#eventRelay.publishLive(
         metadata.id,
         correlationId,
         { type: "session.state", stage, checkoutState: metadata.checkoutState },
@@ -555,12 +688,17 @@ export class SessionProvisioner {
   ): Promise<Result<void, SessionProvisioningError>> {
     return mapRelayResult(
       sessionId,
-      await this.#eventRelay.publish(
+      await this.#eventRelay.publishLive(
         sessionId,
         correlationId,
         { type: "provisioning.log", stream, text },
       ),
     );
+  }
+
+  #supportsOrbSize(orbSize: OrbSize): boolean {
+    const resources = orbSizeResources(orbSize);
+    return resources.cpuCount <= this.#cpuCount && resources.memoryMiB <= this.#memoryMiB;
   }
 }
 
@@ -651,6 +789,13 @@ function hasAlreadyExistsCause(error: unknown): boolean {
   return error instanceof Error && hasAlreadyExistsCause(error.cause);
 }
 
+function unsupportedOrbSizeMessage(orbSize: OrbSize): string {
+  const resources = orbSizeResources(orbSize);
+  return `The runner cannot provision the ${orbSize} orb size (${resources.cpuCount} CPU${
+    resources.cpuCount === 1 ? "" : "s"
+  } and ${resources.memoryMiB / 1024} GB memory).`;
+}
+
 async function clearWorkspace(workspacePath: string): Promise<void> {
   for await (const entry of Deno.readDir(workspacePath)) {
     await Deno.remove(join(workspacePath, entry.name), { recursive: entry.isDirectory });
@@ -666,9 +811,9 @@ function sanitizeOutput(value: string): string {
   return sanitized;
 }
 
-function redactedErrorMessage(error: unknown, secret: string | undefined): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const redacted = secret === undefined ? message : message.replaceAll(secret, "[REDACTED]");
+function redactedErrorMessage(error: unknown, secrets: string[]): string {
+  let redacted = error instanceof Error ? error.message : String(error);
+  for (const secret of secrets) redacted = redacted.replaceAll(secret, "[REDACTED]");
   return sanitizeOutput(redacted).slice(0, 1000) || "unknown runner error";
 }
 

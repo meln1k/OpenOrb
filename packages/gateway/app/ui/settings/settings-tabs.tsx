@@ -6,13 +6,16 @@ import {
   Tabs,
 } from "remix/ui/tabs";
 import { Icon } from "@/app/ui/components/icons.tsx";
-import { GitAuthorSection } from "./git-author.tsx";
-import { GitHubCredentialSection } from "./github-credential.tsx";
-import { ProviderSecrets } from "./provider-secrets.tsx";
-import { RunnersSection } from "./runners.tsx";
+import { GenericSecrets } from "@/app/ui/settings/generic-secrets.tsx";
+import { GitAuthorSection } from "@/app/ui/settings/git-author.tsx";
+import { GitHubCredentialSection } from "@/app/ui/settings/github-credential.tsx";
+import { ModelProviders } from "@/app/ui/settings/model-providers.tsx";
+import { RunnersSection } from "@/app/ui/settings/runners.tsx";
 
-const SETTINGS_TABS = ["secrets", "github", "git-author", "runners"] as const;
+const SETTINGS_TABS = ["providers", "secrets", "github", "git-author", "runners"] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
+export type SettingsModelProvider = { providerId: string; name: string; updatedAt: string };
+export type SettingsModelProviderOption = { id: string; name: string };
 export type SettingsSecret = { key: string; updatedAt: string };
 export type SettingsGitHubCredential = { updatedAt: string };
 export type SettingsGitAuthor = { authorEmail: string; authorName: string; updatedAt: string };
@@ -40,6 +43,8 @@ export type SettingsTabsProps = {
   gitAuthor: SettingsGitAuthor | null;
   githubCredential: SettingsGitHubCredential | null;
   hrefs: SettingsTabHrefs;
+  providerOptions: SettingsModelProviderOption[];
+  providers: SettingsModelProvider[];
   runners: SettingsRunner[];
   secrets: SettingsSecret[];
 };
@@ -50,6 +55,7 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
     let activeTab = handle.props.activeTab;
     let authorEmail = handle.props.gitAuthor?.authorEmail ?? "";
     let authorName = handle.props.gitAuthor?.authorName ?? "";
+    const addProviderDialogId = `${handle.id}-add-provider`;
     const addSecretDialogId = `${handle.id}-add-secret`;
     const githubDialogId = `${handle.id}-github-token`;
     const deleteGithubDialogId = `${handle.id}-delete-github-token`;
@@ -84,6 +90,8 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
         gitAuthor,
         githubCredential,
         hrefs,
+        providerOptions,
+        providers,
         runners,
         secrets,
       } = handle.props;
@@ -110,6 +118,14 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
             data-variant="default"
             mix={tabsListStyle}
           >
+            <TabsTrigger
+              name="providers"
+              draggable={false}
+              data-slot="tabs-trigger"
+              mix={tabsTriggerStyle}
+            >
+              <Icon name="secrets" size={14} />Providers
+            </TabsTrigger>
             <TabsTrigger
               name="secrets"
               draggable={false}
@@ -144,8 +160,17 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
             </TabsTrigger>
           </TabsList>
           {error ? <p role="alert" mix={errorStyle}>{error}</p> : null}
+          <TabsContent name="providers" data-slot="tabs-content" mix={tabsPanelStyle}>
+            <ModelProviders
+              actionHref={hrefs.providers}
+              csrfToken={csrfToken}
+              dialogId={addProviderDialogId}
+              providerOptions={providerOptions}
+              providers={providers}
+            />
+          </TabsContent>
           <TabsContent name="secrets" data-slot="tabs-content" mix={tabsPanelStyle}>
-            <ProviderSecrets
+            <GenericSecrets
               actionHref={hrefs.secrets}
               csrfToken={csrfToken}
               dialogId={addSecretDialogId}
@@ -187,7 +212,7 @@ export const SettingsTabs = clientEntry<SettingsTabsProps>(
 function tabForCurrentUrl(): SettingsTab {
   const currentUrl = new URL(globalThis.location.href);
   const requestedTab = currentUrl.searchParams.get("tab");
-  return SETTINGS_TABS.find((tab) => tab === requestedTab) ?? "secrets";
+  return SETTINGS_TABS.find((tab) => tab === requestedTab) ?? "providers";
 }
 const tabsRootStyle = css({
   display: "flex",

@@ -1,17 +1,21 @@
 import {
   parseRunnerServerMessage,
+  RUNNER_CONNECTED_MESSAGE_TYPE,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
   RUNNER_HELLO_MESSAGE_TYPE,
-  RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
-  RUNNER_RECONCILE_CHUNK_SESSION_LIMIT,
-  RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
-  RUNNER_RECONCILE_START_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT,
+  RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_START_MESSAGE_TYPE,
   type RunnerCapacity,
   type RunnerClientMessage,
   type RunnerSessionSnapshot,
   SESSION_EVENT_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
   SESSION_PROVISION_MESSAGE_TYPE,
   type SessionEventPayload,
+  type SessionEventReplayCommand,
   type SessionProvisionCommand,
 } from "@openorb/protocol";
 import { parseSafe, string } from "@remix-run/data-schema";
@@ -30,7 +34,7 @@ export interface MaintainRunnerConnectionOptions {
   runnerToken: string;
   signal: AbortSignal;
   getCapacity: () => Promise<RunnerCapacity>;
-  getSessionSnapshot: () => Promise<Result<RunnerSessionSnapshot[], Error>>;
+  getSessionManifest: () => Promise<Result<RunnerSessionSnapshot[], Error>>;
   sessionEventRelay?: SessionEventRelay;
   handshakeTimeoutMs?: number;
   random?: () => number;
@@ -93,6 +97,7 @@ async function connectOnce(
 ): Promise<"connected" | "disconnected" | "unauthorized"> {
   const url = new URL("/api/runners/connect", options.gatewayUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  using cleanup = new DisposableStack();
 
   return await new Promise((resolve) => {
     const socket = new WebSocket(url);
@@ -100,10 +105,8 @@ async function connectOnce(
       options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS,
     );
     let connected = false;
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
     let heartbeatInFlight = false;
     let settled = false;
-    let detachSessionEvents: (() => void) | undefined;
 
     const send = (message: RunnerClientMessage) => {
       if (!settled && socket.readyState === WebSocket.OPEN) {
@@ -114,11 +117,6 @@ async function connectOnce(
     const finish = (outcome: "connected" | "disconnected" | "unauthorized") => {
       if (settled) return;
       settled = true;
-      detachSessionEvents?.();
-      detachSessionEvents = undefined;
-      if (heartbeat !== undefined) clearInterval(heartbeat);
-      handshakeDeadline.removeEventListener("abort", handshakeTimedOut);
-      options.signal.removeEventListener("abort", shutDown);
       resolve(outcome);
     };
     const shutDown = () => {
@@ -130,7 +128,9 @@ async function connectOnce(
       finish("disconnected");
     };
     options.signal.addEventListener("abort", shutDown, { once: true });
+    cleanup.defer(() => options.signal.removeEventListener("abort", shutDown));
     handshakeDeadline.addEventListener("abort", handshakeTimedOut, { once: true });
+    cleanup.defer(() => handshakeDeadline.removeEventListener("abort", handshakeTimedOut));
     if (options.signal.aborted) shutDown();
 
     socket.addEventListener("open", () => {
@@ -156,21 +156,22 @@ async function connectOnce(
         return;
       }
       if (connected) {
-        if (
-          message.type !== SESSION_PROVISION_MESSAGE_TYPE ||
-          options.onProvisionCommand === undefined
-        ) {
-          socket.close(4400, "Unexpected server message");
+        if (message.type === SESSION_PROVISION_MESSAGE_TYPE && options.onProvisionCommand) {
+          void options.onProvisionCommand(message, send).then(([, commandError]) => {
+            if (commandError !== undefined) {
+              closeSocket(socket, 1011, "Runner provisioning command failed");
+            }
+          });
           return;
         }
-        void options.onProvisionCommand(message, send).then(([, commandError]) => {
-          if (commandError !== undefined) {
-            closeSocket(socket, 1011, "Runner provisioning command failed");
-          }
-        });
+        if (message.type === SESSION_EVENT_REPLAY_MESSAGE_TYPE && options.sessionEventRelay) {
+          void sendSessionEventReplay(message, options.sessionEventRelay, send);
+          return;
+        }
+        socket.close(4400, "Unexpected server message");
         return;
       }
-      if (message.type === SESSION_PROVISION_MESSAGE_TYPE) {
+      if (message.type !== RUNNER_CONNECTED_MESSAGE_TYPE) {
         socket.close(4400, "Runner handshake is incomplete");
         return;
       }
@@ -180,51 +181,32 @@ async function connectOnce(
       }
       connected = true;
       handshakeDeadline.removeEventListener("abort", handshakeTimedOut);
-      const sendSnapshot = async (): Promise<Result<boolean, Error>> => {
-        const [sessions, snapshotError] = await options.getSessionSnapshot();
-        if (snapshotError !== undefined) return err(snapshotError);
+      const sendSessionManifest = async (): Promise<Result<boolean, Error>> => {
+        const [sessions, manifestError] = await options.getSessionManifest();
+        if (manifestError !== undefined) return err(manifestError);
         if (settled || socket.readyState !== WebSocket.OPEN) return ok(false);
 
-        const [sent, sendError] = trySync(
+        const [, sendError] = trySync(
           () => {
-            const snapshotId = crypto.randomUUID();
-            socket.send(JSON.stringify(reconcileStartMessage(snapshotId)));
+            const manifestId = crypto.randomUUID();
+            socket.send(JSON.stringify(sessionSyncStartMessage(manifestId)));
             let sequence = 0;
             for (
               let index = 0;
               index < sessions.length;
-              index += RUNNER_RECONCILE_CHUNK_SESSION_LIMIT
+              index += RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT
             ) {
-              const chunk = sessions.slice(index, index + RUNNER_RECONCILE_CHUNK_SESSION_LIMIT);
-              socket.send(JSON.stringify(reconcileChunkMessage(snapshotId, sequence++, chunk)));
+              const chunk = sessions.slice(index, index + RUNNER_SESSION_SYNC_CHUNK_SESSION_LIMIT);
+              socket.send(JSON.stringify(sessionSyncChunkMessage(manifestId, sequence++, chunk)));
             }
             socket.send(
-              JSON.stringify(reconcileCompleteMessage(snapshotId, sequence, sessions.length)),
+              JSON.stringify(sessionSyncCompleteMessage(manifestId, sequence, sessions.length)),
             );
-            return snapshotId;
+            return manifestId;
           },
-          (cause) => new RunnerConnectionError("Runner session inventory delivery failed.", cause),
+          (cause) => new RunnerConnectionError("Runner session manifest delivery failed.", cause),
         );
         if (sendError !== undefined) return err(sendError);
-        if (options.sessionEventRelay) {
-          for (const session of sessions) {
-            const [, replayError] = await options.sessionEventRelay.replayEvents(
-              session.id,
-              (event) => {
-                if (settled || socket.readyState !== WebSocket.OPEN) return;
-                socket.send(
-                  JSON.stringify(replayedSessionEventMessage(session.id, sent, event)),
-                );
-              },
-            );
-            if (replayError !== undefined) {
-              return err(
-                new RunnerConnectionError("Runner session event replay failed.", replayError),
-              );
-            }
-            if (settled || socket.readyState !== WebSocket.OPEN) return ok(false);
-          }
-        }
         return ok(true);
       };
       const sendHeartbeat = async () => {
@@ -253,26 +235,27 @@ async function connectOnce(
         heartbeatInFlight = false;
       };
       void (async () => {
-        const [detach, inventoryError] = options.sessionEventRelay
-          ? await options.sessionEventRelay.attach(send, sendSnapshot)
-          : await sendSnapshot().then(([sent, error]) =>
+        const [detach, manifestError] = options.sessionEventRelay
+          ? await options.sessionEventRelay.attach(send, sendSessionManifest)
+          : await sendSessionManifest().then(([sent, error]) =>
             error === undefined
               ? ok(sent ? () => {} : undefined)
-              : err(new SessionEventRelayError("Runner session inventory failed.", error))
+              : err(new SessionEventRelayError("Runner session manifest sync failed.", error))
           );
-        if (inventoryError !== undefined) {
-          closeSocket(socket, 1011, "Runner session inventory failed");
+        if (manifestError !== undefined) {
+          closeSocket(socket, 1011, "Runner session manifest sync failed");
           return;
         }
         if (!detach || settled || socket.readyState !== WebSocket.OPEN) {
           detach?.();
           return;
         }
-        detachSessionEvents = detach;
+        cleanup.defer(detach);
         void sendHeartbeat();
-        heartbeat = setInterval(() => {
+        const heartbeat = setInterval(() => {
           void sendHeartbeat();
         }, RUNNER_HEARTBEAT_INTERVAL_MS);
+        cleanup.defer(() => clearInterval(heartbeat));
         options.onConnected?.();
       })();
     });
@@ -304,52 +287,91 @@ function heartbeatMessage(capacity: RunnerCapacity): RunnerClientMessage {
   };
 }
 
-function reconcileStartMessage(snapshotId: string): RunnerClientMessage {
+function sessionSyncStartMessage(manifestId: string): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
-    type: RUNNER_RECONCILE_START_MESSAGE_TYPE,
-    payload: { snapshotId },
+    type: RUNNER_SESSION_SYNC_START_MESSAGE_TYPE,
+    payload: { manifestId },
   };
 }
 
-function reconcileChunkMessage(
-  snapshotId: string,
+function sessionSyncChunkMessage(
+  manifestId: string,
   sequence: number,
   sessions: RunnerSessionSnapshot[],
 ): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
-    type: RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
-    payload: { snapshotId, sequence, sessions },
+    type: RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE,
+    payload: { manifestId, sequence, sessions },
   };
 }
 
-function reconcileCompleteMessage(
-  snapshotId: string,
+function sessionSyncCompleteMessage(
+  manifestId: string,
   chunkCount: number,
   sessionCount: number,
 ): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
-    type: RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
-    payload: { snapshotId, chunkCount, sessionCount },
+    type: RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE,
+    payload: { manifestId, chunkCount, sessionCount },
   };
 }
 
 function replayedSessionEventMessage(
-  sessionId: string,
-  snapshotId: string,
+  command: SessionEventReplayCommand,
   payload: SessionEventPayload,
 ): RunnerClientMessage {
   return {
     version: 1,
     id: crypto.randomUUID(),
     type: SESSION_EVENT_MESSAGE_TYPE,
-    sessionId,
-    correlationId: snapshotId,
+    sessionId: command.sessionId,
+    correlationId: command.id,
+    payload,
+  };
+}
+
+async function sendSessionEventReplay(
+  command: SessionEventReplayCommand,
+  relay: SessionEventRelay,
+  send: (message: RunnerClientMessage) => void,
+): Promise<void> {
+  let completed = false;
+  const [, replayError] = await relay.replayEvents(
+    command.sessionId,
+    command.payload.afterCursor,
+    (event) => {
+      send(replayedSessionEventMessage(command, event));
+    },
+    (cursor) => {
+      send(sessionEventReplayResultMessage(command, { status: "completed", cursor }));
+      completed = true;
+    },
+  );
+  if (replayError !== undefined) {
+    send(sessionEventReplayResultMessage(command, { status: "failed" }));
+    return;
+  }
+  if (!completed) {
+    send(sessionEventReplayResultMessage(command, { status: "failed" }));
+  }
+}
+
+function sessionEventReplayResultMessage(
+  command: SessionEventReplayCommand,
+  payload: { status: "completed"; cursor: number } | { status: "failed" },
+): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
+    sessionId: command.sessionId,
+    correlationId: command.id,
     payload,
   };
 }

@@ -1,5 +1,8 @@
 import {
   initialPromptPreview,
+  modelReferenceSchema,
+  type OrbSize,
+  orbSizeSchema,
   projectIdSchema,
   type RunnerCheckoutState,
   runnerCheckoutStateSchema,
@@ -11,25 +14,16 @@ import {
   sessionBranchNameSchema,
   sessionGitRefSchema,
   sessionIdSchema,
-  type SessionProvisioningEvent,
-  sessionProvisioningEventSchema,
   sessionRepositoryUrlSchema,
 } from "@openorb/protocol";
-import {
-  type InferOutput,
-  literal,
-  number,
-  object,
-  optional,
-  parse,
-  string,
-} from "@remix-run/data-schema";
+import { type InferOutput, literal, object, optional, parse, string } from "@remix-run/data-schema";
 import { dirname, join } from "node:path";
-import { ok, type Result, tryAsync, trySync } from "@openorb/result";
+import { type Result, tryAsync } from "@openorb/result";
+
+import { readPiSessionEvents } from "@/src/pi-session-history.ts";
 
 const SESSIONS_DIRECTORY = "sessions";
 const METADATA_FILE = "metadata.json";
-const EVENTS_FILE = "events.jsonl";
 const PI_SESSION_FILE = join("pi", "session.jsonl");
 
 const metadataSchema = object(
@@ -46,6 +40,8 @@ const metadataSchema = object(
       (value) => initialPromptPreview(value).length > 0,
       "The initial prompt must contain non-whitespace text.",
     ),
+    model: modelReferenceSchema,
+    orbSize: orbSizeSchema,
     state: runnerSessionStateSchema,
     checkoutState: runnerCheckoutStateSchema,
     baseCommit: optional(
@@ -67,7 +63,14 @@ export interface CreateRunnerSessionInput {
   ref: string;
   branchName: string;
   initialPrompt: string;
+  model: string;
+  orbSize: OrbSize;
   createdAt?: string;
+}
+
+export interface RunnerSessionPiPaths {
+  agentDirectory: string;
+  sessionFile: string;
 }
 
 export interface UpdateRunnerSessionProvisioningInput {
@@ -76,27 +79,14 @@ export interface UpdateRunnerSessionProvisioningInput {
   baseCommit?: string;
 }
 
-const storedSessionEventSchema = object(
-  {
-    cursor: number().refine(
-      (value) => Number.isSafeInteger(value) && value > 0,
-      "Session event cursors must be positive safe integers.",
-    ),
-    event: sessionProvisioningEventSchema,
-  },
-  { unknownKeys: "error" },
-);
-
-export type StoredRunnerSessionEvent = InferOutput<typeof storedSessionEventSchema>;
-
-export interface RunnerSessionInventoryError {
+export interface RunnerSessionManifestError {
   sessionDirectory: string;
   message: string;
 }
 
-export interface RunnerSessionInventory {
+export interface RunnerSessionManifest {
   sessions: RunnerSessionSnapshot[];
-  errors: RunnerSessionInventoryError[];
+  errors: RunnerSessionManifestError[];
 }
 
 export type RunnerSessionStoreOperation =
@@ -106,10 +96,9 @@ export type RunnerSessionStoreOperation =
   | "update-session-state"
   | "update-provisioning"
   | "get-workspace-path"
+  | "get-pi-paths"
   | "get-session-snapshot"
-  | "load-inventory"
-  | "read-events"
-  | "append-event";
+  | "load-session-manifest";
 
 export class RunnerSessionStoreError extends Error {
   constructor(
@@ -122,22 +111,9 @@ export class RunnerSessionStoreError extends Error {
   }
 }
 
-interface EventCursorInspection {
-  lastCursor: number;
-  byteLength: number;
-  error?: Error;
-}
-
-interface EventCursor {
-  value: number;
-  byteLength: number;
-}
-
 export class RunnerSessionStore {
   readonly #workingDirectory: string;
   readonly #runnerId: string;
-  readonly #eventWrites = new Map<string, Promise<Result<number, RunnerSessionStoreError>>>();
-  readonly #eventCursors = new Map<string, EventCursor>();
 
   constructor(options: { workingDirectory: string; runnerId: string }) {
     this.#workingDirectory = options.workingDirectory;
@@ -171,6 +147,8 @@ export class RunnerSessionStore {
       ref: input.ref,
       branchName: input.branchName,
       initialPrompt: input.initialPrompt,
+      model: input.model,
+      orbSize: input.orbSize,
       state: "created",
       checkoutState: "pending",
     });
@@ -182,18 +160,16 @@ export class RunnerSessionStore {
     await using rollback = new AsyncDisposableStack();
     rollback.defer(async () => {
       if (committed) return;
-      this.#eventCursors.delete(metadata.id);
       await tryAsync(Deno.remove(sessionPath, { recursive: true }), () => undefined);
     });
 
     for (const directory of ["workspace", "pi", "logs", "reports"]) {
       await Deno.mkdir(join(sessionPath, directory), { mode: 0o700 });
     }
-    await writeNewPrivateFile(join(sessionPath, EVENTS_FILE), new Uint8Array());
+    await Deno.mkdir(join(sessionPath, "pi", "agent"), { mode: 0o700 });
     await writeNewPrivateFile(join(sessionPath, PI_SESSION_FILE), new Uint8Array());
     await writeAtomicMetadata(join(sessionPath, METADATA_FILE), metadata);
     await syncDirectory(this.sessionsPath());
-    this.#eventCursors.set(metadata.id, { value: 0, byteLength: 0 });
     committed = true;
     return metadata;
   }
@@ -285,6 +261,29 @@ export class RunnerSessionStore {
     return await Deno.realPath(workspacePath);
   }
 
+  getSessionPiPaths(
+    sessionId: string,
+  ): Promise<Result<RunnerSessionPiPaths, RunnerSessionStoreError>> {
+    return tryAsync(
+      this.#getSessionPiPaths(sessionId),
+      storeError("get-pi-paths", `Could not access runner session ${sessionId} Pi storage`),
+    );
+  }
+
+  async #getSessionPiPaths(sessionId: string): Promise<RunnerSessionPiPaths> {
+    const metadata = await this.#readMetadataValue(sessionId);
+    const piDirectory = join(this.sessionPath(metadata.id), "pi");
+    const agentDirectory = join(piDirectory, "agent");
+    const sessionFile = join(this.sessionPath(metadata.id), PI_SESSION_FILE);
+    await assertRealDirectory(piDirectory, "Runner session Pi directory");
+    await assertRealDirectory(agentDirectory, "Runner session Pi agent directory");
+    await assertRegularFile(sessionFile, "Runner session Pi session file");
+    return {
+      agentDirectory: await Deno.realPath(agentDirectory),
+      sessionFile: await Deno.realPath(sessionFile),
+    };
+  }
+
   getSessionSnapshot(
     sessionId: string,
   ): Promise<Result<RunnerSessionSnapshot, RunnerSessionStoreError>> {
@@ -296,26 +295,21 @@ export class RunnerSessionStore {
 
   async #getSessionSnapshot(sessionId: string): Promise<RunnerSessionSnapshot> {
     const metadata = await this.#readMetadataValue(sessionId);
-    const eventLog = await iterateEventLog(
-      join(this.sessionPath(metadata.id), EVENTS_FILE),
-      () => {},
-    );
-    if (eventLog.error) throw eventLog.error;
-    this.#rememberEventCursor(metadata.id, eventLog);
-    return snapshotFrom(metadata, eventLog.lastCursor);
+    const history = await readPiSessionEvents(join(this.sessionPath(metadata.id), PI_SESSION_FILE));
+    return snapshotFrom(metadata, history.length);
   }
 
-  loadInventory(): Promise<Result<RunnerSessionInventory, RunnerSessionStoreError>> {
+  loadSessionManifest(): Promise<Result<RunnerSessionManifest, RunnerSessionStoreError>> {
     return tryAsync(
-      this.#loadInventory(),
-      storeError("load-inventory", "Could not access the runner session inventory root"),
+      this.#loadSessionManifest(),
+      storeError("load-session-manifest", "Could not load the runner session manifest"),
     );
   }
 
-  async #loadInventory(): Promise<RunnerSessionInventory> {
+  async #loadSessionManifest(): Promise<RunnerSessionManifest> {
     await ensurePrivateDirectory(this.sessionsPath());
     const sessions: RunnerSessionSnapshot[] = [];
-    const errors: RunnerSessionInventoryError[] = [];
+    const errors: RunnerSessionManifestError[] = [];
     const entries = [];
     for await (const entry of Deno.readDir(this.sessionsPath())) entries.push(entry);
     entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -338,15 +332,16 @@ export class RunnerSessionStore {
           continue;
         }
 
-        const eventLog = await iterateEventLog(join(entryPath, EVENTS_FILE), () => {});
-        if (eventLog.error) {
-          errors.push({ sessionDirectory: entry.name, message: eventLog.error.message });
-        } else {
-          this.#rememberEventCursor(metadata.id, eventLog);
-        }
-        sessions.push(
-          snapshotFrom(metadata, eventLog.lastCursor, eventLog.error ? "error" : undefined),
+        const [history, historyError] = await tryAsync(
+          readPiSessionEvents(join(entryPath, PI_SESSION_FILE)),
+          (cause) => new RunnerSessionDataError(errorMessage(cause)),
         );
+        if (historyError !== undefined) {
+          errors.push({ sessionDirectory: entry.name, message: historyError.message });
+          sessions.push(snapshotFrom(metadata, 0, "error"));
+          continue;
+        }
+        sessions.push(snapshotFrom(metadata, history.length));
       } else {
         errors.push({
           sessionDirectory: entry.name,
@@ -366,114 +361,12 @@ export class RunnerSessionStore {
     return { metadata };
   }
 
-  readEvents(
-    sessionId: string,
-  ): Promise<Result<StoredRunnerSessionEvent[], RunnerSessionStoreError>> {
-    return tryAsync(
-      this.#readEvents(sessionId),
-      storeError("read-events", `Could not read events for runner session ${sessionId}`),
-    );
-  }
-
-  async #readEvents(sessionId: string): Promise<StoredRunnerSessionEvent[]> {
-    const records: StoredRunnerSessionEvent[] = [];
-    await this.#forEachEvent(sessionId, (record) => {
-      records.push(record);
-    });
-    return records;
-  }
-
-  forEachEvent(
-    sessionId: string,
-    visit: (record: StoredRunnerSessionEvent) => void | Promise<void>,
-  ): Promise<Result<void, RunnerSessionStoreError>> {
-    return tryAsync(
-      this.#forEachEvent(sessionId, visit),
-      storeError("read-events", `Could not read events for runner session ${sessionId}`),
-    );
-  }
-
-  async #forEachEvent(
-    sessionId: string,
-    visit: (record: StoredRunnerSessionEvent) => void | Promise<void>,
-  ): Promise<void> {
-    const metadata = await this.#readMetadataValue(sessionId);
-    const inspection = await iterateEventLog(
-      join(this.sessionPath(metadata.id), EVENTS_FILE),
-      visit,
-    );
-    if (inspection.error) throw inspection.error;
-    this.#rememberEventCursor(metadata.id, inspection);
-  }
-
-  appendEvent(
-    sessionId: string,
-    event: SessionProvisioningEvent,
-  ): Promise<Result<number, RunnerSessionStoreError>> {
-    const previous = this.#eventWrites.get(sessionId) ?? Promise.resolve(ok(0));
-    const pending = tryAsync(
-      previous.then(async () => {
-        const id = parse(sessionIdSchema, sessionId);
-        const parsedEvent = parseSessionEvent(event);
-        const metadata = await this.#readMetadataValue(id);
-        const path = join(this.sessionPath(metadata.id), EVENTS_FILE);
-        let cursorState = this.#eventCursors.get(id);
-        if (cursorState && cursorState.byteLength !== await regularFileSize(path)) {
-          this.#eventCursors.delete(id);
-          cursorState = undefined;
-        }
-        if (!cursorState) {
-          const inspection = await iterateEventLog(path, () => {});
-          if (inspection.error) throw inspection.error;
-          cursorState = { value: inspection.lastCursor, byteLength: inspection.byteLength };
-          this.#eventCursors.set(id, cursorState);
-        }
-
-        const cursor = cursorState.value + 1;
-        const record: StoredRunnerSessionEvent = { cursor, event: parsedEvent };
-        const contents = new TextEncoder().encode(`${JSON.stringify(record)}\n`);
-        {
-          let writeSucceeded = false;
-          using rollback = new DisposableStack();
-          rollback.defer(() => {
-            if (!writeSucceeded) this.#eventCursors.delete(id);
-          });
-          {
-            using file = await openRegularFile(path, { write: true, append: true });
-            await writeAll(file, contents);
-            await file.sync();
-          }
-          writeSucceeded = true;
-        }
-        this.#eventCursors.set(id, {
-          value: cursor,
-          byteLength: cursorState.byteLength + contents.byteLength,
-        });
-        return cursor;
-      }),
-      storeError("append-event", `Could not append event for runner session ${sessionId}`),
-    );
-    this.#eventWrites.set(sessionId, pending);
-    return pending.finally(() => {
-      if (this.#eventWrites.get(sessionId) === pending) this.#eventWrites.delete(sessionId);
-    });
-  }
-
   private sessionsPath(): string {
     return join(this.#workingDirectory, SESSIONS_DIRECTORY);
   }
 
   private sessionPath(sessionId: string): string {
     return join(this.sessionsPath(), sessionId);
-  }
-
-  #rememberEventCursor(sessionId: string, inspection: EventCursorInspection): void {
-    if (!this.#eventCursors.has(sessionId) && !this.#eventWrites.has(sessionId)) {
-      this.#eventCursors.set(sessionId, {
-        value: inspection.lastCursor,
-        byteLength: inspection.byteLength,
-      });
-    }
   }
 }
 
@@ -491,6 +384,8 @@ function snapshotFrom(
     projectId: metadata.projectId,
     createdAt: metadata.createdAt,
     initialPromptPreview: initialPromptPreview(metadata.initialPrompt),
+    model: metadata.model,
+    orbSize: metadata.orbSize,
     state,
     lastEventCursor,
   };
@@ -502,85 +397,6 @@ async function readMetadataFile(path: string): Promise<RunnerSessionMetadata> {
     await readAll(file),
   ));
   return parseMetadata(value);
-}
-
-async function iterateEventLog(
-  path: string,
-  visit: (record: StoredRunnerSessionEvent) => void | Promise<void>,
-): Promise<EventCursorInspection> {
-  const [openedFile, openError] = await tryAsync(
-    openRegularFile(path, { read: true }),
-    (cause) => corruptEventLog(errorMessage(cause)),
-  );
-  if (openError !== undefined) return { lastCursor: 0, byteLength: 0, error: openError };
-  using file = openedFile;
-
-  const buffer = new Uint8Array(64 * 1024);
-  let lineBytes: number[] = [];
-  let lastCursor = 0;
-  let byteLength = 0;
-  while (true) {
-    const [bytesRead, readError] = await tryAsync(
-      file.read(buffer),
-      (cause) => corruptEventLog(errorMessage(cause)),
-    );
-    if (readError !== undefined) return { lastCursor, byteLength, error: readError };
-    if (bytesRead === null) break;
-    byteLength += bytesRead;
-    for (const byte of buffer.subarray(0, bytesRead)) {
-      if (byte !== 0x0a) {
-        lineBytes.push(byte);
-        continue;
-      }
-      const [record, recordError] = trySync(
-        () => {
-          const line = new TextDecoder("utf-8", { fatal: true }).decode(
-            Uint8Array.from(lineBytes),
-          );
-          return parseStoredEvent(JSON.parse(line));
-        },
-        (cause) => new RunnerSessionDataError(errorMessage(cause)),
-      );
-      if (recordError !== undefined) {
-        return {
-          lastCursor,
-          byteLength,
-          error: corruptEventLog(
-            `line ${lastCursor + 1} is invalid: ${errorMessage(recordError)}`,
-          ),
-        };
-      }
-      const expectedCursor = lastCursor + 1;
-      if (record.cursor !== expectedCursor) {
-        return {
-          lastCursor,
-          byteLength,
-          error: corruptEventLog(
-            `line ${expectedCursor} is invalid: expected cursor ${expectedCursor}, found ${record.cursor}`,
-          ),
-        };
-      }
-      await visit(record);
-      lastCursor = record.cursor;
-      lineBytes = [];
-    }
-  }
-  if (lineBytes.length > 0) {
-    return { lastCursor, byteLength, error: corruptEventLog("the final append is incomplete") };
-  }
-  return { lastCursor, byteLength };
-}
-
-function parseStoredEvent(input: unknown): StoredRunnerSessionEvent {
-  return parse(storedSessionEventSchema, input);
-}
-
-function parseSessionEvent(input: unknown): SessionProvisioningEvent {
-  return parse(sessionProvisioningEventSchema, input);
-}
-
-function corruptEventLog(message: string): Error {
-  return new Error(`Session event log is corrupt: ${message}.`);
 }
 
 async function writeAtomicMetadata(path: string, metadata: RunnerSessionMetadata): Promise<void> {
@@ -619,20 +435,19 @@ async function assertRealDirectory(path: string, label: string): Promise<void> {
   }
 }
 
+async function assertRegularFile(path: string, label: string): Promise<void> {
+  const info = await Deno.lstat(path);
+  if (!info.isFile || info.isSymlink) {
+    throw new RunnerSessionDataError(`${label} must be a regular file.`);
+  }
+}
+
 async function openRegularFile(path: string, options: Deno.OpenOptions): Promise<Deno.FsFile> {
   const info = await Deno.lstat(path);
   if (!info.isFile || info.isSymlink) {
     throw new RunnerSessionDataError(`${path} must be a regular file.`);
   }
   return await Deno.open(path, options);
-}
-
-async function regularFileSize(path: string): Promise<number> {
-  const info = await Deno.lstat(path);
-  if (!info.isFile || info.isSymlink) {
-    throw new RunnerSessionDataError(`${path} must be a regular file.`);
-  }
-  return info.size;
 }
 
 async function readAll(file: Deno.FsFile): Promise<Uint8Array> {

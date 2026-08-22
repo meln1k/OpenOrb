@@ -5,10 +5,16 @@ import type {
   GitCredential,
 } from "@/app/data/git-configuration-repository.ts";
 import type { RunnerEnrollmentToken } from "@/app/data/runner-repository.ts";
+import type { ModelProviderCredential } from "@/app/data/model-provider-repository.ts";
 import type { SecretEntry } from "@/app/data/secret-repository.ts";
+import type { ModelProviderOption } from "@/app/model-provider-catalog.ts";
 import { routes } from "@/app/routes.ts";
+import {
+  type SettingsRunner,
+  type SettingsTab,
+  SettingsTabs,
+} from "@/app/ui/settings/settings-tabs.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
-import { type SettingsRunner, type SettingsTab, SettingsTabs } from "./settings-tabs.tsx";
 import { designSystemStyle } from "@/app/ui/components/theme.ts";
 import { Document } from "@/app/ui/document.tsx";
 import { media } from "@/app/ui/responsive.ts";
@@ -27,6 +33,8 @@ export interface SettingsPageProps {
   error?: string;
   gitAuthor: GitAuthorConfiguration | null;
   githubCredential: GitCredential | null;
+  providerOptions: readonly ModelProviderOption[];
+  providers: Pick<ModelProviderCredential, "providerId" | "updatedAt">[];
   runners: SettingsRunner[];
   secrets: SecretEntry[];
 }
@@ -40,6 +48,8 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
     error,
     gitAuthor,
     githubCredential,
+    providerOptions,
+    providers,
     runners,
     secrets,
   } = handle.props;
@@ -74,11 +84,19 @@ export function SettingsPage(handle: Handle<SettingsPageProps>) {
             githubCredential={githubCredential ? { updatedAt: githubCredential.updatedAt } : null}
             runners={runners}
             hrefs={{
+              providers: settingsTabHref("providers"),
               secrets: settingsTabHref("secrets"),
               github: settingsTabHref("github"),
               "git-author": settingsTabHref("git-author"),
               runners: settingsTabHref("runners"),
             }}
+            providerOptions={[...providerOptions]}
+            providers={providers.map((provider) => ({
+              providerId: provider.providerId,
+              name: providerOptions.find((option) => option.id === provider.providerId)?.name ??
+                provider.providerId,
+              updatedAt: provider.updatedAt,
+            }))}
             secrets={secrets.map((secret) => ({
               key: secret.key,
               updatedAt: secret.updatedAt,

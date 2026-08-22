@@ -1,15 +1,48 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 
 import {
+  MAX_SESSION_EVENT_TEXT_BYTES,
+  modelReference,
+  ORB_SIZE_RESOURCES,
+  ORB_SIZES,
+  parseModelReference,
   parseRunnerClientMessage,
   parseRunnerServerMessage,
   type SessionEventMessage,
+  type SessionEventReplayCommand,
+  type SessionEventReplayResultMessage,
   type SessionProvisionAcceptedMessage,
   type SessionProvisionCommand,
 } from "@/src/index.ts";
 
 const SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const PROJECT_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c10";
+const MODEL_RUNTIME = {
+  model: "opencode-go/deepseek-v4-flash",
+  thinkingLevel: "high" as const,
+  credential: { type: "api_key" as const, value: "model-provider-key" },
+};
+
+Deno.test("defines the fixed orb provisioning sizes", () => {
+  assertEquals(ORB_SIZES, ["tiny", "small", "medium", "large", "xxlarge"]);
+  assertEquals(ORB_SIZE_RESOURCES, {
+    tiny: { cpuCount: 1, memoryMiB: 2048 },
+    small: { cpuCount: 2, memoryMiB: 4096 },
+    medium: { cpuCount: 4, memoryMiB: 8192 },
+    large: { cpuCount: 8, memoryMiB: 16_384 },
+    xxlarge: { cpuCount: 16, memoryMiB: 32_768 },
+  });
+});
+
+Deno.test("treats provider and model as one reference split only at the first slash", () => {
+  const reference = modelReference("openai", "organization/model/version");
+
+  assertEquals(reference, "openai/organization/model/version");
+  assertEquals(parseModelReference(reference), {
+    providerId: "openai",
+    modelId: "organization/model/version",
+  });
+});
 
 Deno.test("validates provisioning commands, acknowledgements, and events", () => {
   const command = {
@@ -23,7 +56,9 @@ Deno.test("validates provisioning commands, acknowledgements, and events", () =>
       repositoryUrl: "https://github.com/meln1k/openorb.git",
       ref: "main",
       branchName: "openorb/session-1234",
+      orbSize: "medium",
       initialPrompt: "Inspect the repository",
+      modelRuntime: MODEL_RUNTIME,
       githubToken: "github-token",
     },
   } satisfies SessionProvisionCommand;
@@ -43,6 +78,8 @@ Deno.test("validates provisioning commands, acknowledgements, and events", () =>
         projectId: PROJECT_ID,
         createdAt: "2026-08-17T12:00:00Z",
         initialPromptPreview: "Inspect the repository",
+        model: "opencode-go/deepseek-v4-flash",
+        orbSize: "medium",
         state: "created",
         lastEventCursor: 0,
       },
@@ -62,7 +99,6 @@ Deno.test("validates provisioning commands, acknowledgements, and events", () =>
     sessionId: SESSION_ID,
     correlationId: command.id,
     payload: {
-      cursor: 1,
       event: {
         type: "session.state",
         stage: "cloning",
@@ -74,13 +110,64 @@ Deno.test("validates provisioning commands, acknowledgements, and events", () =>
   assert(parsedEvent.type === "session.event");
   assertEquals(parsedEvent.payload, event.payload);
 
+  const compactedEvent = {
+    version: 1,
+    id: "event-2",
+    type: "session.event",
+    sessionId: SESSION_ID,
+    correlationId: command.id,
+    payload: {
+      cursor: 1,
+      event: {
+        type: "context.compacted",
+        compactionId: "compaction-1",
+        summary: "Inspected the repository.",
+        tokensBefore: 42_000,
+        usage: {
+          inputTokens: 2_000,
+          outputTokens: 200,
+          cacheReadTokens: 100,
+          cacheWriteTokens: 0,
+          totalTokens: 2_300,
+          totalCost: 0.01,
+        },
+      },
+    },
+  } satisfies SessionEventMessage;
+  const parsedCompactedEvent = parseRunnerClientMessage(compactedEvent);
+  assert(parsedCompactedEvent.type === "session.event");
+  assertEquals(parsedCompactedEvent.payload, compactedEvent.payload);
+
+  const replay = {
+    version: 1,
+    id: "replay-1",
+    type: "session.event.replay",
+    sessionId: SESSION_ID,
+    payload: { afterCursor: 7 },
+  } satisfies SessionEventReplayCommand;
+  const parsedReplay = parseRunnerServerMessage(replay);
+  assert(parsedReplay.type === "session.event.replay");
+  assertEquals(parsedReplay.payload, replay.payload);
+
+  const replayResult = {
+    version: 1,
+    id: "replay-result-1",
+    type: "session.event.replay.result",
+    sessionId: SESSION_ID,
+    correlationId: replay.id,
+    payload: { status: "completed", cursor: 9 },
+  } satisfies SessionEventReplayResultMessage;
+  const parsedReplayResult = parseRunnerClientMessage(replayResult);
+  assert(parsedReplayResult.type === "session.event.replay.result");
+  assertEquals(parsedReplayResult.payload, replayResult.payload);
+
   const retry = parseRunnerServerMessage({
     ...command,
     id: "retry-1",
-    payload: { mode: "retry" },
+    payload: { mode: "retry", modelRuntime: MODEL_RUNTIME },
   });
   assert(retry.type === "session.provision");
-  assertEquals(retry.payload, { mode: "retry" });
+  assertEquals(retry.payload, { mode: "retry", modelRuntime: MODEL_RUNTIME });
 });
 
 Deno.test("rejects malformed or oversized provisioning traffic", () => {
@@ -95,7 +182,9 @@ Deno.test("rejects malformed or oversized provisioning traffic", () => {
       repositoryUrl: "https://github.com/meln1k/openorb.git",
       ref: "main",
       branchName: "openorb/session-1234",
+      orbSize: "medium",
       initialPrompt: "Inspect the repository",
+      modelRuntime: MODEL_RUNTIME,
     },
   };
 
@@ -118,6 +207,28 @@ Deno.test("rejects malformed or oversized provisioning traffic", () => {
     })
   );
   assertThrows(() =>
+    parseRunnerServerMessage({
+      ...command,
+      payload: { ...command.payload, orbSize: "enormous" },
+    })
+  );
+  const { orbSize: _orbSize, ...missingOrbSize } = command.payload;
+  assertThrows(() => parseRunnerServerMessage({ ...command, payload: missingOrbSize }));
+  for (
+    const modelRuntime of [
+      { ...MODEL_RUNTIME, model: "invalid" },
+      { ...MODEL_RUNTIME, thinkingLevel: "invalid" },
+      { ...MODEL_RUNTIME, credential: { type: "api_key", value: "" } },
+    ]
+  ) {
+    assertThrows(() =>
+      parseRunnerServerMessage({
+        ...command,
+        payload: { ...command.payload, modelRuntime },
+      })
+    );
+  }
+  assertThrows(() =>
     parseRunnerClientMessage({
       version: 1,
       id: "accepted-1",
@@ -130,6 +241,8 @@ Deno.test("rejects malformed or oversized provisioning traffic", () => {
           projectId: PROJECT_ID,
           createdAt: "2026-08-17T12:00:00Z",
           initialPromptPreview: "Inspect the repository",
+          model: "opencode-go/deepseek-v4-flash",
+          orbSize: "medium",
           state: "created",
           lastEventCursor: 0,
         },
@@ -147,13 +260,43 @@ Deno.test("rejects malformed or oversized provisioning traffic", () => {
       sessionId: SESSION_ID,
       correlationId: "provision-1",
       payload: {
-        cursor: 1,
         event: {
           type: "provisioning.log",
           stream: "stdout",
-          text: "x".repeat(16 * 1024 + 1),
+          text: "x".repeat(MAX_SESSION_EVENT_TEXT_BYTES + 1),
         },
       },
     })
   );
+  for (
+    const payload of [
+      {
+        event: {
+          type: "model.retry.started",
+          attempt: Number.POSITIVE_INFINITY,
+          maxAttempts: 3,
+          delayMs: 100,
+          errorMessage: "Provider unavailable",
+        },
+      },
+      {
+        cursor: 1,
+        event: { type: "agent.started" },
+      },
+      {
+        event: { type: "agent.started", unexpected: true },
+      },
+    ]
+  ) {
+    assertThrows(() =>
+      parseRunnerClientMessage({
+        version: 1,
+        id: "live-event-1",
+        type: "session.event",
+        sessionId: SESSION_ID,
+        correlationId: "provision-1",
+        payload,
+      })
+    );
+  }
 });

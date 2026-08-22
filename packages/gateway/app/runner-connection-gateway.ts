@@ -1,19 +1,26 @@
 import {
+  MAX_RUNNER_CLIENT_MESSAGE_BYTES,
+  type OrbSize,
+  orbSizeResources,
   parseRunnerClientMessage,
   RUNNER_CONNECTED_MESSAGE_TYPE,
   RUNNER_HEARTBEAT_MESSAGE_TYPE,
   RUNNER_HELLO_MESSAGE_TYPE,
-  RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE,
-  RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE,
-  RUNNER_RECONCILE_START_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE,
+  RUNNER_SESSION_SYNC_START_MESSAGE_TYPE,
   type RunnerCapacity,
   type RunnerServerMessage,
   type RunnerSessionSnapshot,
   SESSION_EVENT_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_MESSAGE_TYPE,
+  SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
   SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
   SESSION_PROVISION_MESSAGE_TYPE,
   SESSION_PROVISION_REJECTED_MESSAGE_TYPE,
   type SessionEventPayload,
+  type SessionEventReplayResultMessage,
+  type SessionEventReplayResultPayload,
   type SessionProvisionAcceptedMessage,
   type SessionProvisionAcceptedPayload,
   type SessionProvisionCommandPayload,
@@ -27,7 +34,6 @@ import { ProvisionCommandOwner } from "@/app/provision-command-owner.ts";
 import { SessionRouteOwner } from "@/app/session-route-owner.ts";
 
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
-const MAX_MESSAGE_BYTES = 64 * 1024;
 const PROVISION_ACCEPTANCE_TIMEOUT_MS = 15_000;
 export const RUNNER_HEARTBEAT_TIMEOUT_MS = 60_000;
 
@@ -68,7 +74,8 @@ export type ProvisionSessionResult =
   | { status: "unavailable"; message: string };
 
 export interface SessionEventSubscription {
-  events: SessionEventPayload[];
+  replay: Promise<void>;
+  signal: AbortSignal;
   unsubscribe(): void;
 }
 
@@ -78,14 +85,14 @@ interface ActiveRunnerConnection {
   heartbeatTimeout: ReturnType<typeof setTimeout>;
   sessionIds: Set<string>;
   reservedCreateSessions: number;
-  reconciliationStarted: boolean;
-  reconciliation?: ReconciliationState;
+  sessionSyncStarted: boolean;
+  sessionSync?: SessionSyncState;
   capacity?: RunnerCapacity;
   lastHeartbeatAt?: number;
 }
 
-interface ReconciliationState {
-  snapshotId: string;
+interface SessionSyncState {
+  manifestId: string;
   nextSequence: number;
   receivedSessionCount: number;
   seenSessionIds: Set<string>;
@@ -94,7 +101,7 @@ interface ReconciliationState {
 
 type GatewayRepository =
   & Pick<RunnerRepository, "authenticateRunner">
-  & Pick<SessionCatalogRepository, "reconcileSessionSnapshotEntries">;
+  & Pick<SessionCatalogRepository, "reconcileSessionManifestEntries">;
 
 export class RunnerConnectionGateway implements RunnerConnectionRegistry {
   readonly #repository: GatewayRepository;
@@ -104,6 +111,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
   readonly #sessionRoutes = new SessionRouteOwner<ActiveRunnerConnection>((connection) =>
     this.#isActive(connection)
   );
+  readonly #sessionEventReplays = new Map<string, PendingSessionEventReplay>();
   readonly #provisionCommands: ProvisionCommandOwner<ActiveRunnerConnection>;
   readonly #heartbeatTimeoutMs: number;
   readonly #provisionAcceptanceTimeoutMs: number;
@@ -159,7 +167,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         messageQueue.then(async () => {
           if (socket.readyState !== WebSocket.OPEN) return;
           const frame = parseSafe(string(), event.data);
-          if (!frame.success || byteLength(frame.value) > MAX_MESSAGE_BYTES) {
+          if (!frame.success || byteLength(frame.value) > MAX_RUNNER_CLIENT_MESSAGE_BYTES) {
             closeSocket(socket, 4400, "Invalid message");
             return;
           }
@@ -198,6 +206,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
                 existing,
                 "Runner reconnected before acknowledging.",
               );
+              this.#failSessionEventReplaysForConnection(
+                existing,
+                "Runner reconnected before session history was replayed.",
+              );
               this.#sessionRoutes.remove(existing);
               closeSocket(existing.socket, 4000, "Replaced by reconnect");
             }
@@ -207,7 +219,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
               heartbeatTimeout: this.#createHeartbeatTimeout(runner.id, socket),
               sessionIds: new Set(),
               reservedCreateSessions: 0,
-              reconciliationStarted: false,
+              sessionSyncStarted: false,
             };
             this.#connections.set(runner.id, activeConnection);
             socket.send(JSON.stringify(connectedMessage(runner.id)));
@@ -226,14 +238,14 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             return;
           }
 
-          if (message.type === RUNNER_RECONCILE_START_MESSAGE_TYPE) {
-            if (activeConnection.reconciliationStarted) {
-              closeSocket(socket, 4400, "Session reconciliation already started");
+          if (message.type === RUNNER_SESSION_SYNC_START_MESSAGE_TYPE) {
+            if (activeConnection.sessionSyncStarted) {
+              closeSocket(socket, 4400, "Session sync already started");
               return;
             }
-            activeConnection.reconciliationStarted = true;
-            activeConnection.reconciliation = {
-              snapshotId: message.payload.snapshotId,
+            activeConnection.sessionSyncStarted = true;
+            activeConnection.sessionSync = {
+              manifestId: message.payload.manifestId,
               nextSequence: 0,
               receivedSessionCount: 0,
               seenSessionIds: new Set(),
@@ -243,43 +255,41 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             return;
           }
 
-          if (message.type === RUNNER_RECONCILE_CHUNK_MESSAGE_TYPE) {
-            const reconciliation = activeConnection.reconciliation;
+          if (message.type === RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE) {
+            const sessionSync = activeConnection.sessionSync;
             if (
-              !reconciliation ||
-              reconciliation.snapshotId !== message.payload.snapshotId ||
-              reconciliation.nextSequence !== message.payload.sequence ||
-              message.payload.sessions.some((session) =>
-                reconciliation.seenSessionIds.has(session.id)
-              )
+              !sessionSync ||
+              sessionSync.manifestId !== message.payload.manifestId ||
+              sessionSync.nextSequence !== message.payload.sequence ||
+              message.payload.sessions.some((session) => sessionSync.seenSessionIds.has(session.id))
             ) {
-              closeSocket(socket, 4400, "Invalid session reconciliation chunk");
+              closeSocket(socket, 4400, "Invalid session sync chunk");
               return;
             }
 
             this.#refreshHeartbeatTimeout(activeConnection);
             for (const session of message.payload.sessions) {
-              reconciliation.seenSessionIds.add(session.id);
-              reconciliation.sessions.push(session);
+              sessionSync.seenSessionIds.add(session.id);
+              sessionSync.sessions.push(session);
             }
-            reconciliation.receivedSessionCount += message.payload.sessions.length;
-            reconciliation.nextSequence++;
+            sessionSync.receivedSessionCount += message.payload.sessions.length;
+            sessionSync.nextSequence++;
             return;
           }
 
-          if (message.type === RUNNER_RECONCILE_COMPLETE_MESSAGE_TYPE) {
-            const reconciliation = activeConnection.reconciliation;
+          if (message.type === RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE) {
+            const sessionSync = activeConnection.sessionSync;
             if (
-              !reconciliation ||
-              reconciliation.snapshotId !== message.payload.snapshotId ||
-              reconciliation.nextSequence !== message.payload.chunkCount ||
-              reconciliation.receivedSessionCount !== message.payload.sessionCount
+              !sessionSync ||
+              sessionSync.manifestId !== message.payload.manifestId ||
+              sessionSync.nextSequence !== message.payload.chunkCount ||
+              sessionSync.receivedSessionCount !== message.payload.sessionCount
             ) {
-              closeSocket(socket, 4400, "Invalid session reconciliation completion");
+              closeSocket(socket, 4400, "Invalid session sync completion");
               return;
             }
             this.#refreshHeartbeatTimeout(activeConnection);
-            await this.#publishReconciliation(activeConnection, reconciliation);
+            await this.#publishSessionManifest(activeConnection, sessionSync);
             return;
           }
 
@@ -306,12 +316,32 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
           }
 
           if (message.type === SESSION_EVENT_MESSAGE_TYPE) {
+            const replay = this.#sessionEventReplays.get(message.correlationId);
+            if (replay) {
+              if (
+                replay.connection !== activeConnection || replay.sessionId !== message.sessionId
+              ) {
+                closeSocket(socket, 4400, "Session event replay does not match its request");
+                return;
+              }
+              if (!replay.accept(message.payload)) {
+                this.#sessionEventReplays.delete(message.correlationId);
+                replay.fail("Runner sent an invalid session history replay.");
+                closeSocket(socket, 4400, "Invalid session event replay sequence");
+              }
+              return;
+            }
             if (
               !this.#sessionRoutes.publish(activeConnection, message.sessionId, message.payload)
             ) {
               closeSocket(socket, 4400, "Session event is not routed through this runner");
               return;
             }
+            return;
+          }
+
+          if (message.type === SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE) {
+            this.#settleSessionEventReplay(activeConnection, message);
             return;
           }
 
@@ -338,6 +368,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
           this.#provisionCommands.rejectForConnection(
             activeConnection,
             "Runner disconnected before acknowledging.",
+          );
+          this.#failSessionEventReplaysForConnection(
+            activeConnection,
+            "Runner disconnected before session history was replayed.",
           );
           this.#sessionRoutes.remove(activeConnection);
         }
@@ -404,6 +438,15 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         message: "Runner has reached its concurrent session limit.",
       });
     }
+    if (
+      input.payload.mode === "create" &&
+      !runnerSupportsOrbSize(liveState.capacity, input.payload.orbSize)
+    ) {
+      return Promise.resolve({
+        status: "unavailable",
+        message: `Runner cannot provision the ${input.payload.orbSize} orb size.`,
+      });
+    }
 
     if (this.#provisionCommands.hasSession(input.userId, input.sessionId)) {
       return Promise.resolve({
@@ -456,7 +499,39 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     afterCursor: number,
     listener: (event: SessionEventPayload) => void,
   ): SessionEventSubscription {
-    return this.#sessionRoutes.subscribe(userId, sessionId, afterCursor, listener);
+    const connection = this.#sessionRoutes.getRoute(userId, sessionId);
+    if (!connection || !this.#isActive(connection)) {
+      return failedSessionEventSubscription("The pinned runner is offline.");
+    }
+
+    const commandId = crypto.randomUUID();
+    const replay = new PendingSessionEventReplay(connection, sessionId, afterCursor, listener);
+    const liveSubscription = this.#sessionRoutes.subscribe(
+      userId,
+      sessionId,
+      (event) => replay.acceptLive(event),
+      () => replay.fail("Runner disconnected from the session event stream."),
+    );
+    replay.setUnsubscribeLive(() => liveSubscription.unsubscribe());
+    this.#sessionEventReplays.set(commandId, replay);
+
+    const command: RunnerServerMessage = {
+      version: 1,
+      id: commandId,
+      type: SESSION_EVENT_REPLAY_MESSAGE_TYPE,
+      sessionId,
+      payload: { afterCursor },
+    };
+    const [, sendError] = trySync(
+      () => connection.socket.send(JSON.stringify(command)),
+      (cause) => new RunnerWebSocketError("Runner replay request delivery failed.", cause),
+    );
+    if (sendError !== undefined) {
+      this.#sessionEventReplays.delete(commandId);
+      replay.fail("Runner disconnected before session history could be requested.");
+      return replay;
+    }
+    return replay;
   }
 
   disconnectRunner(userId: string, runnerId: string): boolean {
@@ -468,6 +543,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     this.#provisionCommands.rejectForConnection(
       connection,
       "Runner was revoked before acknowledging.",
+    );
+    this.#failSessionEventReplaysForConnection(
+      connection,
+      "Runner was revoked before session history was replayed.",
     );
     this.#sessionRoutes.remove(connection);
     clearTimeout(connection.heartbeatTimeout);
@@ -486,6 +565,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       status: "unavailable",
       message: "Gateway is shutting down.",
     });
+    for (const replay of this.#sessionEventReplays.values()) {
+      replay.fail("Gateway shut down before session history was replayed.");
+    }
+    this.#sessionEventReplays.clear();
     this.#connections.clear();
     this.#sessionRoutes.clear();
     this.#sockets.clear();
@@ -501,6 +584,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         connection,
         "Runner heartbeat timed out before acknowledging.",
       );
+      this.#failSessionEventReplaysForConnection(
+        connection,
+        "Runner heartbeat timed out before session history was replayed.",
+      );
       this.#sessionRoutes.remove(connection);
       closeSocket(socket, 4408, "Heartbeat timed out");
     }, this.#heartbeatTimeoutMs);
@@ -514,19 +601,19 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     );
   }
 
-  async #publishReconciliation(
+  async #publishSessionManifest(
     connection: ActiveRunnerConnection,
-    reconciliation: ReconciliationState,
+    sessionSync: SessionSyncState,
   ): Promise<void> {
     if (!this.#isActive(connection)) return;
-    if (this.#sessionRoutes.hasConflict(connection, reconciliation.sessions)) {
+    if (this.#sessionRoutes.hasConflict(connection, sessionSync.sessions)) {
       closeSocket(connection.socket, 4400, "Session is already routed through another runner");
       return;
     }
 
-    const [reconciled, persistenceError] = await this.#repository.reconcileSessionSnapshotEntries(
+    const [reconciled, persistenceError] = await this.#repository.reconcileSessionManifestEntries(
       connection.runner.userId,
-      reconciliation.sessions,
+      sessionSync.sessions,
     );
     if (persistenceError !== undefined) {
       closeSocket(connection.socket, 1011, "Session catalog persistence failed");
@@ -534,21 +621,21 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     }
     if (!this.#isActive(connection)) return;
     if (reconciled.rejected.length > 0) {
-      closeSocket(connection.socket, 4400, "Session reconciliation was rejected");
+      closeSocket(connection.socket, 4400, "Session manifest reconciliation was rejected");
       return;
     }
-    if (this.#sessionRoutes.hasConflict(connection, reconciliation.sessions)) {
+    if (this.#sessionRoutes.hasConflict(connection, sessionSync.sessions)) {
       closeSocket(connection.socket, 4400, "Session is already routed through another runner");
       return;
     }
 
     this.#sessionRoutes.replace(connection, new Set(reconciled.acceptedSessionIds));
-    for (const session of reconciliation.sessions) {
+    for (const session of sessionSync.sessions) {
       if (reconciled.acceptedSessionIds.includes(session.id)) {
         this.#sessionRoutes.setSnapshot(connection.runner.userId, session);
       }
     }
-    connection.reconciliation = undefined;
+    connection.sessionSync = undefined;
   }
 
   async #acceptProvisionedSession(
@@ -569,7 +656,8 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       (pending.expectedProjectId !== message.payload.session.projectId ||
         pending.expectedRef !== message.payload.ref ||
         pending.expectedBranchName !== message.payload.branchName ||
-        pending.expectedInitialPromptPreview !== message.payload.session.initialPromptPreview)
+        pending.expectedInitialPromptPreview !== message.payload.session.initialPromptPreview ||
+        pending.expectedOrbSize !== message.payload.session.orbSize)
     ) {
       closeSocket(connection.socket, 4400, "Provisioning acceptance does not match the command");
       return;
@@ -582,7 +670,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     }
 
     if (pending.mode === "create") {
-      const [reconciled, persistenceError] = await this.#repository.reconcileSessionSnapshotEntries(
+      const [reconciled, persistenceError] = await this.#repository.reconcileSessionManifestEntries(
         connection.runner.userId,
         [message.payload.session],
       );
@@ -620,6 +708,32 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     });
   }
 
+  #settleSessionEventReplay(
+    connection: ActiveRunnerConnection,
+    message: SessionEventReplayResultMessage,
+  ): void {
+    const replay = this.#sessionEventReplays.get(message.correlationId);
+    if (!replay || replay.connection !== connection || replay.sessionId !== message.sessionId) {
+      closeSocket(connection.socket, 4400, "Unexpected session event replay result");
+      return;
+    }
+    this.#sessionEventReplays.delete(message.correlationId);
+    if (!replay.complete(message.payload)) {
+      closeSocket(connection.socket, 4400, "Invalid session event replay result");
+    }
+  }
+
+  #failSessionEventReplaysForConnection(
+    connection: ActiveRunnerConnection,
+    message: string,
+  ): void {
+    for (const [commandId, replay] of this.#sessionEventReplays) {
+      if (replay.connection !== connection) continue;
+      this.#sessionEventReplays.delete(commandId);
+      replay.fail(message);
+    }
+  }
+
   #isActive(connection: ActiveRunnerConnection): boolean {
     return connection.socket.readyState === WebSocket.OPEN &&
       this.#connections.get(connection.runner.id) === connection;
@@ -641,6 +755,12 @@ function byteLength(value: string): number {
 
 function runnerKey(userId: string, runnerId: string): string {
   return `${userId}:${runnerId}`;
+}
+
+function runnerSupportsOrbSize(capacity: RunnerCapacity, orbSize: OrbSize): boolean {
+  const resources = orbSizeResources(orbSize);
+  return resources.cpuCount <= capacity.vmCpuCount &&
+    resources.memoryMiB <= capacity.vmMemoryMiB;
 }
 
 function closeSocket(socket: WebSocket, code: number, reason: string): void {
@@ -673,5 +793,127 @@ class RunnerGatewayConfigurationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RunnerGatewayConfigurationError";
+  }
+}
+
+class PendingSessionEventReplay implements SessionEventSubscription {
+  readonly connection: ActiveRunnerConnection;
+  readonly sessionId: string;
+  readonly replay: Promise<void>;
+  readonly #abort = new AbortController();
+  readonly #resolveReplay: () => void;
+  readonly #rejectReplay: (error: Error) => void;
+  readonly #listener: (event: SessionEventPayload) => void;
+  readonly #afterCursor: number;
+  #unsubscribeLive = () => {};
+  #active = true;
+  #replaying = true;
+  #settled = false;
+  #replayMode: "pending" | "incremental" | "reset" = "pending";
+  #nextCursor: number;
+
+  get signal(): AbortSignal {
+    return this.#abort.signal;
+  }
+
+  constructor(
+    connection: ActiveRunnerConnection,
+    sessionId: string,
+    afterCursor: number,
+    listener: (event: SessionEventPayload) => void,
+  ) {
+    this.connection = connection;
+    this.sessionId = sessionId;
+    this.#afterCursor = afterCursor;
+    this.#nextCursor = afterCursor + 1;
+    this.#listener = listener;
+    const replay = Promise.withResolvers<void>();
+    this.replay = replay.promise;
+    this.#resolveReplay = replay.resolve;
+    this.#rejectReplay = replay.reject;
+  }
+
+  setUnsubscribeLive(unsubscribe: () => void): void {
+    this.#unsubscribeLive = unsubscribe;
+  }
+
+  accept(event: SessionEventPayload): boolean {
+    if (!this.#replaying) return false;
+    if (!("cursor" in event) && event.event.type === "conversation.reset") {
+      if (this.#replayMode !== "pending") return false;
+      this.#replayMode = "reset";
+      this.#nextCursor = 1;
+    } else {
+      if (!("cursor" in event)) return false;
+      if (this.#replayMode === "pending") {
+        if (this.#afterCursor === 0) return false;
+        this.#replayMode = "incremental";
+      }
+      if (event.cursor !== this.#nextCursor) return false;
+      this.#nextCursor += 1;
+    }
+    if (this.#active) {
+      // A disconnected browser stream must not disrupt the runner connection.
+      trySync(() => this.#listener(event), () => undefined);
+    }
+    return true;
+  }
+
+  acceptLive(event: SessionEventPayload): void {
+    if (this.#active && !this.#replaying) this.#listener(event);
+  }
+
+  complete(result: SessionEventReplayResultPayload): boolean {
+    if (result.status === "failed") {
+      this.fail("Runner could not replay Pi session history.");
+      return true;
+    }
+    const expectedCursor = this.#replayMode === "pending"
+      ? this.#afterCursor === 0 ? undefined : this.#afterCursor
+      : this.#nextCursor - 1;
+    if (expectedCursor === undefined || result.cursor !== expectedCursor) {
+      this.fail("Runner sent an incomplete Pi session history replay.");
+      return false;
+    }
+    if (this.#settled) return true;
+    this.#settled = true;
+    this.#replaying = false;
+    this.#resolveReplay();
+    return true;
+  }
+
+  fail(message: string): void {
+    if (!this.#active) return;
+    this.#active = false;
+    this.#unsubscribeLive();
+    if (!this.#settled) {
+      this.#settled = true;
+      this.#rejectReplay(new SessionEventReplayError(message));
+    }
+    this.#abort.abort();
+  }
+
+  unsubscribe(): void {
+    if (!this.#active) return;
+    this.#active = false;
+    this.#unsubscribeLive();
+    if (!this.#settled) {
+      this.#settled = true;
+      this.#resolveReplay();
+    }
+    this.#abort.abort();
+  }
+}
+
+function failedSessionEventSubscription(message: string): SessionEventSubscription {
+  const replay = Promise.reject<void>(new SessionEventReplayError(message));
+  void replay.catch(() => undefined);
+  return { replay, signal: AbortSignal.abort(), unsubscribe() {} };
+}
+
+class SessionEventReplayError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionEventReplayError";
   }
 }

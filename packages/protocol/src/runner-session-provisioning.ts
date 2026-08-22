@@ -1,11 +1,13 @@
 import { literal, object, optional, string, union } from "@remix-run/data-schema";
 import { trySync } from "@openorb/result";
 
-import { projectIdSchema, runnerSessionSnapshotSchema } from "@/src/runner-session-inventory.ts";
+import { projectIdSchema, runnerSessionSnapshotSchema } from "@/src/runner-session-manifest.ts";
 import type { InferOutput } from "@remix-run/data-schema";
 import type { RunnerMessage } from "@/src/runner-message.ts";
 import { runnerCheckoutStateSchema } from "@/src/runner-session-events.ts";
 import type { OptionalSchemaProperties } from "@/src/schema-output.ts";
+import { modelReferenceSchema } from "@/src/model-provider.ts";
+import { orbSizeSchema } from "@/src/orb-size.ts";
 
 export const SESSION_PROVISION_MESSAGE_TYPE = "session.provision";
 export const SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE = "session.provision.accepted";
@@ -38,6 +40,35 @@ const githubTokenSchema = string().refine(
   "GitHub tokens must be trimmed values of at most 4096 characters.",
 );
 
+const modelApiKeySchema = string().refine(
+  (value) => value.length > 0 && value.length <= 4096 && value.trim() === value,
+  "Model provider API keys must be trimmed values of at most 4096 characters.",
+);
+
+export const sessionModelRuntimeSchema = object(
+  {
+    model: modelReferenceSchema,
+    thinkingLevel: union([
+      literal("minimal" as const),
+      literal("low" as const),
+      literal("medium" as const),
+      literal("high" as const),
+      literal("xhigh" as const),
+      literal("max" as const),
+    ]),
+    credential: object(
+      {
+        type: literal("api_key" as const),
+        value: modelApiKeySchema,
+      },
+      { unknownKeys: "error" },
+    ),
+  },
+  { unknownKeys: "error" },
+);
+
+export type SessionModelRuntime = InferOutput<typeof sessionModelRuntimeSchema>;
+
 const createPayloadSchema = object(
   {
     mode: literal("create" as const),
@@ -45,7 +76,9 @@ const createPayloadSchema = object(
     repositoryUrl: sessionRepositoryUrlSchema,
     ref: sessionGitRefSchema,
     branchName: sessionBranchNameSchema,
+    orbSize: orbSizeSchema,
     initialPrompt: initialPromptSchema,
+    modelRuntime: sessionModelRuntimeSchema,
     githubToken: optional(githubTokenSchema),
   },
   { unknownKeys: "error" },
@@ -54,6 +87,7 @@ const createPayloadSchema = object(
 const retryPayloadSchema = object(
   {
     mode: literal("retry" as const),
+    modelRuntime: sessionModelRuntimeSchema,
     githubToken: optional(githubTokenSchema),
   },
   { unknownKeys: "error" },

@@ -3,7 +3,10 @@
     "jsx": "react-jsx",
     "jsxImportSource": "remix/ui",
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "@openorb/protocol/runner-session-events": [
+        "../protocol/src/runner-session-events.ts"
+      ]
     }
   }
 }

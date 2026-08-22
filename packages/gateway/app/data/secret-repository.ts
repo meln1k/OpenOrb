@@ -29,7 +29,7 @@ export function createSecretRepository(
   return {
     async listSecrets(userId) {
       const rows = await database.findMany(encryptedSecrets, {
-        where: { user_id: userId, purpose: encryptedSecretPurposes.providerApiKey },
+        where: { user_id: userId, purpose: encryptedSecretPurposes.genericSecret },
         orderBy: ["key", "asc"],
       });
       return rows.map(mapRow);
@@ -37,7 +37,7 @@ export function createSecretRepository(
 
     async getSecret(userId, key) {
       const row = await database.findOne(encryptedSecrets, {
-        where: { user_id: userId, key, purpose: encryptedSecretPurposes.providerApiKey },
+        where: { user_id: userId, key, purpose: encryptedSecretPurposes.genericSecret },
       });
       return row ? mapRow(row) : null;
     },
@@ -50,7 +50,7 @@ export function createSecretRepository(
         id: crypto.randomUUID(),
         user_id: userId,
         key,
-        purpose: encryptedSecretPurposes.providerApiKey,
+        purpose: encryptedSecretPurposes.genericSecret,
         key_version: encrypted.keyVersion,
         ciphertext: encrypted.ciphertext.toBase64(),
         created_at: now,
@@ -59,7 +59,7 @@ export function createSecretRepository(
 
       await database.transaction(async (transaction) => {
         const existing = await transaction.findOne(encryptedSecrets, {
-          where: { user_id: userId, key, purpose: encryptedSecretPurposes.providerApiKey },
+          where: { user_id: userId, key, purpose: encryptedSecretPurposes.genericSecret },
         });
         if (existing) {
           await transaction.update(encryptedSecrets, existing.id, {
@@ -77,7 +77,7 @@ export function createSecretRepository(
 
     async deleteSecret(userId, key) {
       const result = await database.deleteMany(encryptedSecrets, {
-        where: { user_id: userId, key, purpose: encryptedSecretPurposes.providerApiKey },
+        where: { user_id: userId, key, purpose: encryptedSecretPurposes.genericSecret },
       });
       return result.affectedRows > 0;
     },
