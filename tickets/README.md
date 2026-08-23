@@ -96,7 +96,7 @@ Unless a ticket explicitly says otherwise:
 
 | Ticket | Outcome |
 |---|---|
-| [OO-020](OO-020-offline-and-reconnect.md) | Offline/reconnect behavior and route rebuilding |
+| [OO-020](OO-020-offline-and-reconnect.md) | **Stale. Do not implement until restart behavior is specified again.** |
 | [OO-021](OO-021-visible-failure-recovery.md) | Required failures are visible and manually recoverable |
 | [OO-022](OO-022-responsive-session-ui.md) | Required workflow works at desktop and mobile widths |
 

@@ -96,18 +96,20 @@ The research also established limits that materially affect this design:
 ## Why the current structure is difficult
 
 The current code correctly handles many necessary edge cases, but implements an ad hoc effect
-runtime in application code. Six transport/event ownership files alone total 1,960 lines:
+runtime in application code. Eight transport/event ownership files alone total 2,425 lines:
 
 | Current owner                                                       | Lines | Concerns combined in the owner                                                                              |
 | ------------------------------------------------------------------- | ----: | ----------------------------------------------------------------------------------------------------------- |
-| `packages/gateway/app/runner-connection-gateway.ts`                 |   919 | Upgrade, auth, parsing, timers, manifest assembly, routes, command correlation, replay correlation, cleanup |
+| `packages/gateway/app/runner-connection-gateway.ts`                 | 1,189 | Upgrade, auth, parsing, timers, manifest assembly, routes, command correlation, replay correlation, cleanup |
 | `packages/gateway/app/provision-command-owner.ts`                   |   122 | Pending map, timeout, reservations, settlement                                                              |
-| `packages/gateway/app/session-route-owner.ts`                       |   165 | Routes, snapshots, listeners, fanout, disconnect cleanup                                                    |
+| `packages/gateway/app/prompt-command-owner.ts`                      |    75 | Prompt acknowledgement, timeout, uncertainty, and disconnect settlement                                     |
+| `packages/gateway/app/abort-command-owner.ts`                       |    75 | Abort acknowledgement, timeout, uncertainty, and disconnect settlement                                      |
+| `packages/gateway/app/session-route-owner.ts`                       |   182 | Routes, snapshots, listeners, fanout, disconnect cleanup                                                    |
 | `packages/gateway/app/actions/api/sessions/session-event-stream.ts` |   100 | Queue, overflow policy, timer, abort wiring, Web stream bridge                                              |
-| `packages/runner/src/connection.ts`                                 |   390 | WebSocket lifecycle, auth, reconnect, heartbeat, manifests, dispatch, replay responses                      |
+| `packages/runner/src/connection.ts`                                 |   418 | WebSocket lifecycle, auth, reconnect, heartbeat, manifests, dispatch, replay responses                      |
 | `packages/runner/src/session-event-relay.ts`                        |   264 | Serialization, connection handoff gate, cursor state, replay/live sequencing, publication                   |
 
-The 842-line `SessionProvisioner` then has a second set of job maps, disposable stacks, callback
+The 1,257-line `SessionProvisioner` then has a second set of job maps, disposable stacks, callback
 adapters, tuple results, event publication, and runtime ownership. The protocol package separately
 defines the correlation envelopes and parsers required by the manual dispatchers.
 
@@ -124,8 +126,8 @@ reimplemented at every level:
   object, route owner, socket command, and runner relay.
 
 That multiplication makes the system harder to reason about than its actual domain rules. Adding
-prompt commands, cancellation, terminal streams, or preview channels in the same style would grow
-more pending maps and cleanup paths.
+more session commands, terminal streams, or preview channels in the same style would grow more
+pending maps and cleanup paths.
 
 ## Alternatives considered
 
@@ -172,6 +174,7 @@ Browser
 |      -> Effect RPC client per authenticated runner connection                 |
 |         -> WatchRunner() stream                                               |
 |         -> ProvisionSession() effect                                          |
+|         -> PromptSession() / AbortSession() effects                           |
 |         -> WatchSession(afterCursor) stream                                   |
 |                                                                               |
 | DenoHttpServer owns HTTP/upgrade. Each accepted connection has one Scope.     |
@@ -251,6 +254,22 @@ One custom transport adapter remains on the runner. Effect RPC servers consume a
 reconnect schedule. It does not parse frames, buffer messages, authenticate peers, correlate calls,
 or implement RPC. If it grows beyond that responsibility, the API proof has invalidated the design.
 
+The runner socket decorator also reports one transport-only terminal signal to the connection
+attempt. The gateway uses private WebSocket close code `4401` for permanent runner rejection. This
+includes invalid credentials, claimed-ID mismatch, revocation, and application protocol mismatch.
+The close reason is one fixed, non-sensitive message. Detailed rejection information remains only in
+safe gateway logs.
+
+The decorator records code `4401` in an attempt-scoped `Deferred` before Effect RPC consumes the
+`SocketCloseError`. When the RPC handler ends, `OutboundSocketServer` reads that signal. Code `4401`
+stops the reconnect schedule and returns a runner startup error. The operator must fix or re-enroll
+the runner and restart the process. Observing this one close code is socket lifetime management. It
+does not move authentication policy into the adapter.
+
+All other close outcomes remain transient unless another policy in this document says otherwise.
+This includes bootstrap timeout code `4408`, DNS failure, connect failure, abnormal close, and ping
+timeout. These outcomes use the one capped reconnect schedule.
+
 ### Authentication as the first RPC
 
 Do not add a custom pre-RPC authentication protocol. Make `IdentifyRunner` the only procedure the
@@ -264,8 +283,8 @@ gateway may invoke on a candidate connection:
    version, and capabilities in a size-bounded response.
 4. The gateway authenticates the bearer token, requires the authenticated and claimed runner IDs to
    match, checks revocation and protocol compatibility, and then starts `WatchRunner`.
-5. Failure or timeout closes the candidate scope. Authentication/version rejection is not retried
-   until runner configuration changes; transient DNS, connect, close, and ping failures are.
+5. Failure or timeout closes the candidate scope. Permanent rejection uses close code `4401` and
+   stops runner reconnect. A bootstrap timeout uses close code `4408` and remains transient.
 
 This preserves the MVP's bearer-token design without putting credentials in the URL query string or
 WebSocket subprotocol, where they are more likely to enter HTTP/proxy logs. The credential must also
@@ -304,6 +323,18 @@ class ProvisionSession extends Rpc.make("session.provision", {
   error: Schema.Union([CapacityExceeded, SessionConflict, ProvisionRejected]),
 }) {}
 
+class PromptSession extends Rpc.make("session.prompt", {
+  payload: PromptSessionPayload,
+  success: PromptSessionAccepted,
+  error: Schema.Union([SessionNotFound, PromptRejected]),
+}) {}
+
+class AbortSession extends Rpc.make("session.abort", {
+  payload: AbortSessionPayload,
+  success: AbortSessionAccepted,
+  error: Schema.Union([SessionNotFound, AbortRejected]),
+}) {}
+
 class WatchSession extends Rpc.make("session.watch", {
   payload: { sessionId: SessionId, afterCursor: SessionCursor },
   success: SessionEvent,
@@ -315,16 +346,20 @@ export const RunnerApi = RpcGroup.make(
   IdentifyRunner,
   WatchRunner,
   ProvisionSession,
+  PromptSession,
+  AbortSession,
   WatchSession,
 );
 ```
 
-Later prompt, abort, status, diff, archive, delete, and data-channel preparation procedures join the
-same group. They are domain procedures, not generic `Command`/`CommandResult` envelopes.
+Later status, diff, archive, delete, and data-channel preparation procedures join the same group.
+They are domain procedures, not generic `Command`/`CommandResult` envelopes.
 
 Effect RPC request IDs are transport correlation only. Stable domain identifiers remain in payloads
-where an operation needs idempotency across disconnects, restarts, or retries. Examples include a
-session ID for provisioning and `clientRequestId` for future prompt delivery.
+and results where an operation needs identity across disconnects, restarts, or retries. These values
+include the provisioning session ID, each prompt `clientRequestId`, and each Pi `runId`. A `runId`
+must appear explicitly in accepted results, runner snapshots and events, and `AbortSessionPayload`.
+It must never be derived from an Effect RPC request ID.
 
 ### `WatchRunner`
 
@@ -371,6 +406,28 @@ The handler performs only the acceptance transaction:
 3. transfer the long-running job to the process-owned `SessionSupervisor`; and
 4. return the durable session snapshot.
 
+Steps 2 and 3 form one short acceptance commit. Implement that commit with
+`Effect.uninterruptibleMask`. Validation and response delivery remain interruptible. The mask ends
+as soon as the supervisor owns the job. It must not cover the long-running provisioning job.
+
+The acceptance commit handles durable metadata as follows:
+
+- New matching input creates metadata and installs one supervisor job.
+- Matching metadata in the `created` state with no supervisor job installs the missing job. This
+  repairs interruption or process failure between durable creation and supervisor insertion.
+- Matching metadata with a live supervisor job or a completed durable state is already accepted. It
+  does not start a second job.
+- Matching metadata in the `provisioning` state with no live job indicates a process interruption
+  after job start. Mark it failed and require an explicit retry. Do not restart its side effects
+  automatically.
+- Metadata for different immutable provisioning input returns `SessionConflict`.
+- If supervisor insertion fails after metadata creation, mark the metadata as failed before leaving
+  the masked section. An explicit retry then uses the normal failed-session path. If the failure
+  write also fails, preserve the `created` metadata. The missing-job rule repairs that state.
+
+Supervisor insertion is keyed by session ID and must never replace a live job. These rules make the
+acceptance commit idempotent without making the provisioning side effects automatically retryable.
+
 The background provisioning job is held in a process-scoped `FiberMap` keyed by session ID. It is
 not a child of the RPC request or connection. A disconnect after step 3 may lose the RPC response,
 but does not stop the job.
@@ -389,6 +446,31 @@ services or `Ref`s. One process-owned session fiber exclusively owns it and seri
 Effect only manages scoped creation, subscription cleanup, interruption through `abort()`, and final
 disposal. Keep the Pi session alive across prompts and use its JSONL transcript to reconstruct it
 after a runner restart.
+
+### `PromptSession` and `AbortSession`
+
+`PromptSession` and `AbortSession` are unary acceptance effects. The process-owned session fiber
+serializes both procedures for each session. This preserves order when Prompt and Abort arrive at
+the same time.
+
+The runner checks Pi's current state inside the serialized operation. An idle prompt calls
+`session.prompt()`. A prompt during an active run calls `session.followUp()`. The gateway does not
+select between these operations. Each prompt carries a stable `clientRequestId`. A newly started Pi
+run receives an explicit `runId`. An accepted follow-up reports the current `runId`.
+
+Do not retry a prompt automatically. A timeout or disconnect after Pi may have accepted the prompt
+produces a `delivery-uncertain` gateway result. The next runner snapshot and Pi JSONL can show work
+that became observable. They do not authorize automatic replay. Pi's accepted follow-up queue is
+process-local and ephemeral. Only a delivered follow-up becomes durable in Pi JSONL.
+
+`AbortSessionPayload` contains the exact `runId` observed by the gateway. The runner rejects an
+Abort for an idle, settled, or different run. When Abort starts, the session rejects new Prompt and
+Abort requests. It then clears all Pi-native queued follow-ups, calls `session.abort()`, and waits
+for Pi to settle. A user-requested `aborted` stop reason returns the session to ready instead of
+failed.
+
+Do not retry Abort automatically. A timeout or disconnect produces an uncertain result because the
+target run may still be stopping.
 
 ### `WatchSession`
 
@@ -418,18 +500,18 @@ into one wake-up, the next Pi JSONL read still returns all ten durable events. A
 fresh initial read. This is simpler and safer than attempting to make an in-memory event queue
 lossless.
 
-If `afterCursor` is zero or no longer valid for the active Pi branch, emit `conversation.reset` then
-the complete active projection. Otherwise emit only later cursor-bearing events. The cursor contract
-remains runner-owned and independent of RPC request IDs.
+OpenOrb does not expose Pi branching. `SessionCursor` therefore remains a non-negative position in
+the current linear Pi JSONL projection. If `afterCursor` is zero or is greater than the current
+projection length, emit `conversation.reset` and then the complete projection. Otherwise, emit only
+later cursor-bearing events. A future OpenOrb branching feature must define a new cursor contract
+before it can change the active projection. The cursor remains independent of RPC request IDs.
 
 The current implementation's fine-grained provisioning stages and provisioning output are ephemeral.
-Effect cannot make them durable. The accepted design must choose explicitly between:
-
-- keeping them documented as best-effort; or
-- deriving current stage from runner metadata and replaying output from the ordinary runner log
-  files already allowed by `MVP.md`.
-
-Do not add a unified OpenOrb event log or a second normalized conversation transcript to solve this.
+Keep them best-effort. Deliver them through a bounded/sliding in-memory stream. A disconnect or slow
+consumer may lose them, and reconnect does not replay them. Runner metadata provides only the latest
+coarse lifecycle state. Pi JSONL remains the only durable conversation source of truth. Do not add a
+durable provisioning event log, a unified OpenOrb event log, or a second normalized conversation
+transcript.
 
 ### Gateway SSE edge
 
@@ -546,19 +628,19 @@ meaningfully classify.
 
 Effect centralizes these policies but does not decide them:
 
-| Flow                            | Authoritative state                                                    | Automatic retry                                      | Disconnect/overflow behavior                                        |
-| ------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------- |
-| Identification/auth/version     | Gateway runner record + protocol constants                             | Never after rejection/mismatch                       | Close candidate; operator must fix identity/version                 |
-| Physical runner connection      | Current scoped socket                                                  | Transient open/close only, exponential capped jitter | New connection scope; old scope finalizes                           |
-| Runner snapshot/routes          | Runner store + gateway tombstones/catalog                              | Full stream restarts on reconnect                    | Gateway commits only complete reconciled snapshot                   |
-| Capacity/status                 | Current runner observation                                             | Re-established with connection                       | Inactivity closes connection; no stale live state                   |
-| Provision acceptance            | Runner-local session metadata                                          | No blind side-effect retry                           | Response may be ambiguous; same session ID is reconciled/idempotent |
-| Completed conversation          | Pi JSONL active projection                                             | Browser reconnect asks after cursor                  | Never silently drop; close and replay from cursor                   |
-| Current lifecycle state         | Runner metadata                                                        | Re-read on each watch/reconnect                      | Coalesced notifications are safe because state is reread            |
-| Token deltas/transient progress | Memory only                                                            | No                                                   | Bounded/sliding drop is allowed                                     |
-| Provisioning logs               | Best-effort today, or ordinary runner log file after explicit decision | Only if file-backed                                  | Must not be described as durable while memory-only                  |
-| Future prompt command           | Runner journal + `clientRequestId` + Pi reconciliation                 | Only where domain classifies safe                    | Ambiguous Pi handoff remains `delivery-uncertain`                   |
-| Future terminal/preview bytes   | Endpoint stream, no durable replay by default                          | Reopen/reset explicitly                              | Byte credits and bounded queues; never block control                |
+| Flow                            | Authoritative state                                    | Automatic retry                                      | Disconnect/overflow behavior                                        |
+| ------------------------------- | ------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------- |
+| Identification/auth/version     | Gateway runner record + protocol constants             | Never after close code `4401`                        | Stop reconnect; operator fixes configuration and restarts runner    |
+| Physical runner connection      | Current scoped socket                                  | Transient open/close only, exponential capped jitter | New connection scope; old scope finalizes                           |
+| Runner snapshot/routes          | Runner store + gateway tombstones/catalog              | Full stream restarts on reconnect                    | Gateway commits only complete reconciled snapshot                   |
+| Capacity/status                 | Current runner observation                             | Re-established with connection                       | Inactivity closes connection; no stale live state                   |
+| Provision acceptance            | Runner-local session metadata                          | No blind side-effect retry                           | Response may be ambiguous; same session ID is reconciled/idempotent |
+| Prompt/follow-up/Abort          | Pi live state + explicit `clientRequestId` and `runId` | No                                                   | Ambiguous handoff remains `delivery-uncertain`                      |
+| Completed conversation          | Pi JSONL projection                                    | Browser reconnect asks after cursor                  | Never silently drop; close and replay from cursor                   |
+| Current lifecycle state         | Runner metadata                                        | Re-read on each watch/reconnect                      | Coalesced notifications are safe because state is reread            |
+| Token deltas/transient progress | Memory only                                            | No                                                   | Bounded/sliding drop is allowed                                     |
+| Provisioning logs               | Memory only                                            | No                                                   | Bounded best-effort delivery; disconnect loses them                 |
+| Future terminal/preview bytes   | Endpoint stream, no durable replay by default          | Reopen/reset explicitly                              | Byte credits and bounded queues; never block control                |
 
 There must be exactly one owner for connection retry: the runner's outbound connection supervisor.
 Disable the Effect RPC client's built-in socket retry for the gateway's already-accepted socket
@@ -603,6 +685,7 @@ channels. Their close interrupts the channel fiber and sends reset/end as approp
 | Hand-written runner message envelopes and dispatch switches                | `RunnerApi` Effect Schema/RPC declarations, beginning with `IdentifyRunner`       |
 | `RunnerConnectionGateway` giant class                                      | `RunnerRegistry` domain service + Deno HTTP upgrade/admission handler             |
 | `ProvisionCommandOwner`                                                    | Unary RPC effect, `Effect.timeout`, scoped reservation, runner domain idempotency |
+| `PromptCommandOwner` and `AbortCommandOwner`                               | Unary RPC effects, explicit domain IDs, and transport uncertainty mapping         |
 | `PendingSessionEventReplay` and replay-result messages                     | One `WatchSession(afterCursor)` stream                                            |
 | Gateway live session listener fanout                                       | Direct per-browser runner RPC stream; registry retains only routes/snapshots      |
 | Runner `SessionEventRelay` attachment and Promise gates                    | `SessionEvents` history projection, coalesced change PubSub, ephemeral PubSub     |
@@ -649,11 +732,13 @@ Before changing production paths, build a test-only vertical slice pinned to the
    native socket listener or custom preface buffer.
 5. Invalid token, claimed-ID mismatch, version mismatch, and timeout close the candidate before any
    non-bootstrap procedure is called.
-6. One unary RPC and one infinite streaming RPC work in the inverted logical direction.
-7. Stream cancellation reaches the runner finalizer.
-8. Forced disconnect settles pending effects and permits a clean reconnect.
-9. Frame limits, JSON Schema failures, ping timeout, and exact close codes are observed.
-10. `deno compile` still produces the standalone Linux runner without a Node runtime requirement.
+6. The socket decorator records close code `4401` before RPC consumes the close error, and the
+   runner stops reconnecting. Bootstrap timeout code `4408` still reconnects.
+7. One unary RPC and one infinite streaming RPC work in the inverted logical direction.
+8. Stream cancellation reaches the runner finalizer.
+9. Forced disconnect settles pending effects and permits a clean reconnect.
+10. Frame limits, JSON Schema failures, ping timeout, and exact close codes are observed.
+11. `deno compile` still produces the standalone Linux runner without a Node runtime requirement.
 
 Promote this slice to a contract test or delete it when its coverage exists in integration tests. It
 must never become a second production transport. If `OutboundSocketServer` cannot remain a minimal
@@ -674,9 +759,10 @@ protocol as a fallback and do not copy Effect's private RPC implementation.
 - Keep Remix `data-schema` at browser form/request boundaries; Effect Schema becomes the sole runner
   wire/RPC schema source.
 
-Do not add Bun/npm runtime scripts or Vitest. The private `package.json` is restricted to local
-TypeScript and Effect language-service tooling; Deno installs and runs that tooling, and the
-application remains Deno-only.
+Do not add Bun/npm runtime scripts or Vitest. The private `package.json` is required for Effect
+setup scripts, Effect-aware diagnostics, and local TypeScript tooling. Deno installs and runs that
+tooling. The application remains Deno-only, and `deno.json` plus `deno.lock` remain authoritative
+for runtime dependencies.
 
 ### Work package 2: atomic runner and gateway replacement
 
@@ -685,11 +771,15 @@ application remains Deno-only.
 - Wrap existing `RunnerSessionStore` and Gondolin Promise APIs once at their leaf Effect services;
   use the existing Pi factory directly at the scoped session boundary.
 - Install the runner RPC server over `OutboundSocketServer` and implement `IdentifyRunner`,
-  `WatchRunner`, `ProvisionSession`, and `WatchSession` directly from the new services.
+  `WatchRunner`, `ProvisionSession`, `PromptSession`, `AbortSession`, and `WatchSession` directly
+  from the new services.
+- Preserve native follow-up behavior, per-session Prompt/Abort ordering, exact-run Abort, queue
+  clearing before Abort, no automatic command retry, and uncertain delivery results.
 - Move gateway HTTP ownership to `DenoHttpServer`, mount runner upgrade as an Effect HTTP handler,
   and pass all remaining requests to Remix with `HttpEffect.fromWebHandler`.
-- Replace `RunnerConnectionGateway`, `ProvisionCommandOwner`, and `SessionRouteOwner` with the one
-  `RunnerRegistry` and the accepted-socket RPC client.
+- Replace `RunnerConnectionGateway`, `ProvisionCommandOwner`, `PromptCommandOwner`,
+  `AbortCommandOwner`, and `SessionRouteOwner` with the one `RunnerRegistry` and the accepted-socket
+  RPC client.
 - Replace the replay command plus gateway fanout path with direct per-browser `WatchSession`
   streams, then replace the manual SSE channel with `Stream.toReadableStreamEffect`.
 - Remove tuple `Result` from the transport, registry, event, and provisioning core. Delete
@@ -700,10 +790,11 @@ application remains Deno-only.
 Before the cutover is considered reviewable:
 
 - delete version 1 envelopes, parsers, dispatch switches, manifest chunks, heartbeat messages,
-  provision responses, replay commands/results, pending maps, relay attachment gates, gateway live
-  fanout, the old reconnect loop, and the manual SSE channel;
+  provision/prompt/abort responses, replay commands/results, pending maps, relay attachment gates,
+  gateway live fanout, the old reconnect loop, and the manual SSE channel;
 - search for and reject any old/new switch, compatibility branch, or dead transport owner;
-- update `MVP.md` protocol wording to describe only the new path; and
+- update `MVP.md` and `MASTER_PLAN.md` protocol and gateway server wording to describe only the new
+  path; and
 - run the complete verification strategy below against the combined runner/gateway architecture.
 
 ### Future data plane
@@ -738,8 +829,9 @@ Use four layers of tests:
 
 - Pi append before subscription, during initial read, and after live handoff;
 - notification coalescing without durable event loss;
-- reset for zero, expired, and ahead-of-history cursors;
+- reset for zero and ahead-of-history cursors;
 - no duplicate cursor-bearing event across replay/live boundaries;
+- best-effort provisioning output is bounded and is not replayed after reconnect;
 - slow browser drops token deltas without blocking Pi;
 - durable pressure/gap terminates SSE and resumes from `Last-Event-ID`;
 - multiple browsers have independent cancellation/backpressure; and
@@ -748,8 +840,11 @@ Use four layers of tests:
 ### Real integration and security tests
 
 - actual Deno WebSocket between runner and gateway;
-- enrollment/authentication, invalid token, revocation, reconnect, and gateway restart;
-- disconnect before and after provision's durable acceptance boundary;
+- enrollment/authentication, invalid token, revocation, terminal rejection, reconnect, and gateway
+  restart;
+- disconnect before, during, and after provision's durable acceptance commit;
+- idle prompt, native follow-up, Prompt/Abort ordering, stale-run Abort rejection, follow-up
+  clearing, and uncertain non-retry behavior;
 - manifest/catalog/tombstone reconciliation and anti-resurrection;
 - native browser EventSource reconnect through gateway to runner Pi JSONL;
 - no secrets in URLs, close reasons, spans, logs, defects, or browser events;
@@ -766,8 +861,8 @@ Use four layers of tests:
 - When an RC changes, let type errors identify affected call sites and rewrite them directly. The
   expected maintenance strategy is a compile-guided repository update, not a compatibility layer.
 - Add contract tests around the outbound `SocketServer` adapter, accepted-socket no-retry client,
-  `IdentifyRunner` admission, stream acknowledgement, cancellation, frame size, and eager-frame
-  handling.
+  terminal close signal, `IdentifyRunner` admission, stream acknowledgement, cancellation, frame
+  size, and eager-frame handling.
 - Review Effect source and rerun the API contract tests after every v4 RC upgrade.
 - Keep the Effect language service and local TypeScript in the private tooling-only `package.json`.
   Deno remains the package manager and authoritative TypeScript language server; use
@@ -789,7 +884,8 @@ a permanent abstraction cost to avoid occasional pre-production rewrites.
 **Risk:** Public `SocketServer` lifecycle semantics may not fit an outbound reconnect loop cleanly.
 
 **Mitigation:** prove it before migration. The adapter should only offer the outbound Deno socket to
-the supplied handler in a child scope and apply the connection retry schedule. If it starts
+the supplied handler in a child scope, observe the one terminal close signal, and apply the
+connection retry schedule. The socket decorator, not RPC, records that signal. If the adapter starts
 implementing authentication, RPC framing, client IDs, or correlation, revise the role arrangement
 before the atomic cutover.
 
@@ -798,15 +894,16 @@ before the atomic cutover.
 **Risk:** `Effect.retry` makes a non-idempotent call look safe.
 
 **Mitigation:** retry only connection establishment and explicitly classified domain operations.
-Keep stable command IDs, journals, Pi reconciliation, and `delivery-uncertain` semantics outside the
-transport library.
+Keep stable command and run IDs, Pi reconciliation, and `delivery-uncertain` semantics outside the
+transport library. Do not add a durable prompt queue or journal.
 
 ### A scope can own too much
 
 **Risk:** Closing a WebSocket cancels provisioning or a running Pi session.
 
-**Mitigation:** enforce the documented process/connection/request scope hierarchy. Include a test
-that disconnects immediately after durable acceptance and observes the process-owned job continue.
+**Mitigation:** enforce the documented process/connection/request scope hierarchy. Mask only the
+short metadata-and-supervisor acceptance commit. Test interruption before, during, and after that
+commit. After acceptance, the process-owned job must continue.
 
 ### RPC acknowledgement is not byte-level drain
 
@@ -850,16 +947,20 @@ when all of the following are true:
 6. Completed conversation events are recovered only from Pi JSONL and survive notification loss.
 7. Slow consumers cannot block Pi or runner control; durable events are replayed rather than
    silently dropped.
-8. Authentication/protocol failures do not retry, while transient connection failures use one
-   deterministic capped-jitter schedule.
-9. Existing catalog, ownership, tombstone, Pi isolation, Git isolation, and secret-redaction tests
-   remain green.
-10. The old dispatch envelopes, provision owner, replay owner, relay attachment gate, and manual SSE
+8. `PromptSession` preserves idle prompt and native follow-up behavior. `AbortSession` targets one
+   exact run, clears queued follow-ups, and preserves Prompt/Abort order.
+9. Prompt and Abort are never retried automatically. An ambiguous handoff reports uncertain
+   delivery.
+10. Authentication/protocol failures stop retry through close code `4401`. Transient connection
+    failures use one deterministic capped-jitter schedule.
+11. Existing catalog, ownership, tombstone, Pi isolation, Git isolation, and secret-redaction tests
+    remain green.
+12. The old dispatch envelopes, command owners, replay owner, relay attachment gate, and manual SSE
     channel are deleted.
-11. There is no compatibility protocol, old/new feature flag, dual event path, or unstable-API
+13. There is no compatibility protocol, old/new feature flag, dual event path, or unstable-API
     insulation wrapper.
 
-As a guardrail, the six current transport/event ownership files total 1,960 lines. The replacement
+As a guardrail, the eight current transport/event ownership files total 2,425 lines. The replacement
 should remove substantially more custom lifecycle/correlation code than it adds; a reasonable target
 is a 40–60% reduction in that area, excluding schema declarations and domain reconciliation. If the
 new design approaches the old size because of integration glue around Effect RPC, reconsider the RPC

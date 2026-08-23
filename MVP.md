@@ -50,7 +50,7 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 - Session creation, stop, continuation, and online/offline deletion
 - Responsive chat UI
 - Streaming assistant text, thinking, tool calls, and results
-- Session status and provisioning logs
+- Session status and best-effort live provisioning logs
 - Aggregate Git status/diff and changed-file view while the runner is online
 - Live proxying of runner-owned session history and events; no gateway session mirror
 
@@ -150,7 +150,12 @@ There is no browser-to-runner connection and no runner listener exposed to the n
 ### Monorepo
 
 - TypeScript throughout
-- Deno 2.9.5 workspace with Deno-native package manifests, exact `npm:`/`jsr:` imports, `nodeModulesDir: "auto"`, and committed `deno.lock`; Deno owns the generated local `node_modules` tree needed by Remix browser-asset resolution, while no OpenOrb `package.json` or pnpm files are retained
+- Deno 2.9.5 workspace with Deno-native runtime package manifests, exact `npm:`/`jsr:` imports,
+  `nodeModulesDir: "auto"`, and committed `deno.lock`; Deno owns the generated local `node_modules`
+  tree needed by Remix browser-asset resolution and local developer tools. One private root
+  `package.json` is retained only for Effect setup scripts, Effect-aware diagnostics, and local
+  TypeScript tooling. It does not define application runtime dependencies. Deno runs its scripts;
+  npm and Bun do not. No pnpm files are retained.
 - Suggested initial packages:
 
 ```text
@@ -341,7 +346,8 @@ Persist only on the runner:
 - Workspace and `.git`
 - Pi JSONL
 - Complete session metadata, including the selected orb size, and pinned-runner identity
-- Provisioning and operation logs
+- Ordinary operation logs. Fine-grained provisioning stages and output remain ephemeral and are
+  delivered best-effort while connected.
 - Last bounded Git status/diff report
 
 The gateway stores only this minimal session catalog record:

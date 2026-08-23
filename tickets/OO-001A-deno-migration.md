@@ -18,7 +18,9 @@ This is a migration, not a parallel runtime path. The existing OO-001 Node.js/pn
 - Pin Deno exactly to `2.9.5` for development, CI, gateway deployment, lockfile generation, and runner compilation.
 - Give each existing OpenOrb package a Deno-native `deno.json` containing its package metadata, exports, imports, and `publish: false` policy.
 - Resolve dependencies through exact `npm:` and `jsr:` imports and a committed `deno.lock`; use `nodeModulesDir: "auto"` so Deno creates the local package tree required by Remix's Node-style browser-asset resolver, and keep npm compatibility dependencies only where required by the selected Remix, PostgreSQL, Gondolin, or Pi implementations.
-- Remove OpenOrb-owned `package.json` files, `pnpm-workspace.yaml`, and `pnpm-lock.yaml`. Do not retain a package-manifest shim for a dependency that has not been isolated as a compatibility blocker.
+- Remove application-runtime `package.json` files, `pnpm-workspace.yaml`, and `pnpm-lock.yaml`. One
+  private root `package.json` may declare approved local developer tooling that requires it. Deno
+  must install and run that tooling. Do not use the file as an application package manifest.
 - Preserve the OO-001 development workflow through the lean root task interface: `dev`, `dev:gateway`, `dev:runner`, `check`, and `test`. `check` performs formatting verification, linting, and typechecking. Production gateway startup remains package-scoped, while production runners use standalone artifacts.
 - Establish Deno check, lint, format, and test commands from a clean checkout. No task or production path may invoke Node.js, npm, pnpm, or an installed Deno executable as a runtime dependency.
 
@@ -72,7 +74,9 @@ The following interfaces are fixed for this follow-up:
 ## Acceptance criteria
 
 - A clean checkout can install/resolve dependencies with the pinned Deno workflow and pass `deno check`, `deno lint`, format checking, and `deno test` without Node.js or pnpm.
-- No OpenOrb-owned `package.json`, `pnpm-workspace.yaml`, or `pnpm-lock.yaml` remains tracked; the Deno workspace and lockfile are authoritative.
+- No application-runtime `package.json`, `pnpm-workspace.yaml`, or `pnpm-lock.yaml` remains tracked.
+  The private root `package.json` contains only approved local developer tooling. The Deno workspace
+  and lockfile remain authoritative for application runtime dependencies.
 - The gateway, `/healthz`, PostgreSQL migrations, and existing authentication/session tests run under Deno.
 - Password credentials use only PBKDF2-HMAC-SHA-256 with 600,000 iterations, a random 16-byte salt, and a 256-bit derived key. Wrong passwords, malformed metadata, and length mismatches fail safely. No Argon2 compatibility path exists.
 - The temporary runner harness starts under Deno and reports actionable prerequisite errors without requiring a VM in the baseline tests.

@@ -1,5 +1,8 @@
 # OO-020 — Offline and reconnect behavior
 
+**Status:** Stale. Ignore this ticket for now. Its requirements do not constrain current work.
+Tickets that depend on OO-020 remain blocked until this ticket is replaced or revised.
+
 **Slice:** 7 — Failure and UX hardening  
 **Depends on:** OO-019
 

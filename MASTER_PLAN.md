@@ -224,7 +224,15 @@ docs/
 MASTER_PLAN.md
 ```
 
-Use a Deno-native workspace with strict TypeScript and pin Deno exactly to 2.9.5 for development, CI, gateway deployment, lockfile generation, and runner compilation. `deno.json`/`deno.lock` are authoritative and no OpenOrb `package.json` or pnpm files are retained. Deno generates and owns a local `node_modules` tree because Remix's browser-asset compiler requires Node-style package resolution; this does not require npm tooling or a Node.js runtime. Exact `npm:` compatibility dependencies remain locked by Deno. Browser/gateway contracts should prefer Web APIs (`Request`, `Response`, `ReadableStream`, `Uint8Array`, Web Crypto).
+Use a Deno-native workspace with strict TypeScript and pin Deno exactly to 2.9.5 for development, CI,
+gateway deployment, lockfile generation, and runner compilation. `deno.json`/`deno.lock` are
+authoritative for application runtime dependencies. Retain one private root `package.json` only for
+Effect setup scripts, Effect-aware diagnostics, and local TypeScript tooling. Deno installs and runs
+that tooling. Do not add npm/Bun application scripts or pnpm files. Deno generates and owns the local
+`node_modules` tree required by those tools and Remix's browser-asset compiler. This does not require
+npm tooling or a Node.js runtime. Exact `npm:` compatibility dependencies remain locked by Deno.
+Browser/gateway contracts should prefer Web APIs (`Request`, `Response`, `ReadableStream`,
+`Uint8Array`, Web Crypto).
 
 ## 8. Gateway
 
