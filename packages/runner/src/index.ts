@@ -9,13 +9,18 @@ import { ensureDeveloperImage } from "@/src/developer-image.ts";
 import { SessionEventRelay } from "@/src/session-event-relay.ts";
 import { SessionProvisioner, type SessionProvisioningError } from "@/src/session-provisioner.ts";
 import { RunnerSessionStore } from "@/src/session-store.ts";
+import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
+import { Effect, Exit, Predicate, Runtime } from "effect";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
 export const RUNNER_VERSION = "0.0.0";
 const tracer = trace.getTracer("openorb-runner", RUNNER_VERSION);
 
-export async function main(args: string[] = Deno.args): Promise<number> {
+export async function main(
+  args: string[] = Deno.args,
+  processSignal?: AbortSignal,
+): Promise<number> {
   const [command, commandError] = trySync(parseRunnerCommand.bind(undefined, args), toError);
   if (commandError !== undefined) {
     console.error(`[openorb-runner] error: ${commandError.message}`);
@@ -172,7 +177,9 @@ export async function main(args: string[] = Deno.args): Promise<number> {
       }
 
       const shutdownController = new AbortController();
-      const removeSignalListeners = installShutdownListeners(shutdownController);
+      const removeSignalListeners = processSignal
+        ? linkShutdownSignal(processSignal, shutdownController)
+        : installShutdownListeners(shutdownController);
       using signalCleanup = new DisposableStack();
       signalCleanup.defer(removeSignalListeners);
       const sessionStore = new RunnerSessionStore({
@@ -319,6 +326,35 @@ function installShutdownListeners(controller: AbortController): () => void {
   };
 }
 
+function linkShutdownSignal(signal: AbortSignal, controller: AbortController): () => void {
+  const shutdown = () => controller.abort(signal.reason);
+  if (signal.aborted) {
+    shutdown();
+    return () => {};
+  }
+  signal.addEventListener("abort", shutdown, { once: true });
+  return () => signal.removeEventListener("abort", shutdown);
+}
+
+export function runMain(args: string[] = Deno.args): void {
+  const program = Effect.callback<number>((resume, signal) => {
+    const result = main(args, signal);
+    result.then(
+      (exitCode) => resume(Effect.succeed(exitCode)),
+      (cause) => resume(Effect.die(cause)),
+    );
+    return Effect.promise(() => result).pipe(Effect.asVoid);
+  });
+  DenoRuntime.runMain(program, {
+    teardown(exit, onExit) {
+      if (Exit.isSuccess(exit)) {
+        return onExit(Predicate.isNumber(exit.value) ? exit.value : 0);
+      }
+      Runtime.defaultTeardown(exit, onExit);
+    },
+  });
+}
+
 if (import.meta.main) {
-  Deno.exitCode = await main();
+  runMain();
 }

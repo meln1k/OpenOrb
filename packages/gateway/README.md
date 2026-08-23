@@ -1,6 +1,6 @@
 # OpenOrb gateway
 
-The Remix 3 gateway runs directly on Deno 2.9.5 with `Deno.serve()`. PostgreSQL remains available through Deno's compatibility support for the pinned `pg` npm package. `deno install --frozen` creates a Deno-managed local `node_modules` tree because Remix's browser-asset compiler uses Node-style package resolution. The trusted gateway process reads that workspace tree and loads pinned OXC native bindings through FFI; npm lifecycle scripts remain disabled and no Node.js or npm executable is used.
+The Remix 3 gateway runs on Deno 2.9.5 through Effect's `DenoHttpServer`. PostgreSQL remains available through Deno's compatibility support for the pinned `pg` npm package. `deno install --frozen` creates a Deno-managed local `node_modules` tree because Remix's browser-asset compiler uses Node-style package resolution. The trusted gateway process reads that workspace tree and loads pinned OXC native bindings through FFI; npm lifecycle scripts remain disabled and no Node.js or npm executable is used.
 
 From the repository root, configure PostgreSQL, a deployment-injected session-cookie secret, and the application master key. Either export them, or copy `packages/gateway/.env.example` to `packages/gateway/.env` (gitignored) — the `dev` and `start` tasks load `.env` automatically, and shell-exported variables take precedence:
 

@@ -4,89 +4,39 @@ import { createAppRouter } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
 import { RunnerConnectionGateway } from "@/app/runner-connection-gateway.ts";
 import { migrate } from "@/db/migrate.ts";
-import { SpanStatusCode, trace } from "@opentelemetry/api";
-import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
-
-const tracer = trace.getTracer("openorb-gateway", "0.0.0");
-const [initialized, initializationError] = await tracer.startActiveSpan(
-  "gateway.initialize",
-  async (span) => {
-    const [value, error] = await initializeGateway();
-    if (error !== undefined) {
-      span.recordException(error);
-      span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
-      span.end();
-      return err(error);
-    }
-    span.end();
-    return ok(value);
-  },
-);
-if (initializationError !== undefined) throw initializationError;
-const { store, router, runnerConnectionGateway } = initialized;
-await using cleanup = new AsyncDisposableStack();
-cleanup.defer(async () => {
-  runnerConnectionGateway.close();
-  await store.close();
-});
+import * as DenoHttpClient from "@effect/platform-deno/DenoHttpClient";
+import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
+import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
+import { Effect, Layer } from "effect";
+import * as HttpEffect from "effect/unstable/http/HttpEffect";
+import * as HttpServer from "effect/unstable/http/HttpServer";
+import * as OtlpSerialization from "effect/unstable/observability/OtlpSerialization";
+import * as OtlpTracer from "effect/unstable/observability/OtlpTracer";
 
 const port = Number(Deno.env.get("PORT") ?? "44100");
-const abortController = new AbortController();
-const server = Deno.serve(
-  {
-    port,
-    signal: abortController.signal,
-    automaticCompression: true,
-    onListen({ hostname, port: listeningPort }) {
-      const displayHost = hostname === "0.0.0.0" ? "localhost" : hostname;
-      console.log(
-        JSON.stringify({
-          component: "openorb-gateway",
-          status: "healthy",
-          url: `http://${displayHost}:${listeningPort}`,
-          healthUrl: `http://${displayHost}:${listeningPort}/healthz`,
-        }),
-      );
-    },
+
+const telemetryLayer = OtlpTracer.layerFromConfig({
+  resource: {
+    serviceName: "openorb-gateway",
+    serviceVersion: "0.0.0",
   },
-  async (request) => {
-    const [response, requestError] = await tryAsync(
-      (async () => {
-        if (new URL(request.url).pathname === routes.api.runners.connect.href()) {
-          return runnerConnectionGateway.handleUpgrade(request);
-        }
-        return await router.fetch(request);
-      })(),
-      (cause) => new GatewayRequestError(cause),
-    );
-    if (requestError !== undefined) {
-      const span = trace.getActiveSpan();
-      span?.recordException(requestError);
-      span?.setStatus({ code: SpanStatusCode.ERROR, message: requestError.message });
-      if (!(request.signal.aborted && requestError.cause === request.signal.reason)) {
-        console.error(requestError);
-      }
-      return new Response("Internal Server Error", { status: 500 });
-    }
-    return response;
-  },
+}).pipe(
+  Layer.provide(
+    Layer.merge(DenoHttpClient.layer, OtlpSerialization.layerProtobuf),
+  ),
 );
 
-let shuttingDown = false;
-
-function shutdown(signal: Deno.Signal) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`[openorb-gateway] received ${signal}; shutting down`);
-  runnerConnectionGateway.close();
-  abortController.abort();
+function makeGatewayHandler(
+  router: InitializedGateway["router"],
+  runnerConnectionGateway: RunnerConnectionGateway,
+): (request: Request) => Promise<Response> {
+  return async (request) => {
+    if (new URL(request.url).pathname === routes.api.runners.connect.href()) {
+      return runnerConnectionGateway.handleUpgrade(request);
+    }
+    return await router.fetch(request);
+  };
 }
-
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  Deno.addSignalListener(signal, () => shutdown(signal));
-}
-
-await server.finished;
 
 interface InitializedGateway {
   store: Awaited<ReturnType<typeof createDefaultStore>>;
@@ -94,48 +44,40 @@ interface InitializedGateway {
   runnerConnectionGateway: RunnerConnectionGateway;
 }
 
-async function initializeGateway(): Promise<
-  Result<InitializedGateway, GatewayInitializationError>
-> {
-  const [store, storeError] = await tryAsync(
-    createDefaultStore(),
-    (cause) => new GatewayInitializationError("Gateway data store initialization failed.", cause),
+const initializeGateway = Effect.fn("gateway.initialize")(function* () {
+  const store = yield* Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () => createDefaultStore(),
+      catch: (cause) =>
+        new GatewayInitializationError("Gateway data store initialization failed.", cause),
+    }),
+    (store) => Effect.promise(() => store.close()),
   );
-  if (storeError !== undefined) return err(storeError);
 
-  const [, migrationError] = await tracer.startActiveSpan(
-    "database.migrate",
-    async (span) => {
-      const [value, error] = await tryAsync(
-        migrate(store.pool),
-        (cause) => new GatewayInitializationError("Gateway database migration failed.", cause),
-      );
-      if (error !== undefined) {
-        span.recordException(error);
-        span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
-        span.end();
-        return err(error);
-      }
-      span.end();
-      return ok(value);
-    },
+  yield* Effect.tryPromise({
+    try: () => migrate(store.pool),
+    catch: (cause) => new GatewayInitializationError("Gateway database migration failed.", cause),
+  }).pipe(
+    Effect.withSpan("database.migrate"),
   );
-  if (migrationError !== undefined) return err(migrationError);
 
-  const [services, serviceError] = trySync(
-    () => {
-      const runnerConnectionGateway = new RunnerConnectionGateway(store);
-      return {
-        store,
-        router: createAppRouter(createAppServices(store, runnerConnectionGateway)),
-        runnerConnectionGateway,
-      };
-    },
-    (cause) => new GatewayInitializationError("Gateway services initialization failed.", cause),
+  const runnerConnectionGateway = yield* Effect.acquireRelease(
+    Effect.try({
+      try: () => new RunnerConnectionGateway(store),
+      catch: (cause) =>
+        new GatewayInitializationError("Gateway services initialization failed.", cause),
+    }),
+    (runnerConnectionGateway) => Effect.sync(() => runnerConnectionGateway.close()),
   );
-  if (serviceError !== undefined) return err(serviceError);
-  return ok(services);
-}
+
+  const router = yield* Effect.try({
+    try: () => createAppRouter(createAppServices(store, runnerConnectionGateway)),
+    catch: (cause) =>
+      new GatewayInitializationError("Gateway services initialization failed.", cause),
+  });
+
+  return { store, router, runnerConnectionGateway } satisfies InitializedGateway;
+});
 
 class GatewayInitializationError extends Error {
   constructor(message: string, override readonly cause: unknown) {
@@ -144,9 +86,40 @@ class GatewayInitializationError extends Error {
   }
 }
 
-class GatewayRequestError extends Error {
-  constructor(override readonly cause: unknown) {
-    super("Gateway request handling failed.", { cause });
-    this.name = "GatewayRequestError";
-  }
-}
+const gatewayLive = Effect.scoped(Effect.gen(function* () {
+  const { router, runnerConnectionGateway } = yield* initializeGateway();
+
+  yield* Layer.launch(
+    Layer.effectDiscard(Effect.gen(function* () {
+      const server = yield* HttpServer.HttpServer;
+      yield* server.serve(
+        HttpEffect.fromWebHandler(
+          makeGatewayHandler(router, runnerConnectionGateway),
+        ),
+      );
+    })).pipe(
+      Layer.provide(
+        DenoHttpServer.layer({
+          port,
+          automaticCompression: true,
+          onListen({ hostname, port: listeningPort }: { hostname: string; port: number }) {
+            const displayHost = hostname === "0.0.0.0" ? "localhost" : hostname;
+            console.log(
+              JSON.stringify({
+                component: "openorb-gateway",
+                status: "healthy",
+                url: `http://${displayHost}:${listeningPort}`,
+                healthUrl: `http://${displayHost}:${listeningPort}/healthz`,
+              }),
+            );
+          },
+        }),
+      ),
+    ),
+  );
+}));
+
+gatewayLive.pipe(
+  Effect.provide(telemetryLayer),
+  DenoRuntime.runMain,
+);

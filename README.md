@@ -68,9 +68,11 @@ deno task dev:runner
 
 ## Local observability
 
-OpenOrb uses Deno's built-in OpenTelemetry integration. For local traces and trace-correlated
-`console` logs, install the pinned [Motel](https://github.com/kitlangton/motel) development tool and
-run the instrumented tasks:
+The gateway exports Effect spans through its OTLP tracer layer and uses Deno's built-in
+OpenTelemetry integration to export `console` logs. Deno's automatic gateway traces are sampled off
+so they do not duplicate Effect's HTTP spans; consequently, gateway `console` logs are not
+trace-correlated with Effect spans. For local telemetry, install the pinned
+[Motel](https://github.com/kitlangton/motel) development tool and run the instrumented tasks:
 
 ```sh
 bun add --global @kitlangton/motel@0.2.6
@@ -92,8 +94,9 @@ query API.
 The application processes remain Deno-only. Motel 0.2.6 itself requires Bun 1.3 or newer because
 its HTTP server uses `@effect/platform-bun`; it cannot currently be launched by Deno without
 porting Motel. Motel does not ingest metrics, so `dev:otel` disables Deno's metric signal while
-exporting traces and logs. Production can enable all Deno OpenTelemetry signals and select any
-OTLP collector through the standard `OTEL_*` environment variables.
+exporting Effect traces and Deno-captured logs. Production configures the Effect trace exporter and
+Deno OpenTelemetry signals through the standard `OTEL_*` environment variables; Effect traces use
+OTLP/HTTP protobuf.
 
 ## Required development database reset
 

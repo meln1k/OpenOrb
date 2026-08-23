@@ -11,5 +11,5 @@ Deno.chdir(canonicalWorkingDirectory);
 Deno.env.set("PWD", canonicalWorkingDirectory);
 Deno.env.set("TMPDIR", temporaryDirectory);
 Deno.env.set("XDG_CACHE_HOME", cacheDirectory);
-const { main } = await import("@openorb/runner");
-Deno.exitCode = await main(Deno.args);
+const { runMain } = await import("@openorb/runner");
+runMain(Deno.args);

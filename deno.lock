@@ -2631,7 +2631,6 @@
           "jsr:@std/streams@1.1.2",
           "jsr:@std/uuid@1.1.1",
           "npm:@earendil-works/pi-ai@0.84.2",
-          "npm:@opentelemetry/api@1.9.0",
           "npm:lucide@^1.31.0",
           "npm:pg@8.16.3",
           "npm:remix@3.0.0-beta.10"

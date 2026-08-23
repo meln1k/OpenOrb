@@ -17,7 +17,6 @@
     "@std/http/file-server": "jsr:@std/http@1.1.3/file-server",
     "@std/path": "jsr:@std/path@1.1.6",
     "@std/streams/limited-bytes-transform-stream": "jsr:@std/streams@1.1.2/limited-bytes-transform-stream",
-    "@opentelemetry/api": "npm:@opentelemetry/api@1.9.0",
     "@std/uuid": "jsr:@std/uuid@1.1.1",
     "lucide": "npm:lucide@^1.31.0",
     "pg": "npm:pg@8.16.3",
@@ -26,7 +25,7 @@
   "publish": false,
   "tasks": {
     "dev": "NODE_ENV=development deno run --watch --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts",
-    "dev:otel": "OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_SERVICE_NAME=openorb-gateway OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno task dev",
+    "dev:otel": "OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_TRACES_EXPORTER=otlp OTEL_TRACES_SAMPLER=always_off OTEL_SERVICE_NAME=openorb-gateway OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno task dev",
     "start": "NODE_ENV=production deno run --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts"
   }
 }
