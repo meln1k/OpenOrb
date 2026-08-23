@@ -18,7 +18,7 @@ export interface Project {
 }
 
 export interface SaveProjectInput {
-  id?: string;
+  id?: string | undefined;
   name: string;
   repositoryUrl: string;
 }

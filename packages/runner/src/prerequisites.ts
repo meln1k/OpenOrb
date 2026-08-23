@@ -11,11 +11,11 @@ export interface PrerequisiteReport {
   platform: RunnerPlatform;
   architecture: string;
   denoVersion: string;
-  libc?: RunnerLibc;
-  qemu?: {
+  libc: RunnerLibc | undefined;
+  qemu: {
     executable: string;
     version: string;
-  };
+  } | undefined;
   errors: string[];
   warnings: string[];
 }

@@ -31,7 +31,7 @@ export class SessionEventRelayError extends Error {
 
 export class SessionEventRelay {
   readonly #sessionStore: RunnerSessionStore;
-  #consumer?: EventConsumer;
+  #consumer: EventConsumer | undefined;
   #attachments: Promise<void> = Promise.resolve();
   #publishGate: Promise<void> = Promise.resolve();
   readonly #sessionOperations = new Map<string, Promise<void>>();

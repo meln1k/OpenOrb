@@ -34,7 +34,7 @@ export interface ToolEntry {
   readonly toolName: string;
   readonly active: boolean;
   readonly arguments?: string;
-  readonly partialResult?: string;
+  readonly partialResult?: string | undefined;
   readonly result?: string;
   readonly isError?: boolean;
 }
@@ -65,9 +65,9 @@ export interface SessionTranscriptState {
   readonly warningVisible: boolean;
   readonly followUpQueue: readonly string[];
   readonly entries: readonly TranscriptEntry[];
-  readonly latestUsage?: SessionUsage;
-  readonly contextUsage?: SessionUsage;
-  readonly lastCompletedContextUsage?: SessionUsage;
+  readonly latestUsage: SessionUsage | undefined;
+  readonly contextUsage: SessionUsage | undefined;
+  readonly lastCompletedContextUsage: SessionUsage | undefined;
   readonly contextInvalidatedByCompaction: boolean;
   readonly usageByMessageId: ReadonlyMap<string, SessionUsage>;
   readonly nextActivityId: number;
@@ -96,6 +96,9 @@ export function createSessionTranscriptState(
     warningVisible: false,
     followUpQueue: [],
     entries: [],
+    latestUsage: undefined,
+    contextUsage: undefined,
+    lastCompletedContextUsage: undefined,
     contextInvalidatedByCompaction: false,
     usageByMessageId: new Map(),
     nextActivityId: 1,

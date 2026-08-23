@@ -30,7 +30,7 @@ export interface SettingsPageProps {
   gatewayUrl: string;
   csrfToken: string;
   enrollmentToken: RunnerEnrollmentToken;
-  error?: string;
+  error: string | undefined;
   gitAuthor: GitAuthorConfiguration | null;
   githubCredential: GitCredential | null;
   providerOptions: readonly ModelProviderOption[];

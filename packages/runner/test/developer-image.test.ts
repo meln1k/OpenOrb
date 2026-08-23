@@ -324,7 +324,7 @@ interface ImageFixtureOptions {
   buildId?: string;
   architecture?: "aarch64" | "x86_64";
   extraEntries?: TarStreamInput[];
-  omit?: keyof typeof ASSET_CONTENTS;
+  omit?: keyof typeof ASSET_CONTENTS | undefined;
 }
 
 async function createImageFixture(options: ImageFixtureOptions = {}) {
@@ -406,7 +406,10 @@ function releaseFor(
 function responseFor(archive: Uint8Array, headers?: HeadersInit): Response {
   const body = new ArrayBuffer(archive.byteLength);
   new Uint8Array(body).set(archive);
-  return new Response(body, { status: 200, headers });
+  return new Response(body, {
+    status: 200,
+    ...(headers === undefined ? {} : { headers }),
+  });
 }
 
 function sha256(bytes: Uint8Array): string {

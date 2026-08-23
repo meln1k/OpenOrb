@@ -905,7 +905,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
         this.#sessionRoutes.setSnapshot(connection.runner.userId, session);
       }
     }
-    connection.sessionSync = undefined;
+    delete connection.sessionSync;
   }
 
   async #acceptProvisionedSession(

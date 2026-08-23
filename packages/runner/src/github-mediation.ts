@@ -50,12 +50,14 @@ export function createOpenOrbGitHubVmOptions(
         allowedInternalHosts: [],
         blockInternalRanges: true,
         replaceSecretsInQuery: false,
-        secrets: token === undefined ? undefined : {
-          GH_TOKEN: {
-            hosts: [GITHUB_HOST, GITHUB_API_HOST],
-            value: token,
+        ...(token === undefined ? {} : {
+          secrets: {
+            GH_TOKEN: {
+              hosts: [GITHUB_HOST, GITHUB_API_HOST],
+              value: token,
+            },
           },
-        },
+        }),
         isRequestAllowed: (request) => isAllowedGitHubRequest(request, repository),
       }),
     (cause) => new GitHubMediationError("GitHub request mediation could not be created.", cause),

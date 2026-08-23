@@ -205,7 +205,7 @@ function ProjectDialog(
 
 function ProjectFormFields(
   handle: Handle<{
-    project?: Project;
+    project: Project | undefined;
     idPrefix: string;
   }>,
 ) {

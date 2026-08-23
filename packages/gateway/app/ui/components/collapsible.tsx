@@ -1,6 +1,6 @@
 import { css, type Handle, type Props } from "remix/ui";
 
-export type CollapsibleProps = Props<"details"> & { defaultOpen?: boolean };
+export type CollapsibleProps = Props<"details"> & { defaultOpen?: boolean | undefined };
 
 export function Collapsible(handle: Handle<CollapsibleProps>) {
   return () => {

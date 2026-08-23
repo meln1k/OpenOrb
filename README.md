@@ -10,7 +10,11 @@ OpenOrb is an open-source, self-hostable gateway and runner for Pi coding-agent 
 - PostgreSQL for the gateway and its tests
 - QEMU/KVM for the runner
 
-Node.js, npm, and pnpm are not used by OpenOrb. Dependencies published to npm are resolved and installed by Deno from exact `npm:` imports. Deno owns the generated local `node_modules` tree required by Remix's browser-asset compiler; OpenOrb retains no `package.json`, and no npm tooling or Node.js runtime is required.
+The Node.js, npm, and pnpm CLIs are not used by OpenOrb. Runtime dependencies published to npm are
+resolved and installed by Deno from exact `npm:` imports. A private `package.json` declares only the
+local TypeScript and Effect language-service tooling, which Deno also installs and runs. Deno owns
+the generated local `node_modules` tree required by those tools and Remix's browser-asset compiler;
+no Node.js runtime is required.
 
 The repository's orb setup installs QEMU for the orb architecture. Outside an orb, install QEMU for
 the host architecture:
@@ -37,6 +41,7 @@ From a clean checkout, resolve the frozen Deno graph, provide PostgreSQL and a s
 
 ```sh
 deno install --frozen
+deno task prepare # patch workspace TypeScript with Effect diagnostics
 export DATABASE_URL=postgres://localhost/openorb
 export SESSION_SECRET="replace-with-a-long-random-secret"
 deno task dev:gateway
@@ -105,6 +110,7 @@ Then restart the gateway and recreate the administrator and configuration. There
 
 ```sh
 deno task check  # formatting, linting, and typechecking
+deno task typecheck:effect # Effect-specific diagnostics
 deno task test
 ```
 

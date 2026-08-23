@@ -674,7 +674,9 @@ protocol as a fallback and do not copy Effect's private RPC implementation.
 - Keep Remix `data-schema` at browser form/request boundaries; Effect Schema becomes the sole runner
   wire/RPC schema source.
 
-Do not add Bun/npm scripts, a package.json, or Vitest. The repository remains Deno-only.
+Do not add Bun/npm runtime scripts or Vitest. The private `package.json` is restricted to local
+TypeScript and Effect language-service tooling; Deno installs and runs that tooling, and the
+application remains Deno-only.
 
 ### Work package 2: atomic runner and gateway replacement
 
@@ -767,8 +769,10 @@ Use four layers of tests:
   `IdentifyRunner` admission, stream acknowledgement, cancellation, frame size, and eager-frame
   handling.
 - Review Effect source and rerun the API contract tests after every v4 RC upgrade.
-- Evaluate the Effect language service separately. Do not introduce Node package tooling solely for
-  editor diagnostics in this Deno project.
+- Keep the Effect language service and local TypeScript in the private tooling-only `package.json`.
+  Deno remains the package manager and authoritative TypeScript language server; use
+  `deno task typecheck:effect` for Effect-specific diagnostics without moving application tooling to
+  Node.js.
 
 ## Risks and mitigations
 

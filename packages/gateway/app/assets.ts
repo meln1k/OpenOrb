@@ -32,7 +32,7 @@ export const assetServer = createAssetServer({
     "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/{server,test}.js",
     "node_modules/.deno/@remix-run+ui@0.7.0/node_modules/@remix-run/ui/dist/{server/**,test.js}",
   ],
-  sourceMaps: isDevelopment ? "external" : undefined,
+  ...(isDevelopment ? { sourceMaps: "external" as const } : {}),
   minify: !isDevelopment,
   watch: false,
 });

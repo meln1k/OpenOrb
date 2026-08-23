@@ -20,5 +20,5 @@ class PublicUrlConfigurationError extends Error {
 }
 
 export function csrf() {
-  return csrfMiddleware({ origin: publicOrigin });
+  return csrfMiddleware(publicOrigin === undefined ? {} : { origin: publicOrigin });
 }

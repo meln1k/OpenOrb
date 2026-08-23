@@ -28,7 +28,7 @@ export type SettingsRunner = {
   capacity: SettingsRunnerCapacity | null;
 };
 export type SettingsRunnerCapacity = {
-  maxConcurrentSessions?: number;
+  maxConcurrentSessions?: number | undefined;
   activeSessions: number;
   vmCpuCount: number;
   vmMemoryMiB: number;
@@ -39,7 +39,7 @@ export type SettingsTabsProps = {
   activeTab: SettingsTab;
   csrfToken: string;
   enrollmentCommand: SettingsEnrollmentCommand;
-  error?: string;
+  error: string | undefined;
   gitAuthor: SettingsGitAuthor | null;
   githubCredential: SettingsGitHubCredential | null;
   hrefs: SettingsTabHrefs;

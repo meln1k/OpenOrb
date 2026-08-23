@@ -13,7 +13,7 @@ export interface SessionRouteConnection {
 interface SessionEventChannel {
   listeners: Set<SessionEventListener>;
   snapshot?: RunnerSessionSnapshot;
-  activeRunId?: string;
+  activeRunId?: string | undefined;
 }
 
 interface SessionEventListener {

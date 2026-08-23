@@ -20,7 +20,7 @@ interface SessionDetailPageProps {
   messageHref: string;
   retryHref: string;
   sidebarSessions: SessionCatalogEntry[];
-  error?: string;
+  error: string | undefined;
 }
 
 export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {

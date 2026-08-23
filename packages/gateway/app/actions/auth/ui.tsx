@@ -57,7 +57,7 @@ export function AuthForm(
   handle: Handle<{
     action: string;
     csrfToken: string;
-    error?: string;
+    error: string | undefined;
     submitLabel: string;
     children?: RemixNode;
   }>,
@@ -106,7 +106,7 @@ function AuthBrand() {
   );
 }
 
-function AuthError(handle: Handle<{ message?: string }>) {
+function AuthError(handle: Handle<{ message: string | undefined }>) {
   return () =>
     handle.props.message
       ? (

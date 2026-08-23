@@ -107,6 +107,25 @@ install_deno() {
   deno --version | head -n 1
 }
 
+install_effect_solutions() {
+  local version=0.5.3
+  local expected="effect-solutions v$version"
+
+  if command -v effect-solutions >/dev/null 2>&1 &&
+    [[ "$(effect-solutions --version)" == "$expected" ]]; then
+    echo "Effect Solutions $version already installed."
+    return
+  fi
+
+  as_root deno install --global --allow-all --force --root /usr/local \
+    --name effect-solutions "npm:effect-solutions@$version"
+
+  if [[ "$(effect-solutions --version)" != "$expected" ]]; then
+    echo "Effect Solutions $version installation failed." >&2
+    return 1
+  fi
+}
+
 configure_postgres() {
   local cluster
   cluster="$(pg_lsclusters --no-header | awk 'NR == 1 { print $1, $2 }')"
@@ -199,6 +218,7 @@ install_motel() {
 
 step 'Install system packages' install_system_packages
 step 'Install pinned Deno toolchain' install_deno
+step 'Install Effect Solutions CLI' install_effect_solutions
 step 'Configure PostgreSQL' configure_postgres
 step 'Create local gateway environment' create_local_environment
 step 'Install locked Deno dependencies' install_dependencies

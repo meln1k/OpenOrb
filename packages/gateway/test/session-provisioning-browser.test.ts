@@ -45,7 +45,7 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
   events: SessionEventPayload[] = [];
   afterCursors: number[] = [];
   subscriptionUnsubscribes = 0;
-  beforeAcceptance?: (input: ProvisionSessionInput) => Promise<void>;
+  beforeAcceptance: ((input: ProvisionSessionInput) => Promise<void>) | undefined = undefined;
   reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
   promptResult: PromptSessionResult = { status: "accepted" };
   abortResult: AbortSessionResult = { status: "accepted" };

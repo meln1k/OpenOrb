@@ -7,9 +7,9 @@ const MIB_BYTES_BIGINT = BigInt(MIB_BYTES);
 
 export interface RunnerCapacityReporterOptions {
   path: string;
-  maxConcurrentSessions?: number;
-  vmCpuCount?: number;
-  vmMemoryMiB?: number;
+  maxConcurrentSessions?: number | undefined;
+  vmCpuCount?: number | undefined;
+  vmMemoryMiB?: number | undefined;
   getActiveSessions?: () => number;
   getHardwareConcurrency?: () => number;
   getSystemMemoryInfo?: () => { total: number };

@@ -1,0 +1,14 @@
+{
+  "name": "openorb",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "deno run -A npm:@effect/language-service patch",
+    "typecheck": "deno check",
+    "typecheck:effect": "deno run -A npm:@effect/language-service diagnostics --project tsconfig.json --strict"
+  },
+  "devDependencies": {
+    "@effect/language-service": "^0.87.2",
+    "typescript": "^6.0.3"
+  }
+}

@@ -143,12 +143,12 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
   readonly #workspacePath: string;
   readonly #developerImage: DeveloperImage;
   readonly #sessionLabel: string;
-  readonly #github?: OpenOrbGitHubMediationOptions;
-  readonly #cpuCount?: number;
-  readonly #memoryMiB?: number;
-  #running?: RunningVm;
-  #starting?: Promise<Result<RunningVm, GondolinRuntimeError>>;
-  #cleanup?: Promise<Result<void, GondolinRuntimeError>>;
+  readonly #github: OpenOrbGitHubMediationOptions | undefined;
+  readonly #cpuCount: number | undefined;
+  readonly #memoryMiB: number | undefined;
+  #running: RunningVm | undefined;
+  #starting: Promise<Result<RunningVm, GondolinRuntimeError>> | undefined;
+  #cleanup: Promise<Result<void, GondolinRuntimeError>> | undefined;
   #closePromise?: Promise<Result<void, GondolinRuntimeError>>;
   #closed = false;
 
@@ -245,7 +245,7 @@ class GondolinToolRuntime implements OpenOrbGondolinToolRuntime {
             ? OPENORB_GUEST_WORKSPACE
             : resolveGuestWorkspacePath(options.cwd),
           env: { [OPENORB_GUEST_MARKER]: "1" },
-          signal: options.signal,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
           stdout: "pipe",
           stderr: "pipe",
         });
@@ -393,13 +393,11 @@ function createTools(runtime: GondolinToolRuntime): readonly ToolDefinition[] {
   const write = createWriteToolDefinition(OPENORB_GUEST_WORKSPACE, {
     operations: writeOperations,
   });
-  const edit = {
-    ...createEditToolDefinition(OPENORB_GUEST_WORKSPACE, {
-      operations: editOperations,
-    }),
-    // Pi's edit preview renderer reads files directly from the runner host.
-    renderCall: undefined,
-  };
+  // Pi's edit preview renderer reads files directly from the runner host.
+  const { renderCall: _renderCall, ...edit } = createEditToolDefinition(
+    OPENORB_GUEST_WORKSPACE,
+    { operations: editOperations },
+  );
   const bash = createBashToolDefinition(OPENORB_GUEST_WORKSPACE, {
     operations: createBashOperations(runtime),
     exposeSessionEnvironment: false,
