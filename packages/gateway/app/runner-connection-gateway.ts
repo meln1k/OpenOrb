@@ -15,12 +15,16 @@ import {
   SESSION_EVENT_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
+  SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE,
+  SESSION_PROMPT_MESSAGE_TYPE,
+  SESSION_PROMPT_REJECTED_MESSAGE_TYPE,
   SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
   SESSION_PROVISION_MESSAGE_TYPE,
   SESSION_PROVISION_REJECTED_MESSAGE_TYPE,
   type SessionEventPayload,
   type SessionEventReplayResultMessage,
   type SessionEventReplayResultPayload,
+  type SessionPromptCommandPayload,
   type SessionProvisionAcceptedMessage,
   type SessionProvisionAcceptedPayload,
   type SessionProvisionCommandPayload,
@@ -30,6 +34,7 @@ import { parseSafe, string } from "remix/data-schema";
 
 import type { AuthenticatedRunner, RunnerRepository } from "@/app/data/runner-repository.ts";
 import type { SessionCatalogRepository } from "@/app/data/session-catalog-repository.ts";
+import { PromptCommandOwner } from "@/app/prompt-command-owner.ts";
 import { ProvisionCommandOwner } from "@/app/provision-command-owner.ts";
 import { SessionRouteOwner } from "@/app/session-route-owner.ts";
 
@@ -47,6 +52,7 @@ export interface RunnerConnectionRegistry {
   getSessionRunner(userId: string, sessionId: string): string | null;
   getSessionSnapshot(userId: string, sessionId: string): RunnerSessionSnapshot | null;
   provisionSession(input: ProvisionSessionInput): Promise<ProvisionSessionResult>;
+  promptSession(input: PromptSessionInput): Promise<PromptSessionResult>;
   subscribeToSessionEvents(
     userId: string,
     sessionId: string,
@@ -59,6 +65,7 @@ export interface RunnerConnectionRegistry {
 export interface RunnerConnectionGatewayOptions {
   heartbeatTimeoutMs?: number;
   provisionAcceptanceTimeoutMs?: number;
+  promptAcceptanceTimeoutMs?: number;
 }
 
 export interface ProvisionSessionInput {
@@ -70,6 +77,17 @@ export interface ProvisionSessionInput {
 
 export type ProvisionSessionResult =
   | { status: "accepted"; acknowledgement: SessionProvisionAcceptedPayload }
+  | { status: "rejected"; message: string }
+  | { status: "unavailable"; message: string };
+
+export interface PromptSessionInput {
+  userId: string;
+  sessionId: string;
+  payload: SessionPromptCommandPayload;
+}
+
+export type PromptSessionResult =
+  | { status: "accepted" }
   | { status: "rejected"; message: string }
   | { status: "unavailable"; message: string };
 
@@ -113,6 +131,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
   );
   readonly #sessionEventReplays = new Map<string, PendingSessionEventReplay>();
   readonly #provisionCommands: ProvisionCommandOwner<ActiveRunnerConnection>;
+  readonly #promptCommands: PromptCommandOwner<ActiveRunnerConnection>;
   readonly #heartbeatTimeoutMs: number;
   readonly #provisionAcceptanceTimeoutMs: number;
 
@@ -138,6 +157,14 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       );
     }
     this.#provisionCommands = new ProvisionCommandOwner(this.#provisionAcceptanceTimeoutMs);
+    const promptAcceptanceTimeoutMs = options.promptAcceptanceTimeoutMs ??
+      PROVISION_ACCEPTANCE_TIMEOUT_MS;
+    if (!Number.isSafeInteger(promptAcceptanceTimeoutMs) || promptAcceptanceTimeoutMs <= 0) {
+      throw new RunnerGatewayConfigurationError(
+        "Runner prompt timeout must be a positive integer.",
+      );
+    }
+    this.#promptCommands = new PromptCommandOwner(promptAcceptanceTimeoutMs);
   }
 
   handleUpgrade(request: Request): Response {
@@ -205,6 +232,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
               this.#provisionCommands.rejectForConnection(
                 existing,
                 "Runner reconnected before acknowledging.",
+              );
+              this.#promptCommands.rejectForConnection(
+                existing,
+                "Runner reconnected before acknowledging the prompt.",
               );
               this.#failSessionEventReplaysForConnection(
                 existing,
@@ -315,6 +346,39 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             return;
           }
 
+          if (message.type === SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE) {
+            const pending = this.#promptCommands.get(message.correlationId);
+            // A valid runner may finish preflight after the browser-facing acceptance deadline.
+            if (!pending) return;
+            if (
+              pending.connection !== activeConnection ||
+              pending.sessionId !== message.sessionId
+            ) {
+              closeSocket(socket, 4400, "Unexpected prompt acceptance");
+              return;
+            }
+            this.#promptCommands.settle(message.correlationId, { status: "accepted" });
+            return;
+          }
+
+          if (message.type === SESSION_PROMPT_REJECTED_MESSAGE_TYPE) {
+            const pending = this.#promptCommands.get(message.correlationId);
+            // Rejections can race the same deadline and no longer have a caller to settle.
+            if (!pending) return;
+            if (
+              pending.connection !== activeConnection ||
+              pending.sessionId !== message.sessionId
+            ) {
+              closeSocket(socket, 4400, "Unexpected prompt rejection");
+              return;
+            }
+            this.#promptCommands.settle(message.correlationId, {
+              status: "rejected",
+              message: message.payload.message,
+            });
+            return;
+          }
+
           if (message.type === SESSION_EVENT_MESSAGE_TYPE) {
             const replay = this.#sessionEventReplays.get(message.correlationId);
             if (replay) {
@@ -368,6 +432,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
           this.#provisionCommands.rejectForConnection(
             activeConnection,
             "Runner disconnected before acknowledging.",
+          );
+          this.#promptCommands.rejectForConnection(
+            activeConnection,
+            "Runner disconnected before acknowledging the prompt.",
           );
           this.#failSessionEventReplaysForConnection(
             activeConnection,
@@ -493,6 +561,61 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     });
   }
 
+  promptSession(input: PromptSessionInput): Promise<PromptSessionResult> {
+    const connection = this.#sessionRoutes.getRoute(input.userId, input.sessionId);
+    if (!connection || !this.#isActive(connection)) {
+      return Promise.resolve({
+        status: "unavailable",
+        message: "The pinned runner is offline.",
+      });
+    }
+    const snapshot = this.#sessionRoutes.getSnapshot(input.userId, input.sessionId);
+    if (!snapshot || snapshot.state !== "ready") {
+      return Promise.resolve({
+        status: "rejected",
+        message: "The session is not ready and idle.",
+      });
+    }
+    if (snapshot.model !== input.payload.modelRuntime.model) {
+      return Promise.resolve({
+        status: "rejected",
+        message: "The session model cannot change during continuation.",
+      });
+    }
+    if (
+      this.#provisionCommands.hasSession(input.userId, input.sessionId) ||
+      this.#promptCommands.hasSession(input.userId, input.sessionId)
+    ) {
+      return Promise.resolve({
+        status: "rejected",
+        message: "The session already has a command in flight.",
+      });
+    }
+
+    const commandId = crypto.randomUUID();
+    return new Promise((resolve) => {
+      this.#promptCommands.create(commandId, connection, input.sessionId, resolve);
+      const command: RunnerServerMessage = {
+        version: 1,
+        id: commandId,
+        type: SESSION_PROMPT_MESSAGE_TYPE,
+        sessionId: input.sessionId,
+        payload: input.payload,
+      };
+      const [, sendError] = trySync(
+        () => connection.socket.send(JSON.stringify(command)),
+        (cause) => new RunnerWebSocketError("Runner prompt delivery failed.", cause),
+      );
+      if (sendError !== undefined) {
+        this.#promptCommands.settle(commandId, {
+          status: "unavailable",
+          message: "Runner disconnected before the prompt could be sent.",
+        });
+        return;
+      }
+    });
+  }
+
   subscribeToSessionEvents(
     userId: string,
     sessionId: string,
@@ -544,6 +667,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       connection,
       "Runner was revoked before acknowledging.",
     );
+    this.#promptCommands.rejectForConnection(
+      connection,
+      "Runner was revoked before acknowledging the prompt.",
+    );
     this.#failSessionEventReplaysForConnection(
       connection,
       "Runner was revoked before session history was replayed.",
@@ -565,6 +692,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       status: "unavailable",
       message: "Gateway is shutting down.",
     });
+    this.#promptCommands.settleAll({
+      status: "unavailable",
+      message: "Gateway is shutting down.",
+    });
     for (const replay of this.#sessionEventReplays.values()) {
       replay.fail("Gateway shut down before session history was replayed.");
     }
@@ -583,6 +714,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       this.#provisionCommands.rejectForConnection(
         connection,
         "Runner heartbeat timed out before acknowledging.",
+      );
+      this.#promptCommands.rejectForConnection(
+        connection,
+        "Runner heartbeat timed out before acknowledging the prompt.",
       );
       this.#failSessionEventReplaysForConnection(
         connection,

@@ -1,7 +1,7 @@
 # Developer image release process
 
 OO-009 defines one OpenOrb developer-image release with immutable Gondolin assets for each supported
-runner architecture. The current release ID is `mvp-1`; it is not derived from the Gondolin package
+runner architecture. The current release ID is `mvp-2`; it is not derived from the Gondolin package
 version or from either architecture-specific Gondolin build ID.
 
 The guest is Alpine 3.23.0 with only `bash`, `coreutils`, `git`, `github-cli`, `ca-certificates`,
@@ -26,7 +26,7 @@ deno task build:image aarch64
 read, write, and environment access; the task restricts network destinations and subprocess names.
 Do not run an unreviewed build configuration with these permissions.
 
-Each invocation writes unpacked assets under `dist/developer-image/mvp-1/<gondolin-arch>/`, a
+Each invocation writes unpacked assets under `dist/developer-image/mvp-2/<gondolin-arch>/`, a
 deterministically ordered archive under `dist/developer-image/`, and a neighboring `.json` metadata
 file. The final stdout line is the same metadata in compact JSON. It contains the OpenOrb release
 ID, architecture-specific Gondolin build ID, normalized manifest SHA-256, archive filename, exact
@@ -56,7 +56,7 @@ For any guest-content change:
    supervisor, excluded toolchains, and SSH. Validate both x86-64 and ARM64 on their native release
    hosts before signing a runner release.
 
-The `mvp-1` asset URLs use GitHub release tag `developer-image-mvp-1`. After review and **separate
+The `mvp-2` asset URLs use GitHub release tag `developer-image-mvp-2`. After review and **separate
 explicit approval to publish**, create that release in `meln1k/openorb` and upload exactly the two
 generated `.tar.gz` files. Do not upload the unpacked directories or substitute rebuilt archives
 without updating the checked-in metadata. Publishing a release or assets is an external write and

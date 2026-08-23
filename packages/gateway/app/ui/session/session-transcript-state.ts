@@ -16,6 +16,8 @@ export interface UserEntry {
   readonly role: "user";
   readonly messageId: string;
   readonly text: string;
+  readonly delivery?: "pending" | "failed";
+  readonly deliveryError?: string;
 }
 
 export interface AssistantEntry {
@@ -97,6 +99,32 @@ export function createSessionTranscriptState(
     nextActivityId: 1,
     entryIndex: new Map(),
   };
+}
+
+export function appendOptimisticUserMessage(
+  state: SessionTranscriptState,
+  messageId: string,
+  text: string,
+): SessionTranscriptState {
+  return appendEntry(state, messageKey(messageId), {
+    role: "user",
+    messageId,
+    text,
+    delivery: "pending",
+  });
+}
+
+export function failOptimisticUserMessage(
+  state: SessionTranscriptState,
+  messageId: string,
+  deliveryError: string,
+): SessionTranscriptState {
+  const index = state.entryIndex.get(messageKey(messageId));
+  if (index === undefined) return state;
+  const entry = state.entries[index];
+  return entry && "role" in entry && entry.role === "user" && entry.delivery === "pending"
+    ? replaceEntry(state, index, { ...entry, delivery: "failed", deliveryError })
+    : state;
 }
 
 export function reduceSessionTranscriptState(
@@ -267,7 +295,9 @@ function reduceConversation(
   switch (event.type) {
     case "user.message": {
       const key = messageKey(event.messageId);
-      return state.entryIndex.has(key) ? state : appendEntry(state, key, {
+      if (state.entryIndex.has(key)) return state;
+      const reconciled = removeMatchingOptimisticUserMessage(state, event.text);
+      return appendEntry(reconciled, key, {
         role: "user",
         messageId: event.messageId,
         text: event.text,
@@ -335,6 +365,22 @@ function reduceConversation(
     default:
       return state;
   }
+}
+
+function removeMatchingOptimisticUserMessage(
+  state: SessionTranscriptState,
+  text: string,
+): SessionTranscriptState {
+  for (let index = state.entries.length - 1; index >= 0; index--) {
+    const entry = state.entries[index];
+    if (
+      entry && "role" in entry && entry.role === "user" && entry.delivery !== undefined &&
+      entry.text === text
+    ) {
+      return removeEntry(state, index);
+    }
+  }
+  return state;
 }
 
 function updateActiveAssistant(

@@ -16,7 +16,7 @@ import {
   parseDeveloperImageManifest,
 } from "@/packages/runner/src/developer-image-manifest.ts";
 
-export const DEVELOPER_IMAGE_RELEASE_ID = "mvp-1";
+export const DEVELOPER_IMAGE_RELEASE_ID = "mvp-2";
 export const DEVELOPER_IMAGE_FILES = [
   "manifest.json",
   "vmlinuz-virt",

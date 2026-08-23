@@ -15,25 +15,25 @@ export interface DeveloperImageRelease {
 }
 
 export const DEVELOPER_IMAGE_RELEASE: DeveloperImageRelease = {
-  id: "mvp-1",
+  id: "mvp-2",
   assets: {
     arm64: {
       gondolinArchitecture: "aarch64",
-      gondolinBuildId: "4d414669-47ce-5bde-9fb0-da2014333aae",
-      manifestSha256: "4d3da4bf4017e9c8e7de6d53f3bc894726dbab5eaa399c3f97eb4f45bc637982",
+      gondolinBuildId: "aa1462cb-82f6-52e8-b4b1-1f1b2552e097",
+      manifestSha256: "0e410bd4d312260114c783741dd40db76bad57f63702cbbcbf94eea5d909bc93",
       url:
-        "https://github.com/meln1k/openorb/releases/download/developer-image-mvp-1/gondolin-image-openorb-developer-mvp-1-aarch64.tar.gz",
-      sizeBytes: 102_182_441,
-      sha256: "7931b50fdb77dfd215365a4e775804ec164d8157c82eb077051ceb63d21bf7e4",
+        "https://github.com/meln1k/openorb/releases/download/developer-image-mvp-2/gondolin-image-openorb-developer-mvp-2-aarch64.tar.gz",
+      sizeBytes: 102_182_786,
+      sha256: "247922ee87ab66de364b89213eca16e135912c317d7e4e2b2aea50d1629d4050",
     },
     x64: {
       gondolinArchitecture: "x86_64",
-      gondolinBuildId: "bc7af3ee-c7f1-5d60-b50d-16319637cb8c",
-      manifestSha256: "0532180ffef55eb41cc5705331bd931b243c3bde792aac30f6cd7fc37be8ab2a",
+      gondolinBuildId: "77fc416d-2645-5204-b18a-87d011d50d24",
+      manifestSha256: "fd16f03c2fb0088d0e564e7058696784db238ffd246370e293d95454fe32599a",
       url:
-        "https://github.com/meln1k/openorb/releases/download/developer-image-mvp-1/gondolin-image-openorb-developer-mvp-1-x86_64.tar.gz",
-      sizeBytes: 106_657_808,
-      sha256: "257d53f7cca910ca0822af07eba6d8ca17e63d33afadad692e4595c25e5c4a3c",
+        "https://github.com/meln1k/openorb/releases/download/developer-image-mvp-2/gondolin-image-openorb-developer-mvp-2-x86_64.tar.gz",
+      sizeBytes: 106_657_391,
+      sha256: "dd8e233d20cd7a410891f2e284ee159da3366304cc7f972737d713c1d19eaef2",
     },
   },
 };

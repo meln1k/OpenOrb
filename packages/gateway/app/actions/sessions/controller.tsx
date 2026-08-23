@@ -36,7 +36,7 @@ const promptSchema = s.string().refine(
   (value) =>
     value.trim().length > 0 && new TextEncoder().encode(value).byteLength <=
       MAX_INITIAL_PROMPT_BYTES,
-  `The initial prompt is required and must be at most ${MAX_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
+  `The prompt is required and must be at most ${MAX_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
 );
 
 const createSessionSchema = f.object({
@@ -47,6 +47,9 @@ const createSessionSchema = f.object({
   orbSize: f.field(orbSizeSchema),
   branchName: f.field(sessionBranchNameSchema),
   initialPrompt: f.field(promptSchema),
+});
+const continueSessionSchema = f.object({
+  prompt: f.field(promptSchema),
 });
 
 type SessionsContext = MiddlewareContext<
@@ -159,6 +162,66 @@ export default createController(routes.app.sessions, {
 
     async detail(context) {
       return await renderDetailPage(context);
+    },
+
+    async message(context) {
+      const userId = context.auth.identity.id;
+      const sessionId = parseSessionId(context.params.sessionId);
+      if (!sessionId) return new Response("Session not found.", { status: 404 });
+      const parsed = s.parseSafe(continueSessionSchema, context.formData);
+      if (!parsed.success) {
+        return await renderDetailPage(
+          context,
+          parsed.issues[0]?.message ?? "Invalid prompt.",
+          400,
+        );
+      }
+      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      if (!session) return new Response("Session not found.", { status: 404 });
+      const snapshot = context.services.runnerConnections.getSessionSnapshot(userId, sessionId);
+      if (!snapshot || !context.services.runnerConnections.getSessionRunner(userId, sessionId)) {
+        return await renderDetailPage(context, "The pinned runner is offline.", 503);
+      }
+      if (snapshot.state !== "ready") {
+        return await renderDetailPage(context, "The session is not ready and idle.", 409);
+      }
+
+      const [modelApiKey, modelCredentialError] = await context.services.store
+        .getModelProviderApiKey(
+          userId,
+          parseModelReference(snapshot.model).providerId,
+        );
+      if (modelCredentialError !== undefined) {
+        return await renderDetailPage(
+          context,
+          "The saved model provider credential could not be read.",
+          500,
+        );
+      }
+      if (modelApiKey === null) {
+        return await renderDetailPage(
+          context,
+          "Reconfigure this session's model provider before continuing.",
+          409,
+        );
+      }
+
+      const prompted = await context.services.runnerConnections.promptSession({
+        userId,
+        sessionId,
+        payload: {
+          prompt: parsed.value.prompt,
+          modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
+        },
+      });
+      if (prompted.status !== "accepted") {
+        return await renderDetailPage(
+          context,
+          prompted.message,
+          prompted.status === "rejected" ? 409 : 503,
+        );
+      }
+      return redirect(routes.app.sessions.detail.href({ sessionId }), 303);
     },
 
     async retry(context) {
@@ -277,6 +340,7 @@ async function renderDetailPage(
       runnerId={runnerId}
       snapshot={snapshot}
       eventsHref={routes.api.sessions.events.href({ sessionId })}
+      messageHref={routes.app.sessions.message.href({ sessionId })}
       retryHref={routes.app.sessions.retry.href({ sessionId })}
       sidebarSessions={sidebarSessions}
       error={error}

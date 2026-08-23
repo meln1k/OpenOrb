@@ -38,6 +38,18 @@ import {
   type SessionProvisionRejectedMessage,
   sessionProvisionRejectedPayloadSchema,
 } from "@/src/runner-session-provisioning.ts";
+import {
+  SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE,
+  SESSION_PROMPT_MESSAGE_TYPE,
+  SESSION_PROMPT_REJECTED_MESSAGE_TYPE,
+  type SessionPromptAcceptedMessage,
+  sessionPromptAcceptedPayloadSchema,
+  type SessionPromptCommand,
+  type SessionPromptCommandPayload,
+  sessionPromptCommandPayloadSchema,
+  type SessionPromptRejectedMessage,
+  sessionPromptRejectedPayloadSchema,
+} from "@/src/runner-session-prompt.ts";
 import type { OptionalSchemaProperties } from "@/src/schema-output.ts";
 
 export const RUNNER_HELLO_MESSAGE_TYPE = "runner.hello";
@@ -58,6 +70,8 @@ export type RunnerClientMessage =
   })
   | SessionProvisionAcceptedMessage
   | SessionProvisionRejectedMessage
+  | SessionPromptAcceptedMessage
+  | SessionPromptRejectedMessage
   | SessionEventMessage
   | SessionEventReplayResultMessage;
 
@@ -66,6 +80,7 @@ export type RunnerServerMessage =
     type: typeof RUNNER_CONNECTED_MESSAGE_TYPE;
   })
   | SessionProvisionCommand
+  | SessionPromptCommand
   | SessionEventReplayCommand;
 
 const helloPayloadSchema = object(
@@ -182,6 +197,22 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
       payload: parse(sessionProvisionRejectedPayloadSchema, message.payload),
     };
   }
+  if (message.type === SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE) {
+    assertSessionResponseEnvelope(message);
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(sessionPromptAcceptedPayloadSchema, message.payload),
+    };
+  }
+  if (message.type === SESSION_PROMPT_REJECTED_MESSAGE_TYPE) {
+    assertSessionResponseEnvelope(message);
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(sessionPromptRejectedPayloadSchema, message.payload),
+    };
+  }
   if (message.type === SESSION_EVENT_MESSAGE_TYPE) {
     assertSessionResponseEnvelope(message);
     return {
@@ -228,6 +259,19 @@ export function parseRunnerServerMessage(input: unknown): RunnerServerMessage {
       type: message.type,
       sessionId: message.sessionId,
       payload: parse(sessionEventReplayPayloadSchema, message.payload),
+    };
+  }
+  if (message.type === SESSION_PROMPT_MESSAGE_TYPE) {
+    assertSessionCommandEnvelope(message);
+    const payload: SessionPromptCommandPayload = parse(
+      sessionPromptCommandPayloadSchema,
+      message.payload,
+    );
+    return {
+      ...message,
+      type: message.type,
+      sessionId: message.sessionId,
+      payload,
     };
   }
   throw new TypeError(`Unsupported runner server message type: ${message.type}`);

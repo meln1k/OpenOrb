@@ -4,6 +4,7 @@ import { MAX_SESSION_EVENT_TEXT_BYTES, type SessionConversationEvent } from "@op
 import {
   boundedCount,
   messageContentText,
+  normalizeCompletedAssistantText,
   sessionUsage,
   stringify,
   truncateUtf8,
@@ -44,14 +45,20 @@ export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionCo
         {
           type: "assistant.completed" as const,
           messageId: entry.id,
-          text: truncateUtf8(
-            message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join(""),
-            MAX_SESSION_EVENT_TEXT_BYTES,
+          text: normalizeCompletedAssistantText(
+            truncateUtf8(
+              message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join(
+                "",
+              ),
+              MAX_SESSION_EVENT_TEXT_BYTES,
+            ),
           ),
-          thinking: truncateUtf8(
-            message.content.flatMap((block) => block.type === "thinking" ? [block.thinking] : [])
-              .join(""),
-            MAX_SESSION_EVENT_TEXT_BYTES,
+          thinking: normalizeCompletedAssistantText(
+            truncateUtf8(
+              message.content.flatMap((block) => block.type === "thinking" ? [block.thinking] : [])
+                .join(""),
+              MAX_SESSION_EVENT_TEXT_BYTES,
+            ),
           ),
           stopReason: message.stopReason,
           usage: sessionUsage(message.usage),

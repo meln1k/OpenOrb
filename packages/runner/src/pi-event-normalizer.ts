@@ -95,15 +95,16 @@ export class PiEventNormalizer {
             await this.#options.publishConversation({
               type: "assistant.completed",
               messageId,
-              text: this.#safeText(
+              text: this.#safeCompletedAssistantText(
                 content.flatMap((block) => block.type === "text" ? [block.text] : [])
                   .join(""),
                 MAX_SESSION_EVENT_TEXT_BYTES,
               ),
-              thinking: this.#safeText(
-                content.flatMap((block) => block.type === "thinking" ? [block.thinking] : []).join(
-                  "",
-                ),
+              thinking: this.#safeCompletedAssistantText(
+                content.flatMap((block) => block.type === "thinking" ? [block.thinking] : [])
+                  .join(
+                    "",
+                  ),
                 MAX_SESSION_EVENT_TEXT_BYTES,
               ),
               stopReason: message.stopReason,
@@ -401,6 +402,11 @@ export class PiEventNormalizer {
     return boundedIdentifier(this.#redact(value), fallback);
   }
 
+  #safeCompletedAssistantText(value: string, maxBytes: number): string {
+    const normalized = normalizeCompletedAssistantText(sanitizeText(this.#redact(value)));
+    return truncateUtf8(normalized, maxBytes);
+  }
+
   #safeText(value: string, maxBytes: number): string {
     return truncateUtf8(sanitizeText(this.#redact(value)), maxBytes);
   }
@@ -432,6 +438,10 @@ class PiEventNormalizationError extends Error {
     super(message, { cause });
     this.name = "PiEventNormalizationError";
   }
+}
+
+export function normalizeCompletedAssistantText(value: string): string {
+  return value.trim().length === 0 ? "" : value;
 }
 
 export function truncateUtf8(value: string, maxBytes: number): string {

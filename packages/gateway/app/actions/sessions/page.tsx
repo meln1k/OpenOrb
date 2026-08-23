@@ -16,6 +16,7 @@ interface SessionDetailPageProps {
   runnerId: string | null;
   snapshot: RunnerSessionSnapshot | null;
   eventsHref: string;
+  messageHref: string;
   retryHref: string;
   sidebarSessions: SessionCatalogEntry[];
   error?: string;
@@ -27,6 +28,7 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
     csrfToken,
     error,
     eventsHref,
+    messageHref,
     project,
     retryHref,
     runnerId,
@@ -53,6 +55,7 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
         csrfToken={csrfToken}
         eventsHref={eventsHref}
         initialState={state}
+        messageHref={messageHref}
         retryHref={retryHref}
         sessionId={session.id}
       />

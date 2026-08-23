@@ -4,6 +4,7 @@ import { delay } from "@std/async/delay";
 import type {
   RunnerClientMessage,
   SessionEventPayload,
+  SessionPromptCommand,
   SessionProvisionCommand,
 } from "@openorb/protocol";
 import { err, ok, type Result } from "@openorb/result";
@@ -15,6 +16,7 @@ import { installLocalDeveloperImage } from "@/test/local-developer-image.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { type AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { OpenOrbPiSessionOptions } from "@/src/pi-session-factory.ts";
+import { eventsFromPiEntries } from "@/src/pi-session-history.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c10";
@@ -22,6 +24,7 @@ const PROJECT_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c11";
 const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
 const BRANCH_NAME = "openorb/session-test";
 const INITIAL_PROMPT = "Inspect the repository and report what you find.";
+const CONTINUATION_PROMPT = "Continue with the implementation.";
 const BASE_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const GITHUB_TOKEN = "github-secret-token";
 const MODEL_PROVIDER_KEY = "model-provider-secret-key";
@@ -193,6 +196,255 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
   }
 });
 
+Deno.test("reopens the same Pi JSONL and retained runtime for an accepted continuation", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    const eventRelay = new SessionEventRelay(store);
+    const runtime = new FakeRuntime();
+    const messages: RunnerClientMessage[] = [];
+    const contexts: Array<ReturnType<SessionManager["buildSessionContext"]>> = [];
+    const piOptions: OpenOrbPiSessionOptions[] = [];
+    const promptInputs: string[] = [];
+    const continuationStarted = Promise.withResolvers<void>();
+    const finishContinuation = Promise.withResolvers<void>();
+    let runtimeCreations = 0;
+    let piIdle = true;
+    const detach = success(
+      await eventRelay.attach((message) => messages.push(message), () => Promise.resolve(ok(true))),
+    );
+    const provisioner = new SessionProvisioner({
+      sessionStore: store,
+      eventRelay,
+      cpuCount: 4,
+      memoryMiB: 8192,
+      createRuntime: () => {
+        runtimeCreations += 1;
+        return Promise.resolve(ok(runtime));
+      },
+      createPiSession(options) {
+        piOptions.push(options);
+        const sessionManager = SessionManager.open(
+          options.runnerSessionFile,
+          undefined,
+          "/workspace",
+        );
+        contexts.push(sessionManager.buildSessionContext());
+        const idle = piIdle;
+        let listener: (event: AgentSessionEvent) => void = () => {};
+        return Promise.resolve({
+          session: {
+            isIdle: idle,
+            sessionManager,
+            subscribe(nextListener: (event: AgentSessionEvent) => void) {
+              listener = nextListener;
+              return () => {
+                listener = () => {};
+              };
+            },
+            async prompt(
+              input: string,
+              promptOptions?: { preflightResult?: (success: boolean) => void },
+            ) {
+              promptInputs.push(input);
+              promptOptions?.preflightResult?.(true);
+              if (input === CONTINUATION_PROMPT) {
+                continuationStarted.resolve();
+                await finishContinuation.promise;
+              }
+              const userMessage = { role: "user" as const, content: input, timestamp: Date.now() };
+              sessionManager.appendMessage(userMessage);
+              listener({ type: "message_end", message: userMessage });
+              await Promise.resolve();
+              const answer = assistantMessage([
+                {
+                  type: "text",
+                  text: input === INITIAL_PROMPT ? "Initial answer" : "Continuation answer",
+                },
+              ], "stop");
+              sessionManager.appendMessage(answer);
+              listener({ type: "message_end", message: answer });
+              await Promise.resolve();
+            },
+            dispose() {},
+          },
+        });
+      },
+    });
+
+    success(await provisioner.handleCommand(createCommand(), (message) => messages.push(message)));
+    await waitForState(store, "ready");
+    await delay(0);
+    const piPaths = success(await store.getSessionPiPaths(SESSION_ID));
+    assertEquals(runtimeCreations, 1);
+    assertEquals(promptInputs, [INITIAL_PROMPT]);
+
+    piIdle = false;
+    const idleRejection = promptCommand("pi-busy", "Reject while Pi is busy");
+    success(
+      await provisioner.handlePromptCommand(idleRejection, (message) => messages.push(message)),
+    );
+    assert(
+      messages.some((message) =>
+        message.type === "session.prompt.rejected" &&
+        message.correlationId === idleRejection.id &&
+        message.payload.message === "Pi did not accept the prompt."
+      ),
+    );
+    assertEquals(success(await store.readMetadata(SESSION_ID)).state, "ready");
+    await delay(0);
+
+    piIdle = true;
+    const continuationRuntime = {
+      ...MODEL_RUNTIME,
+      credential: { type: "api_key" as const, value: "current-model-provider-key" },
+    };
+    const continuation = provisioner.handlePromptCommand(
+      promptCommand("continue-command", CONTINUATION_PROMPT, continuationRuntime),
+      (message) => messages.push(message),
+    );
+    await continuationStarted.promise;
+    success(await continuation);
+    assert(
+      messages.some((message) =>
+        message.type === "session.prompt.accepted" &&
+        message.correlationId === "continue-command"
+      ),
+    );
+    assertEquals(success(await store.readMetadata(SESSION_ID)).state, "running");
+
+    const concurrent = promptCommand("concurrent-command", "Do not queue this prompt");
+    success(await provisioner.handlePromptCommand(concurrent, (message) => messages.push(message)));
+    assert(
+      messages.some((message) =>
+        message.type === "session.prompt.rejected" &&
+        message.correlationId === concurrent.id &&
+        message.payload.message === "The session is not ready and idle."
+      ),
+    );
+
+    finishContinuation.resolve();
+    await waitForState(store, "ready");
+    await waitForEventType(
+      messages.flatMap((message) => message.type === "session.event" ? [message.payload] : []),
+      "session.state",
+      "ready",
+    );
+    await delay(0);
+
+    assertEquals(runtimeCreations, 1);
+    assertEquals(runtime.commands.length, 4);
+    assertEquals(promptInputs, [INITIAL_PROMPT, CONTINUATION_PROMPT]);
+    assertEquals(piOptions.map((options) => options.runnerSessionFile), [
+      piPaths.sessionFile,
+      piPaths.sessionFile,
+      piPaths.sessionFile,
+    ]);
+    assertEquals(piOptions.map((options) => options.runnerAgentDirectory), [
+      piPaths.agentDirectory,
+      piPaths.agentDirectory,
+      piPaths.agentDirectory,
+    ]);
+    assertStrictEquals(piOptions[2]?.tools, runtime.tools);
+    assertEquals(piOptions[2]?.modelRuntime, continuationRuntime);
+    assertEquals(contexts.map((context) => context.messages.length), [0, 2, 2]);
+    assertEquals(contexts[2]?.messages.map((message) => message.role), ["user", "assistant"]);
+    const priorUserMessage = contexts[2]?.messages[0];
+    assert(priorUserMessage?.role === "user");
+    assertEquals(priorUserMessage.content, INITIAL_PROMPT);
+
+    const history = eventsFromPiEntries(SessionManager.open(piPaths.sessionFile).getBranch());
+    assertEquals(history.map((event) => event.type), [
+      "user.message",
+      "assistant.completed",
+      "user.message",
+      "assistant.completed",
+    ]);
+    assertEquals(
+      history.flatMap((event) => event.type === "user.message" ? [event.text] : []),
+      [INITIAL_PROMPT, CONTINUATION_PROMPT],
+    );
+    assertEquals(
+      history.flatMap((event) => event.type === "assistant.completed" ? [event.text] : []),
+      ["Initial answer", "Continuation answer"],
+    );
+    const persisted = await readSessionText(workingDirectory);
+    assert(!persisted.includes(continuationRuntime.credential.value));
+
+    detach();
+    success(await provisioner.close());
+    assert(runtime.closed);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("rejects continuation without ready metadata, the original model, or a VM", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    success(
+      await store.createSession({
+        id: SESSION_ID,
+        projectId: PROJECT_ID,
+        repositoryUrl: REPOSITORY_URL,
+        ref: "main",
+        branchName: BRANCH_NAME,
+        initialPrompt: INITIAL_PROMPT,
+        model: MODEL_RUNTIME.model,
+        orbSize: "small",
+      }),
+    );
+    const provisioner = new SessionProvisioner({
+      sessionStore: store,
+      eventRelay: new SessionEventRelay(store),
+      cpuCount: 2,
+      memoryMiB: 4096,
+      createRuntime: () => Promise.resolve(ok(new FakeRuntime())),
+      createPiSession: createFakePiSession,
+    });
+    const messages: RunnerClientMessage[] = [];
+
+    const notReady = promptCommand("not-ready", CONTINUATION_PROMPT);
+    success(await provisioner.handlePromptCommand(notReady, (message) => messages.push(message)));
+    await delay(0);
+    success(
+      await store.updateProvisioning(SESSION_ID, {
+        state: "ready",
+        checkoutState: "pending",
+      }),
+    );
+
+    const wrongModel = promptCommand("wrong-model", CONTINUATION_PROMPT, {
+      ...MODEL_RUNTIME,
+      model: "openai/gpt-4.1",
+    });
+    success(await provisioner.handlePromptCommand(wrongModel, (message) => messages.push(message)));
+    await delay(0);
+    const noVm = promptCommand("no-vm", CONTINUATION_PROMPT);
+    success(await provisioner.handlePromptCommand(noVm, (message) => messages.push(message)));
+
+    assertEquals(
+      messages.flatMap((message) =>
+        message.type === "session.prompt.rejected"
+          ? [{ correlationId: message.correlationId, text: message.payload.message }]
+          : []
+      ),
+      [
+        { correlationId: "not-ready", text: "The session is not ready and idle." },
+        {
+          correlationId: "wrong-model",
+          text: "The session model cannot change during continuation.",
+        },
+        { correlationId: "no-vm", text: "The session VM is unavailable." },
+      ],
+    );
+    success(await provisioner.close());
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
 Deno.test("rejects an orb size above runner capacity before creating session state", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
@@ -338,6 +590,7 @@ Deno.test("a terminal Pi error marks the session failed and disposes Pi", async 
         let listener: (event: AgentSessionEvent) => void = () => {};
         return Promise.resolve({
           session: {
+            isIdle: true,
             sessionManager: EMPTY_PI_SESSION_MANAGER,
             subscribe(nextListener: (event: AgentSessionEvent) => void) {
               listener = nextListener;
@@ -648,6 +901,7 @@ Deno.test("continues to Pi when repository setup fails", async () => {
       createPiSession: () => {
         return Promise.resolve({
           session: {
+            isIdle: true,
             sessionManager: EMPTY_PI_SESSION_MANAGER,
             subscribe() {
               return () => {};
@@ -763,6 +1017,20 @@ function createCommand(): SessionProvisionCommand {
   };
 }
 
+function promptCommand(
+  id: string,
+  prompt: string,
+  modelRuntime = MODEL_RUNTIME,
+): SessionPromptCommand {
+  return {
+    version: 1,
+    id,
+    type: "session.prompt",
+    sessionId: SESSION_ID,
+    payload: { prompt, modelRuntime },
+  };
+}
+
 async function waitForState(
   store: RunnerSessionStore,
   state: "ready" | "error",
@@ -816,6 +1084,7 @@ async function waitForEventType(
 function createFakePiSession(_options: OpenOrbPiSessionOptions) {
   return Promise.resolve({
     session: {
+      isIdle: true,
       sessionManager: EMPTY_PI_SESSION_MANAGER,
       subscribe(_listener: (event: AgentSessionEvent) => void) {
         return () => {};

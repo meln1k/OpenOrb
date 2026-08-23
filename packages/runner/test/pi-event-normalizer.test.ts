@@ -43,6 +43,68 @@ Deno.test("does not durably publish an assistant message Pi did not persist", as
   assert(live.some((event) => event.type === "message.completed"));
 });
 
+Deno.test("normalizes only whitespace-only completed assistant content", async () => {
+  const conversation: SessionConversationEvent[] = [];
+  let nextEntryId = 1;
+  const normalizer = new PiEventNormalizer({
+    getCompactionEntryId: () => undefined,
+    getMessageEntryId: () => `entry-${nextEntryId++}`,
+    publishConversation(event) {
+      conversation.push(event);
+      return Promise.resolve();
+    },
+    publishLive() {
+      return Promise.resolve();
+    },
+  });
+  normalizer.handle({
+    type: "message_end",
+    message: assistantMessage([
+      { type: "thinking", thinking: "\t", thinkingSignature: "reasoning_content" },
+      { type: "text", text: "\n\n" },
+      { type: "toolCall", id: "tool-1", name: "bash", arguments: { command: "pwd" } },
+    ], "toolUse"),
+  });
+  normalizer.handle({
+    type: "message_end",
+    message: assistantMessage([{ type: "text", text: "  Meaningful answer\n" }], "stop"),
+  });
+  normalizer.handle({
+    type: "message_end",
+    message: assistantMessage([{
+      type: "text",
+      text: `${" \t\n".repeat(16 * 1024)}\u0000`,
+    }], "toolUse"),
+  });
+
+  await normalizer.flush();
+
+  assertEquals(conversation[0], {
+    type: "assistant.completed",
+    messageId: "entry-1",
+    text: "",
+    thinking: "",
+    stopReason: "toolUse",
+    usage: zeroUsage(),
+  });
+  assertEquals(conversation[1], {
+    type: "assistant.completed",
+    messageId: "entry-2",
+    text: "  Meaningful answer\n",
+    thinking: "",
+    stopReason: "stop",
+    usage: zeroUsage(),
+  });
+  assertEquals(conversation[2], {
+    type: "assistant.completed",
+    messageId: "entry-3",
+    text: "",
+    thinking: "",
+    stopReason: "toolUse",
+    usage: zeroUsage(),
+  });
+});
+
 Deno.test("bounds normalized UTF-8 text without splitting code points", () => {
   const truncated = truncateUtf8("🙂".repeat(100), 64);
 
@@ -100,5 +162,16 @@ function assistantMessage(
     stopReason,
     ...(errorMessage === undefined ? {} : { errorMessage }),
     timestamp: 0,
+  };
+}
+
+function zeroUsage() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    totalCost: 0,
   };
 }

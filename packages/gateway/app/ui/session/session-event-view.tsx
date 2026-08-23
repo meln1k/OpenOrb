@@ -3,9 +3,9 @@ import {
   sessionEventSchema,
   type SessionUsage,
 } from "@openorb/protocol/runner-session-events";
-import { trySync } from "../../../../result/src/index.ts";
+import { tryAsync, trySync } from "../../../../result/src/index.ts";
 import { object, parseSafe, string } from "remix/data-schema";
-import { clientEntry, css, type Handle } from "remix/ui";
+import { clientEntry, css, type Handle, on } from "remix/ui";
 
 import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
@@ -20,7 +20,9 @@ import {
 import { media } from "@/app/ui/responsive.ts";
 import {
   activeActivityId,
+  appendOptimisticUserMessage,
   createSessionTranscriptState,
+  failOptimisticUserMessage,
   isSessionBusy,
   reduceSessionTranscriptState,
   type SessionState,
@@ -37,6 +39,7 @@ export type SessionEventViewProps = {
   csrfToken: string;
   eventsHref: string;
   initialState: SessionState;
+  messageHref: string;
   retryHref: string;
   sessionId: string;
 };
@@ -67,8 +70,10 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
     handle.props.canRetry,
   );
   let connectionInterrupted = false;
+  let pendingPrompt: { id: string; text: string } | undefined;
 
   handle.queueTask(() => {
+    if (handle.props.initialState === "offline") return;
     let updateTimer: ReturnType<typeof setTimeout> | undefined;
     // Remix flushes updates in microtasks, so use a timer task to coalesce replay bursts.
     const scheduleUpdate = () => {
@@ -90,6 +95,9 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
       if (!source.success) return;
       const event = parseSessionEvent(source.value);
       if (!event) return;
+      if (event.type === "user.message" && event.text === pendingPrompt?.text) {
+        pendingPrompt = undefined;
+      }
       const next = reduceSessionTranscriptState(transcriptState, event);
       if (next === transcriptState) return;
       transcriptState = next;
@@ -97,8 +105,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
     });
     stream.addEventListener("error", () => {
       const next = settleSessionTranscriptState(transcriptState);
-      const interrupted = transcriptState.sessionState !== "ready" &&
-        transcriptState.sessionState !== "error";
+      const interrupted = true;
       if (next === transcriptState && interrupted === connectionInterrupted) return;
       transcriptState = next;
       connectionInterrupted = interrupted;
@@ -115,6 +122,8 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
   return () => {
     const currentActivityId = activeActivityId(transcriptState);
     const busy = isSessionBusy(transcriptState.sessionState) && !connectionInterrupted;
+    const canPrompt = transcriptState.sessionState === "ready" && !connectionInterrupted &&
+      pendingPrompt === undefined;
     const usage = totalSessionUsage(transcriptState);
 
     return (
@@ -179,7 +188,9 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
                 ? (
                   <MessageScrollerItem>
                     <p data-conversation-placeholder mix={emptyConversationStyle}>
-                      Waiting for the initial prompt to reach Pi…
+                      {transcriptState.sessionState === "offline"
+                        ? "Conversation history is unavailable while the pinned runner is offline."
+                        : "Waiting for the initial prompt to reach Pi…"}
                     </p>
                   </MessageScrollerItem>
                 )
@@ -190,6 +201,98 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
           </MessageScrollerViewport>
           <MessageScrollerButton />
         </MessageScroller>
+        <form
+          method="post"
+          action={handle.props.messageHref}
+          mix={[
+            promptFormStyle,
+            on<HTMLFormElement, "submit">("submit", async (event) => {
+              event.preventDefault();
+              if (
+                pendingPrompt !== undefined || connectionInterrupted ||
+                transcriptState.sessionState !== "ready"
+              ) return;
+
+              const form = event.currentTarget;
+              const formData = new FormData(form);
+              const prompt = parseSafe(string(), formData.get("prompt"));
+              if (!prompt.success || prompt.value.trim().length === 0) return;
+
+              const optimisticId = `optimistic:${crypto.randomUUID()}`;
+              pendingPrompt = { id: optimisticId, text: prompt.value };
+              transcriptState = appendOptimisticUserMessage(
+                transcriptState,
+                optimisticId,
+                prompt.value,
+              );
+              const action = form.action;
+              form.reset();
+              await handle.update();
+              if (handle.signal.aborted) return;
+
+              const [response, requestError] = await tryAsync(
+                fetch(action, {
+                  method: "POST",
+                  body: formData,
+                  credentials: "same-origin",
+                  signal: handle.signal,
+                }),
+                () => true,
+              );
+              if (requestError !== undefined) {
+                if (handle.signal.aborted) return;
+                if (pendingPrompt?.id === optimisticId) pendingPrompt = undefined;
+                transcriptState = failOptimisticUserMessage(
+                  transcriptState,
+                  optimisticId,
+                  "Message was not sent. Check the connection and try again.",
+                );
+                await handle.update();
+                return;
+              }
+              if (handle.signal.aborted || response.ok) return;
+              const deliveryError = await promptResponseError(response);
+              if (handle.signal.aborted) return;
+
+              if (pendingPrompt?.id === optimisticId) pendingPrompt = undefined;
+              transcriptState = failOptimisticUserMessage(
+                transcriptState,
+                optimisticId,
+                deliveryError,
+              );
+              await handle.update();
+            }),
+          ]}
+        >
+          <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+          <textarea
+            name="prompt"
+            aria-label="Continue session"
+            placeholder={canPrompt ? "Continue the session…" : "Wait until the session is ready…"}
+            required
+            disabled={!canPrompt}
+            mix={[
+              promptInputStyle,
+              on<HTMLTextAreaElement, "keydown">("keydown", (event) => {
+                if (
+                  event.key !== "Enter" || event.isComposing ||
+                  (!event.metaKey && !event.ctrlKey)
+                ) return;
+                event.preventDefault();
+                if (!event.currentTarget.disabled) event.currentTarget.form?.requestSubmit();
+              }),
+            ]}
+          />
+          <Button
+            type="submit"
+            size="icon-lg"
+            aria-label="Send prompt"
+            title={canPrompt ? "Send prompt" : "Session must be ready"}
+            disabled={!canPrompt}
+          >
+            <Icon name="arrow-right" size={20} />
+          </Button>
+        </form>
       </section>
     );
   };
@@ -234,13 +337,26 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
           messageId={`message:${entry.messageId}`}
           scrollAnchor
         >
-          <article data-conversation-entry data-role="user" mix={userMessageStyle}>
+          <article
+            data-conversation-entry
+            data-role="user"
+            data-delivery={entry.delivery}
+            aria-invalid={entry.delivery === "failed" || undefined}
+            mix={userMessageStyle}
+          >
             <p>{entry.text}</p>
+            {entry.delivery === "pending"
+              ? <small role="status" data-prompt-delivery>Sending…</small>
+              : entry.delivery === "failed"
+              ? <small role="alert" data-prompt-delivery>{entry.deliveryError}</small>
+              : null}
           </article>
         </MessageScrollerItem>
       );
     case "assistant": {
-      if (entry.text.length === 0 && entry.thinking.length === 0) return null;
+      const hasText = entry.text.trim().length > 0;
+      const hasThinking = entry.thinking.trim().length > 0;
+      if (!hasText && !hasThinking) return null;
       const assistantKey = entry.messageId === undefined
         ? "assistant:active"
         : `message:${entry.messageId}`;
@@ -250,7 +366,7 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
           messageId={assistantKey}
         >
           <article data-conversation-entry data-role="assistant" mix={assistantMessageStyle}>
-            {entry.thinking.length > 0
+            {hasThinking
               ? (
                 <Marker
                   role={entry.completed ? undefined : "status"}
@@ -271,7 +387,7 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
                 </Marker>
               )
               : null}
-            {entry.text ? <p data-assistant-text>{entry.text}</p> : null}
+            {hasText ? <p data-assistant-text>{entry.text}</p> : null}
           </article>
         </MessageScrollerItem>
       );
@@ -469,6 +585,17 @@ function renderUsageStatus(
   );
 }
 
+async function promptResponseError(response: Response): Promise<string> {
+  const fallback = response.status > 0
+    ? `Message was not sent (${response.status}).`
+    : "Message was not sent.";
+  const [body, readError] = await tryAsync(response.text(), () => true);
+  if (readError !== undefined) return fallback;
+  const document = new DOMParser().parseFromString(body, "text/html");
+  const message = document.querySelector("[role='alert']")?.textContent?.trim();
+  return message || fallback;
+}
+
 function formatTokens(count: number): string {
   if (count < 1_000) return count.toString();
   if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
@@ -536,6 +663,8 @@ const sessionUsageStyle = css({
   "& > span": { whiteSpace: "nowrap" },
 });
 const userMessageStyle = css({
+  display: "grid",
+  gap: "4px",
   width: "fit-content",
   maxWidth: "min(84%, 640px)",
   marginLeft: "auto",
@@ -544,6 +673,18 @@ const userMessageStyle = css({
   background: "var(--accent)",
   borderRadius: "var(--radius-xl) var(--radius-xl) var(--radius-sm) var(--radius-xl)",
   "& p": { margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+  "&[data-delivery='pending']": { opacity: 0.72 },
+  "&[data-delivery='failed']": {
+    color: "var(--destructive)",
+    background: "color-mix(in oklab, var(--destructive) 10%, var(--background))",
+    border: "1px solid color-mix(in oklab, var(--destructive) 35%, var(--border))",
+  },
+  "& [data-prompt-delivery]": {
+    color: "var(--muted-foreground)",
+    fontSize: "11px",
+    lineHeight: 1.4,
+  },
+  "&[data-delivery='failed'] [data-prompt-delivery]": { color: "var(--destructive)" },
 });
 const assistantMessageStyle = css({
   display: "grid",
@@ -626,6 +767,35 @@ const emptyConversationStyle = css({
   color: "var(--muted-foreground)",
   fontSize: "14px",
   textAlign: "center",
+});
+const promptFormStyle = css({
+  display: "flex",
+  alignItems: "flex-end",
+  gap: "10px",
+  flexShrink: 0,
+  padding: "12px 16px",
+  background: "var(--muted)",
+  borderTop: "1px solid var(--border)",
+});
+const promptInputStyle = css({
+  flex: 1,
+  minHeight: "44px",
+  maxHeight: "160px",
+  padding: "11px 13px",
+  color: "var(--foreground)",
+  background: "var(--background)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-md)",
+  outline: "none",
+  resize: "vertical",
+  font: "inherit",
+  fontSize: "14px",
+  lineHeight: 1.5,
+  "&:focus": {
+    borderColor: "var(--ring)",
+    boxShadow: "0 0 0 3px color-mix(in oklab, var(--ring) 35%, transparent)",
+  },
+  "&:disabled": { cursor: "not-allowed", opacity: 0.6 },
 });
 const spinnerStyle = css({
   display: "block",

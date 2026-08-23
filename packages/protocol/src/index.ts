@@ -109,6 +109,20 @@ export {
   sessionRepositoryUrlSchema,
 } from "@/src/runner-session-provisioning.ts";
 export {
+  SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE,
+  SESSION_PROMPT_MESSAGE_TYPE,
+  SESSION_PROMPT_REJECTED_MESSAGE_TYPE,
+  type SessionPromptAcceptedMessage,
+  type SessionPromptAcceptedPayload,
+  sessionPromptAcceptedPayloadSchema,
+  type SessionPromptCommand,
+  type SessionPromptCommandPayload,
+  sessionPromptCommandPayloadSchema,
+  type SessionPromptRejectedMessage,
+  type SessionPromptRejectedPayload,
+  sessionPromptRejectedPayloadSchema,
+} from "@/src/runner-session-prompt.ts";
+export {
   DEFAULT_ORB_SIZE,
   ORB_SIZE_RESOURCES,
   ORB_SIZES,

@@ -173,12 +173,16 @@ Deno.test("projects tool-only assistant turns with durable arguments and results
   const session = SessionManager.inMemory("/workspace");
   const assistantId = session.appendMessage({
     role: "assistant",
-    content: [{
-      type: "toolCall",
-      id: "tool-1",
-      name: "bash",
-      arguments: { command: "pwd" },
-    }],
+    content: [
+      { type: "thinking", thinking: "\t", thinkingSignature: "reasoning_content" },
+      { type: "text", text: "\n\n" },
+      {
+        type: "toolCall",
+        id: "tool-1",
+        name: "bash",
+        arguments: { command: "pwd" },
+      },
+    ],
     api: "openai-completions",
     provider: "opencode-go",
     model: "deepseek-v4-flash",

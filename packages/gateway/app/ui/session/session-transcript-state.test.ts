@@ -2,7 +2,9 @@ import { assertEquals } from "@std/assert";
 
 import type { SessionEvent, SessionUsage } from "@openorb/protocol";
 import {
+  appendOptimisticUserMessage,
   createSessionTranscriptState,
+  failOptimisticUserMessage,
   reduceSessionTranscriptState,
   type ToolEntry,
   totalSessionUsage,
@@ -144,6 +146,45 @@ Deno.test("duplicate durable events are idempotent", () => {
   assertEquals(state.entries.filter(isMessageEntry).length, 2);
   assertEquals([...state.usageByMessageId], [["assistant-1", usage(8, 3)]]);
   assertEquals(totalSessionUsage(state), usage(8, 3));
+});
+
+Deno.test("optimistic user messages reconcile with durable events or retain failures", () => {
+  const initial = createSessionTranscriptState("ready", false);
+  const pending = appendOptimisticUserMessage(
+    initial,
+    "optimistic-1",
+    "Continue the implementation",
+  );
+  assertEquals(pending.entries, [{
+    role: "user",
+    messageId: "optimistic-1",
+    text: "Continue the implementation",
+    delivery: "pending",
+  }]);
+
+  const failed = failOptimisticUserMessage(
+    pending,
+    "optimistic-1",
+    "The pinned runner is offline.",
+  );
+  assertEquals(failed.entries, [{
+    role: "user",
+    messageId: "optimistic-1",
+    text: "Continue the implementation",
+    delivery: "failed",
+    deliveryError: "The pinned runner is offline.",
+  }]);
+
+  const reconciled = reduceSessionTranscriptState(failed, {
+    type: "user.message",
+    messageId: "pi-user-1",
+    text: "Continue the implementation",
+  });
+  assertEquals(reconciled.entries, [{
+    role: "user",
+    messageId: "pi-user-1",
+    text: "Continue the implementation",
+  }]);
 });
 
 Deno.test("agent and turn boundaries do not add transcript activity", () => {

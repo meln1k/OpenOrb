@@ -240,6 +240,9 @@ export async function main(args: string[] = Deno.args): Promise<number> {
           onProvisionCommand(command, send) {
             return sessionProvisioner.handleCommand(command, send);
           },
+          onPromptCommand(command, send) {
+            return sessionProvisioner.handlePromptCommand(command, send);
+          },
           onConnected() {
             console.log(`[openorb-runner] connected runner ${identity.runnerId}`);
           },

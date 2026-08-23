@@ -11,6 +11,9 @@ import {
   type SessionEventMessage,
   type SessionEventReplayCommand,
   type SessionEventReplayResultMessage,
+  type SessionPromptAcceptedMessage,
+  type SessionPromptCommand,
+  type SessionPromptRejectedMessage,
   type SessionProvisionAcceptedMessage,
   type SessionProvisionCommand,
 } from "@/src/index.ts";
@@ -296,6 +299,96 @@ Deno.test("rejects malformed or oversized provisioning traffic", () => {
         sessionId: SESSION_ID,
         correlationId: "provision-1",
         payload,
+      })
+    );
+  }
+});
+
+Deno.test("validates continuation prompt commands and acknowledgements", () => {
+  const command = {
+    version: 1,
+    id: "prompt-1",
+    type: "session.prompt",
+    sessionId: SESSION_ID,
+    payload: {
+      prompt: "Continue with the implementation",
+      modelRuntime: MODEL_RUNTIME,
+    },
+  } satisfies SessionPromptCommand;
+  const parsedCommand = parseRunnerServerMessage(command);
+  assert(parsedCommand.type === "session.prompt");
+  assertEquals(parsedCommand.payload, command.payload);
+
+  const accepted = {
+    version: 1,
+    id: "prompt-accepted-1",
+    type: "session.prompt.accepted",
+    sessionId: SESSION_ID,
+    correlationId: command.id,
+    payload: {},
+  } satisfies SessionPromptAcceptedMessage;
+  const parsedAccepted = parseRunnerClientMessage(accepted);
+  assert(parsedAccepted.type === "session.prompt.accepted");
+  assertEquals(parsedAccepted.payload, {});
+
+  const rejected = {
+    version: 1,
+    id: "prompt-rejected-1",
+    type: "session.prompt.rejected",
+    sessionId: SESSION_ID,
+    correlationId: command.id,
+    payload: { message: "The session is busy." },
+  } satisfies SessionPromptRejectedMessage;
+  const parsedRejected = parseRunnerClientMessage(rejected);
+  assert(parsedRejected.type === "session.prompt.rejected");
+  assertEquals(parsedRejected.payload, rejected.payload);
+});
+
+Deno.test("rejects malformed or oversized continuation prompt traffic", () => {
+  const command = {
+    version: 1,
+    id: "prompt-1",
+    type: "session.prompt",
+    sessionId: SESSION_ID,
+    payload: {
+      prompt: "Continue",
+      modelRuntime: MODEL_RUNTIME,
+    },
+  };
+
+  for (const prompt of ["   ", "x".repeat(32 * 1024 + 1)]) {
+    assertThrows(() =>
+      parseRunnerServerMessage({
+        ...command,
+        payload: { ...command.payload, prompt },
+      })
+    );
+  }
+  assertThrows(() =>
+    parseRunnerServerMessage({
+      ...command,
+      payload: { ...command.payload, unexpected: true },
+    })
+  );
+  assertThrows(() =>
+    parseRunnerClientMessage({
+      version: 1,
+      id: "prompt-accepted-1",
+      type: "session.prompt.accepted",
+      sessionId: SESSION_ID,
+      correlationId: command.id,
+      payload: { unexpected: true },
+    })
+  );
+  for (const message of ["", "x".repeat(1001)]) {
+    assertThrows(() =>
+      parseRunnerClientMessage({
+        version: 1,
+        id: "prompt-rejected-1",
+        type: "session.prompt.rejected",
+        sessionId: SESSION_ID,
+        correlationId: command.id,
+        payload: { message },
       })
     );
   }

@@ -5,6 +5,7 @@
     "./packages/result",
     "./packages/runner"
   ],
+  "exclude": [".openorb-runner-dev"],
   "unstable": ["no-legacy-abort"],
   "nodeModulesDir": "auto",
   "imports": {

@@ -13,9 +13,11 @@ import {
   SESSION_EVENT_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
+  SESSION_PROMPT_MESSAGE_TYPE,
   SESSION_PROVISION_MESSAGE_TYPE,
   type SessionEventPayload,
   type SessionEventReplayCommand,
+  type SessionPromptCommand,
   type SessionProvisionCommand,
 } from "@openorb/protocol";
 import { parseSafe, string } from "@remix-run/data-schema";
@@ -43,6 +45,10 @@ export interface MaintainRunnerConnectionOptions {
   onReconnectScheduled?: (milliseconds: number) => void;
   onProvisionCommand?: (
     command: SessionProvisionCommand,
+    send: (message: RunnerClientMessage) => void,
+  ) => Promise<Result<void, Error>>;
+  onPromptCommand?: (
+    command: SessionPromptCommand,
     send: (message: RunnerClientMessage) => void,
   ) => Promise<Result<void, Error>>;
 }
@@ -160,6 +166,14 @@ async function connectOnce(
           void options.onProvisionCommand(message, send).then(([, commandError]) => {
             if (commandError !== undefined) {
               closeSocket(socket, 1011, "Runner provisioning command failed");
+            }
+          });
+          return;
+        }
+        if (message.type === SESSION_PROMPT_MESSAGE_TYPE && options.onPromptCommand) {
+          void options.onPromptCommand(message, send).then(([, commandError]) => {
+            if (commandError !== undefined) {
+              closeSocket(socket, 1011, "Runner prompt command failed");
             }
           });
           return;

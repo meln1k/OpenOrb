@@ -1,6 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 
-import { parseRunnerServerMessage } from "@openorb/protocol";
+import { parseRunnerServerMessage, type RunnerSessionSnapshot } from "@openorb/protocol";
 import { err, ok } from "@openorb/result";
 import { SessionCatalogPersistenceError } from "@/app/data/session-catalog-repository.ts";
 import { RunnerConnectionGateway } from "@/app/runner-connection-gateway.ts";
@@ -275,6 +275,154 @@ Deno.test("catalog failure rejects acceptance before installing the session rout
   }
 });
 
+Deno.test("proxies one ready-session prompt and settles runner acknowledgements", async () => {
+  const gateway = new RunnerConnectionGateway({
+    authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
+    reconcileSessionManifestEntries: (_userId, entries) =>
+      Promise.resolve(ok({
+        acceptedSessionIds: entries.map((entry) => entry.id),
+        tombstonedSessionIds: [],
+        rejected: [],
+      })),
+  });
+  const server = await createTestServer((request) => gateway.handleUpgrade(request));
+  let socket: WebSocket | undefined;
+
+  try {
+    socket = await connectRunner(server.baseUrl);
+    await publishSessionManifest(socket, gateway, [{ ...sessionSnapshot(), state: "ready" }]);
+
+    const firstFrame = nextMessage(socket);
+    const first = gateway.promptSession(promptInput("Continue the implementation"));
+    const firstCommand = parseRunnerServerMessage(JSON.parse(await firstFrame));
+    assert(firstCommand.type === "session.prompt");
+    assertEquals(firstCommand.payload, {
+      prompt: "Continue the implementation",
+      modelRuntime: MODEL_RUNTIME,
+    });
+
+    assertEquals(await gateway.promptSession(promptInput("Do not queue this")), {
+      status: "rejected",
+      message: "The session already has a command in flight.",
+    });
+    assertEquals(
+      await gateway.promptSession({
+        ...promptInput("Do not change models"),
+        payload: {
+          ...promptInput("Do not change models").payload,
+          modelRuntime: { ...MODEL_RUNTIME, model: "openai/gpt-4.1" },
+        },
+      }),
+      {
+        status: "rejected",
+        message: "The session model cannot change during continuation.",
+      },
+    );
+
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.prompt.rejected",
+      sessionId: SESSION_ID,
+      correlationId: firstCommand.id,
+      payload: { message: "Pi did not accept the prompt." },
+    }));
+    assertEquals(await first, {
+      status: "rejected",
+      message: "Pi did not accept the prompt.",
+    });
+
+    const acceptedFrame = nextMessage(socket);
+    const accepted = gateway.promptSession(promptInput("Try again"));
+    const acceptedCommand = parseRunnerServerMessage(JSON.parse(await acceptedFrame));
+    assert(acceptedCommand.type === "session.prompt");
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.prompt.accepted",
+      sessionId: SESSION_ID,
+      correlationId: acceptedCommand.id,
+      payload: {},
+    }));
+    assertEquals(await accepted, { status: "accepted" });
+
+    const disconnectedFrame = nextMessage(socket);
+    const disconnected = gateway.promptSession(promptInput("Disconnect before accepting"));
+    const disconnectedCommand = parseRunnerServerMessage(JSON.parse(await disconnectedFrame));
+    assert(disconnectedCommand.type === "session.prompt");
+    socket.close();
+    assertEquals(await disconnected, {
+      status: "unavailable",
+      message: "Runner disconnected before acknowledging the prompt.",
+    });
+    assertEquals(await gateway.promptSession(promptInput("Do not queue while offline")), {
+      status: "unavailable",
+      message: "The pinned runner is offline.",
+    });
+  } finally {
+    socket?.close();
+    gateway.close();
+    await server.close();
+  }
+});
+
+Deno.test("ignores prompt acknowledgements that arrive after the acceptance deadline", async () => {
+  const gateway = new RunnerConnectionGateway({
+    authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
+    reconcileSessionManifestEntries: (_userId, entries) =>
+      Promise.resolve(ok({
+        acceptedSessionIds: entries.map((entry) => entry.id),
+        tombstonedSessionIds: [],
+        rejected: [],
+      })),
+  }, { promptAcceptanceTimeoutMs: 5 });
+  const server = await createTestServer((request) => gateway.handleUpgrade(request));
+  let socket: WebSocket | undefined;
+
+  try {
+    socket = await connectRunner(server.baseUrl);
+    await publishSessionManifest(socket, gateway, [{ ...sessionSnapshot(), state: "ready" }]);
+
+    const lateFrame = nextMessage(socket);
+    const timedOut = gateway.promptSession(promptInput("Accept this too late"));
+    const lateCommand = parseRunnerServerMessage(JSON.parse(await lateFrame));
+    assert(lateCommand.type === "session.prompt");
+    assertEquals(await timedOut, {
+      status: "unavailable",
+      message: "Runner did not acknowledge the prompt in time.",
+    });
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.prompt.accepted",
+      sessionId: SESSION_ID,
+      correlationId: lateCommand.id,
+      payload: {},
+    }));
+
+    const nextFrame = nextMessage(socket);
+    const nextPrompt = gateway.promptSession(promptInput("The socket remains usable"));
+    const nextCommand = parseRunnerServerMessage(JSON.parse(await nextFrame));
+    assert(nextCommand.type === "session.prompt");
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.prompt.rejected",
+      sessionId: SESSION_ID,
+      correlationId: nextCommand.id,
+      payload: { message: "Expected test rejection." },
+    }));
+    assertEquals(await nextPrompt, {
+      status: "rejected",
+      message: "Expected test rejection.",
+    });
+  } finally {
+    socket?.close();
+    gateway.close();
+    await server.close();
+  }
+});
+
 Deno.test("rejects an orb size that exceeds the runner's advertised capacity", async () => {
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
@@ -478,6 +626,15 @@ async function publishEmptySessionManifest(
   gateway: RunnerConnectionGateway,
   maxConcurrentSessions = 2,
 ): Promise<void> {
+  await publishSessionManifest(socket, gateway, [], maxConcurrentSessions);
+}
+
+async function publishSessionManifest(
+  socket: WebSocket,
+  gateway: RunnerConnectionGateway,
+  sessions: ReturnType<typeof sessionSnapshot>[],
+  maxConcurrentSessions = 2,
+): Promise<void> {
   const manifestId = crypto.randomUUID();
   socket.send(JSON.stringify({
     version: 1,
@@ -485,14 +642,29 @@ async function publishEmptySessionManifest(
     type: "runner.session-sync.start",
     payload: { manifestId },
   }));
+  if (sessions.length > 0) {
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "runner.session-sync.chunk",
+      payload: { manifestId, sequence: 0, sessions },
+    }));
+  }
   socket.send(JSON.stringify({
     version: 1,
     id: crypto.randomUUID(),
     type: "runner.session-sync.complete",
-    payload: { manifestId, chunkCount: 0, sessionCount: 0 },
+    payload: {
+      manifestId,
+      chunkCount: sessions.length > 0 ? 1 : 0,
+      sessionCount: sessions.length,
+    },
   }));
   socket.send(JSON.stringify(heartbeatMessage(maxConcurrentSessions, 0)));
-  await waitFor(() => gateway.getRunnerLiveState(USER_ID, RUNNER_ID) !== null);
+  await waitFor(() =>
+    gateway.getRunnerLiveState(USER_ID, RUNNER_ID) !== null &&
+    sessions.every((session) => gateway.getSessionRunner(USER_ID, session.id) === RUNNER_ID)
+  );
 }
 
 function provisionInput(sessionId: string) {
@@ -510,6 +682,14 @@ function provisionInput(sessionId: string) {
       initialPrompt: INITIAL_PROMPT,
       modelRuntime: MODEL_RUNTIME,
     },
+  };
+}
+
+function promptInput(prompt: string) {
+  return {
+    userId: USER_ID,
+    sessionId: SESSION_ID,
+    payload: { prompt, modelRuntime: MODEL_RUNTIME },
   };
 }
 
@@ -531,7 +711,7 @@ function heartbeatMessage(maxConcurrentSessions: number, activeSessions: number)
   };
 }
 
-function sessionSnapshot() {
+function sessionSnapshot(): RunnerSessionSnapshot {
   return {
     id: SESSION_ID,
     projectId: PROJECT_ID,
@@ -539,7 +719,7 @@ function sessionSnapshot() {
     initialPromptPreview: INITIAL_PROMPT,
     model: "opencode-go/deepseek-v4-flash",
     orbSize: "medium" as const,
-    state: "created" as const,
+    state: "created",
     lastEventCursor: 0,
   };
 }

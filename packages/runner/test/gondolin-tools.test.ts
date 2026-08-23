@@ -155,7 +155,7 @@ Deno.test({
       const imageProbe = await bash.execute("developer-image", {
         command: [
           "set -eu",
-          'test "$(cat /etc/openorb-image-release)" = mvp-1',
+          'test "$(cat /etc/openorb-image-release)" = mvp-2',
           'for command in bash git gh curl jq rg file tar unzip zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
           "test -s /etc/ssl/certs/ca-certificates.crt",
           "git --version",

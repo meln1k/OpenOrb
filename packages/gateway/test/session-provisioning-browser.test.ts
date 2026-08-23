@@ -6,6 +6,8 @@ import {
   type SessionEventPayload,
 } from "@openorb/protocol";
 import type {
+  PromptSessionInput,
+  PromptSessionResult,
   ProvisionSessionInput,
   ProvisionSessionResult,
   RunnerConnectionRegistry,
@@ -21,6 +23,7 @@ import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
 const PASSWORD = "[REDACTED:password] horse battery staple";
 const GITHUB_TOKEN = "browser-provisioning-github-token";
 const MODEL_PROVIDER_KEY = "browser-provisioning-model-key";
+const CONTINUATION_MODEL_PROVIDER_KEY = "browser-continuation-model-key";
 const RETRY_MODEL_PROVIDER_KEY = "browser-provisioning-retry-model-key";
 const PROVIDER_ID = "opencode-go";
 const MODEL = `${PROVIDER_ID}/deepseek-v4-flash`;
@@ -35,11 +38,13 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
   sessionId: string | null = null;
   snapshot: RunnerSessionSnapshot | null = null;
   provisions: ProvisionSessionInput[] = [];
+  prompts: PromptSessionInput[] = [];
   events: SessionEventPayload[] = [];
   afterCursors: number[] = [];
   subscriptionUnsubscribes = 0;
   beforeAcceptance?: (input: ProvisionSessionInput) => Promise<void>;
   reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
+  promptResult: PromptSessionResult = { status: "accepted" };
 
   getRunnerLiveState(userId: string, runnerId: string): RunnerLiveState | null {
     if (userId !== this.userId || runnerId !== this.runnerId) return null;
@@ -102,6 +107,11 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
         checkoutState: "pending",
       },
     };
+  }
+
+  promptSession(input: PromptSessionInput): Promise<PromptSessionResult> {
+    this.prompts.push(input);
+    return Promise.resolve(this.promptResult);
   }
 
   subscribeToSessionEvents(
@@ -300,6 +310,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       cursor: 1,
       event: { type: "user.message", messageId: "pi:user:1", text: INITIAL_PROMPT },
     }];
+    assert(connections.snapshot);
+    connections.snapshot = { ...connections.snapshot, state: "ready" };
     const detail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
@@ -311,6 +323,12 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(detailHtml, /<span>Repository<\/span>/);
     assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/events`));
     assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-event-view\.tsx/);
+    assertMatch(
+      detailHtml,
+      new RegExp(`action="/app/sessions/${provision.sessionId}/messages"`),
+    );
+    assertMatch(detailHtml, /<textarea[^>]*name="prompt"[^>]*aria-label="Continue session"/);
+    assertMatch(detailHtml, /aria-label="Send prompt"/);
     assertNotMatch(detailHtml, /data-session-events/);
     assert(!detailHtml.includes(GITHUB_TOKEN));
     assert(!detailHtml.includes(MODEL_PROVIDER_KEY));
@@ -334,6 +352,74 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         currentSidebarLink < olderSidebarLink,
     );
     assert(projectsLink > olderSidebarLink);
+
+    const messageHref = routes.app.sessions.message.href({ sessionId: provision.sessionId });
+    const missingMessageCsrf = await fetch(new URL(messageHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({ prompt: "Continue without CSRF" }),
+    });
+    assertEquals(missingMessageCsrf.status, 403);
+    assertEquals(connections.prompts, []);
+
+    await store.saveModelProviderCredential(
+      client.userId,
+      PROVIDER_ID,
+      CONTINUATION_MODEL_PROVIDER_KEY,
+    );
+    const continued = await fetch(new URL(messageHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(detailHtml),
+        prompt: "Implement the next step",
+      }),
+    });
+    assertEquals(continued.status, 303);
+    assertEquals(continued.headers.get("location"), location);
+    assertEquals(connections.prompts, [{
+      userId: client.userId,
+      sessionId: provision.sessionId,
+      payload: {
+        prompt: "Implement the next step",
+        modelRuntime: {
+          model: MODEL,
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
+        },
+      },
+    }]);
+
+    connections.snapshot = { ...connections.snapshot, state: "running" };
+    const busyContinuation = await fetch(new URL(messageHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(detailHtml),
+        prompt: "Do not queue this prompt",
+      }),
+    });
+    assertEquals(busyContinuation.status, 409);
+    assertMatch(await busyContinuation.text(), /session is not ready and idle/);
+    assertEquals(connections.prompts.length, 1);
+
+    connections.sessionId = null;
+    const offlineContinuation = await fetch(new URL(messageHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(detailHtml),
+        prompt: "Do not queue this offline prompt",
+      }),
+    });
+    assertEquals(offlineContinuation.status, 503);
+    assertMatch(await offlineContinuation.text(), /pinned runner is offline/);
+    assertEquals(connections.prompts.length, 1);
+    connections.sessionId = provision.sessionId;
 
     connections.beforeAcceptance = undefined;
     assert(connections.snapshot);
