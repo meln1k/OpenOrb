@@ -4,6 +4,18 @@ import type { InferOutput } from "@remix-run/data-schema";
 import { runnerIdSchema, runnerTokenSchema } from "@/src/runner-enrollment.ts";
 import { parseRunnerMessage, type RunnerMessage } from "@/src/runner-message.ts";
 import {
+  SESSION_ABORT_ACCEPTED_MESSAGE_TYPE,
+  SESSION_ABORT_MESSAGE_TYPE,
+  SESSION_ABORT_REJECTED_MESSAGE_TYPE,
+  type SessionAbortAcceptedMessage,
+  sessionAbortAcceptedPayloadSchema,
+  type SessionAbortCommand,
+  type SessionAbortCommandPayload,
+  sessionAbortCommandPayloadSchema,
+  type SessionAbortRejectedMessage,
+  sessionAbortRejectedPayloadSchema,
+} from "@/src/runner-session-abort.ts";
+import {
   RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE,
   RUNNER_SESSION_SYNC_COMPLETE_MESSAGE_TYPE,
   RUNNER_SESSION_SYNC_START_MESSAGE_TYPE,
@@ -72,6 +84,8 @@ export type RunnerClientMessage =
   | SessionProvisionRejectedMessage
   | SessionPromptAcceptedMessage
   | SessionPromptRejectedMessage
+  | SessionAbortAcceptedMessage
+  | SessionAbortRejectedMessage
   | SessionEventMessage
   | SessionEventReplayResultMessage;
 
@@ -81,6 +95,7 @@ export type RunnerServerMessage =
   })
   | SessionProvisionCommand
   | SessionPromptCommand
+  | SessionAbortCommand
   | SessionEventReplayCommand;
 
 const helloPayloadSchema = object(
@@ -213,6 +228,22 @@ export function parseRunnerClientMessage(input: unknown): RunnerClientMessage {
       payload: parse(sessionPromptRejectedPayloadSchema, message.payload),
     };
   }
+  if (message.type === SESSION_ABORT_ACCEPTED_MESSAGE_TYPE) {
+    assertSessionResponseEnvelope(message);
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(sessionAbortAcceptedPayloadSchema, message.payload),
+    };
+  }
+  if (message.type === SESSION_ABORT_REJECTED_MESSAGE_TYPE) {
+    assertSessionResponseEnvelope(message);
+    return {
+      ...message,
+      type: message.type,
+      payload: parse(sessionAbortRejectedPayloadSchema, message.payload),
+    };
+  }
   if (message.type === SESSION_EVENT_MESSAGE_TYPE) {
     assertSessionResponseEnvelope(message);
     return {
@@ -265,6 +296,19 @@ export function parseRunnerServerMessage(input: unknown): RunnerServerMessage {
     assertSessionCommandEnvelope(message);
     const payload: SessionPromptCommandPayload = parse(
       sessionPromptCommandPayloadSchema,
+      message.payload,
+    );
+    return {
+      ...message,
+      type: message.type,
+      sessionId: message.sessionId,
+      payload,
+    };
+  }
+  if (message.type === SESSION_ABORT_MESSAGE_TYPE) {
+    assertSessionCommandEnvelope(message);
+    const payload: SessionAbortCommandPayload = parse(
+      sessionAbortCommandPayloadSchema,
       message.payload,
     );
     return {

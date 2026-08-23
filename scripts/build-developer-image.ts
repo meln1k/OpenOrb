@@ -29,6 +29,13 @@ export const DEVELOPER_IMAGE_FILES = [
 const REPRODUCIBLE_BUILD_TIME = "1970-01-01T00:00:00.000Z";
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
+class DeveloperImageBuildError extends Error {
+  constructor(message: string, override readonly cause: unknown) {
+    super(message, { cause });
+    this.name = "DeveloperImageBuildError";
+  }
+}
+
 if (import.meta.main) {
   const architecture = parseArchitecture(Deno.args[0]);
   const outputDirectory = join(
@@ -136,13 +143,6 @@ async function createArchive(
   if (!archiveError) return ok(undefined);
   await tryAsync(Deno.remove(destination), () => undefined);
   return err(archiveError);
-}
-
-class DeveloperImageBuildError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
-    super(message, { cause });
-    this.name = "DeveloperImageBuildError";
-  }
 }
 
 async function* archiveEntries(sourceDirectory: string): AsyncGenerator<TarStreamInput> {

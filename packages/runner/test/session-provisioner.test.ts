@@ -3,6 +3,7 @@ import { delay } from "@std/async/delay";
 
 import type {
   RunnerClientMessage,
+  SessionAbortCommand,
   SessionEventPayload,
   SessionPromptCommand,
   SessionProvisionCommand,
@@ -196,6 +197,174 @@ Deno.test("durably accepts and provisions a repository entirely through the gues
   }
 });
 
+Deno.test("abort clears queued follow-ups, rejects new prompts, and cannot hit a settled run", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await createStore(workingDirectory);
+    const eventRelay = new SessionEventRelay(store);
+    const runtime = new FakeRuntime();
+    const messages: RunnerClientMessage[] = [];
+    const events: SessionEventPayload[] = [];
+    const promptStarted = Promise.withResolvers<void>();
+    const finishPrompt = Promise.withResolvers<void>();
+    const promptSettled = Promise.withResolvers<void>();
+    const completeAbort = Promise.withResolvers<void>();
+    const queuedFollowUps: string[] = [];
+    const abortCalls: string[] = [];
+    let listener: (event: AgentSessionEvent) => void = () => {};
+    let active = false;
+    const detach = success(
+      await eventRelay.attach((message) => {
+        messages.push(message);
+        if (message.type === "session.event") events.push(message.payload);
+      }, () => Promise.resolve(ok(true))),
+    );
+    const provisioner = new SessionProvisioner({
+      sessionStore: store,
+      eventRelay,
+      cpuCount: 2,
+      memoryMiB: 4096,
+      createRuntime: () => Promise.resolve(ok(runtime)),
+      createPiSession: () =>
+        Promise.resolve({
+          session: {
+            get isIdle() {
+              return !active;
+            },
+            sessionManager: EMPTY_PI_SESSION_MANAGER,
+            subscribe(nextListener: (event: AgentSessionEvent) => void) {
+              listener = nextListener;
+              return () => {
+                listener = () => {};
+              };
+            },
+            async prompt(
+              _input: string,
+              options?: { preflightResult?: (success: boolean) => void },
+            ) {
+              active = true;
+              options?.preflightResult?.(true);
+              promptStarted.resolve();
+              await finishPrompt.promise;
+              listener({ type: "message_end", message: assistantMessage([], "aborted") });
+              active = false;
+              promptSettled.resolve();
+            },
+            followUp(input: string) {
+              queuedFollowUps.push(input);
+              listener({
+                type: "queue_update",
+                steering: [],
+                followUp: [...queuedFollowUps],
+              });
+              return Promise.resolve();
+            },
+            clearQueue() {
+              abortCalls.push("clearQueue");
+              const followUp = queuedFollowUps.splice(0);
+              listener({ type: "queue_update", steering: [], followUp: [] });
+              return { steering: [], followUp };
+            },
+            async abort() {
+              abortCalls.push("abort");
+              await completeAbort.promise;
+              finishPrompt.resolve();
+              await promptSettled.promise;
+            },
+            dispose() {},
+          },
+        }),
+    });
+
+    success(await provisioner.handleCommand(createCommand(), (message) => messages.push(message)));
+    await promptStarted.promise;
+    await waitForEventType(events, "session.state", "running");
+    assertEquals(provisioner.getActiveRunId(SESSION_ID), "create-command");
+    const firstFollowUp = promptCommand("abort-follow-up-1", "First queued follow-up");
+    const secondFollowUp = promptCommand("abort-follow-up-2", "Second queued follow-up");
+    success(
+      await provisioner.handlePromptCommand(firstFollowUp, (message) => messages.push(message)),
+    );
+    success(
+      await provisioner.handlePromptCommand(secondFollowUp, (message) => messages.push(message)),
+    );
+    assertEquals(queuedFollowUps, ["First queued follow-up", "Second queued follow-up"]);
+
+    const racedFollowUp = promptCommand("abort-follow-up-3", "Follow-up racing Abort");
+    const abort = abortCommand("abort-active", "create-command");
+    const [racedFollowUpResult, abortResult] = await Promise.all([
+      provisioner.handlePromptCommand(racedFollowUp, (message) => messages.push(message)),
+      provisioner.handleAbortCommand(abort, (message) => messages.push(message)),
+    ]);
+    success(racedFollowUpResult);
+    success(abortResult);
+    assertEquals(abortCalls, ["clearQueue", "abort"]);
+    assertEquals(queuedFollowUps, []);
+    assert(
+      messages.some((message) =>
+        message.type === "session.prompt.accepted" &&
+        message.correlationId === racedFollowUp.id
+      ),
+    );
+    assert(
+      messages.some((message) =>
+        message.type === "session.abort.accepted" && message.correlationId === abort.id
+      ),
+    );
+
+    const whileAborting = promptCommand("prompt-while-aborting", "Do not accept this prompt");
+    const duplicateAbort = abortCommand("duplicate-abort", "create-command");
+    const [duplicateAbortResult, whileAbortingResult] = await Promise.all([
+      provisioner.handleAbortCommand(duplicateAbort, (message) => messages.push(message)),
+      provisioner.handlePromptCommand(whileAborting, (message) => messages.push(message)),
+    ]);
+    success(duplicateAbortResult);
+    success(whileAbortingResult);
+    assert(
+      messages.some((message) =>
+        message.type === "session.abort.rejected" &&
+        message.correlationId === duplicateAbort.id &&
+        message.payload.message === "That Pi run is no longer active."
+      ),
+    );
+    assert(
+      messages.some((message) =>
+        message.type === "session.prompt.rejected" &&
+        message.correlationId === whileAborting.id && message.payload.message ===
+          "The session is aborting."
+      ),
+    );
+
+    completeAbort.resolve();
+    await waitForState(store, "ready");
+    const staleAbort = abortCommand("stale-abort", "create-command");
+    success(await provisioner.handleAbortCommand(staleAbort, (message) => messages.push(message)));
+    assert(
+      messages.some((message) =>
+        message.type === "session.abort.rejected" &&
+        message.correlationId === staleAbort.id &&
+        message.payload.message === "That Pi run is no longer active."
+      ),
+    );
+    const queueUpdates = messages.flatMap((message) =>
+      message.type === "session.event" && message.payload.event.type === "queue.updated"
+        ? [message.payload.event.followUp]
+        : []
+    );
+    assertEquals(queueUpdates, [
+      ["First queued follow-up"],
+      ["First queued follow-up", "Second queued follow-up"],
+      ["First queued follow-up", "Second queued follow-up", "Follow-up racing Abort"],
+      [],
+    ]);
+
+    detach();
+    success(await provisioner.close());
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
 Deno.test("reopens the same Pi JSONL and retained runtime for an accepted continuation", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
@@ -206,6 +375,8 @@ Deno.test("reopens the same Pi JSONL and retained runtime for an accepted contin
     const contexts: Array<ReturnType<SessionManager["buildSessionContext"]>> = [];
     const piOptions: OpenOrbPiSessionOptions[] = [];
     const promptInputs: string[] = [];
+    const followUpInputs: string[] = [];
+    const pendingFollowUps: string[] = [];
     const continuationStarted = Promise.withResolvers<void>();
     const finishContinuation = Promise.withResolvers<void>();
     let runtimeCreations = 0;
@@ -231,10 +402,13 @@ Deno.test("reopens the same Pi JSONL and retained runtime for an accepted contin
         );
         contexts.push(sessionManager.buildSessionContext());
         const idle = piIdle;
+        let active = false;
         let listener: (event: AgentSessionEvent) => void = () => {};
         return Promise.resolve({
           session: {
-            isIdle: idle,
+            get isIdle() {
+              return idle && !active;
+            },
             sessionManager,
             subscribe(nextListener: (event: AgentSessionEvent) => void) {
               listener = nextListener;
@@ -246,26 +420,72 @@ Deno.test("reopens the same Pi JSONL and retained runtime for an accepted contin
               input: string,
               promptOptions?: { preflightResult?: (success: boolean) => void },
             ) {
-              promptInputs.push(input);
-              promptOptions?.preflightResult?.(true);
-              if (input === CONTINUATION_PROMPT) {
-                continuationStarted.resolve();
-                await finishContinuation.promise;
+              active = true;
+              try {
+                promptInputs.push(input);
+                promptOptions?.preflightResult?.(true);
+                if (input === CONTINUATION_PROMPT) {
+                  continuationStarted.resolve();
+                  await finishContinuation.promise;
+                }
+                const userMessage = {
+                  role: "user" as const,
+                  content: input,
+                  timestamp: Date.now(),
+                };
+                sessionManager.appendMessage(userMessage);
+                listener({ type: "message_end", message: userMessage });
+                await Promise.resolve();
+                const answer = assistantMessage([
+                  {
+                    type: "text",
+                    text: input === INITIAL_PROMPT ? "Initial answer" : "Continuation answer",
+                  },
+                ], "stop");
+                sessionManager.appendMessage(answer);
+                listener({ type: "message_end", message: answer });
+                await Promise.resolve();
+                while (pendingFollowUps.length > 0) {
+                  const followUp = pendingFollowUps.shift()!;
+                  listener({
+                    type: "queue_update",
+                    steering: [],
+                    followUp: [...pendingFollowUps],
+                  });
+                  const followUpMessage = {
+                    role: "user" as const,
+                    content: followUp,
+                    timestamp: Date.now(),
+                  };
+                  sessionManager.appendMessage(followUpMessage);
+                  listener({ type: "message_end", message: followUpMessage });
+                  const followUpAnswer = assistantMessage([
+                    { type: "text", text: `Follow-up answer: ${followUp}` },
+                  ], "stop");
+                  sessionManager.appendMessage(followUpAnswer);
+                  listener({ type: "message_end", message: followUpAnswer });
+                  await Promise.resolve();
+                }
+              } finally {
+                active = false;
               }
-              const userMessage = { role: "user" as const, content: input, timestamp: Date.now() };
-              sessionManager.appendMessage(userMessage);
-              listener({ type: "message_end", message: userMessage });
-              await Promise.resolve();
-              const answer = assistantMessage([
-                {
-                  type: "text",
-                  text: input === INITIAL_PROMPT ? "Initial answer" : "Continuation answer",
-                },
-              ], "stop");
-              sessionManager.appendMessage(answer);
-              listener({ type: "message_end", message: answer });
-              await Promise.resolve();
             },
+            followUp(input: string) {
+              followUpInputs.push(input);
+              pendingFollowUps.push(input);
+              listener({
+                type: "queue_update",
+                steering: [],
+                followUp: [...pendingFollowUps],
+              });
+              return Promise.resolve();
+            },
+            clearQueue() {
+              const followUp = pendingFollowUps.splice(0);
+              listener({ type: "queue_update", steering: [], followUp: [] });
+              return { steering: [], followUp };
+            },
+            abort: () => Promise.resolve(),
             dispose() {},
           },
         });
@@ -313,15 +533,41 @@ Deno.test("reopens the same Pi JSONL and retained runtime for an accepted contin
     );
     assertEquals(success(await store.readMetadata(SESSION_ID)).state, "running");
 
-    const concurrent = promptCommand("concurrent-command", "Do not queue this prompt");
-    success(await provisioner.handlePromptCommand(concurrent, (message) => messages.push(message)));
-    assert(
-      messages.some((message) =>
-        message.type === "session.prompt.rejected" &&
-        message.correlationId === concurrent.id &&
-        message.payload.message === "The session is not ready and idle."
+    const staleInitialAbort = abortCommand("stale-initial-abort", "create-command");
+    success(
+      await provisioner.handleAbortCommand(
+        staleInitialAbort,
+        (message) => messages.push(message),
       ),
     );
+    assert(
+      messages.some((message) =>
+        message.type === "session.abort.rejected" &&
+        message.correlationId === staleInitialAbort.id &&
+        message.payload.message === "That Pi run is no longer active."
+      ),
+    );
+    assertEquals(provisioner.getActiveRunId(SESSION_ID), "continue-command");
+
+    const concurrent = promptCommand("concurrent-command", "Queue this follow-up");
+    const secondFollowUp = promptCommand("second-follow-up", "Queue this second follow-up");
+    const [firstFollowUpResult, secondFollowUpResult] = await Promise.all([
+      provisioner.handlePromptCommand(concurrent, (message) => messages.push(message)),
+      provisioner.handlePromptCommand(secondFollowUp, (message) => messages.push(message)),
+    ]);
+    success(firstFollowUpResult);
+    success(secondFollowUpResult);
+    assert(
+      messages.some((message) =>
+        message.type === "session.prompt.accepted" && message.correlationId === concurrent.id
+      ),
+    );
+    assert(
+      messages.some((message) =>
+        message.type === "session.prompt.accepted" && message.correlationId === secondFollowUp.id
+      ),
+    );
+    assertEquals(followUpInputs, ["Queue this follow-up", "Queue this second follow-up"]);
 
     finishContinuation.resolve();
     await waitForState(store, "ready");
@@ -359,14 +605,28 @@ Deno.test("reopens the same Pi JSONL and retained runtime for an accepted contin
       "assistant.completed",
       "user.message",
       "assistant.completed",
+      "user.message",
+      "assistant.completed",
+      "user.message",
+      "assistant.completed",
     ]);
     assertEquals(
       history.flatMap((event) => event.type === "user.message" ? [event.text] : []),
-      [INITIAL_PROMPT, CONTINUATION_PROMPT],
+      [
+        INITIAL_PROMPT,
+        CONTINUATION_PROMPT,
+        "Queue this follow-up",
+        "Queue this second follow-up",
+      ],
     );
     assertEquals(
       history.flatMap((event) => event.type === "assistant.completed" ? [event.text] : []),
-      ["Initial answer", "Continuation answer"],
+      [
+        "Initial answer",
+        "Continuation answer",
+        "Follow-up answer: Queue this follow-up",
+        "Follow-up answer: Queue this second follow-up",
+      ],
     );
     const persisted = await readSessionText(workingDirectory);
     assert(!persisted.includes(continuationRuntime.credential.value));
@@ -436,7 +696,7 @@ Deno.test("rejects continuation without ready metadata, the original model, or a
           correlationId: "wrong-model",
           text: "The session model cannot change during continuation.",
         },
-        { correlationId: "no-vm", text: "The session VM is unavailable." },
+        { correlationId: "no-vm", text: "This session orb is unavailable." },
       ],
     );
     success(await provisioner.close());
@@ -598,7 +858,11 @@ Deno.test("a terminal Pi error marks the session failed and disposes Pi", async 
                 listener = () => {};
               };
             },
-            prompt() {
+            prompt(
+              _input: string,
+              options?: { preflightResult?: (success: boolean) => void },
+            ) {
+              options?.preflightResult?.(true);
               const failed = assistantMessage(
                 [],
                 "error",
@@ -608,6 +872,9 @@ Deno.test("a terminal Pi error marks the session failed and disposes Pi", async 
               listener({ type: "message_end", message: failed });
               return Promise.resolve();
             },
+            followUp: () => Promise.resolve(),
+            clearQueue: () => ({ steering: [], followUp: [] }),
+            abort: () => Promise.resolve(),
             dispose() {
               piDisposed = true;
             },
@@ -906,10 +1173,17 @@ Deno.test("continues to Pi when repository setup fails", async () => {
             subscribe() {
               return () => {};
             },
-            prompt() {
+            prompt(
+              _input: string,
+              options?: { preflightResult?: (success: boolean) => void },
+            ) {
               promptCalls += 1;
+              options?.preflightResult?.(true);
               return Promise.resolve();
             },
+            followUp: () => Promise.resolve(),
+            clearQueue: () => ({ steering: [], followUp: [] }),
+            abort: () => Promise.resolve(),
             dispose() {},
           },
         });
@@ -1031,6 +1305,16 @@ function promptCommand(
   };
 }
 
+function abortCommand(id: string, runId: string): SessionAbortCommand {
+  return {
+    version: 1,
+    id,
+    type: "session.abort",
+    sessionId: SESSION_ID,
+    payload: { runId },
+  };
+}
+
 async function waitForState(
   store: RunnerSessionStore,
   state: "ready" | "error",
@@ -1082,16 +1366,28 @@ async function waitForEventType(
 }
 
 function createFakePiSession(_options: OpenOrbPiSessionOptions) {
+  let active = false;
   return Promise.resolve({
     session: {
-      isIdle: true,
+      get isIdle() {
+        return !active;
+      },
       sessionManager: EMPTY_PI_SESSION_MANAGER,
       subscribe(_listener: (event: AgentSessionEvent) => void) {
         return () => {};
       },
-      prompt(_input: string) {
-        return Promise.resolve();
+      async prompt(
+        _input: string,
+        options?: { preflightResult?: (success: boolean) => void },
+      ) {
+        active = true;
+        options?.preflightResult?.(true);
+        await delay(0);
+        active = false;
       },
+      followUp: () => Promise.resolve(),
+      clearQueue: () => ({ steering: [], followUp: [] }),
+      abort: () => Promise.resolve(),
       dispose() {},
     },
   });

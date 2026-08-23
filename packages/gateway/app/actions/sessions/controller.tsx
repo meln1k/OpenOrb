@@ -12,6 +12,7 @@ import {
 import { v7 } from "@std/uuid";
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
+import { Accept } from "remix/headers/accept";
 import { requireAuth } from "remix/middleware/auth";
 import { getCsrfToken } from "remix/middleware/csrf";
 import { type ContextWithParams, createController, type MiddlewareContext } from "remix/router";
@@ -167,23 +168,27 @@ export default createController(routes.app.sessions, {
     async message(context) {
       const userId = context.auth.identity.id;
       const sessionId = parseSessionId(context.params.sessionId);
-      if (!sessionId) return new Response("Session not found.", { status: 404 });
+      if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
       const parsed = s.parseSafe(continueSessionSchema, context.formData);
       if (!parsed.success) {
-        return await renderDetailPage(
+        return await sessionCommandError(
           context,
           parsed.issues[0]?.message ?? "Invalid prompt.",
           400,
         );
       }
       const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
-      if (!session) return new Response("Session not found.", { status: 404 });
+      if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const snapshot = context.services.runnerConnections.getSessionSnapshot(userId, sessionId);
       if (!snapshot || !context.services.runnerConnections.getSessionRunner(userId, sessionId)) {
-        return await renderDetailPage(context, "The pinned runner is offline.", 503);
+        return await sessionCommandError(context, "The pinned runner is offline.", 503);
       }
-      if (snapshot.state !== "ready") {
-        return await renderDetailPage(context, "The session is not ready and idle.", 409);
+      if (snapshot.state !== "ready" && snapshot.state !== "running") {
+        return await sessionCommandError(
+          context,
+          "The session cannot accept a prompt right now.",
+          409,
+        );
       }
 
       const [modelApiKey, modelCredentialError] = await context.services.store
@@ -192,14 +197,14 @@ export default createController(routes.app.sessions, {
           parseModelReference(snapshot.model).providerId,
         );
       if (modelCredentialError !== undefined) {
-        return await renderDetailPage(
+        return await sessionCommandError(
           context,
           "The saved model provider credential could not be read.",
           500,
         );
       }
       if (modelApiKey === null) {
-        return await renderDetailPage(
+        return await sessionCommandError(
           context,
           "Reconfigure this session's model provider before continuing.",
           409,
@@ -215,13 +220,38 @@ export default createController(routes.app.sessions, {
         },
       });
       if (prompted.status !== "accepted") {
-        return await renderDetailPage(
+        return await sessionCommandError(
           context,
           prompted.message,
           prompted.status === "rejected" ? 409 : 503,
         );
       }
-      return redirect(routes.app.sessions.detail.href({ sessionId }), 303);
+      return sessionCommandAccepted(context, sessionId);
+    },
+
+    async abort(context) {
+      const userId = context.auth.identity.id;
+      const sessionId = parseSessionId(context.params.sessionId);
+      if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
+      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      if (!session) return await sessionCommandError(context, "Session not found.", 404);
+      const snapshot = context.services.runnerConnections.getSessionSnapshot(userId, sessionId);
+      if (!snapshot || !context.services.runnerConnections.getSessionRunner(userId, sessionId)) {
+        return await sessionCommandError(context, "The pinned runner is offline.", 503);
+      }
+      if (snapshot.state !== "running") {
+        return await sessionCommandError(context, "There is no active Pi run to abort.", 409);
+      }
+
+      const aborted = await context.services.runnerConnections.abortSession({ userId, sessionId });
+      if (aborted.status !== "accepted") {
+        return await sessionCommandError(
+          context,
+          aborted.message,
+          aborted.status === "rejected" ? 409 : 503,
+        );
+      }
+      return sessionCommandAccepted(context, sessionId);
     },
 
     async retry(context) {
@@ -313,6 +343,32 @@ async function renderCreateError(
   );
 }
 
+async function sessionCommandError(
+  context: SessionDetailContext,
+  error: string,
+  status: number,
+): Promise<Response> {
+  if (prefersJson(context.request)) return Response.json({ error }, { status });
+  return await renderDetailPage(context, error, status);
+}
+
+function sessionCommandAccepted(
+  context: SessionDetailContext,
+  sessionId: string,
+): Response {
+  if (prefersJson(context.request)) {
+    return Response.json({ status: "accepted" }, { status: 202 });
+  }
+  return redirect(routes.app.sessions.detail.href({ sessionId }), 303);
+}
+
+function prefersJson(request: Request): boolean {
+  return Accept.from(request.headers.get("Accept")).getPreferred([
+    "text/html",
+    "application/json",
+  ]) === "application/json";
+}
+
 async function renderDetailPage(
   context: SessionDetailContext,
   error?: string,
@@ -339,6 +395,7 @@ async function renderDetailPage(
       project={project}
       runnerId={runnerId}
       snapshot={snapshot}
+      abortHref={routes.app.sessions.abort.href({ sessionId })}
       eventsHref={routes.api.sessions.events.href({ sessionId })}
       messageHref={routes.app.sessions.message.href({ sessionId })}
       retryHref={routes.app.sessions.retry.href({ sessionId })}

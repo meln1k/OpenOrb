@@ -12,6 +12,9 @@ import {
   type RunnerCapacity,
   type RunnerServerMessage,
   type RunnerSessionSnapshot,
+  SESSION_ABORT_ACCEPTED_MESSAGE_TYPE,
+  SESSION_ABORT_MESSAGE_TYPE,
+  SESSION_ABORT_REJECTED_MESSAGE_TYPE,
   SESSION_EVENT_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
@@ -34,6 +37,7 @@ import { parseSafe, string } from "remix/data-schema";
 
 import type { AuthenticatedRunner, RunnerRepository } from "@/app/data/runner-repository.ts";
 import type { SessionCatalogRepository } from "@/app/data/session-catalog-repository.ts";
+import { AbortCommandOwner } from "@/app/abort-command-owner.ts";
 import { PromptCommandOwner } from "@/app/prompt-command-owner.ts";
 import { ProvisionCommandOwner } from "@/app/provision-command-owner.ts";
 import { SessionRouteOwner } from "@/app/session-route-owner.ts";
@@ -53,6 +57,7 @@ export interface RunnerConnectionRegistry {
   getSessionSnapshot(userId: string, sessionId: string): RunnerSessionSnapshot | null;
   provisionSession(input: ProvisionSessionInput): Promise<ProvisionSessionResult>;
   promptSession(input: PromptSessionInput): Promise<PromptSessionResult>;
+  abortSession(input: AbortSessionInput): Promise<AbortSessionResult>;
   subscribeToSessionEvents(
     userId: string,
     sessionId: string,
@@ -66,6 +71,7 @@ export interface RunnerConnectionGatewayOptions {
   heartbeatTimeoutMs?: number;
   provisionAcceptanceTimeoutMs?: number;
   promptAcceptanceTimeoutMs?: number;
+  abortAcceptanceTimeoutMs?: number;
 }
 
 export interface ProvisionSessionInput {
@@ -87,6 +93,16 @@ export interface PromptSessionInput {
 }
 
 export type PromptSessionResult =
+  | { status: "accepted" }
+  | { status: "rejected"; message: string }
+  | { status: "unavailable"; message: string };
+
+export interface AbortSessionInput {
+  userId: string;
+  sessionId: string;
+}
+
+export type AbortSessionResult =
   | { status: "accepted" }
   | { status: "rejected"; message: string }
   | { status: "unavailable"; message: string };
@@ -132,6 +148,7 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
   readonly #sessionEventReplays = new Map<string, PendingSessionEventReplay>();
   readonly #provisionCommands: ProvisionCommandOwner<ActiveRunnerConnection>;
   readonly #promptCommands: PromptCommandOwner<ActiveRunnerConnection>;
+  readonly #abortCommands: AbortCommandOwner<ActiveRunnerConnection>;
   readonly #heartbeatTimeoutMs: number;
   readonly #provisionAcceptanceTimeoutMs: number;
 
@@ -165,6 +182,14 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       );
     }
     this.#promptCommands = new PromptCommandOwner(promptAcceptanceTimeoutMs);
+    const abortAcceptanceTimeoutMs = options.abortAcceptanceTimeoutMs ??
+      PROVISION_ACCEPTANCE_TIMEOUT_MS;
+    if (!Number.isSafeInteger(abortAcceptanceTimeoutMs) || abortAcceptanceTimeoutMs <= 0) {
+      throw new RunnerGatewayConfigurationError(
+        "Runner abort timeout must be a positive integer.",
+      );
+    }
+    this.#abortCommands = new AbortCommandOwner(abortAcceptanceTimeoutMs);
   }
 
   handleUpgrade(request: Request): Response {
@@ -235,7 +260,11 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
               );
               this.#promptCommands.rejectForConnection(
                 existing,
-                "Runner reconnected before acknowledging the prompt.",
+                "Runner reconnected before acknowledging the prompt. Delivery may be uncertain; it will not be retried automatically.",
+              );
+              this.#abortCommands.rejectForConnection(
+                existing,
+                "Runner reconnected before acknowledging the abort. The run may still be stopping.",
               );
               this.#failSessionEventReplaysForConnection(
                 existing,
@@ -379,6 +408,37 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
             return;
           }
 
+          if (message.type === SESSION_ABORT_ACCEPTED_MESSAGE_TYPE) {
+            const pending = this.#abortCommands.get(message.correlationId);
+            if (!pending) return;
+            if (
+              pending.connection !== activeConnection ||
+              pending.sessionId !== message.sessionId
+            ) {
+              closeSocket(socket, 4400, "Unexpected abort acceptance");
+              return;
+            }
+            this.#abortCommands.settle(message.correlationId, { status: "accepted" });
+            return;
+          }
+
+          if (message.type === SESSION_ABORT_REJECTED_MESSAGE_TYPE) {
+            const pending = this.#abortCommands.get(message.correlationId);
+            if (!pending) return;
+            if (
+              pending.connection !== activeConnection ||
+              pending.sessionId !== message.sessionId
+            ) {
+              closeSocket(socket, 4400, "Unexpected abort rejection");
+              return;
+            }
+            this.#abortCommands.settle(message.correlationId, {
+              status: "rejected",
+              message: message.payload.message,
+            });
+            return;
+          }
+
           if (message.type === SESSION_EVENT_MESSAGE_TYPE) {
             const replay = this.#sessionEventReplays.get(message.correlationId);
             if (replay) {
@@ -396,7 +456,12 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
               return;
             }
             if (
-              !this.#sessionRoutes.publish(activeConnection, message.sessionId, message.payload)
+              !this.#sessionRoutes.publish(
+                activeConnection,
+                message.sessionId,
+                message.payload,
+                message.correlationId,
+              )
             ) {
               closeSocket(socket, 4400, "Session event is not routed through this runner");
               return;
@@ -435,7 +500,11 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
           );
           this.#promptCommands.rejectForConnection(
             activeConnection,
-            "Runner disconnected before acknowledging the prompt.",
+            "Runner disconnected before acknowledging the prompt. Delivery may be uncertain; it will not be retried automatically.",
+          );
+          this.#abortCommands.rejectForConnection(
+            activeConnection,
+            "Runner disconnected before acknowledging the abort. The run may still be stopping.",
           );
           this.#failSessionEventReplaysForConnection(
             activeConnection,
@@ -570,10 +639,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       });
     }
     const snapshot = this.#sessionRoutes.getSnapshot(input.userId, input.sessionId);
-    if (!snapshot || snapshot.state !== "ready") {
+    if (!snapshot || (snapshot.state !== "ready" && snapshot.state !== "running")) {
       return Promise.resolve({
         status: "rejected",
-        message: "The session is not ready and idle.",
+        message: "The session cannot accept a prompt right now.",
       });
     }
     if (snapshot.model !== input.payload.modelRuntime.model) {
@@ -584,7 +653,8 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     }
     if (
       this.#provisionCommands.hasSession(input.userId, input.sessionId) ||
-      this.#promptCommands.hasSession(input.userId, input.sessionId)
+      this.#promptCommands.hasSession(input.userId, input.sessionId) ||
+      this.#abortCommands.hasSession(input.userId, input.sessionId)
     ) {
       return Promise.resolve({
         status: "rejected",
@@ -609,7 +679,60 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       if (sendError !== undefined) {
         this.#promptCommands.settle(commandId, {
           status: "unavailable",
-          message: "Runner disconnected before the prompt could be sent.",
+          message:
+            "Runner disconnected while sending the prompt. Delivery may be uncertain; it will not be retried automatically.",
+        });
+        return;
+      }
+    });
+  }
+
+  abortSession(input: AbortSessionInput): Promise<AbortSessionResult> {
+    const connection = this.#sessionRoutes.getRoute(input.userId, input.sessionId);
+    if (!connection || !this.#isActive(connection)) {
+      return Promise.resolve({
+        status: "unavailable",
+        message: "The pinned runner is offline.",
+      });
+    }
+    const snapshot = this.#sessionRoutes.getSnapshot(input.userId, input.sessionId);
+    const runId = this.#sessionRoutes.getActiveRunId(input.userId, input.sessionId);
+    if (!snapshot || snapshot.state !== "running" || !runId) {
+      return Promise.resolve({
+        status: "rejected",
+        message: "There is no active Pi run to abort.",
+      });
+    }
+    if (
+      this.#provisionCommands.hasSession(input.userId, input.sessionId) ||
+      this.#promptCommands.hasSession(input.userId, input.sessionId) ||
+      this.#abortCommands.hasSession(input.userId, input.sessionId)
+    ) {
+      return Promise.resolve({
+        status: "rejected",
+        message: "The session already has a command in flight.",
+      });
+    }
+
+    const commandId = crypto.randomUUID();
+    return new Promise((resolve) => {
+      this.#abortCommands.create(commandId, connection, input.sessionId, resolve);
+      const command: RunnerServerMessage = {
+        version: 1,
+        id: commandId,
+        type: SESSION_ABORT_MESSAGE_TYPE,
+        sessionId: input.sessionId,
+        payload: { runId },
+      };
+      const [, sendError] = trySync(
+        () => connection.socket.send(JSON.stringify(command)),
+        (cause) => new RunnerWebSocketError("Runner abort delivery failed.", cause),
+      );
+      if (sendError !== undefined) {
+        this.#abortCommands.settle(commandId, {
+          status: "unavailable",
+          message:
+            "Runner disconnected while sending the abort. The run may still be stopping; the abort will not be retried automatically.",
         });
         return;
       }
@@ -669,7 +792,11 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
     );
     this.#promptCommands.rejectForConnection(
       connection,
-      "Runner was revoked before acknowledging the prompt.",
+      "Runner was revoked before acknowledging the prompt. Delivery may be uncertain; it will not be retried automatically.",
+    );
+    this.#abortCommands.rejectForConnection(
+      connection,
+      "Runner was revoked before acknowledging the abort. The run may still be stopping.",
     );
     this.#failSessionEventReplaysForConnection(
       connection,
@@ -696,6 +823,10 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       status: "unavailable",
       message: "Gateway is shutting down.",
     });
+    this.#abortCommands.settleAll({
+      status: "unavailable",
+      message: "Gateway is shutting down while the abort acknowledgement is pending.",
+    });
     for (const replay of this.#sessionEventReplays.values()) {
       replay.fail("Gateway shut down before session history was replayed.");
     }
@@ -717,7 +848,11 @@ export class RunnerConnectionGateway implements RunnerConnectionRegistry {
       );
       this.#promptCommands.rejectForConnection(
         connection,
-        "Runner heartbeat timed out before acknowledging the prompt.",
+        "Runner heartbeat timed out before acknowledging the prompt. Delivery may be uncertain; it will not be retried automatically.",
+      );
+      this.#abortCommands.rejectForConnection(
+        connection,
+        "Runner heartbeat timed out before acknowledging the abort. The run may still be stopping.",
       );
       this.#failSessionEventReplaysForConnection(
         connection,

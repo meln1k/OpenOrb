@@ -57,6 +57,8 @@ const disconnectedRunnerRegistry: RunnerConnectionRegistry = {
     Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
   promptSession: () =>
     Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
+  abortSession: () =>
+    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
   subscribeToSessionEvents: () => ({
     replay: Promise.resolve(),
     signal: AbortSignal.abort(),

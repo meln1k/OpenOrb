@@ -206,6 +206,15 @@ Deno.test("validates bounded ordered runner session sync messages", () => {
   });
   assert(boundaryChunk.type === "runner.session-sync.chunk");
   assertEquals(boundaryChunk.payload.sessions[0]?.initialPromptPreview, boundaryPreview);
+  const activeChunk = parseRunnerClientMessage({
+    ...chunk,
+    payload: {
+      ...chunk.payload,
+      sessions: [{ ...session, state: "running", activeRunId: "active-run-1" }],
+    },
+  });
+  assert(activeChunk.type === "runner.session-sync.chunk");
+  assertEquals(activeChunk.payload.sessions[0]?.activeRunId, "active-run-1");
   assertThrows(() =>
     parseRunnerClientMessage({
       ...chunk,
@@ -224,6 +233,24 @@ Deno.test("validates bounded ordered runner session sync messages", () => {
       payload: {
         ...chunk.payload,
         sessions: [{ ...session, initialPromptPreview: " unnormalized  prompt " }],
+      },
+    })
+  );
+  assertThrows(() =>
+    parseRunnerClientMessage({
+      ...chunk,
+      payload: {
+        ...chunk.payload,
+        sessions: [{ ...session, state: "running", activeRunId: "" }],
+      },
+    })
+  );
+  assertThrows(() =>
+    parseRunnerClientMessage({
+      ...chunk,
+      payload: {
+        ...chunk.payload,
+        sessions: [{ ...session, state: "running", activeRunId: "x".repeat(101) }],
       },
     })
   );

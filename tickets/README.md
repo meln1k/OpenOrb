@@ -70,7 +70,7 @@ Unless a ticket explicitly says otherwise:
 |---|---|
 | [OO-013](OO-013-first-real-pi-run.md) | Initial prompt streams a real Pi run to the browser |
 | [OO-014](OO-014-session-replay-and-continuation.md) | Completed history replays and an idle session accepts another prompt |
-| [OO-015](OO-015-one-prompt-and-abort.md) | One-prompt-at-a-time behavior and Abort |
+| [OO-015](OO-015-follow-up-and-abort.md) | Native follow-ups and Abort while Pi is running |
 
 **Slice exit:** The user can run and continue a real coding-agent conversation that changes repository files.
 

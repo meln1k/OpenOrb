@@ -4,10 +4,13 @@ import {
   type OrbSize,
   orbSizeResources,
   type RunnerClientMessage,
+  SESSION_ABORT_ACCEPTED_MESSAGE_TYPE,
+  SESSION_ABORT_REJECTED_MESSAGE_TYPE,
   SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE,
   SESSION_PROMPT_REJECTED_MESSAGE_TYPE,
   SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE,
   SESSION_PROVISION_REJECTED_MESSAGE_TYPE,
+  type SessionAbortCommand,
   type SessionModelRuntime,
   type SessionPromptCommand,
   type SessionProvisionCommand,
@@ -66,6 +69,9 @@ interface ProvisioningPiSession {
     input: string,
     options?: { preflightResult?: (success: boolean) => void },
   ): Promise<void>;
+  followUp(input: string): Promise<void>;
+  clearQueue(): { steering: string[]; followUp: string[] };
+  abort(): Promise<void>;
   dispose(): void;
 }
 
@@ -90,6 +96,11 @@ interface Utf8Slice {
   bytes: number;
 }
 
+interface LivePiRun {
+  runId: string;
+  session: ProvisioningPiSession;
+}
+
 export class SessionProvisioner {
   readonly #sessionStore: RunnerSessionStore;
   readonly #eventRelay: SessionEventRelay;
@@ -99,6 +110,9 @@ export class SessionProvisioner {
   readonly #createPiSession: CreatePiSession;
   readonly #jobs = new Map<string, Promise<Result<void, SessionProvisioningError>>>();
   readonly #runtimes = new Map<string, ProvisioningRuntime>();
+  readonly #livePiRuns = new Map<string, LivePiRun>();
+  readonly #abortingSessionIds = new Set<string>();
+  readonly #commandTails = new Map<string, Promise<void>>();
   readonly #activeSessionIds = new Set<string>();
   #closed = false;
 
@@ -125,6 +139,11 @@ export class SessionProvisioner {
 
   get activeSessionCount(): number {
     return this.#activeSessionIds.size;
+  }
+
+  getActiveRunId(sessionId: string): string | undefined {
+    const liveRun = this.#livePiRuns.get(sessionId);
+    return liveRun && !liveRun.session.isIdle ? liveRun.runId : undefined;
   }
 
   async handleCommand(
@@ -211,11 +230,65 @@ export class SessionProvisioner {
     command: SessionPromptCommand,
     send: SendRunnerMessage,
   ): Promise<Result<void, SessionProvisioningError>> {
+    return await this.#serializeSessionCommand(
+      command.sessionId,
+      () => this.#handlePromptCommand(command, send),
+    );
+  }
+
+  async #handlePromptCommand(
+    command: SessionPromptCommand,
+    send: SendRunnerMessage,
+  ): Promise<Result<void, SessionProvisioningError>> {
     if (this.#closed) {
       return sendPromptMessage(
         send,
         rejectedPromptMessage(command, "The runner is shutting down."),
       );
+    }
+    if (this.#abortingSessionIds.has(command.sessionId)) {
+      return sendPromptMessage(
+        send,
+        rejectedPromptMessage(command, "The session is aborting."),
+      );
+    }
+
+    const [metadata, metadataError] = await this.#sessionStore.readMetadata(command.sessionId);
+    if (metadataError !== undefined) {
+      return sendPromptMessage(
+        send,
+        rejectedPromptMessage(command, "The runner could not read this session."),
+      );
+    }
+    if (metadata.model !== command.payload.modelRuntime.model) {
+      return sendPromptMessage(
+        send,
+        rejectedPromptMessage(command, "The session model cannot change during continuation."),
+      );
+    }
+
+    const liveRun = this.#livePiRuns.get(command.sessionId);
+    if (liveRun) {
+      if (liveRun.session.isIdle) {
+        return sendPromptMessage(
+          send,
+          rejectedPromptMessage(command, "The active Pi run is settling."),
+        );
+      }
+      const [, followUpError] = await tryAsync(
+        liveRun.session.followUp(command.payload.prompt),
+        (cause) => new SessionProvisioningError("Pi did not confirm the follow-up handoff.", cause),
+      );
+      if (followUpError !== undefined) {
+        return sendPromptMessage(
+          send,
+          rejectedPromptMessage(
+            command,
+            "Pi could not confirm the follow-up; delivery may be uncertain and will not be retried automatically.",
+          ),
+        );
+      }
+      return sendPromptMessage(send, acceptedPromptMessage(command));
     }
     if (this.#jobs.has(command.sessionId)) {
       return sendPromptMessage(
@@ -233,9 +306,65 @@ export class SessionProvisioner {
     return await acceptance.promise;
   }
 
+  async handleAbortCommand(
+    command: SessionAbortCommand,
+    send: SendRunnerMessage,
+  ): Promise<Result<void, SessionProvisioningError>> {
+    return await this.#serializeSessionCommand(
+      command.sessionId,
+      () => this.#handleAbortCommand(command, send),
+    );
+  }
+
+  #handleAbortCommand(
+    command: SessionAbortCommand,
+    send: SendRunnerMessage,
+  ): Result<void, SessionProvisioningError> {
+    if (this.#closed) {
+      return sendAbortMessage(send, rejectedAbortMessage(command, "The runner is shutting down."));
+    }
+    const liveRun = this.#livePiRuns.get(command.sessionId);
+    if (
+      !liveRun || liveRun.runId !== command.payload.runId || liveRun.session.isIdle ||
+      this.#abortingSessionIds.has(command.sessionId)
+    ) {
+      return sendAbortMessage(
+        send,
+        rejectedAbortMessage(command, "That Pi run is no longer active."),
+      );
+    }
+
+    const [, clearError] = trySync(
+      () => liveRun.session.clearQueue(),
+      (cause) => new SessionProvisioningError("Could not clear Pi's queued follow-ups.", cause),
+    );
+    if (clearError !== undefined) {
+      return sendAbortMessage(
+        send,
+        rejectedAbortMessage(command, "The queued follow-ups could not be cleared."),
+      );
+    }
+
+    this.#abortingSessionIds.add(command.sessionId);
+    const abort = tryAsync(
+      liveRun.session.abort(),
+      (cause) => new SessionProvisioningError("Could not abort the active Pi run.", cause),
+    );
+    void abort.then(() => {
+      if (this.#livePiRuns.get(command.sessionId) === liveRun && liveRun.session.isIdle) {
+        this.#abortingSessionIds.delete(command.sessionId);
+      }
+    });
+    return sendAbortMessage(send, acceptedAbortMessage(command));
+  }
+
   async close(): Promise<Result<void, SessionProvisioningError>> {
     if (this.#closed) return ok(undefined);
     this.#closed = true;
+    await Promise.all([...this.#livePiRuns.values()].map(async ({ session }) => {
+      trySync(() => session.clearQueue(), () => undefined);
+      await tryAsync(session.abort(), () => undefined);
+    }));
     await Promise.all(this.#jobs.values());
     const closeErrors = await Promise.all(
       [...this.#runtimes.values()].map(async (runtime) => {
@@ -245,11 +374,30 @@ export class SessionProvisioner {
       }),
     );
     this.#runtimes.clear();
+    this.#livePiRuns.clear();
+    this.#abortingSessionIds.clear();
+    this.#commandTails.clear();
     this.#activeSessionIds.clear();
     const closeError = closeErrors.find((error) => error !== undefined);
     return closeError === undefined
       ? ok(undefined)
       : err(new SessionProvisioningError("Could not close a provisioning runtime.", closeError));
+  }
+
+  #serializeSessionCommand(
+    sessionId: string,
+    task: () =>
+      | Result<void, SessionProvisioningError>
+      | Promise<Result<void, SessionProvisioningError>>,
+  ): Promise<Result<void, SessionProvisioningError>> {
+    const previous = this.#commandTails.get(sessionId) ?? Promise.resolve();
+    const command = previous.then(task, task);
+    const tail = command.then(() => undefined, () => undefined);
+    this.#commandTails.set(sessionId, tail);
+    void tail.then(() => {
+      if (this.#commandTails.get(sessionId) === tail) this.#commandTails.delete(sessionId);
+    });
+    return command;
   }
 
   async #prepareRetry(
@@ -488,19 +636,6 @@ export class SessionProvisioner {
         }
       }
 
-      const [running, runningError] = mapStoreResult(
-        sessionId,
-        await this.#sessionStore.updateProvisioning(sessionId, {
-          state: "running",
-          checkoutState: metadata.checkoutState,
-          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-        }),
-      );
-      if (runningError !== undefined) return err(runningError);
-      metadata = running;
-      const [, runningEventError] = await this.#emitState(metadata, "running", correlationId);
-      if (runningEventError !== undefined) return err(runningEventError);
-
       const [, piRunError] = await this.#runInitialPrompt(
         metadata,
         runtime,
@@ -588,29 +723,11 @@ export class SessionProvisioner {
       return reject("The session model cannot change during continuation.");
     }
     const runtime = this.#runtimes.get(command.sessionId);
-    if (!runtime) return reject("The session VM is unavailable.");
-
-    const [running, runningError] = mapStoreResult(
-      command.sessionId,
-      await this.#sessionStore.updateProvisioning(command.sessionId, {
-        state: "running",
-        checkoutState: metadata.checkoutState,
-        ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-      }),
-    );
-    if (runningError !== undefined) return reject("The session could not start another prompt.");
-    const [, runningEventError] = await this.#emitState(running, "running", command.id);
-    if (runningEventError !== undefined) {
-      const [, readyError] = await this.#restoreReady(running, command.id);
-      if (readyError !== undefined) {
-        return reject("The session could not recover after failing to start the prompt.");
-      }
-      return reject("The session could not start another prompt.");
-    }
+    if (!runtime) return reject("This session orb is unavailable.");
 
     const preflight = Promise.withResolvers<boolean>();
     const promptRun = this.#runPiPrompt(
-      running,
+      metadata,
       runtime,
       command.payload.modelRuntime,
       command.id,
@@ -624,13 +741,13 @@ export class SessionProvisioner {
     if (!acceptedByPi) {
       const [, promptError] = await promptRun;
       if (promptError !== undefined) {
-        const [, readyError] = await this.#restoreReady(running, command.id);
+        const [, readyError] = await this.#restoreReady(metadata, command.id);
         if (readyError !== undefined) {
           return reject("The session could not recover after rejecting the prompt.");
         }
         return reject("Pi did not accept the prompt.");
       }
-      const [, readyError] = await this.#restoreReady(running, command.id);
+      const [, readyError] = await this.#restoreReady(metadata, command.id);
       if (readyError !== undefined) {
         return reject("The session could not recover after rejecting the prompt.");
       }
@@ -639,24 +756,17 @@ export class SessionProvisioner {
 
     settlePromptAcceptance(
       send,
-      {
-        version: 1,
-        id: crypto.randomUUID(),
-        type: SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE,
-        sessionId: command.sessionId,
-        correlationId: command.id,
-        payload: {},
-      },
+      acceptedPromptMessage(command),
       settleAcceptance,
     );
 
     const [, promptError] = await promptRun;
     if (promptError !== undefined) {
-      const [, readyError] = await this.#restoreReady(running, command.id);
+      const [, readyError] = await this.#restoreReady(metadata, command.id);
       if (readyError !== undefined) return err(readyError);
       return err(promptError);
     }
-    const [, readyError] = await this.#restoreReady(running, command.id);
+    const [, readyError] = await this.#restoreReady(metadata, command.id);
     if (readyError !== undefined) return err(readyError);
     return ok(undefined);
   }
@@ -689,6 +799,12 @@ export class SessionProvisioner {
       return err(new SessionProvisioningError("The Pi session is not idle.", undefined));
     }
 
+    const piPublicationReady = Promise.withResolvers<void>();
+    let publishPiEvents = false;
+    const waitForPiPublication = async (): Promise<boolean> => {
+      await piPublicationReady.promise;
+      return publishPiEvents;
+    };
     const normalizer = new PiEventNormalizer({
       secrets: [modelRuntime.credential.value],
       getCompactionEntryId: () => {
@@ -700,6 +816,7 @@ export class SessionProvisioner {
         return entry?.type === "message" && entry.message === message ? entry.id : undefined;
       },
       publishConversation: async (event) => {
+        if (!await waitForPiPublication()) return;
         const [, relayError] = mapRelayResult(
           metadata.id,
           await this.#eventRelay.publish(metadata.id, correlationId, event),
@@ -707,6 +824,7 @@ export class SessionProvisioner {
         if (relayError !== undefined) throw relayError;
       },
       publishLive: async (event) => {
+        if (!await waitForPiPublication()) return;
         const [, relayError] = mapRelayResult(
           metadata.id,
           await this.#eventRelay.publishLive(metadata.id, correlationId, event),
@@ -716,22 +834,69 @@ export class SessionProvisioner {
     });
     using cleanup = new DisposableStack();
     cleanup.defer(() => pi.session.dispose());
+    cleanup.defer(() => piPublicationReady.resolve());
     let finalPiError: Error | undefined;
     const unsubscribe = pi.session.subscribe((event) => {
       normalizer.handle(event);
       if (event.type !== "message_end" || event.message.role !== "assistant") return;
-      finalPiError = event.message.stopReason === "error" || event.message.stopReason === "aborted"
+      finalPiError = event.message.stopReason === "error"
         ? new Error(event.message.errorMessage ?? `Pi stopped with ${event.message.stopReason}.`)
         : undefined;
     });
     cleanup.defer(unsubscribe);
-    const [, promptError] = await tryAsync(
+    const liveRun = { runId: correlationId, session: pi.session };
+    this.#livePiRuns.set(metadata.id, liveRun);
+    cleanup.defer(() => {
+      if (this.#livePiRuns.get(metadata.id) === liveRun) this.#livePiRuns.delete(metadata.id);
+      this.#abortingSessionIds.delete(metadata.id);
+    });
+    const piPreflight = Promise.withResolvers<boolean>();
+    const promptRun = tryAsync(
       pi.session.prompt(
         prompt,
-        preflightResult === undefined ? undefined : { preflightResult },
+        { preflightResult: piPreflight.resolve },
       ),
       (cause) => new SessionProvisioningError("The Pi run failed.", cause),
     );
+    const acceptedByPi = await Promise.race([
+      piPreflight.promise,
+      promptRun.then(() => false),
+    ]);
+    if (!acceptedByPi) {
+      preflightResult?.(false);
+      const [, promptError] = await promptRun;
+      if (promptError !== undefined) return err(promptError);
+      return err(new SessionProvisioningError("Pi did not accept the prompt.", undefined));
+    }
+
+    if (!pi.session.isIdle) {
+      const [running, runningError] = mapStoreResult(
+        metadata.id,
+        await this.#sessionStore.updateProvisioning(metadata.id, {
+          state: "running",
+          checkoutState: metadata.checkoutState,
+          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+        }),
+      );
+      if (runningError !== undefined) {
+        preflightResult?.(false);
+        trySync(() => pi.session.clearQueue(), () => undefined);
+        await tryAsync(pi.session.abort(), () => undefined);
+        return err(runningError);
+      }
+      const [, runningEventError] = await this.#emitState(running, "running", correlationId);
+      if (runningEventError !== undefined) {
+        preflightResult?.(false);
+        trySync(() => pi.session.clearQueue(), () => undefined);
+        await tryAsync(pi.session.abort(), () => undefined);
+        return err(runningEventError);
+      }
+    }
+
+    publishPiEvents = true;
+    piPublicationReady.resolve();
+    preflightResult?.(true);
+    const [, promptError] = await promptRun;
     if (promptError !== undefined) return err(promptError);
     const [, eventError] = await tryAsync(
       normalizer.flush(),
@@ -903,6 +1068,16 @@ function sendPromptMessage(
   );
 }
 
+function sendAbortMessage(
+  send: SendRunnerMessage,
+  message: RunnerClientMessage,
+): Result<void, SessionProvisioningError> {
+  return trySync(
+    () => send(message),
+    (cause) => new SessionProvisioningError("Could not send an abort response.", cause),
+  );
+}
+
 function settlePromptAcceptance(
   send: SendRunnerMessage,
   message: RunnerClientMessage,
@@ -973,6 +1148,42 @@ function rejectedPromptMessage(
     version: 1,
     id: crypto.randomUUID(),
     type: SESSION_PROMPT_REJECTED_MESSAGE_TYPE,
+    sessionId: command.sessionId,
+    correlationId: command.id,
+    payload: { message },
+  };
+}
+
+function acceptedPromptMessage(command: SessionPromptCommand): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE,
+    sessionId: command.sessionId,
+    correlationId: command.id,
+    payload: {},
+  };
+}
+
+function acceptedAbortMessage(command: SessionAbortCommand): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: SESSION_ABORT_ACCEPTED_MESSAGE_TYPE,
+    sessionId: command.sessionId,
+    correlationId: command.id,
+    payload: {},
+  };
+}
+
+function rejectedAbortMessage(
+  command: SessionAbortCommand,
+  message: string,
+): RunnerClientMessage {
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    type: SESSION_ABORT_REJECTED_MESSAGE_TYPE,
     sessionId: command.sessionId,
     correlationId: command.id,
     payload: { message },

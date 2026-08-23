@@ -10,11 +10,13 @@ import {
   type RunnerCapacity,
   type RunnerClientMessage,
   type RunnerSessionSnapshot,
+  SESSION_ABORT_MESSAGE_TYPE,
   SESSION_EVENT_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_MESSAGE_TYPE,
   SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE,
   SESSION_PROMPT_MESSAGE_TYPE,
   SESSION_PROVISION_MESSAGE_TYPE,
+  type SessionAbortCommand,
   type SessionEventPayload,
   type SessionEventReplayCommand,
   type SessionPromptCommand,
@@ -49,6 +51,10 @@ export interface MaintainRunnerConnectionOptions {
   ) => Promise<Result<void, Error>>;
   onPromptCommand?: (
     command: SessionPromptCommand,
+    send: (message: RunnerClientMessage) => void,
+  ) => Promise<Result<void, Error>>;
+  onAbortCommand?: (
+    command: SessionAbortCommand,
     send: (message: RunnerClientMessage) => void,
   ) => Promise<Result<void, Error>>;
 }
@@ -174,6 +180,14 @@ async function connectOnce(
           void options.onPromptCommand(message, send).then(([, commandError]) => {
             if (commandError !== undefined) {
               closeSocket(socket, 1011, "Runner prompt command failed");
+            }
+          });
+          return;
+        }
+        if (message.type === SESSION_ABORT_MESSAGE_TYPE && options.onAbortCommand) {
+          void options.onAbortCommand(message, send).then(([, commandError]) => {
+            if (commandError !== undefined) {
+              closeSocket(socket, 1011, "Runner abort command failed");
             }
           });
           return;

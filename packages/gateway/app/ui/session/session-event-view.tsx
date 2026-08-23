@@ -4,8 +4,8 @@ import {
   type SessionUsage,
 } from "@openorb/protocol/runner-session-events";
 import { tryAsync, trySync } from "../../../../result/src/index.ts";
-import { object, parseSafe, string } from "remix/data-schema";
-import { clientEntry, css, type Handle, on } from "remix/ui";
+import { literal, object, parseSafe, string } from "remix/data-schema";
+import { clientEntry, css, type Dispatched, type Handle, on } from "remix/ui";
 
 import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
@@ -25,6 +25,7 @@ import {
   failOptimisticUserMessage,
   isSessionBusy,
   reduceSessionTranscriptState,
+  removeOptimisticUserMessage,
   type SessionState,
   settleSessionTranscriptState,
   type ToolEntry,
@@ -34,6 +35,7 @@ import {
 } from "@/app/ui/session/session-transcript-state.ts";
 
 export type SessionEventViewProps = {
+  abortHref: string;
   canRetry: boolean;
   contextWindow: number;
   csrfToken: string;
@@ -50,6 +52,14 @@ const bashToolArgumentsSchema = object(
 const readToolArgumentsSchema = object(
   { path: string() },
   { unknownKeys: "passthrough" },
+);
+const actionAcceptedResponseSchema = object(
+  { status: literal("accepted" as const) },
+  { unknownKeys: "error" },
+);
+const actionErrorResponseSchema = object(
+  { error: string() },
+  { unknownKeys: "error" },
 );
 
 export const SessionEventView = clientEntry<SessionEventViewProps>(
@@ -70,7 +80,59 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
     handle.props.canRetry,
   );
   let connectionInterrupted = false;
-  let pendingPrompt: { id: string; text: string } | undefined;
+  let promptRequestPending = false;
+  let abortPending = false;
+  let actionError: string | undefined;
+
+  async function submitAbort(
+    event: Dispatched<SubmitEvent, HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (
+      transcriptState.sessionState !== "running" || connectionInterrupted || abortPending
+    ) return;
+
+    const form = event.currentTarget;
+    abortPending = true;
+    actionError = undefined;
+    await handle.update();
+    if (handle.signal.aborted) return;
+
+    const [response, requestError] = await tryAsync(
+      fetch(form.action, {
+        method: "POST",
+        body: new FormData(form),
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        redirect: "manual",
+        signal: handle.signal,
+      }),
+      () => true,
+    );
+    if (requestError !== undefined) {
+      if (handle.signal.aborted) return;
+      abortPending = false;
+      actionError =
+        "Abort acknowledgement was lost. The run may still be stopping; wait for session state before trying again.";
+      await handle.update();
+      return;
+    }
+    if (handle.signal.aborted) return;
+    if (response.ok) {
+      const accepted = await actionResponseAccepted(response);
+      if (handle.signal.aborted || accepted) return;
+      abortPending = false;
+      actionError =
+        "Abort acknowledgement was invalid. The run may still be stopping; wait for session state before trying again.";
+      await handle.update();
+      return;
+    }
+    abortPending = false;
+    actionError = await actionResponseError(response, "Abort was not accepted");
+    if (!handle.signal.aborted) await handle.update();
+  }
+
+  const abortSubmit = on<HTMLFormElement, "submit">("submit", submitAbort);
 
   handle.queueTask(() => {
     if (handle.props.initialState === "offline") return;
@@ -95,9 +157,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
       if (!source.success) return;
       const event = parseSessionEvent(source.value);
       if (!event) return;
-      if (event.type === "user.message" && event.text === pendingPrompt?.text) {
-        pendingPrompt = undefined;
-      }
+      if (event.type === "session.state" && event.stage !== "running") abortPending = false;
       const next = reduceSessionTranscriptState(transcriptState, event);
       if (next === transcriptState) return;
       transcriptState = next;
@@ -122,8 +182,11 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
   return () => {
     const currentActivityId = activeActivityId(transcriptState);
     const busy = isSessionBusy(transcriptState.sessionState) && !connectionInterrupted;
-    const canPrompt = transcriptState.sessionState === "ready" && !connectionInterrupted &&
-      pendingPrompt === undefined;
+    const hasActiveRun = transcriptState.sessionState === "running";
+    const canComposePrompt = (transcriptState.sessionState === "ready" || hasActiveRun) &&
+      !connectionInterrupted && !abortPending;
+    const canSubmitPrompt = canComposePrompt && !promptRequestPending;
+    const canAbort = hasActiveRun && !connectionInterrupted && !abortPending;
     const usage = totalSessionUsage(transcriptState);
 
     return (
@@ -140,7 +203,11 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
             </MarkerIcon>
             <MarkerContent mix={sessionStatusContentStyle}>
               <strong role={busy ? "status" : undefined} data-session-status>
-                {connectionInterrupted ? "Connection interrupted" : transcriptState.status}
+                {connectionInterrupted
+                  ? "Connection interrupted"
+                  : abortPending
+                  ? "Aborting…"
+                  : transcriptState.status}
               </strong>
               {renderUsageStatus(
                 usage,
@@ -150,6 +217,25 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
               )}
             </MarkerContent>
           </Marker>
+          {hasActiveRun
+            ? (
+              <form
+                method="post"
+                action={handle.props.abortHref}
+                mix={[retryStyle, abortSubmit]}
+              >
+                <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="destructive"
+                  disabled={!canAbort}
+                >
+                  {abortPending ? "Aborting…" : "Abort"}
+                </Button>
+              </form>
+            )
+            : null}
           {transcriptState.retryVisible
             ? (
               <form method="post" action={handle.props.retryHref} mix={retryStyle}>
@@ -159,6 +245,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
             )
             : null}
         </header>
+        {actionError ? <p role="alert" mix={actionErrorStyle}>{actionError}</p> : null}
         <MessageScroller
           autoScroll
           defaultScrollPosition="last-anchor"
@@ -179,6 +266,28 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
                       <MarkerContent>
                         Repository checkout is unavailable. Provisioning completed without branch or
                         setup steps.
+                      </MarkerContent>
+                    </Marker>
+                  </MessageScrollerItem>
+                )
+                : null}
+              {transcriptState.followUpQueue.length > 0
+                ? (
+                  <MessageScrollerItem messageId="session:follow-up-queue">
+                    <Marker data-follow-up-queue mix={richMarkerStyle}>
+                      <MarkerIcon>
+                        <Icon name="activity" />
+                      </MarkerIcon>
+                      <MarkerContent mix={queueDetailStyle}>
+                        <strong>
+                          {transcriptState.followUpQueue.length}{" "}
+                          follow-up{transcriptState.followUpQueue.length === 1 ? "" : "s"} queued
+                        </strong>
+                        <ol>
+                          {transcriptState.followUpQueue.map((prompt, index) => (
+                            <li key={`${index}:${prompt}`}>{prompt}</li>
+                          ))}
+                        </ol>
                       </MarkerContent>
                     </Marker>
                   </MessageScrollerItem>
@@ -209,8 +318,10 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
             on<HTMLFormElement, "submit">("submit", async (event) => {
               event.preventDefault();
               if (
-                pendingPrompt !== undefined || connectionInterrupted ||
-                transcriptState.sessionState !== "ready"
+                promptRequestPending || connectionInterrupted ||
+                abortPending ||
+                (transcriptState.sessionState !== "ready" &&
+                  transcriptState.sessionState !== "running")
               ) return;
 
               const form = event.currentTarget;
@@ -219,7 +330,9 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
               if (!prompt.success || prompt.value.trim().length === 0) return;
 
               const optimisticId = `optimistic:${crypto.randomUUID()}`;
-              pendingPrompt = { id: optimisticId, text: prompt.value };
+              const followUpSubmission = transcriptState.sessionState === "running";
+              actionError = undefined;
+              promptRequestPending = true;
               transcriptState = appendOptimisticUserMessage(
                 transcriptState,
                 optimisticId,
@@ -235,26 +348,50 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
                   method: "POST",
                   body: formData,
                   credentials: "same-origin",
+                  headers: { Accept: "application/json" },
+                  redirect: "manual",
                   signal: handle.signal,
                 }),
                 () => true,
               );
               if (requestError !== undefined) {
                 if (handle.signal.aborted) return;
-                if (pendingPrompt?.id === optimisticId) pendingPrompt = undefined;
+                promptRequestPending = false;
                 transcriptState = failOptimisticUserMessage(
                   transcriptState,
                   optimisticId,
-                  "Message was not sent. Check the connection and try again.",
+                  "Message acknowledgement was lost. Delivery is uncertain; check the live session before trying again.",
                 );
                 await handle.update();
                 return;
               }
-              if (handle.signal.aborted || response.ok) return;
-              const deliveryError = await promptResponseError(response);
+              if (handle.signal.aborted) return;
+              if (response.ok) {
+                const accepted = await actionResponseAccepted(response);
+                if (handle.signal.aborted) return;
+                promptRequestPending = false;
+                if (!accepted) {
+                  transcriptState = failOptimisticUserMessage(
+                    transcriptState,
+                    optimisticId,
+                    "Message acknowledgement was invalid. Delivery is uncertain; check the live session before trying again.",
+                  );
+                  await handle.update();
+                  return;
+                }
+                if (followUpSubmission) {
+                  transcriptState = removeOptimisticUserMessage(transcriptState, optimisticId);
+                }
+                await handle.update();
+                return;
+              }
+              const deliveryError = await actionResponseError(
+                response,
+                "Message was not accepted",
+              );
               if (handle.signal.aborted) return;
 
-              if (pendingPrompt?.id === optimisticId) pendingPrompt = undefined;
+              promptRequestPending = false;
               transcriptState = failOptimisticUserMessage(
                 transcriptState,
                 optimisticId,
@@ -268,9 +405,13 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
           <textarea
             name="prompt"
             aria-label="Continue session"
-            placeholder={canPrompt ? "Continue the session…" : "Wait until the session is ready…"}
+            placeholder={canComposePrompt
+              ? hasActiveRun ? "Queue a follow-up…" : "Continue the session…"
+              : abortPending
+              ? "Wait for the abort to finish…"
+              : "Wait until the session can accept a prompt…"}
             required
-            disabled={!canPrompt}
+            disabled={!canComposePrompt}
             mix={[
               promptInputStyle,
               on<HTMLTextAreaElement, "keydown">("keydown", (event) => {
@@ -286,9 +427,13 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
           <Button
             type="submit"
             size="icon-lg"
-            aria-label="Send prompt"
-            title={canPrompt ? "Send prompt" : "Session must be ready"}
-            disabled={!canPrompt}
+            aria-label={hasActiveRun ? "Queue follow-up" : "Send prompt"}
+            title={canSubmitPrompt
+              ? hasActiveRun ? "Queue follow-up" : "Send prompt"
+              : promptRequestPending
+              ? "Wait for prompt acknowledgement"
+              : "Session cannot accept a prompt"}
+            disabled={!canSubmitPrompt}
           >
             <Icon name="arrow-right" size={20} />
           </Button>
@@ -585,15 +730,18 @@ function renderUsageStatus(
   );
 }
 
-async function promptResponseError(response: Response): Promise<string> {
-  const fallback = response.status > 0
-    ? `Message was not sent (${response.status}).`
-    : "Message was not sent.";
-  const [body, readError] = await tryAsync(response.text(), () => true);
+async function actionResponseAccepted(response: Response): Promise<boolean> {
+  const [body, readError] = await tryAsync(response.json(), () => true);
+  if (readError !== undefined) return false;
+  return parseSafe(actionAcceptedResponseSchema, body).success;
+}
+
+async function actionResponseError(response: Response, label: string): Promise<string> {
+  const fallback = response.status > 0 ? `${label} (${response.status}).` : `${label}.`;
+  const [body, readError] = await tryAsync(response.json(), () => true);
   if (readError !== undefined) return fallback;
-  const document = new DOMParser().parseFromString(body, "text/html");
-  const message = document.querySelector("[role='alert']")?.textContent?.trim();
-  return message || fallback;
+  const parsed = parseSafe(actionErrorResponseSchema, body);
+  return parsed.success && parsed.value.error.trim() ? parsed.value.error : fallback;
 }
 
 function formatTokens(count: number): string {
@@ -661,6 +809,15 @@ const sessionUsageStyle = css({
   fontSize: "12px",
   fontVariantNumeric: "tabular-nums",
   "& > span": { whiteSpace: "nowrap" },
+});
+const actionErrorStyle = css({
+  flexShrink: 0,
+  margin: 0,
+  padding: "10px 16px",
+  color: "var(--destructive)",
+  background: "color-mix(in oklab, var(--destructive) 10%, transparent)",
+  borderBottom: "1px solid color-mix(in oklab, var(--destructive) 30%, var(--border))",
+  fontSize: "13px",
 });
 const userMessageStyle = css({
   display: "grid",
@@ -762,6 +919,15 @@ const markerDetailStyle = css({
   },
   "& [data-tool-result][data-error='true']": { color: "var(--destructive)" },
 });
+const queueDetailStyle = css({
+  display: "grid",
+  gap: "6px",
+  color: "var(--muted-foreground)",
+  fontSize: "13px",
+  "& strong": { color: "var(--foreground)", fontWeight: 500 },
+  "& ol": { display: "grid", gap: "4px", margin: 0, paddingLeft: "20px" },
+  "& li": { whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+});
 const emptyConversationStyle = css({
   margin: 0,
   color: "var(--muted-foreground)",
@@ -778,7 +944,10 @@ const promptFormStyle = css({
   borderTop: "1px solid var(--border)",
 });
 const promptInputStyle = css({
+  boxSizing: "border-box",
   flex: 1,
+  width: "100%",
+  minWidth: 0,
   minHeight: "44px",
   maxHeight: "160px",
   padding: "11px 13px",

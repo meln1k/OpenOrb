@@ -6,6 +6,8 @@ import {
   type SessionEventPayload,
 } from "@openorb/protocol";
 import type {
+  AbortSessionInput,
+  AbortSessionResult,
   PromptSessionInput,
   PromptSessionResult,
   ProvisionSessionInput,
@@ -39,12 +41,14 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
   snapshot: RunnerSessionSnapshot | null = null;
   provisions: ProvisionSessionInput[] = [];
   prompts: PromptSessionInput[] = [];
+  aborts: AbortSessionInput[] = [];
   events: SessionEventPayload[] = [];
   afterCursors: number[] = [];
   subscriptionUnsubscribes = 0;
   beforeAcceptance?: (input: ProvisionSessionInput) => Promise<void>;
   reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
   promptResult: PromptSessionResult = { status: "accepted" };
+  abortResult: AbortSessionResult = { status: "accepted" };
 
   getRunnerLiveState(userId: string, runnerId: string): RunnerLiveState | null {
     if (userId !== this.userId || runnerId !== this.runnerId) return null;
@@ -112,6 +116,11 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
   promptSession(input: PromptSessionInput): Promise<PromptSessionResult> {
     this.prompts.push(input);
     return Promise.resolve(this.promptResult);
+  }
+
+  abortSession(input: AbortSessionInput): Promise<AbortSessionResult> {
+    this.aborts.push(input);
+    return Promise.resolve(this.abortResult);
   }
 
   subscribeToSessionEvents(
@@ -329,6 +338,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
     assertMatch(detailHtml, /<textarea[^>]*name="prompt"[^>]*aria-label="Continue session"/);
     assertMatch(detailHtml, /aria-label="Send prompt"/);
+    assertNotMatch(detailHtml, />Abort<\/button>/);
     assertNotMatch(detailHtml, /data-session-events/);
     assert(!detailHtml.includes(GITHUB_TOKEN));
     assert(!detailHtml.includes(MODEL_PROVIDER_KEY));
@@ -393,32 +403,87 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     }]);
 
     connections.snapshot = { ...connections.snapshot, state: "running" };
+    const runningDetail = await fetch(new URL(location, server.baseUrl), {
+      headers: { Cookie: client.cookie },
+    });
+    const runningHtml = await runningDetail.text();
+    assertMatch(
+      runningHtml,
+      new RegExp(`action="/app/sessions/${provision.sessionId}/abort"`),
+    );
+    assertMatch(runningHtml, /aria-label="Queue follow-up"/);
+    assertMatch(runningHtml, /title="Queue follow-up"/);
+    assertMatch(runningHtml, />Abort<\/button>/);
     const busyContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
-      headers: { Cookie: client.cookie },
+      headers: { Accept: "application/json", Cookie: client.cookie },
       body: new URLSearchParams({
         _csrf: csrfFrom(detailHtml),
-        prompt: "Do not queue this prompt",
+        prompt: "Queue this follow-up",
       }),
     });
-    assertEquals(busyContinuation.status, 409);
-    assertMatch(await busyContinuation.text(), /session is not ready and idle/);
-    assertEquals(connections.prompts.length, 1);
+    assertEquals(busyContinuation.status, 202);
+    assertMatch(busyContinuation.headers.get("content-type") ?? "", /^application\/json\b/);
+    assertEquals(await busyContinuation.json(), { status: "accepted" });
+    assertEquals(connections.prompts.length, 2);
+    assertEquals(connections.prompts[1]?.payload.prompt, "Queue this follow-up");
+
+    const abortHref = routes.app.sessions.abort.href({ sessionId: provision.sessionId });
+    const missingAbortCsrf = await fetch(new URL(abortHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+    });
+    assertEquals(missingAbortCsrf.status, 403);
+    assertEquals(connections.aborts, []);
+
+    const aborted = await fetch(new URL(abortHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(runningHtml) }),
+    });
+    assertEquals(aborted.status, 202);
+    assertEquals(await aborted.json(), { status: "accepted" });
+    assertEquals(connections.aborts, [{
+      userId: client.userId,
+      sessionId: provision.sessionId,
+    }]);
+
+    connections.snapshot = { ...connections.snapshot, state: "ready" };
+    const staleAbort = await fetch(new URL(abortHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(runningHtml) }),
+    });
+    assertEquals(staleAbort.status, 409);
+    assertMatch(await staleAbort.text(), /no active Pi run to abort/);
+    assertEquals(connections.aborts.length, 1);
 
     connections.sessionId = null;
     const offlineContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
-      headers: { Cookie: client.cookie },
+      headers: { Accept: "application/json", Cookie: client.cookie },
       body: new URLSearchParams({
         _csrf: csrfFrom(detailHtml),
         prompt: "Do not queue this offline prompt",
       }),
     });
     assertEquals(offlineContinuation.status, 503);
-    assertMatch(await offlineContinuation.text(), /pinned runner is offline/);
-    assertEquals(connections.prompts.length, 1);
+    assertEquals(await offlineContinuation.json(), { error: "The pinned runner is offline." });
+    assertEquals(connections.prompts.length, 2);
+    const offlineAbort = await fetch(new URL(abortHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(runningHtml) }),
+    });
+    assertEquals(offlineAbort.status, 503);
+    assertMatch(await offlineAbort.text(), /pinned runner is offline/);
+    assertEquals(connections.aborts.length, 1);
     connections.sessionId = provision.sessionId;
 
     connections.beforeAcceptance = undefined;

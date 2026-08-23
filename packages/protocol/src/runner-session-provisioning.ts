@@ -1,7 +1,11 @@
 import { literal, object, optional, string, union } from "@remix-run/data-schema";
 import { trySync } from "@openorb/result";
 
-import { projectIdSchema, runnerSessionSnapshotSchema } from "@/src/runner-session-manifest.ts";
+import {
+  projectIdSchema,
+  type RunnerSessionSnapshot,
+  runnerSessionSnapshotSchema,
+} from "@/src/runner-session-manifest.ts";
 import type { InferOutput } from "@remix-run/data-schema";
 import type { RunnerMessage } from "@/src/runner-message.ts";
 import { runnerCheckoutStateSchema } from "@/src/runner-session-events.ts";
@@ -118,9 +122,12 @@ export const sessionProvisionAcceptedPayloadSchema = object(
   { unknownKeys: "error" },
 );
 
-export type SessionProvisionAcceptedPayload = InferOutput<
-  typeof sessionProvisionAcceptedPayloadSchema
->;
+export type SessionProvisionAcceptedPayload =
+  & Omit<
+    InferOutput<typeof sessionProvisionAcceptedPayloadSchema>,
+    "session"
+  >
+  & { session: RunnerSessionSnapshot };
 
 export type SessionProvisionAcceptedMessage = RunnerMessage<SessionProvisionAcceptedPayload> & {
   type: typeof SESSION_PROVISION_ACCEPTED_MESSAGE_TYPE;

@@ -6,6 +6,7 @@ import {
   createSessionTranscriptState,
   failOptimisticUserMessage,
   reduceSessionTranscriptState,
+  removeOptimisticUserMessage,
   type ToolEntry,
   totalSessionUsage,
   type TranscriptEntry,
@@ -185,6 +186,34 @@ Deno.test("optimistic user messages reconcile with durable events or retain fail
     messageId: "pi-user-1",
     text: "Continue the implementation",
   }]);
+});
+
+Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's live queue", () => {
+  const initial = createSessionTranscriptState("running", false);
+  const pending = appendOptimisticUserMessage(initial, "optimistic-1", "First follow-up");
+  const accepted = removeOptimisticUserMessage(pending, "optimistic-1");
+  assertEquals(accepted.entries, []);
+
+  const queued = reduceSessionTranscriptState(accepted, {
+    type: "queue.updated",
+    steering: [],
+    followUp: ["First follow-up", "Second follow-up"],
+  });
+  assertEquals(queued.followUpQueue, ["First follow-up", "Second follow-up"]);
+
+  const delivered = reduceSessionTranscriptState(queued, {
+    type: "queue.updated",
+    steering: [],
+    followUp: ["Second follow-up"],
+  });
+  assertEquals(delivered.followUpQueue, ["Second follow-up"]);
+
+  const ready = reduceSessionTranscriptState(delivered, {
+    type: "session.state",
+    stage: "ready",
+    checkoutState: "available",
+  });
+  assertEquals(ready.followUpQueue, []);
 });
 
 Deno.test("agent and turn boundaries do not add transcript activity", () => {

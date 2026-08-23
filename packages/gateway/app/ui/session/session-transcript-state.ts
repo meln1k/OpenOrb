@@ -63,6 +63,7 @@ export interface SessionTranscriptState {
   readonly status: string;
   readonly retryVisible: boolean;
   readonly warningVisible: boolean;
+  readonly followUpQueue: readonly string[];
   readonly entries: readonly TranscriptEntry[];
   readonly latestUsage?: SessionUsage;
   readonly contextUsage?: SessionUsage;
@@ -93,6 +94,7 @@ export function createSessionTranscriptState(
     status: statusLabel(initialState),
     retryVisible: canRetry,
     warningVisible: false,
+    followUpQueue: [],
     entries: [],
     contextInvalidatedByCompaction: false,
     usageByMessageId: new Map(),
@@ -127,6 +129,18 @@ export function failOptimisticUserMessage(
     : state;
 }
 
+export function removeOptimisticUserMessage(
+  state: SessionTranscriptState,
+  messageId: string,
+): SessionTranscriptState {
+  const index = state.entryIndex.get(messageKey(messageId));
+  if (index === undefined) return state;
+  const entry = state.entries[index];
+  return entry && "role" in entry && entry.role === "user" && entry.delivery !== undefined
+    ? removeEntry(state, index)
+    : state;
+}
+
 export function reduceSessionTranscriptState(
   state: SessionTranscriptState,
   event: SessionEvent,
@@ -140,6 +154,9 @@ export function reduceSessionTranscriptState(
       status: sessionStageLabel(event.stage),
       warningVisible: state.warningVisible || event.checkoutState === "unavailable",
       retryVisible: sessionState === "error",
+      followUpQueue: sessionState === "ready" || sessionState === "error"
+        ? []
+        : state.followUpQueue,
     };
     return sessionState === "ready" || sessionState === "error"
       ? settleSessionTranscriptState(next)
@@ -149,6 +166,7 @@ export function reduceSessionTranscriptState(
 
   let next = reduceUsage(state, event);
   next = reduceConversation(next, event);
+  if (event.type === "queue.updated") next = { ...next, followUpQueue: event.followUp };
   const activity = activityForEvent(event);
   if (activity !== null) next = appendActivity(next, activity);
   return event.type === "agent.settled" ||
@@ -513,6 +531,7 @@ function resetConversation(state: SessionTranscriptState): SessionTranscriptStat
     contextUsage: undefined,
     lastCompletedContextUsage: undefined,
     contextInvalidatedByCompaction: false,
+    followUpQueue: [],
     usageByMessageId: new Map(),
     nextActivityId: 1,
   };
@@ -621,7 +640,7 @@ function activityForEvent(event: SessionEvent): ActivityUpdate | null {
       return {
         label: "Prompt queue updated",
         detail: queuedMessages.length > 0 ? queuedMessages.join("\n") : "Queue cleared",
-        status: count > 0 ? `${count} prompt${count === 1 ? "" : "s"} queued` : undefined,
+        status: count > 0 ? `${count} prompt${count === 1 ? "" : "s"} queued` : "Agent running",
       };
     }
     case "context.compacted":

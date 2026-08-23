@@ -234,7 +234,12 @@ export async function main(args: string[] = Deno.args): Promise<number> {
                 `[openorb-runner] session ${error.sessionDirectory}: ${error.message}`,
               );
             }
-            return ok(manifest.sessions);
+            return ok(manifest.sessions.map((session) => {
+              const activeRunId = sessionProvisioner.getActiveRunId(session.id);
+              return session.state === "running" && activeRunId !== undefined
+                ? { ...session, activeRunId }
+                : session;
+            }));
           },
           sessionEventRelay,
           onProvisionCommand(command, send) {
@@ -242,6 +247,9 @@ export async function main(args: string[] = Deno.args): Promise<number> {
           },
           onPromptCommand(command, send) {
             return sessionProvisioner.handlePromptCommand(command, send);
+          },
+          onAbortCommand(command, send) {
+            return sessionProvisioner.handleAbortCommand(command, send);
           },
           onConnected() {
             console.log(`[openorb-runner] connected runner ${identity.runnerId}`);

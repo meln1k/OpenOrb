@@ -13,6 +13,7 @@ export interface SessionRouteConnection {
 interface SessionEventChannel {
   listeners: Set<SessionEventListener>;
   snapshot?: RunnerSessionSnapshot;
+  activeRunId?: string;
 }
 
 interface SessionEventListener {
@@ -52,8 +53,17 @@ export class SessionRouteOwner<Connection extends SessionRouteConnection> {
     return snapshot ? { ...snapshot } : null;
   }
 
+  getActiveRunId(userId: string, sessionId: string): string | null {
+    const key = sessionKey(userId, sessionId);
+    const route = this.#routes.get(key);
+    if (!route || route.runner.userId !== userId || !this.#isActive(route)) return null;
+    return this.#eventChannels.get(key)?.activeRunId ?? null;
+  }
+
   setSnapshot(userId: string, session: RunnerSessionSnapshot): void {
-    this.#getEventChannel(sessionKey(userId, session.id)).snapshot = session;
+    const channel = this.#getEventChannel(sessionKey(userId, session.id));
+    channel.snapshot = session;
+    channel.activeRunId = session.state === "running" ? session.activeRunId : undefined;
   }
 
   install(connection: Connection, sessionId: string): void {
@@ -93,15 +103,22 @@ export class SessionRouteOwner<Connection extends SessionRouteConnection> {
     return false;
   }
 
-  publish(connection: Connection, sessionId: string, event: SessionEventPayload): boolean {
+  publish(
+    connection: Connection,
+    sessionId: string,
+    event: SessionEventPayload,
+    runId: string,
+  ): boolean {
     const key = sessionKey(connection.runner.userId, sessionId);
     if (this.#routes.get(key) !== connection) return false;
     const channel = this.#getEventChannel(key);
     if (event.event.type === "session.state") {
+      channel.activeRunId = event.event.stage === "running" ? runId : undefined;
       if (channel.snapshot) {
         channel.snapshot = {
           ...channel.snapshot,
           state: runnerSessionStateForProvisioningStage(event.event.stage),
+          activeRunId: event.event.stage === "running" ? runId : undefined,
         };
       }
     }

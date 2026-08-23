@@ -1,21 +1,21 @@
-import type { PromptSessionResult } from "@/app/runner-connection-gateway.ts";
+import type { AbortSessionResult } from "@/app/runner-connection-gateway.ts";
 
-export interface PromptCommandConnection {
+export interface AbortCommandConnection {
   readonly runner: { userId: string };
 }
 
-export interface PendingPromptCommand<Connection> {
+export interface PendingAbortCommand<Connection> {
   connection: Connection;
   sessionId: string;
 }
 
-interface OwnedPromptCommand<Connection> extends PendingPromptCommand<Connection> {
-  resolve: (result: PromptSessionResult) => void;
+interface OwnedAbortCommand<Connection> extends PendingAbortCommand<Connection> {
+  resolve: (result: AbortSessionResult) => void;
   timeout: ReturnType<typeof setTimeout>;
 }
 
-export class PromptCommandOwner<Connection extends PromptCommandConnection> {
-  readonly #commands = new Map<string, OwnedPromptCommand<Connection>>();
+export class AbortCommandOwner<Connection extends AbortCommandConnection> {
+  readonly #commands = new Map<string, OwnedAbortCommand<Connection>>();
   readonly #sessions = new Set<string>();
   readonly #timeoutMs: number;
 
@@ -27,7 +27,7 @@ export class PromptCommandOwner<Connection extends PromptCommandConnection> {
     return this.#sessions.has(sessionKey(userId, sessionId));
   }
 
-  get(commandId: string): PendingPromptCommand<Connection> | undefined {
+  get(commandId: string): PendingAbortCommand<Connection> | undefined {
     return this.#commands.get(commandId);
   }
 
@@ -35,20 +35,20 @@ export class PromptCommandOwner<Connection extends PromptCommandConnection> {
     commandId: string,
     connection: Connection,
     sessionId: string,
-    resolve: (result: PromptSessionResult) => void,
+    resolve: (result: AbortSessionResult) => void,
   ): void {
     const timeout = setTimeout(() => {
       this.settle(commandId, {
         status: "unavailable",
         message:
-          "Runner did not acknowledge the prompt in time. Delivery may be uncertain; it will not be retried automatically.",
+          "Runner did not acknowledge the abort in time. The run may still be stopping; the abort will not be retried automatically.",
       });
     }, this.#timeoutMs);
     this.#commands.set(commandId, { connection, sessionId, resolve, timeout });
     this.#sessions.add(sessionKey(connection.runner.userId, sessionId));
   }
 
-  settle(commandId: string, result: PromptSessionResult): void {
+  settle(commandId: string, result: AbortSessionResult): void {
     const pending = this.#commands.get(commandId);
     if (!pending) return;
     this.#commands.delete(commandId);
@@ -65,7 +65,7 @@ export class PromptCommandOwner<Connection extends PromptCommandConnection> {
     }
   }
 
-  settleAll(result: PromptSessionResult): void {
+  settleAll(result: AbortSessionResult): void {
     for (const commandId of [...this.#commands.keys()]) this.settle(commandId, result);
   }
 }

@@ -353,7 +353,8 @@ Deno.test("proxies one ready-session prompt and settles runner acknowledgements"
     socket.close();
     assertEquals(await disconnected, {
       status: "unavailable",
-      message: "Runner disconnected before acknowledging the prompt.",
+      message:
+        "Runner disconnected before acknowledging the prompt. Delivery may be uncertain; it will not be retried automatically.",
     });
     assertEquals(await gateway.promptSession(promptInput("Do not queue while offline")), {
       status: "unavailable",
@@ -366,7 +367,7 @@ Deno.test("proxies one ready-session prompt and settles runner acknowledgements"
   }
 });
 
-Deno.test("ignores prompt acknowledgements that arrive after the acceptance deadline", async () => {
+Deno.test("ignores prompt and abort acknowledgements after their acceptance deadlines", async () => {
   const gateway = new RunnerConnectionGateway({
     authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
     reconcileSessionManifestEntries: (_userId, entries) =>
@@ -375,7 +376,7 @@ Deno.test("ignores prompt acknowledgements that arrive after the acceptance dead
         tombstonedSessionIds: [],
         rejected: [],
       })),
-  }, { promptAcceptanceTimeoutMs: 5 });
+  }, { promptAcceptanceTimeoutMs: 5, abortAcceptanceTimeoutMs: 5 });
   const server = await createTestServer((request) => gateway.handleUpgrade(request));
   let socket: WebSocket | undefined;
 
@@ -389,7 +390,8 @@ Deno.test("ignores prompt acknowledgements that arrive after the acceptance dead
     assert(lateCommand.type === "session.prompt");
     assertEquals(await timedOut, {
       status: "unavailable",
-      message: "Runner did not acknowledge the prompt in time.",
+      message:
+        "Runner did not acknowledge the prompt in time. Delivery may be uncertain; it will not be retried automatically.",
     });
     socket.send(JSON.stringify({
       version: 1,
@@ -416,6 +418,170 @@ Deno.test("ignores prompt acknowledgements that arrive after the acceptance dead
       status: "rejected",
       message: "Expected test rejection.",
     });
+
+    publishSessionState(socket, "timed-out-run", "running");
+    await waitFor(() => gateway.getSessionSnapshot(USER_ID, SESSION_ID)?.state === "running");
+    const lateAbortFrame = nextMessage(socket);
+    const timedOutAbort = gateway.abortSession({ userId: USER_ID, sessionId: SESSION_ID });
+    const lateAbortCommand = parseRunnerServerMessage(JSON.parse(await lateAbortFrame));
+    assert(lateAbortCommand.type === "session.abort");
+    assertEquals(await timedOutAbort, {
+      status: "unavailable",
+      message:
+        "Runner did not acknowledge the abort in time. The run may still be stopping; the abort will not be retried automatically.",
+    });
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.abort.accepted",
+      sessionId: SESSION_ID,
+      correlationId: lateAbortCommand.id,
+      payload: {},
+    }));
+  } finally {
+    socket?.close();
+    gateway.close();
+    await server.close();
+  }
+});
+
+Deno.test("proxies running-session follow-ups and aborts only the observed active run", async () => {
+  const gateway = new RunnerConnectionGateway({
+    authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
+    reconcileSessionManifestEntries: (_userId, entries) =>
+      Promise.resolve(ok({
+        acceptedSessionIds: entries.map((entry) => entry.id),
+        tombstonedSessionIds: [],
+        rejected: [],
+      })),
+  });
+  const server = await createTestServer((request) => gateway.handleUpgrade(request));
+  let socket: WebSocket | undefined;
+
+  try {
+    socket = await connectRunner(server.baseUrl);
+    await publishSessionManifest(socket, gateway, [{ ...sessionSnapshot(), state: "ready" }]);
+    publishSessionState(socket, "run-1", "running");
+    await waitFor(() => gateway.getSessionSnapshot(USER_ID, SESSION_ID)?.state === "running");
+
+    const followUpFrame = nextMessage(socket);
+    const followUp = gateway.promptSession(promptInput("Queue this follow-up"));
+    const followUpCommand = parseRunnerServerMessage(JSON.parse(await followUpFrame));
+    assert(followUpCommand.type === "session.prompt");
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.prompt.accepted",
+      sessionId: SESSION_ID,
+      correlationId: followUpCommand.id,
+      payload: {},
+    }));
+    assertEquals(await followUp, { status: "accepted" });
+
+    const rejectedAbortFrame = nextMessage(socket);
+    const rejectedAbort = gateway.abortSession({ userId: USER_ID, sessionId: SESSION_ID });
+    const rejectedAbortCommand = parseRunnerServerMessage(JSON.parse(await rejectedAbortFrame));
+    assert(rejectedAbortCommand.type === "session.abort");
+    assertEquals(rejectedAbortCommand.payload, { runId: "run-1" });
+    assertEquals(await gateway.promptSession(promptInput("Blocked by abort handshake")), {
+      status: "rejected",
+      message: "The session already has a command in flight.",
+    });
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.abort.rejected",
+      sessionId: SESSION_ID,
+      correlationId: rejectedAbortCommand.id,
+      payload: { message: "That Pi run is no longer active." },
+    }));
+    assertEquals(await rejectedAbort, {
+      status: "rejected",
+      message: "That Pi run is no longer active.",
+    });
+
+    const acceptedAbortFrame = nextMessage(socket);
+    const acceptedAbort = gateway.abortSession({ userId: USER_ID, sessionId: SESSION_ID });
+    const acceptedAbortCommand = parseRunnerServerMessage(JSON.parse(await acceptedAbortFrame));
+    assert(acceptedAbortCommand.type === "session.abort");
+    assertEquals(acceptedAbortCommand.payload, { runId: "run-1" });
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.abort.accepted",
+      sessionId: SESSION_ID,
+      correlationId: acceptedAbortCommand.id,
+      payload: {},
+    }));
+    assertEquals(await acceptedAbort, { status: "accepted" });
+
+    publishSessionState(socket, "run-1", "ready");
+    await waitFor(() => gateway.getSessionSnapshot(USER_ID, SESSION_ID)?.state === "ready");
+    assertEquals(await gateway.abortSession({ userId: USER_ID, sessionId: SESSION_ID }), {
+      status: "rejected",
+      message: "There is no active Pi run to abort.",
+    });
+
+    publishSessionState(socket, "run-2", "running");
+    await waitFor(() => gateway.getSessionSnapshot(USER_ID, SESSION_ID)?.state === "running");
+    const disconnectedFrame = nextMessage(socket);
+    const disconnected = gateway.abortSession({ userId: USER_ID, sessionId: SESSION_ID });
+    const disconnectedCommand = parseRunnerServerMessage(JSON.parse(await disconnectedFrame));
+    assert(disconnectedCommand.type === "session.abort");
+    assertEquals(disconnectedCommand.payload, { runId: "run-2" });
+    socket.close();
+    assertEquals(await disconnected, {
+      status: "unavailable",
+      message: "Runner disconnected before acknowledging the abort. The run may still be stopping.",
+    });
+  } finally {
+    socket?.close();
+    gateway.close();
+    await server.close();
+  }
+});
+
+Deno.test("a reconnect manifest restores the exact active run identity", async () => {
+  const gateway = new RunnerConnectionGateway({
+    authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
+    reconcileSessionManifestEntries: (_userId, entries) =>
+      Promise.resolve(ok({
+        acceptedSessionIds: entries.map((entry) => entry.id),
+        tombstonedSessionIds: [],
+        rejected: [],
+      })),
+  });
+  const server = await createTestServer((request) => gateway.handleUpgrade(request));
+  let socket: WebSocket | undefined;
+
+  try {
+    socket = await connectRunner(server.baseUrl);
+    await publishSessionManifest(socket, gateway, [{ ...sessionSnapshot(), state: "ready" }]);
+    socket.close();
+    await waitFor(() => gateway.getSessionRunner(USER_ID, SESSION_ID) === null);
+
+    socket = await connectRunner(server.baseUrl);
+    await publishSessionManifest(socket, gateway, [{
+      ...sessionSnapshot(),
+      state: "running",
+      activeRunId: "reconnected-run",
+    }]);
+    assertEquals(gateway.getSessionSnapshot(USER_ID, SESSION_ID)?.activeRunId, "reconnected-run");
+
+    const commandFrame = nextMessage(socket);
+    const abort = gateway.abortSession({ userId: USER_ID, sessionId: SESSION_ID });
+    const command = parseRunnerServerMessage(JSON.parse(await commandFrame));
+    assert(command.type === "session.abort");
+    assertEquals(command.payload, { runId: "reconnected-run" });
+    socket.send(JSON.stringify({
+      version: 1,
+      id: crypto.randomUUID(),
+      type: "session.abort.accepted",
+      sessionId: SESSION_ID,
+      correlationId: command.id,
+      payload: {},
+    }));
+    assertEquals(await abort, { status: "accepted" });
   } finally {
     socket?.close();
     gateway.close();
@@ -709,6 +875,23 @@ function heartbeatMessage(maxConcurrentSessions: number, activeSessions: number)
       },
     },
   };
+}
+
+function publishSessionState(
+  socket: WebSocket,
+  runId: string,
+  stage: "running" | "ready",
+): void {
+  socket.send(JSON.stringify({
+    version: 1,
+    id: crypto.randomUUID(),
+    type: "session.event",
+    sessionId: SESSION_ID,
+    correlationId: runId,
+    payload: {
+      event: { type: "session.state", stage, checkoutState: "available" },
+    },
+  }));
 }
 
 function sessionSnapshot(): RunnerSessionSnapshot {

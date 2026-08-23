@@ -109,6 +109,20 @@ export {
   sessionRepositoryUrlSchema,
 } from "@/src/runner-session-provisioning.ts";
 export {
+  SESSION_ABORT_ACCEPTED_MESSAGE_TYPE,
+  SESSION_ABORT_MESSAGE_TYPE,
+  SESSION_ABORT_REJECTED_MESSAGE_TYPE,
+  type SessionAbortAcceptedMessage,
+  type SessionAbortAcceptedPayload,
+  sessionAbortAcceptedPayloadSchema,
+  type SessionAbortCommand,
+  type SessionAbortCommandPayload,
+  sessionAbortCommandPayloadSchema,
+  type SessionAbortRejectedMessage,
+  type SessionAbortRejectedPayload,
+  sessionAbortRejectedPayloadSchema,
+} from "@/src/runner-session-abort.ts";
+export {
   SESSION_PROMPT_ACCEPTED_MESSAGE_TYPE,
   SESSION_PROMPT_MESSAGE_TYPE,
   SESSION_PROMPT_REJECTED_MESSAGE_TYPE,

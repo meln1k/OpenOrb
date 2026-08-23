@@ -8,6 +8,9 @@ import {
   parseModelReference,
   parseRunnerClientMessage,
   parseRunnerServerMessage,
+  type SessionAbortAcceptedMessage,
+  type SessionAbortCommand,
+  type SessionAbortRejectedMessage,
   type SessionEventMessage,
   type SessionEventReplayCommand,
   type SessionEventReplayResultMessage,
@@ -342,6 +345,53 @@ Deno.test("validates continuation prompt commands and acknowledgements", () => {
   const parsedRejected = parseRunnerClientMessage(rejected);
   assert(parsedRejected.type === "session.prompt.rejected");
   assertEquals(parsedRejected.payload, rejected.payload);
+});
+
+Deno.test("validates active-run abort commands and acknowledgements", () => {
+  const command = {
+    version: 1,
+    id: "abort-1",
+    type: "session.abort",
+    sessionId: SESSION_ID,
+    payload: { runId: "active-run-1" },
+  } satisfies SessionAbortCommand;
+  const parsedCommand = parseRunnerServerMessage(command);
+  assert(parsedCommand.type === "session.abort");
+  assertEquals(parsedCommand.payload, command.payload);
+
+  const accepted = {
+    version: 1,
+    id: "abort-accepted-1",
+    type: "session.abort.accepted",
+    sessionId: SESSION_ID,
+    correlationId: command.id,
+    payload: {},
+  } satisfies SessionAbortAcceptedMessage;
+  const parsedAccepted = parseRunnerClientMessage(accepted);
+  assert(parsedAccepted.type === "session.abort.accepted");
+  assertEquals(parsedAccepted.payload, {});
+
+  const rejected = {
+    version: 1,
+    id: "abort-rejected-1",
+    type: "session.abort.rejected",
+    sessionId: SESSION_ID,
+    correlationId: command.id,
+    payload: { message: "That Pi run is no longer active." },
+  } satisfies SessionAbortRejectedMessage;
+  const parsedRejected = parseRunnerClientMessage(rejected);
+  assert(parsedRejected.type === "session.abort.rejected");
+  assertEquals(parsedRejected.payload, rejected.payload);
+
+  for (const payload of [{}, { runId: "" }, { runId: "x".repeat(101) }]) {
+    assertThrows(() => parseRunnerServerMessage({ ...command, payload }));
+  }
+  assertThrows(() =>
+    parseRunnerClientMessage({
+      ...accepted,
+      payload: { unexpected: true },
+    })
+  );
 });
 
 Deno.test("rejects malformed or oversized continuation prompt traffic", () => {

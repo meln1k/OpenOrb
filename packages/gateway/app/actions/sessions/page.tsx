@@ -9,6 +9,7 @@ import { SessionEventView } from "@/app/ui/session/session-event-view.tsx";
 import { AppShell } from "@/app/ui/shell.tsx";
 
 interface SessionDetailPageProps {
+  abortHref: string;
   composer: SessionComposerData;
   csrfToken: string;
   session: SessionCatalogEntry;
@@ -24,6 +25,7 @@ interface SessionDetailPageProps {
 
 export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
   const {
+    abortHref,
     composer,
     csrfToken,
     error,
@@ -50,6 +52,7 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
     >
       {error ? <p role="alert" mix={errorStyle}>{error}</p> : null}
       <SessionEventView
+        abortHref={abortHref}
         canRetry={canRetry}
         contextWindow={snapshot === null ? 0 : modelContextWindow(snapshot.model) ?? 0}
         csrfToken={csrfToken}

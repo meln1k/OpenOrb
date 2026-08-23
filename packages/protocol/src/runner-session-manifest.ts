@@ -1,9 +1,10 @@
-import { array, literal, number, object, string, union } from "@remix-run/data-schema";
+import { array, literal, number, object, optional, string, union } from "@remix-run/data-schema";
 import type { InferOutput } from "@remix-run/data-schema";
 import { trySync } from "@openorb/result";
 import { validate as validateUuid } from "@std/uuid";
 import { modelReferenceSchema } from "@/src/model-provider.ts";
 import { orbSizeSchema } from "@/src/orb-size.ts";
+import type { OptionalSchemaProperties } from "@/src/schema-output.ts";
 
 export const RUNNER_SESSION_SYNC_START_MESSAGE_TYPE = "runner.session-sync.start";
 export const RUNNER_SESSION_SYNC_CHUNK_MESSAGE_TYPE = "runner.session-sync.chunk";
@@ -47,6 +48,12 @@ export const runnerSessionSnapshotSchema = object(
     orbSize: orbSizeSchema,
     state: runnerSessionStateSchema,
     lastEventCursor: nonNegativeIntegerSchema,
+    activeRunId: optional(
+      string().refine(
+        (value) => value.length > 0 && value.length <= 100,
+        "Active run identifiers must be between 1 and 100 characters.",
+      ),
+    ),
   },
   { unknownKeys: "error" },
 );
@@ -81,13 +88,19 @@ export const runnerSessionSyncCompletePayloadSchema = object(
 );
 
 export type RunnerSessionState = InferOutput<typeof runnerSessionStateSchema>;
-export type RunnerSessionSnapshot = InferOutput<typeof runnerSessionSnapshotSchema>;
+export type RunnerSessionSnapshot = OptionalSchemaProperties<
+  InferOutput<typeof runnerSessionSnapshotSchema>,
+  "activeRunId"
+>;
 export type RunnerSessionSyncStartPayload = InferOutput<
   typeof runnerSessionSyncStartPayloadSchema
 >;
-export type RunnerSessionSyncChunkPayload = InferOutput<
-  typeof runnerSessionSyncChunkPayloadSchema
->;
+export type RunnerSessionSyncChunkPayload =
+  & Omit<
+    InferOutput<typeof runnerSessionSyncChunkPayloadSchema>,
+    "sessions"
+  >
+  & { sessions: RunnerSessionSnapshot[] };
 export type RunnerSessionSyncCompletePayload = InferOutput<
   typeof runnerSessionSyncCompletePayloadSchema
 >;
