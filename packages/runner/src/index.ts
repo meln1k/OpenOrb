@@ -15,7 +15,7 @@ import { sessionWorkerFactoryLayer } from "./session/worker.ts";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
 import { Effect, Exit, Layer, Predicate, Runtime, Schema } from "effect";
-import { RunnerId } from "@openorb/protocol/runner-api";
+import { RUNNER_PROTOCOL_VERSION, RunnerId } from "@openorb/protocol/runner-api";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
@@ -233,7 +233,7 @@ export async function main(
               runnerId,
               runnerToken: identity.runnerToken,
               runnerVersion: RUNNER_VERSION,
-              protocolVersion: 2,
+              protocolVersion: RUNNER_PROTOCOL_VERSION,
               getCapacity,
               store: sessionStore,
               supervisor: sessionSupervisor,

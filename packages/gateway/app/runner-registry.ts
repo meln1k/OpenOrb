@@ -2,19 +2,18 @@ import {
   AbortRejected,
   CapacityExceeded,
   ClientRequestId,
-  type HistoryReadError,
   initialPromptPreview,
   PromptRejected,
   ProvisionRejected,
   ProvisionSessionPayload,
   type ProvisionSessionSuccess,
   RunId,
+  RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   type RunnerCapacity,
   type RunnerSessionSnapshot,
   type RunnerStateEvent,
   SessionConflict,
-  type SessionCorrupt,
   SessionId,
   SessionNotFound,
   type WatchSessionEvent,
@@ -23,7 +22,6 @@ import { orbSizeResources } from "@openorb/protocol";
 import {
   Cause,
   Context,
-  Data,
   Effect,
   Exit,
   Layer,
@@ -31,7 +29,6 @@ import {
   Schedule,
   Schema,
   Scope,
-  ScopedCache,
   Stream,
   SynchronizedRef,
 } from "effect";
@@ -47,20 +44,12 @@ import type { SessionCatalogRepository } from "@/app/data/session-catalog-reposi
 
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
 const OPERATION_TIMEOUT_MS = 15_000;
-const RUNNER_PROTOCOL_VERSION = 2;
-const SESSION_WATCH_DURABLE_CAPACITY = 2_048;
-const SESSION_WATCH_EPHEMERAL_CAPACITY = 512;
-const SESSION_WATCH_CAPACITY = SESSION_WATCH_DURABLE_CAPACITY + SESSION_WATCH_EPHEMERAL_CAPACITY;
 export const RUNNER_WATCH_INACTIVITY_TIMEOUT_MS = 60_000;
 export const PERMANENT_REJECTION_CLOSE_CODE = 4401;
 export const BOOTSTRAP_TIMEOUT_CLOSE_CODE = 4408;
 const REJECTION_REASON = "Runner connection rejected";
 
 type Client = RpcClient.RpcClient<RpcGroup.Rpcs<typeof RunnerApi>, RpcClientError>;
-type SessionWatchStream = Stream.Stream<
-  typeof WatchSessionEvent.Type,
-  SessionNotFound | SessionCorrupt | HistoryReadError | RpcClientError
->;
 type OmitUnion<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 export interface RunnerLiveState {
@@ -131,12 +120,7 @@ interface Connection {
 interface ConnectionRuntime {
   readonly client: Client;
   readonly scope: Scope.Closeable;
-  readonly watches: ScopedCache.ScopedCache<SessionWatchKey, SessionWatchStream>;
 }
-class SessionWatchKey extends Data.Class<{
-  readonly sessionId: typeof SessionId.Type;
-  readonly afterCursor: number;
-}> {}
 interface RegistryState {
   readonly nextGeneration: number;
   readonly connections: ReadonlyMap<string, Connection>;
@@ -290,24 +274,7 @@ const accept = Effect.fn("RunnerRegistry.accept")(
           const sessions = new Map(
             initial.filter((x) => accepted.has(x.id)).map((x) => [x.id, x]),
           );
-          const watches = yield* ScopedCache.make({
-            capacity: Number.POSITIVE_INFINITY,
-            lookup: (key: SessionWatchKey) =>
-              client["session.watch"]({
-                sessionId: key.sessionId,
-                afterCursor: key.afterCursor,
-              }).pipe(
-                Stream.share({
-                  capacity: SESSION_WATCH_CAPACITY,
-                  // Keep the most recent live window. Every runner-produced live event carries
-                  // the current durable cursor, so sliding out a durable event is detected below
-                  // and terminates the consumer for JSONL replay instead of becoming silent loss.
-                  strategy: "sliding",
-                  replay: SESSION_WATCH_CAPACITY,
-                }),
-              ),
-          }).pipe(Scope.provide(scope));
-          const connectionRuntime: ConnectionRuntime = { client, scope, watches };
+          const connectionRuntime: ConnectionRuntime = { client, scope };
           const [connection, old] = yield* SynchronizedRef.modifyEffect(
             registry.state,
             (current) => {
@@ -404,13 +371,7 @@ function applyEvent(
       if (route.generation === current.generation) routes.set(id, updated);
     }
     return [removedSessionId, { ...state, connections, routes }] as const;
-  }).pipe(
-    Effect.flatMap((sessionId) =>
-      sessionId === null
-        ? Effect.void
-        : invalidateSessionWatches(connection.runtime.watches, sessionId)
-    ),
-  );
+  });
 }
 
 function removeConnection(registry: RegistryRuntime, connection: Connection) {
@@ -612,35 +573,17 @@ function watchSession(
       routeKey(userId, sessionId),
     );
     if (!connection) return Stream.fail(new Error("The pinned runner is offline."));
-    const key = new SessionWatchKey({ sessionId: decoded.value, afterCursor });
-    const stream = yield* ScopedCache.get(connection.runtime.watches, key);
     const routed = (yield* SynchronizedRef.get(registry.state)).routes.get(
       routeKey(userId, sessionId),
     );
     if (!routed || routed.generation !== connection.generation) {
-      yield* ScopedCache.invalidate(connection.runtime.watches, key);
       return Stream.fail(new Error("The pinned runner is offline."));
     }
-    return watchWithCursorContinuity(
-      stream,
+    return connection.runtime.client["session.watch"]({
+      sessionId: decoded.value,
       afterCursor,
-      ScopedCache.invalidate(connection.runtime.watches, key),
-    );
+    });
   }));
-}
-
-function invalidateSessionWatches(
-  watches: ConnectionRuntime["watches"],
-  sessionId: string,
-) {
-  return Effect.gen(function* () {
-    const keys = yield* ScopedCache.keys(watches);
-    yield* Effect.forEach(
-      keys,
-      (key) => key.sessionId === sessionId ? ScopedCache.invalidate(watches, key) : Effect.void,
-      { discard: true },
-    );
-  });
 }
 
 const disconnectRunner = Effect.fn("RunnerRegistry.disconnectRunner")(
@@ -788,44 +731,6 @@ function runnerSupportsOrbSize(
 ) {
   const resources = orbSizeResources(orbSize);
   return resources.cpuCount <= capacity.vmCpuCount && resources.memoryMiB <= capacity.vmMemoryMiB;
-}
-
-function watchWithCursorContinuity(
-  stream: Stream.Stream<typeof WatchSessionEvent.Type, unknown>,
-  afterCursor: number,
-  invalidate: Effect.Effect<void>,
-) {
-  return Stream.unwrap(Effect.sync(() => {
-    let cursor = afterCursor;
-    return stream.pipe(
-      Stream.mapEffect((item) => {
-        if (item.event.type === "conversation.reset") {
-          cursor = 0;
-          return Effect.succeed(item);
-        }
-        if (!("cursor" in item)) {
-          if (
-            "conversationCursor" in item && item.conversationCursor !== undefined &&
-            item.conversationCursor > cursor
-          ) {
-            return invalidate.pipe(
-              Effect.andThen(
-                Effect.fail(new Error("The session event stream lost durable events.")),
-              ),
-            );
-          }
-          return Effect.succeed(item);
-        }
-        if (item.cursor !== cursor + 1) {
-          return invalidate.pipe(
-            Effect.andThen(Effect.fail(new Error("The session event stream lost durable events."))),
-          );
-        }
-        cursor = item.cursor;
-        return Effect.succeed(item);
-      }),
-    );
-  }));
 }
 
 class CandidateRejected extends Error {}

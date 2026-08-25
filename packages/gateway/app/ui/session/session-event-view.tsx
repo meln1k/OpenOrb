@@ -137,8 +137,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
   handle.queueTask(() => {
     if (handle.props.initialState === "offline") return;
     let updateTimer: ReturnType<typeof setTimeout> | undefined;
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-    let stream: EventSource | undefined;
+    const stream = new EventSource(handle.props.eventsHref);
     // Remix flushes updates in microtasks, so use a timer task to coalesce replay bursts.
     const scheduleUpdate = () => {
       if (updateTimer !== undefined) return;
@@ -147,45 +146,34 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
         if (!handle.signal.aborted) void handle.update();
       }, 0);
     };
-    const connect = () => {
-      if (handle.signal.aborted) return;
-      const source = new EventSource(handle.props.eventsHref);
-      stream = source;
-      source.addEventListener("open", () => {
-        if (source !== stream || !connectionInterrupted) return;
-        connectionInterrupted = false;
-        scheduleUpdate();
-      });
-      source.addEventListener("session", (message) => {
-        if (source !== stream || !(message instanceof MessageEvent)) return;
-        const encoded = parseSafe(string(), message.data);
-        if (!encoded.success) return;
-        const event = parseSessionEvent(encoded.value);
-        if (!event) return;
-        if (event.type === "session.state" && event.stage !== "running") abortPending = false;
-        const next = reduceSessionTranscriptState(transcriptState, event);
-        if (next === transcriptState) return;
+    stream.addEventListener("open", () => {
+      if (!connectionInterrupted) return;
+      connectionInterrupted = false;
+      scheduleUpdate();
+    });
+    stream.addEventListener("session", (message) => {
+      if (!(message instanceof MessageEvent)) return;
+      const encoded = parseSafe(string(), message.data);
+      if (!encoded.success) return;
+      const event = parseSessionEvent(encoded.value);
+      if (!event) return;
+      if (event.type === "session.state" && event.stage !== "running") abortPending = false;
+      const next = reduceSessionTranscriptState(transcriptState, event);
+      if (next === transcriptState) return;
+      transcriptState = next;
+      scheduleUpdate();
+    });
+    stream.addEventListener("error", () => {
+      const next = settleSessionTranscriptState(transcriptState);
+      if (next !== transcriptState || !connectionInterrupted) {
         transcriptState = next;
+        connectionInterrupted = true;
         scheduleUpdate();
-      });
-      source.addEventListener("error", () => {
-        if (source !== stream) return;
-        source.close();
-        stream = undefined;
-        const next = settleSessionTranscriptState(transcriptState);
-        if (next !== transcriptState || !connectionInterrupted) {
-          transcriptState = next;
-          connectionInterrupted = true;
-          scheduleUpdate();
-        }
-        reconnectTimer = setTimeout(connect, 1_000);
-      });
-    };
-    connect();
+      }
+    });
     handle.signal.addEventListener("abort", () => {
-      stream?.close();
+      stream.close();
       if (updateTimer !== undefined) clearTimeout(updateTimer);
-      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
     }, {
       once: true,
     });

@@ -2,6 +2,7 @@
 import { assert, assertEquals } from "@std/assert";
 import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
 import {
+  RUNNER_PROTOCOL_VERSION,
   RunnerCapacity,
   RunnerId,
   RunnerSessionSnapshot,
@@ -152,7 +153,7 @@ function runnerOptions(
     runnerId,
     runnerToken,
     runnerVersion: "test-1",
-    protocolVersion: 2,
+    protocolVersion: RUNNER_PROTOCOL_VERSION,
     getCapacity: () => Promise.resolve(capacity),
     store,
     supervisor: {

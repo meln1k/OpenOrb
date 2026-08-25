@@ -665,11 +665,13 @@ type SessionEvent =
 ```
 
 The runner derives completed conversation events and monotonic positions from the active Pi JSONL
-branch. The gateway shares a scoped `WatchSession(afterCursor)` RPC stream among browsers in the
-same replay cohort, filters browser-visible events, encodes SSE records, and merges keepalives.
-Cancelling the last browser interrupts the runner stream. A durable cursor gap or runner disconnect
-closes SSE so native `EventSource` reconnects from `Last-Event-ID`. Neither the runner nor gateway
-stores a second event history.
+branch. Each browser owns a request-scoped `WatchSession(afterCursor)` RPC stream; the gateway
+filters browser-visible events, encodes SSE records, and merges keepalives without sharing or
+caching watch streams. The runner subscribes before replay, then uses a latest-wins payload-free
+notification to reread Pi JSONL and emit every missing durable suffix. Cancelling a browser
+interrupts only its matching stream. A history failure or runner disconnect closes SSE so the same
+native `EventSource` reconnects from `Last-Event-ID`. Neither the runner nor gateway stores a second
+event history.
 
 If the runner is offline, session history and SSE replay are unavailable.
 

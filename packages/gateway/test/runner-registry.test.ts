@@ -7,6 +7,7 @@ import {
   ProjectId,
   PromptSessionAccepted,
   ProvisionSessionSuccess,
+  RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   RunnerCapacity,
   RunnerIdentity,
@@ -15,19 +16,7 @@ import {
   WatchSessionEvent,
   WatchSessionPayload,
 } from "@openorb/protocol/runner-api";
-import {
-  Cause,
-  Context,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  Option,
-  Queue,
-  Schema,
-  Stream,
-} from "effect";
+import { Context, Deferred, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
@@ -79,23 +68,26 @@ interface Probe {
   provisionRequests: unknown[];
   promptRequests: unknown[];
   abortRequests: unknown[];
-  watchSessionRequests: unknown[];
-  watchSessionEvents: Queue.Queue<typeof WatchSessionEvent.Type>;
+  sessionWatches: SessionWatchProbe[];
   provisionBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
   promptBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
-  watchSessionFinalized: Deferred.Deferred<void>;
   connectionFinalized: Deferred.Deferred<void>;
   closeCode: Deferred.Deferred<number>;
 }
 
+interface SessionWatchProbe {
+  request: unknown;
+  events: Queue.Queue<typeof WatchSessionEvent.Type>;
+  finalized: Deferred.Deferred<void>;
+}
+
 const makeProbe = Effect.fn(function* (token = TOKEN) {
-  const watchSessionEvents = yield* Queue.unbounded<typeof WatchSessionEvent.Type>();
   const probe: Probe = {
     identity: decode(RunnerIdentity)({
       token,
       runnerId: RUNNER_ID,
       runnerVersion: "test-1",
-      protocolVersion: 2,
+      protocolVersion: RUNNER_PROTOCOL_VERSION,
       capabilities: ["sessions"],
     }),
     runnerEvents: yield* Queue.unbounded<typeof RunnerStateEvent.Type>(),
@@ -104,11 +96,9 @@ const makeProbe = Effect.fn(function* (token = TOKEN) {
     provisionRequests: [],
     promptRequests: [],
     abortRequests: [],
-    watchSessionRequests: [],
-    watchSessionEvents,
+    sessionWatches: [],
     provisionBlock: null,
     promptBlock: null,
-    watchSessionFinalized: yield* Deferred.make<void>(),
     connectionFinalized: yield* Deferred.make<void>(),
     closeCode: yield* Deferred.make<number>(),
   };
@@ -208,18 +198,24 @@ function handlers(probe: Probe) {
         probe.abortRequests.push(request);
         return decode(AbortSessionAccepted)({ runId: request.runId });
       }),
-    "session.watch": (request) => {
-      probe.watchSessionRequests.push(request);
-      const initial: typeof WatchSessionEvent.Type = {
-        runId: null,
-        event: { type: "agent.started" },
-      };
-      return Stream.make(initial).pipe(
-        Stream.concat(Stream.fromQueue(probe.watchSessionEvents)),
-        Stream.rechunk(1),
-        Stream.ensuring(Deferred.succeed(probe.watchSessionFinalized, undefined)),
-      );
-    },
+    "session.watch": (request) =>
+      Stream.unwrap(Effect.gen(function* () {
+        const watch: SessionWatchProbe = {
+          request,
+          events: yield* Queue.unbounded<typeof WatchSessionEvent.Type>(),
+          finalized: yield* Deferred.make<void>(),
+        };
+        probe.sessionWatches.push(watch);
+        const initial: typeof WatchSessionEvent.Type = {
+          runId: null,
+          event: { type: "agent.started" },
+        };
+        return Stream.make(initial).pipe(
+          Stream.concat(Stream.fromQueue(watch.events)),
+          Stream.rechunk(1),
+          Stream.ensuring(Deferred.succeed(watch.finalized, undefined)),
+        );
+      })),
   }));
 }
 
@@ -359,11 +355,15 @@ Deno.test("WatchSession stream cancellation reaches the runner handler finalizer
       "route missing",
     );
     yield* gateway.watchSession(USER_ID, SESSION_1, 0).pipe(Stream.take(1), Stream.runDrain);
-    yield* Deferred.await(probe.watchSessionFinalized);
-    assertEquals(probe.watchSessionRequests.length, 1);
+    assertEquals(probe.sessionWatches.length, 1);
+    yield* Deferred.await(probe.sessionWatches[0]!.finalized);
+    assertEquals(
+      probe.sessionWatches[0]!.request,
+      decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 0 }),
+    );
   }))));
 
-Deno.test("WatchSession fans out tabs at one cursor and isolates replay cohorts", () =>
+Deno.test("each browser gets an independent WatchSession RPC and cancellation scope", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const { gateway, url } = yield* makeHarness();
     const probe = yield* makeProbe();
@@ -375,8 +375,7 @@ Deno.test("WatchSession fans out tabs at one cursor and isolates replay cohorts"
     );
 
     const firstReceived = yield* Deferred.make<void>();
-    const secondReceived = yield* Deferred.make<void>();
-    const thirdReceived = yield* Deferred.make<void>();
+    const secondContinued = yield* Deferred.make<void>();
     const first = yield* gateway.watchSession(USER_ID, SESSION_1, 3).pipe(
       Stream.tap(() => Deferred.succeed(firstReceived, undefined)),
       Stream.runDrain,
@@ -384,38 +383,54 @@ Deno.test("WatchSession fans out tabs at one cursor and isolates replay cohorts"
     );
     yield* Deferred.await(firstReceived);
     const second = yield* gateway.watchSession(USER_ID, SESSION_1, 3).pipe(
-      Stream.tap(() => Deferred.succeed(secondReceived, undefined)),
+      Stream.tap((item) =>
+        item.event.type === "assistant.text.delta" && item.event.delta === "second-continues"
+          ? Deferred.succeed(secondContinued, undefined)
+          : Effect.void
+      ),
       Stream.runDrain,
       Effect.forkChild({ startImmediately: true }),
     );
-    yield* Deferred.await(secondReceived);
+    yield* waitUntil(
+      () => Effect.sync(() => probe.sessionWatches.length === 2),
+      "second watch did not start",
+    );
     const third = yield* gateway.watchSession(USER_ID, SESSION_1, 4).pipe(
-      Stream.tap(() => Deferred.succeed(thirdReceived, undefined)),
       Stream.runDrain,
       Effect.forkChild({ startImmediately: true }),
     );
-    yield* Deferred.await(thirdReceived);
+    yield* waitUntil(
+      () => Effect.sync(() => probe.sessionWatches.length === 3),
+      "third watch did not start",
+    );
 
-    assertEquals(probe.watchSessionRequests.length, 2);
     assertEquals(
-      probe.watchSessionRequests[0],
+      probe.sessionWatches[0]!.request,
       decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 3 }),
     );
     assertEquals(
-      probe.watchSessionRequests[1],
+      probe.sessionWatches[1]!.request,
+      decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 3 }),
+    );
+    assertEquals(
+      probe.sessionWatches[2]!.request,
       decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 4 }),
     );
     yield* Fiber.interrupt(first);
-    assert(Option.isNone(yield* Deferred.poll(probe.watchSessionFinalized)));
+    yield* Deferred.await(probe.sessionWatches[0]!.finalized);
+    assert(Option.isNone(yield* Deferred.poll(probe.sessionWatches[1]!.finalized)));
+    assert(Option.isNone(yield* Deferred.poll(probe.sessionWatches[2]!.finalized)));
     yield* Queue.offer(
-      probe.runnerEvents,
-      decode(RunnerStateEvent)({
-        type: "session.removed",
-        revision: 2,
-        sessionId: SESSION_1,
+      probe.sessionWatches[1]!.events,
+      decode(WatchSessionEvent)({
+        runId: "run-active",
+        event: { type: "assistant.text.delta", delta: "second-continues" },
       }),
     );
-    yield* Deferred.await(probe.watchSessionFinalized);
+    yield* Deferred.await(secondContinued);
+    assert(yield* gateway.disconnectRunner(USER_ID, RUNNER_ID));
+    yield* Deferred.await(probe.sessionWatches[1]!.finalized);
+    yield* Deferred.await(probe.sessionWatches[2]!.finalized);
     assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
     yield* Fiber.interrupt(second);
     yield* Fiber.interrupt(third);
@@ -499,125 +514,6 @@ Deno.test("disconnect after provisioning dispatch reports uncertain delivery", (
 
     assertEquals((yield* Fiber.join(provision)).status, "delivery-uncertain");
     assertEquals(probe.provisionRequests.length, 1);
-  }))));
-
-Deno.test("slow shared watcher does not silently lose an evicted durable event", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
-    yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
-      "route missing",
-    );
-
-    const fastStarted = yield* Deferred.make<void>();
-    const slowStarted = yield* Deferred.make<void>();
-    const slowDeliveredCursorOne = yield* Deferred.make<void>();
-    const slowStalled = yield* Deferred.make<void>();
-    const fastReachedSentinel = yield* Deferred.make<void>();
-    const releaseSlow = yield* Deferred.make<void>();
-    const slowDurableCursors: number[] = [];
-    const stallDelta = "stall-slow-watcher";
-    const finalSentinel = "final-ephemeral-sentinel";
-    const fast = yield* gateway.watchSession(USER_ID, SESSION_1, 0).pipe(
-      Stream.tap((item) =>
-        item.event.type === "assistant.text.delta" && item.event.delta === finalSentinel
-          ? Deferred.succeed(fastReachedSentinel, undefined)
-          : Deferred.succeed(fastStarted, undefined)
-      ),
-      Stream.runDrain,
-      Effect.forkChild({ startImmediately: true }),
-    );
-    yield* Deferred.await(fastStarted);
-    const slow = yield* gateway.watchSession(USER_ID, SESSION_1, 0).pipe(
-      Stream.mapEffect((item) =>
-        item.event.type === "assistant.text.delta" && item.event.delta === stallDelta
-          ? Deferred.succeed(slowStalled, undefined).pipe(
-            Effect.andThen(Deferred.await(releaseSlow)),
-            Effect.as(item),
-          )
-          : Effect.succeed(item)
-      ),
-      Stream.tap((item) =>
-        Effect.sync(() => {
-          if ("cursor" in item) slowDurableCursors.push(item.cursor);
-        }).pipe(
-          Effect.andThen(
-            "cursor" in item && item.cursor === 1
-              ? Deferred.succeed(slowDeliveredCursorOne, undefined)
-              : Deferred.succeed(slowStarted, undefined),
-          ),
-        )
-      ),
-      Stream.takeUntil((item) =>
-        item.event.type === "assistant.text.delta" && item.event.delta === finalSentinel
-      ),
-      Stream.runDrain,
-      Effect.exit,
-      Effect.forkChild({ startImmediately: true }),
-    );
-    yield* Deferred.await(slowStarted);
-
-    yield* Queue.offer(
-      probe.watchSessionEvents,
-      decode(WatchSessionEvent)({
-        runId: "run-active",
-        cursor: 1,
-        event: { type: "user.message", messageId: "message-1", text: "first" },
-      }),
-    );
-    yield* Deferred.await(slowDeliveredCursorOne);
-    yield* Queue.offer(
-      probe.watchSessionEvents,
-      decode(WatchSessionEvent)({
-        runId: "run-active",
-        conversationCursor: 1,
-        event: { type: "assistant.text.delta", delta: stallDelta },
-      }),
-    );
-    yield* Deferred.await(slowStalled);
-    yield* Queue.offer(
-      probe.watchSessionEvents,
-      decode(WatchSessionEvent)({
-        runId: "run-active",
-        cursor: 2,
-        event: { type: "user.message", messageId: "message-2", text: "second" },
-      }),
-    );
-    yield* Effect.forEach(
-      Array.from({ length: 2_049 }),
-      (_, index) =>
-        Queue.offer(
-          probe.watchSessionEvents,
-          decode(WatchSessionEvent)({
-            runId: "run-active",
-            conversationCursor: 2,
-            event: {
-              type: "assistant.text.delta",
-              delta: index === 2_048 ? finalSentinel : `pressure-${index}`,
-            },
-          }),
-        ),
-      { discard: true },
-    );
-    yield* Deferred.await(fastReachedSentinel);
-    yield* Deferred.succeed(releaseSlow, undefined);
-
-    const slowExit = yield* Fiber.join(slow);
-    const receivedCursorTwo = slowDurableCursors.includes(2);
-    const explicitlySignaledLoss = Exit.isFailure(slowExit) &&
-      Cause.pretty(slowExit.cause).includes("lost durable events");
-    const reconnected = probe.watchSessionRequests.length > 1;
-    const consumedThroughSentinel = Exit.isSuccess(slowExit);
-    assert(
-      receivedCursorTwo || explicitlySignaledLoss,
-      `durable cursor 2 was neither delivered nor explicitly signaled as lost ` +
-        `(reconnected=${reconnected}, consumedThroughSentinel=${consumedThroughSentinel}, ` +
-        `durableCursors=${JSON.stringify(slowDurableCursors)})`,
-    );
-    yield* Fiber.interrupt(fast);
   }))));
 
 Deno.test("typed commands reach handlers and disconnect removes routes and finalizes connection", () =>

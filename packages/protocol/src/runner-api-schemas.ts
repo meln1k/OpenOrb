@@ -7,6 +7,7 @@ import {
 } from "./runner-api-session-events.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
+export const RUNNER_PROTOCOL_VERSION = 3;
 
 const Uuid = Schema.String.check(Schema.isUUID());
 
@@ -294,7 +295,6 @@ const DurableSessionEvent = Schema.Struct({
 
 const LiveSessionEvent = Schema.Struct({
   runId: Schema.NullOr(RunId),
-  conversationCursor: Schema.optionalKey(SessionCursor),
   event: SessionLiveEvent,
 });
 

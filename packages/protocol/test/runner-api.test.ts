@@ -17,6 +17,7 @@ import {
   ProvisionSessionPayload,
   ProvisionSessionSuccess,
   RunId,
+  RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   RunnerCapacity,
   RunnerId,
@@ -58,7 +59,7 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       token: RUNNER_TOKEN,
       runnerId: RUNNER_ID,
       runnerVersion: "0.0.0",
-      protocolVersion: 2,
+      protocolVersion: RUNNER_PROTOCOL_VERSION,
       capabilities: ["effect-rpc", "session-watch"],
     }).runnerId,
     RUNNER_ID,
@@ -68,7 +69,7 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       token: "not-a-runner-token",
       runnerId: RUNNER_ID,
       runnerVersion: "0.0.0",
-      protocolVersion: 2,
+      protocolVersion: RUNNER_PROTOCOL_VERSION,
       capabilities: ["effect-rpc"],
     })
   );
@@ -77,7 +78,7 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       token: RUNNER_TOKEN,
       runnerId: RUNNER_ID,
       runnerVersion: "0.0.0",
-      protocolVersion: 2,
+      protocolVersion: RUNNER_PROTOCOL_VERSION,
       capabilities: ["effect-rpc", "effect-rpc"],
     })
   );
@@ -131,7 +132,6 @@ Deno.test("WatchSession events always state their run attribution", () => {
   assertEquals(
     Schema.decodeUnknownSync(WatchSessionEvent)({
       runId: RUN_ID,
-      conversationCursor: 1,
       event: { type: "assistant.text.delta", delta: "Hi" },
     }).runId,
     RUN_ID,
@@ -149,7 +149,7 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
     token: RUNNER_TOKEN,
     runnerId: RUNNER_ID,
     runnerVersion: "0.0.0",
-    protocolVersion: 2,
+    protocolVersion: RUNNER_PROTOCOL_VERSION,
     capabilities: ["effect-rpc"],
   });
   const session = sessionSnapshot();

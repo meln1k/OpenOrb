@@ -574,7 +574,7 @@ function makeSessionWorker(
           yield* run.events.pipe(
             Stream.runForEach((event) =>
               event._tag === "ConversationAppended"
-                ? publish(events.publishConversation(sessionId, event.event))
+                ? publish(events.publishConversation(sessionId))
                 : publish(events.publishLive(sessionId, runId, event.event))
             ),
             Effect.mapError(workerError),

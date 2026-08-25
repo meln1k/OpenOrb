@@ -1444,14 +1444,16 @@ state; PostgreSQL is never used to reconstruct runner-owned session data.
 ### 22.5 `WatchSession` and SSE
 
 `WatchSession({ sessionId, afterCursor })` combines cursor-bearing completed conversation events
-projected from Pi JSONL with bounded best-effort live events. Pi JSONL remains the sole durable
-conversation source. The gateway shares the RPC stream only among browsers in the same cursor
-cohort, filters browser-visible events, encodes SSE records, and merges keepalive comments.
+read from Pi JSONL with bounded best-effort live events. Pi JSONL remains the sole durable
+conversation source. Each browser owns a request-scoped runner RPC stream; the gateway filters
+browser-visible events, encodes SSE records, and merges keepalive comments without sharing or
+caching watch streams.
 
-A cursor gap, history failure, or runner disconnect closes SSE so native `EventSource` reconnects
-from `Last-Event-ID`. Cancelling the final browser remotely interrupts the runner stream. Live token
-deltas may be dropped under pressure, but a cursor-bearing event is never silently dropped while the
-same SSE stream continues.
+Each watcher subscribes before its initial JSONL read. A latest-wins, payload-free conversation
+notification causes it to reread JSONL and emit every missing cursor suffix, while ephemeral events
+remain separately bounded and lossy. A history failure or runner disconnect closes SSE so the same
+native `EventSource` reconnects from `Last-Event-ID`; browser cancellation interrupts only its
+matching runner stream.
 
 ## 23. Future runner binary data protocol
 
