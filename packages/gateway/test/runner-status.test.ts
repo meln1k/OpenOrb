@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 
-import type { RunnerCapacity } from "@openorb/protocol";
+import type { RunnerCapacity } from "@openorb/protocol/runner-api";
 import { Effect } from "effect";
 import type { RunnerRecord } from "@/app/data/runner-repository.ts";
 import type { RunnerRegistryService } from "@/app/runner-registry.ts";
@@ -100,7 +100,7 @@ function runnerRecord(id: string): RunnerRecord {
     id,
     name: id,
     architecture: "x64",
-    capabilities: ["heartbeat"],
+    capabilities: ["session-rpc", "session-events"],
     createdAt: Temporal.Instant.from("2026-01-01T00:00:00Z"),
     revokedAt: null,
   };
@@ -117,7 +117,7 @@ function liveConnections(
         capacity
           ? {
             capacity: { ...capacity, maxConcurrentSessions: capacity.maxConcurrentSessions ?? 4 },
-            lastHeartbeatAt: Date.now(),
+            lastObservedAt: Date.now(),
           }
           : null,
       );

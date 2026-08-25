@@ -1,16 +1,9 @@
 import { array, literal, number, object, optional, string, union } from "@remix-run/data-schema";
 
 import type { InferOutput } from "@remix-run/data-schema";
-import type { RunnerMessage } from "@/src/runner-message.ts";
-import type { RunnerSessionState } from "@/src/runner-session-manifest.ts";
 
-export const SESSION_EVENT_MESSAGE_TYPE = "session.event";
-export const SESSION_EVENT_REPLAY_MESSAGE_TYPE = "session.event.replay";
-export const SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE = "session.event.replay.result";
 export const MAX_SESSION_EVENT_TEXT_BYTES = 32 * 1024;
-export const MAX_RUNNER_CLIENT_MESSAGE_BYTES = 512 * 1024;
 export const MAX_QUEUED_SESSION_MESSAGES = 8;
-export const MAX_PROVISIONING_LOG_BYTES = 256 * 1024;
 
 const booleanSchema = union([literal(true), literal(false)]);
 const nonNegativeIntegerSchema = number().refine(
@@ -90,23 +83,6 @@ export const sessionProvisioningStageSchema = union([
 ]);
 
 export type SessionProvisioningStage = InferOutput<typeof sessionProvisioningStageSchema>;
-
-export function runnerSessionStateForProvisioningStage(
-  stage: SessionProvisioningStage,
-): RunnerSessionState {
-  switch (stage) {
-    case "created":
-      return "created";
-    case "ready":
-      return "ready";
-    case "running":
-      return "running";
-    case "failed":
-      return "error";
-    default:
-      return "provisioning";
-  }
-}
 
 const provisioningStateEventSchema = object(
   {
@@ -530,66 +506,6 @@ export const sessionEventSchema = union([sessionConversationEventSchema, session
 export type SessionConversationEvent = InferOutput<typeof sessionConversationEventSchema>;
 export type SessionLiveEvent = InferOutput<typeof sessionLiveEventSchema>;
 export type SessionEvent = InferOutput<typeof sessionEventSchema>;
-
-export const sessionEventPayloadSchema = union([
-  object(
-    {
-      cursor: number().refine(
-        (value) => Number.isSafeInteger(value) && value > 0,
-        "Session event cursors must be positive safe integers.",
-      ),
-      event: sessionConversationEventSchema,
-    },
-    { unknownKeys: "error" },
-  ),
-  object(
-    { event: sessionLiveEventSchema },
-    { unknownKeys: "error" },
-  ),
-]);
-
-export type SessionEventPayload = InferOutput<typeof sessionEventPayloadSchema>;
-
-export const sessionEventReplayPayloadSchema = object(
-  { afterCursor: nonNegativeIntegerSchema },
-  { unknownKeys: "error" },
-);
-
-export const sessionEventReplayResultPayloadSchema = union([
-  object(
-    {
-      status: literal("completed" as const),
-      cursor: nonNegativeIntegerSchema,
-    },
-    { unknownKeys: "error" },
-  ),
-  object(
-    { status: literal("failed" as const) },
-    { unknownKeys: "error" },
-  ),
-]);
-
-export type SessionEventReplayPayload = InferOutput<typeof sessionEventReplayPayloadSchema>;
-export type SessionEventReplayResultPayload = InferOutput<
-  typeof sessionEventReplayResultPayloadSchema
->;
-
-export type SessionEventMessage = RunnerMessage<SessionEventPayload> & {
-  type: typeof SESSION_EVENT_MESSAGE_TYPE;
-  sessionId: string;
-  correlationId: string;
-};
-
-export type SessionEventReplayCommand = RunnerMessage<SessionEventReplayPayload> & {
-  type: typeof SESSION_EVENT_REPLAY_MESSAGE_TYPE;
-  sessionId: string;
-};
-
-export type SessionEventReplayResultMessage = RunnerMessage<SessionEventReplayResultPayload> & {
-  type: typeof SESSION_EVENT_REPLAY_RESULT_MESSAGE_TYPE;
-  sessionId: string;
-  correlationId: string;
-};
 
 function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;

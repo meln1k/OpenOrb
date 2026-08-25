@@ -1,4 +1,4 @@
-import type { RunnerSessionSnapshot } from "@openorb/protocol";
+import type { RunnerSessionSnapshot } from "@openorb/protocol/runner-api";
 import { err, ok, type Result, tryAsync } from "@openorb/result";
 import type { Database } from "remix/data-table";
 

@@ -1,7 +1,11 @@
 import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
 
-import { initialPromptPreview } from "@openorb/protocol";
-import { RunnerSessionSnapshot, type WatchSessionEvent } from "@openorb/protocol/runner-api";
+import {
+  initialPromptPreview,
+  RunnerSessionSnapshot,
+  SessionModelRuntime,
+  type WatchSessionEvent,
+} from "@openorb/protocol/runner-api";
 import { Effect, Schema, Stream } from "effect";
 import type {
   AbortSessionInput,
@@ -48,7 +52,7 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   getRunnerLiveState(userId: string, runnerId: string): Effect.Effect<RunnerLiveState | null> {
     if (userId !== this.userId || runnerId !== this.runnerId) return Effect.succeed(null);
     return Effect.succeed({
-      lastHeartbeatAt: Date.now(),
+      lastObservedAt: Date.now(),
       capacity: {
         maxConcurrentSessions: 2,
         activeSessions: 0,
@@ -264,11 +268,14 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
     assertEquals(provision.payload.initialPrompt, INITIAL_PROMPT);
     assertEquals(provision.payload.orbSize, "small");
-    assertEquals(provision.payload.modelRuntime, {
-      model: MODEL,
-      thinkingLevel: "high",
-      credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
-    });
+    assertEquals(
+      provision.payload.modelRuntime,
+      new SessionModelRuntime({
+        model: MODEL,
+        thinkingLevel: "high",
+        credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
+      }),
+    );
     const catalog = await store.pool.query<{
       user_id: string;
       id: string;
@@ -301,7 +308,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const olderSessionId = crypto.randomUUID();
     const newerSessionId = crypto.randomUUID();
     const [additionalCatalog] = await store.reconcileSessionManifestEntries(client.userId, [
-      {
+      Schema.decodeUnknownSync(RunnerSessionSnapshot)({
         id: olderSessionId,
         projectId: projectResult.project.id,
         createdAt: "2026-08-17T11:00:00Z",
@@ -310,8 +317,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         orbSize: "medium",
         state: "ready",
         lastEventCursor: 1,
-      },
-      {
+      }),
+      Schema.decodeUnknownSync(RunnerSessionSnapshot)({
         id: newerSessionId,
         projectId: projectResult.project.id,
         createdAt: "2026-08-17T13:00:00Z",
@@ -320,7 +327,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         orbSize: "medium",
         state: "ready",
         lastEventCursor: 1,
-      },
+      }),
     ]);
     assert(additionalCatalog);
     assertEquals(additionalCatalog.acceptedSessionIds, [olderSessionId, newerSessionId]);
@@ -409,11 +416,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       sessionId: provision.sessionId,
       payload: {
         prompt: "Implement the next step",
-        modelRuntime: {
+        modelRuntime: new SessionModelRuntime({
           model: MODEL,
           thinkingLevel: "high",
           credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
-        },
+        }),
       },
     }]);
 
@@ -528,10 +535,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(retryProvision?.payload.mode, "retry");
     assertEquals(
       retryProvision?.payload.mode === "retry" ? retryProvision.payload.modelRuntime : undefined,
-      {
+      new SessionModelRuntime({
         ...provision.payload.modelRuntime,
         credential: { type: "api_key", value: RETRY_MODEL_PROVIDER_KEY },
-      },
+      }),
     );
 
     const abort = new AbortController();
@@ -724,11 +731,14 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     const alternateProvision = connections.provisions[0];
     assert(alternateProvision?.payload.mode === "create");
     assertEquals(alternateProvision.sessionId, composerSessionId);
-    assertEquals(alternateProvision.payload.modelRuntime, {
-      model: OPENAI_MODEL,
-      thinkingLevel: "high",
-      credential: { type: "api_key", value: OPENAI_PROVIDER_KEY },
-    });
+    assertEquals(
+      alternateProvision.payload.modelRuntime,
+      new SessionModelRuntime({
+        model: OPENAI_MODEL,
+        thinkingLevel: "high",
+        credential: { type: "api_key", value: OPENAI_PROVIDER_KEY },
+      }),
+    );
     connections.provisions = [];
 
     assertEquals(await store.deleteModelProviderCredential(client.userId, PROVIDER_ID), {
@@ -801,7 +811,7 @@ async function enrollRunner(
     enrollmentPsk: enrollment.token,
     name: "Browser runner",
     architecture: "x64",
-    capabilities: ["heartbeat", "session-provisioning"],
+    capabilities: ["session-rpc", "session-events"],
   });
   assert(runner);
   return runner;

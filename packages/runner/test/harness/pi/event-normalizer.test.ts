@@ -8,7 +8,7 @@ import {
   stringify,
   truncateUtf8,
 } from "@/src/harness/pi/event-normalizer.ts";
-import type { SessionConversationEvent, SessionLiveEvent } from "@openorb/protocol";
+import type { SessionConversationEvent, SessionLiveEvent } from "@openorb/protocol/runner-api";
 
 Deno.test("does not durably publish an assistant message Pi did not persist", async () => {
   const conversation: SessionConversationEvent[] = [];

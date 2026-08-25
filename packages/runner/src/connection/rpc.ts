@@ -1,6 +1,5 @@
 import * as DenoSocket from "@effect/platform-deno/DenoSocket";
 import { Deferred, Duration, Effect, Layer, Predicate, Schedule, Schema, Stream } from "effect";
-import type { RunnerCapacity as LegacyRunnerCapacity } from "@openorb/protocol";
 import {
   type RunId,
   RunnerApi,
@@ -48,8 +47,7 @@ export interface RunnerRpcOptions {
   runnerToken: string;
   runnerVersion: string;
   protocolVersion: number;
-  // Capacity's legacy structural type is decoded by the RPC schema at this boundary.
-  getCapacity: () => Promise<LegacyRunnerCapacity>;
+  getCapacity: () => Promise<RunnerCapacity>;
   store: RunnerSessionStore;
   supervisor: SessionSupervisor;
   events: SessionEvents;
@@ -114,8 +112,8 @@ function watchRunner(options: RunnerRpcOptions) {
         new RunnerWatchError({ message: "Runner manifest could not be read." })
       ),
     );
-    const legacyCapacity = yield* readCapacity(options);
-    const capacity = yield* Schema.decodeUnknownEffect(RunnerCapacity)(legacyCapacity).pipe(
+    const reportedCapacity = yield* readCapacity(options);
+    const capacity = yield* Schema.decodeUnknownEffect(RunnerCapacity)(reportedCapacity).pipe(
       Effect.catch(() => new RunnerWatchError({ message: "Runner capacity was invalid." })),
     );
     const sessions = manifest.sessions.map((session) => {
@@ -189,7 +187,7 @@ function withActiveRun(
 }
 
 function readCapacity(options: RunnerRpcOptions) {
-  return Effect.callback<LegacyRunnerCapacity, RunnerWatchError>((resume) => {
+  return Effect.callback<RunnerCapacity, RunnerWatchError>((resume) => {
     options.getCapacity().then(
       (capacity) => resume(Effect.succeed(capacity)),
       () => resume(capacityReadFailure()),

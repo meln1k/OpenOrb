@@ -2,7 +2,7 @@ import {
   type SessionEvent,
   sessionEventSchema,
   type SessionUsage,
-} from "@openorb/protocol/runner-session-events";
+} from "@openorb/protocol/browser-session-events";
 import { tryAsync, trySync } from "../../../../result/src/index.ts";
 import { literal, object, parseSafe, string } from "remix/data-schema";
 import { clientEntry, css, type Dispatched, type Handle, on } from "remix/ui";

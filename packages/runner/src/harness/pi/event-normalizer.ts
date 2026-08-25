@@ -2,12 +2,12 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { Effect, Result } from "effect";
 import {
-  MAX_QUEUED_SESSION_MESSAGES,
-  MAX_SESSION_EVENT_TEXT_BYTES,
+  MAX_RPC_QUEUED_SESSION_MESSAGES,
+  MAX_RPC_SESSION_EVENT_TEXT_BYTES,
   type SessionConversationEvent,
   type SessionLiveEvent,
   type SessionUsage,
-} from "@openorb/protocol";
+} from "@openorb/protocol/runner-api";
 import { array, literal, object, parseSafe, string, union } from "@remix-run/data-schema";
 
 const toolResultSchema = object({
@@ -43,8 +43,8 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
   const safeIdentifier = (value: string, fallback: string): string =>
     boundedIdentifier(redact(value), fallback);
   const queuedMessages = (messages: readonly string[]): string[] =>
-    messages.slice(0, MAX_QUEUED_SESSION_MESSAGES).map((message) =>
-      safeText(message, MAX_SESSION_EVENT_TEXT_BYTES)
+    messages.slice(0, MAX_RPC_QUEUED_SESSION_MESSAGES).map((message) =>
+      safeText(message, MAX_RPC_SESSION_EVENT_TEXT_BYTES)
     );
   const captureMessageEntryId = (message: PiMessage) =>
     Effect.yieldNow.pipe(
@@ -103,7 +103,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
                     : options.publishConversation({
                       type: "user.message",
                       messageId,
-                      text: truncateUtf8(text, MAX_SESSION_EVENT_TEXT_BYTES),
+                      text: truncateUtf8(text, MAX_RPC_SESSION_EVENT_TEXT_BYTES),
                     })
                 ),
               ),
@@ -124,13 +124,13 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
                         content.flatMap((block) => block.type === "text" ? [block.text] : []).join(
                           "",
                         ),
-                        MAX_SESSION_EVENT_TEXT_BYTES,
+                        MAX_RPC_SESSION_EVENT_TEXT_BYTES,
                       ),
                       thinking: safeCompletedAssistantText(
                         content.flatMap((block) =>
                           block.type === "thinking" ? [block.thinking] : []
                         ).join(""),
-                        MAX_SESSION_EVENT_TEXT_BYTES,
+                        MAX_RPC_SESSION_EVENT_TEXT_BYTES,
                       ),
                       stopReason: message.stopReason,
                       usage: sessionUsage(message.usage),
@@ -143,7 +143,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
                           toolName: safeIdentifier(block.name, "unknown"),
                           arguments: safeText(
                             stringify(block.arguments),
-                            MAX_SESSION_EVENT_TEXT_BYTES,
+                            MAX_RPC_SESSION_EVENT_TEXT_BYTES,
                           ),
                         }]
                         : []
@@ -166,7 +166,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
                   toolName: safeIdentifier(message.toolName, "unknown"),
                   result: safeText(
                     messageContentText(message.content),
-                    MAX_SESSION_EVENT_TEXT_BYTES,
+                    MAX_RPC_SESSION_EVENT_TEXT_BYTES,
                   ),
                   isError: message.isError,
                 })
@@ -186,7 +186,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
           toolName: safeIdentifier(event.toolName, "unknown"),
           partialResult: safeText(
             toolResultText(event.partialResult),
-            MAX_SESSION_EVENT_TEXT_BYTES,
+            MAX_RPC_SESSION_EVENT_TEXT_BYTES,
           ),
         });
         break;
@@ -206,7 +206,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
         const result = event.result;
         const summary = result === undefined
           ? undefined
-          : safeText(result.summary, MAX_SESSION_EVENT_TEXT_BYTES);
+          : safeText(result.summary, MAX_RPC_SESSION_EVENT_TEXT_BYTES);
         const tokensBefore = result === undefined ? undefined : boundedCount(result.tokensBefore);
         if (result !== undefined) {
           const entryId = options.getCompactionEntryId();
@@ -223,7 +223,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
               compactionId: entryId,
               summary: summary ?? "",
               tokensBefore: tokensBefore ?? 0,
-              usage: result.usage === undefined ? undefined : sessionUsage(result.usage),
+              ...(result.usage === undefined ? {} : { usage: sessionUsage(result.usage) }),
             });
           }
         }
@@ -232,14 +232,14 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
           reason: event.reason,
           aborted: event.aborted,
           willRetry: event.willRetry,
-          summary,
-          tokensBefore,
-          estimatedTokensAfter: result?.estimatedTokensAfter === undefined
-            ? undefined
-            : boundedCount(result.estimatedTokensAfter),
-          errorMessage: event.errorMessage === undefined
-            ? undefined
-            : safeText(event.errorMessage, MAX_SESSION_EVENT_TEXT_BYTES),
+          ...(summary === undefined ? {} : { summary }),
+          ...(tokensBefore === undefined ? {} : { tokensBefore }),
+          ...(result?.estimatedTokensAfter === undefined
+            ? {}
+            : { estimatedTokensAfter: boundedCount(result.estimatedTokensAfter) }),
+          ...(event.errorMessage === undefined ? {} : {
+            errorMessage: safeText(event.errorMessage, MAX_RPC_SESSION_EVENT_TEXT_BYTES),
+          }),
         });
         break;
       }
@@ -249,7 +249,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
           attempt: boundedCount(event.attempt),
           maxAttempts: boundedCount(event.maxAttempts),
           delayMs: boundedCount(event.delayMs),
-          errorMessage: safeText(event.errorMessage, MAX_SESSION_EVENT_TEXT_BYTES),
+          errorMessage: safeText(event.errorMessage, MAX_RPC_SESSION_EVENT_TEXT_BYTES),
         });
         break;
       case "auto_retry_end":
@@ -257,9 +257,9 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
           type: "model.retry.completed",
           success: event.success,
           attempt: boundedCount(event.attempt),
-          finalError: event.finalError === undefined
-            ? undefined
-            : safeText(event.finalError, MAX_SESSION_EVENT_TEXT_BYTES),
+          ...(event.finalError === undefined
+            ? {}
+            : { finalError: safeText(event.finalError, MAX_RPC_SESSION_EVENT_TEXT_BYTES) }),
         });
         break;
       case "summarization_retry_scheduled":
@@ -268,7 +268,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
           attempt: boundedCount(event.attempt),
           maxAttempts: boundedCount(event.maxAttempts),
           delayMs: boundedCount(event.delayMs),
-          errorMessage: safeText(event.errorMessage, MAX_SESSION_EVENT_TEXT_BYTES),
+          errorMessage: safeText(event.errorMessage, MAX_RPC_SESSION_EVENT_TEXT_BYTES),
         });
         break;
       case "summarization_retry_attempt_start":
@@ -291,18 +291,18 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
       case "session_info_changed":
         publishLive({
           type: "session.info.changed",
-          name: event.name === undefined ? undefined : safeText(event.name, 256),
+          ...(event.name === undefined ? {} : { name: safeText(event.name, 256) }),
         });
         break;
       case "thinking_level_changed":
         publishLive({ type: "thinking-level.changed", level: event.level });
         break;
       case "bash_execution_update": {
-        const delta = safeText(event.delta, MAX_SESSION_EVENT_TEXT_BYTES);
+        const delta = safeText(event.delta, MAX_RPC_SESSION_EVENT_TEXT_BYTES);
         if (delta) {
           publishLive({
             type: "bash.output.delta",
-            id: event.id === undefined ? undefined : safeIdentifier(event.id, "bash"),
+            ...(event.id === undefined ? {} : { id: safeIdentifier(event.id, "bash") }),
             delta,
           });
         }
@@ -339,7 +339,7 @@ function normalizeAssistantUpdate(
       return;
     case "text_delta":
     case "thinking_delta": {
-      const delta = safeText(update.delta, MAX_SESSION_EVENT_TEXT_BYTES);
+      const delta = safeText(update.delta, MAX_RPC_SESSION_EVENT_TEXT_BYTES);
       if (!delta) return;
       publishLive(
         update.type === "text_delta"
@@ -363,7 +363,7 @@ function normalizeAssistantUpdate(
       });
       return;
     case "toolcall_delta": {
-      const delta = safeText(update.delta, MAX_SESSION_EVENT_TEXT_BYTES);
+      const delta = safeText(update.delta, MAX_RPC_SESSION_EVENT_TEXT_BYTES);
       if (!delta) return;
       publishLive({
         type: "assistant.tool-call.delta",
@@ -378,7 +378,10 @@ function normalizeAssistantUpdate(
         contentIndex: boundedCount(update.contentIndex),
         toolCallId: safeIdentifier(update.toolCall.id, "tool"),
         toolName: safeIdentifier(update.toolCall.name, "unknown"),
-        arguments: safeText(stringify(update.toolCall.arguments), MAX_SESSION_EVENT_TEXT_BYTES),
+        arguments: safeText(
+          stringify(update.toolCall.arguments),
+          MAX_RPC_SESSION_EVENT_TEXT_BYTES,
+        ),
       });
       return;
     case "done":
@@ -388,9 +391,12 @@ function normalizeAssistantUpdate(
       publishLive({
         type: "assistant.stream.failed",
         reason: update.reason,
-        errorMessage: update.error.errorMessage === undefined
-          ? undefined
-          : safeText(update.error.errorMessage, MAX_SESSION_EVENT_TEXT_BYTES),
+        ...(update.error.errorMessage === undefined ? {} : {
+          errorMessage: safeText(
+            update.error.errorMessage,
+            MAX_RPC_SESSION_EVENT_TEXT_BYTES,
+          ),
+        }),
       });
       return;
   }

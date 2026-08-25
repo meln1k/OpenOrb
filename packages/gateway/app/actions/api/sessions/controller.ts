@@ -1,12 +1,14 @@
 import { requireAuth } from "remix/middleware/auth";
 import { createController } from "remix/router";
-import { parseSafe } from "remix/data-schema";
+import { parseSafe, string } from "remix/data-schema";
+import { validate as validateUuid } from "@std/uuid";
 
 import type { Administrator } from "@/app/data/administrator-repository.ts";
-import { sessionIdSchema } from "@openorb/protocol";
 import { createSessionEventStream } from "@/app/actions/api/sessions/session-event-stream.ts";
 import { routes } from "@/app/routes.ts";
 import { Effect } from "effect";
+
+const sessionIdSchema = string().refine(validateUuid, "Expected a session UUID.");
 
 export default createController(routes.api.sessions, {
   middleware: [requireAuth<Administrator>()],

@@ -3,8 +3,8 @@
   "version": "0.0.0",
   "exports": {
     ".": "./src/index.ts",
-    "./runner-api": "./src/runner-api.ts",
-    "./runner-session-events": "./src/runner-session-events.ts"
+    "./browser-session-events": "./src/browser-session-events.ts",
+    "./runner-api": "./src/runner-api.ts"
   },
   "imports": {
     "@/": "./",

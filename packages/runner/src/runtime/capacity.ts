@@ -1,6 +1,6 @@
 import { statfs as readFileSystemStats } from "node:fs/promises";
 
-import type { RunnerCapacity } from "@openorb/protocol";
+import type { RunnerCapacity } from "@openorb/protocol/runner-api";
 
 const MIB_BYTES = 1024 * 1024;
 const MIB_BYTES_BIGINT = BigInt(MIB_BYTES);

@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 
-import type { SessionEvent, SessionUsage } from "@openorb/protocol";
+import type { SessionEvent, SessionUsage } from "@openorb/protocol/browser-session-events";
 import {
   appendOptimisticUserMessage,
   createSessionTranscriptState,

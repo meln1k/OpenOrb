@@ -3,6 +3,7 @@ import {
   CapacityExceeded,
   ClientRequestId,
   type HistoryReadError,
+  initialPromptPreview,
   PromptRejected,
   ProvisionRejected,
   ProvisionSessionPayload,
@@ -18,7 +19,7 @@ import {
   SessionNotFound,
   type WatchSessionEvent,
 } from "@openorb/protocol/runner-api";
-import { initialPromptPreview, orbSizeResources } from "@openorb/protocol";
+import { orbSizeResources } from "@openorb/protocol";
 import {
   Cause,
   Context,
@@ -50,7 +51,7 @@ const RUNNER_PROTOCOL_VERSION = 2;
 const SESSION_WATCH_DURABLE_CAPACITY = 2_048;
 const SESSION_WATCH_EPHEMERAL_CAPACITY = 512;
 const SESSION_WATCH_CAPACITY = SESSION_WATCH_DURABLE_CAPACITY + SESSION_WATCH_EPHEMERAL_CAPACITY;
-export const RUNNER_HEARTBEAT_TIMEOUT_MS = 60_000;
+export const RUNNER_WATCH_INACTIVITY_TIMEOUT_MS = 60_000;
 export const PERMANENT_REJECTION_CLOSE_CODE = 4401;
 export const BOOTSTRAP_TIMEOUT_CLOSE_CODE = 4408;
 const REJECTION_REASON = "Runner connection rejected";
@@ -64,7 +65,7 @@ type OmitUnion<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : neve
 
 export interface RunnerLiveState {
   capacity: RunnerCapacity;
-  lastHeartbeatAt: number;
+  lastObservedAt: number;
 }
 
 export type OperationResult<A> =
@@ -250,7 +251,9 @@ const accept = Effect.fn("RunnerRegistry.accept")(
       sessionCount: number;
     } | undefined;
     let ownedConnection: Connection | undefined;
-    const events = client["runner.watch"]().pipe(Stream.timeout(RUNNER_HEARTBEAT_TIMEOUT_MS));
+    const events = client["runner.watch"]().pipe(
+      Stream.timeout(RUNNER_WATCH_INACTIVITY_TIMEOUT_MS),
+    );
     yield* Stream.runForEach(
       events,
       (event) =>
@@ -446,7 +449,7 @@ function getRunnerLiveState(registry: RegistryRuntime, userId: string, runnerId:
         ...connection.capacity,
         activeSessions: connection.capacity.activeSessions + connection.createReservations.size,
       },
-      lastHeartbeatAt: connection.observedAt,
+      lastObservedAt: connection.observedAt,
     };
   }));
 }

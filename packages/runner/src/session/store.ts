@@ -1,5 +1,5 @@
-import { initialPromptPreview } from "@openorb/protocol";
 import {
+  initialPromptPreview,
   ModelReference,
   type OrbSize,
   OrbSize as OrbSizeSchema,

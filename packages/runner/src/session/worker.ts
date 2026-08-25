@@ -10,19 +10,16 @@ import {
   Scope,
   Stream,
 } from "effect";
-import {
-  MAX_PROVISIONING_LOG_BYTES,
-  MAX_SESSION_EVENT_TEXT_BYTES,
-  orbSizeResources,
-  type SessionModelRuntime,
-  type SessionProvisioningStage,
-} from "@openorb/protocol";
+import { orbSizeResources } from "@openorb/protocol";
 import type {
   AbortSessionPayload,
   PromptSessionPayload,
   RunId,
   SessionId,
+  SessionModelRuntime,
+  SessionProvisioningStage,
 } from "@openorb/protocol/runner-api";
+import { MAX_RPC_SESSION_EVENT_TEXT_BYTES } from "@openorb/protocol/runner-api";
 import { join } from "node:path";
 
 import type { AgentEnvironment } from "../environment/agent-environment.ts";
@@ -32,6 +29,7 @@ import { SessionEvents } from "./events.ts";
 import { type RunnerSessionMetadata, RunnerSessionStore } from "./store.ts";
 
 const MAX_CAPTURED_COMMAND_BYTES = 4 * 1024;
+const MAX_PROVISIONING_LOG_BYTES = 256 * 1024;
 const OUTPUT_TRUNCATED_MESSAGE = "\n[Provisioning output was truncated.]\n";
 
 export type PromptAcceptance =
@@ -643,7 +641,7 @@ function makeSessionWorker(
         let text = sanitizeOutput(rawText);
         for (const secret of budget.secrets) text = text.replaceAll(secret, "[REDACTED]");
         while (text.length > 0 && budget.remainingBytes > 0) {
-          const limit = Math.min(budget.remainingBytes, MAX_SESSION_EVENT_TEXT_BYTES);
+          const limit = Math.min(budget.remainingBytes, MAX_RPC_SESSION_EVENT_TEXT_BYTES);
           const { head, tail, bytes } = takeUtf8(text, limit);
           if (head.length === 0) break;
           yield* emitLog(correlationId, stream, head);

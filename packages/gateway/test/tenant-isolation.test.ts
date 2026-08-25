@@ -114,7 +114,7 @@ Deno.test("configuration persistence separates users across every repository ope
       enrollmentPsk: firstEnrollmentToken.token,
       name: "First runner",
       architecture: "x64",
-      capabilities: ["heartbeat"],
+      capabilities: ["session-rpc", "session-events"],
     });
     assert(firstRunner);
     assertEquals(await store.listRunners(secondUserId), []);

@@ -1,4 +1,4 @@
-import type { RunnerSessionSnapshot } from "@openorb/protocol";
+import type { RunnerSessionSnapshot } from "@openorb/protocol/runner-api";
 import { css, type Handle } from "remix/ui";
 
 import type { Project } from "@/app/data/project-repository.ts";

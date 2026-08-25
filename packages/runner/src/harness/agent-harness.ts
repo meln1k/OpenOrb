@@ -3,7 +3,7 @@ import type {
   SessionConversationEvent,
   SessionLiveEvent,
   SessionModelRuntime,
-} from "@openorb/protocol";
+} from "@openorb/protocol/runner-api";
 
 import type { AgentEnvironment } from "../environment/agent-environment.ts";
 

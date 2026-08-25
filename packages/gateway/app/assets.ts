@@ -21,7 +21,7 @@ export const assetServer = createAssetServer({
     "packages/gateway/app/ui/session/session-event-view.tsx",
     "packages/gateway/app/ui/session/session-transcript-state.ts",
     "packages/gateway/app/ui/settings/**",
-    "packages/protocol/src/runner-session-events.ts",
+    "packages/protocol/src/browser-session-events.ts",
     "packages/result/src/index.ts",
     "node_modules/.deno/@remix-run+data-schema@0.3.0/node_modules/@remix-run/data-schema/dist/**/*.js",
     "node_modules/.deno/lucide@1.31.0/node_modules/lucide/dist/esm/icons/*.mjs",

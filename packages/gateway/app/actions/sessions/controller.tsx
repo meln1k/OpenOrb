@@ -1,15 +1,16 @@
 import {
   DEFAULT_SESSION_THINKING_LEVEL,
-  MAX_INITIAL_PROMPT_BYTES,
   modelReferenceSchema,
   orbSizeSchema,
   parseModelReference,
-  sessionBranchNameSchema,
-  sessionGitRefSchema,
-  sessionIdSchema,
-  type SessionModelRuntime,
 } from "@openorb/protocol";
-import { ProjectId } from "@openorb/protocol/runner-api";
+import {
+  isSafeGitReference,
+  MAX_RPC_INITIAL_PROMPT_BYTES,
+  ProjectId,
+  SessionModelRuntime,
+} from "@openorb/protocol/runner-api";
+import { validate as validateUuid } from "@std/uuid";
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
 import { Accept } from "remix/headers/accept";
@@ -30,15 +31,24 @@ import { loadSessionComposerData } from "@/app/session-composer-data.ts";
 import { isModelReference } from "@/app/model-provider-catalog.ts";
 import type { SessionComposerValues } from "@/app/ui/session-composer.tsx";
 
+const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
 const projectIdSchema = s.string().refine(
   (value) => s.parseSafe(sessionIdSchema, value).success,
   "The project identifier is invalid.",
 );
+const sessionGitRefSchema = s.string().refine(
+  isSafeGitReference,
+  "Expected a valid Git branch or tag reference.",
+);
+const sessionBranchNameSchema = s.string().refine(
+  isSafeGitReference,
+  "Expected a valid Git branch name.",
+);
 const promptSchema = s.string().refine(
   (value) =>
     value.trim().length > 0 && new TextEncoder().encode(value).byteLength <=
-      MAX_INITIAL_PROMPT_BYTES,
-  `The prompt is required and must be at most ${MAX_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
+      MAX_RPC_INITIAL_PROMPT_BYTES,
+  `The prompt is required and must be at most ${MAX_RPC_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
 );
 
 const createSessionSchema = f.object({
@@ -449,11 +459,11 @@ function submittedValues(formData: FormData): SessionComposerValues {
 }
 
 function sessionModelRuntime(model: string, apiKey: string): SessionModelRuntime {
-  return {
+  return new SessionModelRuntime({
     model,
     thinkingLevel: DEFAULT_SESSION_THINKING_LEVEL,
     credential: { type: "api_key" as const, value: apiKey },
-  };
+  });
 }
 
 function stringField(formData: FormData, name: string): string {

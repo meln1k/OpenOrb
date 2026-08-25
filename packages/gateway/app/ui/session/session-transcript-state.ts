@@ -1,8 +1,8 @@
-import {
-  runnerSessionStateForProvisioningStage,
-  type SessionEvent,
-  type SessionUsage,
-} from "@openorb/protocol/runner-session-events";
+import type {
+  SessionEvent,
+  SessionProvisioningStage,
+  SessionUsage,
+} from "@openorb/protocol/browser-session-events";
 
 export type SessionState =
   | "created"
@@ -11,6 +11,21 @@ export type SessionState =
   | "ready"
   | "error"
   | "offline";
+
+function runnerSessionStateForProvisioningStage(stage: SessionProvisioningStage): SessionState {
+  switch (stage) {
+    case "created":
+      return "created";
+    case "ready":
+      return "ready";
+    case "running":
+      return "running";
+    case "failed":
+      return "error";
+    default:
+      return "provisioning";
+  }
+}
 
 export interface UserEntry {
   readonly role: "user";

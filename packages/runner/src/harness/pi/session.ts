@@ -1,5 +1,6 @@
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { parseModelReference, type SessionModelRuntime } from "@openorb/protocol";
+import { parseModelReference } from "@openorb/protocol";
+import type { SessionModelRuntime } from "@openorb/protocol/runner-api";
 import { Effect } from "effect";
 import {
   createAgentSession,

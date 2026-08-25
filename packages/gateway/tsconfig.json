@@ -4,8 +4,8 @@
     "jsxImportSource": "remix/ui",
     "paths": {
       "@/*": ["./*"],
-      "@openorb/protocol/runner-session-events": [
-        "../protocol/src/runner-session-events.ts"
+      "@openorb/protocol/browser-session-events": [
+        "../protocol/src/browser-session-events.ts"
       ]
     }
   }

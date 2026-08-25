@@ -45,6 +45,7 @@ export const SessionUsage = Schema.Struct({
   totalTokens: NonNegativeInt,
   totalCost: NonNegativeNumber,
 });
+export type SessionUsage = typeof SessionUsage.Type;
 
 export const RunnerCheckoutState = Schema.Literals(["pending", "available", "unavailable"]);
 export type RunnerCheckoutState = typeof RunnerCheckoutState.Type;
@@ -59,6 +60,7 @@ export const SessionProvisioningStage = Schema.Literals([
   "ready",
   "failed",
 ]);
+export type SessionProvisioningStage = typeof SessionProvisioningStage.Type;
 
 const ProvisioningStateEvent = Schema.Struct({
   type: Schema.Literal("session.state"),
@@ -321,6 +323,7 @@ export const SessionConversationEvent = Schema.Union([
   ToolCompletedEvent,
   ContextCompactedEvent,
 ]);
+export type SessionConversationEvent = typeof SessionConversationEvent.Type;
 
 export const SessionLiveEvent = Schema.Union([
   ProvisioningStateEvent,
@@ -358,6 +361,7 @@ export const SessionLiveEvent = Schema.Union([
   ThinkingLevelChangedEvent,
   BashOutputDeltaEvent,
 ]);
+export type SessionLiveEvent = typeof SessionLiveEvent.Type;
 
 function eventIdentifier(label: string) {
   return Schema.String.check(

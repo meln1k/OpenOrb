@@ -59,7 +59,7 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 - Native Linux x86-64 and ARM64 service
 - Simple enrollment with gateway URL and enrollment PSK
 - One persistent outbound WebSocket
-- Heartbeat and basic capacity reporting
+- `WatchRunner` liveness and basic capacity reporting
 - Automatic or manual runner selection before provisioning
 - Predefined per-session orb sizes, defaulting to `medium`
 - One Gondolin VM and checkout per session
@@ -130,7 +130,7 @@ Gateway
           │ one outbound authenticated WebSocket
           │
 Runner behind NAT
-  ├── Heartbeat, session manifest sync, and command handling
+  ├── Effect RPC server for identity, state watching, and typed session procedures
   ├── Complete session metadata, transcripts, events, reports, workspaces, and Pi JSONL
   ├── Host-side Pi SDK
   └── Gondolin manager
@@ -173,7 +173,8 @@ Do not create additional abstraction packages until they are justified by workin
 
 - Remix 3
 - Resolve Remix 3 from the current `preview/main` source when scaffolding and pin the exact resolved commit in the lockfile
-- Deno 2.9.5 server using `Deno.serve()` around Remix's Fetch-oriented router
+- Effect `DenoHttpServer` owns Deno HTTP/WebSocket lifecycle and delegates non-runner requests to
+  Remix's Fetch-oriented router through `HttpEffect.fromWebHandler`
 - Remix routes/controllers/actions and middleware for browser request handling
 - `remix/data-table` with its PostgreSQL adapter and explicit committed migrations; `pg` is an explicit application dependency
 - Remix session/auth/CSRF primitives (`remix/middleware/session`, `remix/auth`, `remix/middleware/auth`, and `remix/middleware/csrf`)
@@ -191,7 +192,7 @@ Do not create additional abstraction packages until they are justified by workin
 - Standalone Deno-compiled GNU Linux x86-64/ARM64 executable; runner hosts need neither Node.js nor an installed Deno executable
 - glibc 2.27 or newer for the current Deno 2.9.5 artifacts; reject musl with an actionable error
 - QEMU/KVM and pinned Gondolin 0.12.0
-- One JSON WebSocket to the gateway
+- One outbound JSON WebSocket to the gateway carrying the schema-defined Effect RPC API
 - systemd service for normal deployment
 
 Release artifacts are exactly `dist/openorb-runner-linux-x64` and `dist/openorb-runner-linux-arm64`, built with Deno's GNU targets and accompanied by SHA-256 checksums. The startup CWD is the canonical runner working directory; development uses ignored `.openorb-runner-dev/`, production systemd sets `WorkingDirectory=/var/lib/openorb-runner`, and the MVP has no `--data-dir` option.
@@ -248,35 +249,25 @@ Each runner opens one connection:
 wss://openorb.example.com/api/runners/connect
 ```
 
-The socket carries JSON messages for:
+The runner physically opens the socket, but the gateway is the Effect RPC client and the runner is
+the Effect RPC server. `IdentifyRunner` is the only procedure allowed before admission. After the
+gateway authenticates the returned bearer token, checks the claimed runner ID and protocol version,
+and admits the connection, it consumes `WatchRunner` and may call `ProvisionSession`,
+`PromptSession`, `AbortSession`, and `WatchSession`.
 
-- Authentication and protocol version
-- Heartbeats
-- Session provisioning
-- Prompt dispatch
-- Abort
-- Pi events
-- Provisioning logs
-- Session lifecycle state
-- Git status/diff reports
-- Command results
+`WatchRunner` carries a bounded initial session snapshot, one completion boundary, periodic
+capacity/liveness observations, and later session updates/removals. `WatchSession(afterCursor)`
+combines Pi JSONL-backed durable conversation events with bounded best-effort live events. Effect
+RPC owns framing, schema decoding, in-connection correlation, stream acknowledgement, and remote
+interruption.
 
 There is no binary multiplexing protocol in the MVP.
 
-### Minimal envelope
-
-```ts
-interface RunnerMessage<T = unknown> {
-  version: 1
-  id: string
-  type: string
-  sessionId?: string
-  correlationId?: string
-  payload: T
-}
-```
-
-Commands have IDs for logging and basic duplicate detection. The MVP does not promise exactly-once execution for non-idempotent commands.
+The shared Effect Schema/RPC declarations are the only runner wire contract. Effect RPC request IDs
+are transport correlation only. Stable domain identifiers such as session IDs, prompt
+`clientRequestId` values, and Pi `runId` values remain explicit in RPC payloads/results. The MVP does
+not promise exactly-once execution and never automatically retries a prompt or Abort after an
+ambiguous handoff.
 
 ## 9. Runner selection
 
@@ -284,7 +275,7 @@ Each runner advertises:
 
 ```ts
 interface RunnerCapacity {
-  maxConcurrentSessions: number
+  maxConcurrentSessions?: number
   activeSessions: number
   vmCpuCount: number
   vmMemoryMiB: number
@@ -302,7 +293,7 @@ The user selects one predefined orb size per session. `medium` is the default:
 | `large` | 8 | 16 GB |
 | `xxlarge` | 16 | 32 GB |
 
-The runner durably owns the selected size in its session metadata. The gateway carries it in validated provisioning traffic and live runner manifest entries but does not add resource columns to the `sessions` catalog. A retry uses the original stored size.
+The runner durably owns the selected size in its session metadata. The gateway carries it in validated `ProvisionSession` traffic and live `WatchRunner` session snapshots but does not add resource columns to the `sessions` catalog. A retry uses the original stored size.
 
 `vmCpuCount` and `vmMemoryMiB` advertise the largest single-session request the runner can accept. The gateway rejects a selected size above those limits, and the runner re-checks the same limits authoritatively before creating durable session state. `activeSessions` counts provisioned VMs currently consuming a concurrency slot, including VMs that are provisioning or running. Stopped sessions with no VM do not count.
 
@@ -364,7 +355,17 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is the initial textual prompt with whitespace collapsed and truncated to at most 200 Unicode code points. It excludes attachments and is never used to replay a prompt. No runner ID, title, status, branch, model, transcript, tool data, event cursor, diff, or other runtime state is persisted in the gateway.
 
-On connect and reconnect, the runner sends a complete session manifest, including the four catalog data fields and live routing/state data. The gateway derives ownership from the authenticated runner record rather than accepting a manifest-supplied tenant, runtime-validates the manifest, upserts any missing five-column catalog rows that are not marked deleted, and rebuilds its user-scoped in-memory routing index. This recovers a runner-local session created before a gateway crash could commit its catalog row. Existing catalog entries remain visible while their runner is offline. Manifest absence alone does not delete a catalog row because the gateway does not persist runner assignment. A manifest entry whose `(user_id, session_id)` has a gateway deletion marker is never reinserted or routed; the runner is instructed to remove it once any active work settles.
+On connect and reconnect, the gateway authenticates with `IdentifyRunner` and consumes a complete,
+bounded initial `WatchRunner` snapshot containing the four catalog data fields and live
+routing/state data. The runner subscribes to state changes before reading its local session files.
+The gateway derives ownership from the authenticated runner record rather than accepting a
+runner-supplied tenant, runtime-validates the snapshot, reconciles the catalog, and commits routes
+only after the snapshot completion boundary. This recovers a runner-local session created before a
+gateway crash could commit its catalog row without exposing a partial snapshot. Existing catalog
+entries remain visible while their runner is offline. Snapshot absence alone does not delete a
+catalog row because the gateway does not persist runner assignment. A snapshot entry whose
+`(user_id, session_id)` has a gateway deletion marker is never reinserted or routed; the runner is
+instructed to remove it once any active work settles.
 
 Do not persist:
 
@@ -427,7 +428,7 @@ Deletion requires explicit confirmation. In one PostgreSQL transaction, the gate
 - If the runner is online and idle, it removes the workspace, Pi JSONL, metadata, events, reports, and logs.
 - If the runner is online but active, deletion is rejected; the user must wait for the work to settle. An offline deletion cannot determine live state, so if the runner later reconnects with active work, cleanup waits until that work settles rather than interrupting it.
 - If the runner is offline or its host has been lost, the catalog card is still removed and the marker remains.
-- If any runner later reports the deleted session ID in a complete manifest, the gateway does not recreate the catalog row and repeatedly requests idempotent cleanup until the runner confirms removal.
+- If any runner later reports the deleted session ID in a complete `WatchRunner` snapshot, the gateway does not recreate the catalog row and repeatedly requests idempotent cleanup until the runner confirms removal.
 - Deleted-session markers are retained so a stale runner disk or backup cannot resurrect a deleted session.
 
 ## 12. Pi integration
@@ -663,7 +664,12 @@ type SessionEvent =
   | { type: "workspace.changed"; summary: DiffSummary }
 ```
 
-The runner derives completed conversation events and monotonic positions from the active Pi JSONL branch. The gateway proxies SSE and asks the runner to replay events after the browser’s cursor. Neither the runner nor gateway stores a second event history.
+The runner derives completed conversation events and monotonic positions from the active Pi JSONL
+branch. The gateway shares a scoped `WatchSession(afterCursor)` RPC stream among browsers in the
+same replay cohort, filters browser-visible events, encodes SSE records, and merges keepalives.
+Cancelling the last browser interrupts the runner stream. A durable cursor gap or runner disconnect
+closes SSE so native `EventSource` reconnects from `Last-Event-ID`. Neither the runner nor gateway
+stores a second event history.
 
 If the runner is offline, session history and SSE replay are unavailable.
 
@@ -684,7 +690,7 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 - `sessions`, restricted to `user_id`, `id`, `project_id`, `created_at`, and `initial_prompt_preview`
 - `deleted_sessions`, restricted to `user_id`, `session_id`, and `deleted_at`
 
-It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only user ownership, session identity, and deletion time. Session routing is a user-scoped in-memory index rebuilt from connected runner manifests. Do not add Redis, another database/KV service, or application-owned durable gateway files.
+It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only user ownership, session identity, and deletion time. Session routing is a user-scoped in-memory index rebuilt from complete, reconciled `WatchRunner` snapshots. Do not add Redis, another database/KV service, or application-owned durable gateway files.
 
 Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as the sole durable conversation transcript, atomic JSON for session metadata, ordinary log files, and JSON/patch Git reports. Derive bounded replay/wire events from Pi JSONL instead of adding an OpenOrb event file. Do not add a runner-local database for the MVP.
 
@@ -711,7 +717,7 @@ Do not add gateway tables for:
 - Session transcript, diff, files, status, Stop, and other runner-backed actions are unavailable because no gateway copy exists. Explicit deletion remains available because it records a gateway deletion marker and removes the catalog card without waiting for the runner.
 - Disable prompt submission.
 - Do not move sessions to another runner.
-- Restore the session manifest and access after the same runner reconnects.
+- Restore session routes and access after the same runner reconnects and completes `WatchRunner` admission.
 
 ### Runner process crash
 
@@ -734,7 +740,7 @@ Do not add gateway tables for:
 ### Gateway restart
 
 - Minimal catalog rows remain available.
-- Runners reconnect automatically and send complete session manifests; the gateway derives ownership from the authenticated runner, upserts missing non-deleted five-column catalog rows, rejects user-scoped tombstoned entries, and rebuilds user-scoped live routes.
+- Runners reconnect automatically; the gateway authenticates them with `IdentifyRunner`, reconciles each complete `WatchRunner` snapshot, rejects user-scoped tombstoned entries, and atomically rebuilds user-scoped live routes.
 - Browsers reload full history/state through the reconnected runner.
 - No full session reconstruction occurs from gateway storage.
 - In-flight operations may be marked failed and manually retried.
@@ -791,7 +797,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 
 - Deno 2.9.5 TypeScript workspace and lockfile
 - Remix 3 resolved from current `preview/main` and pinned exactly
-- Shared protocol schemas
+- Shared Effect Schema/RPC runner API and browser-boundary schemas
 - PostgreSQL user-owned gateway configuration, five-column live-session catalog, and minimal user/session/time deletion markers
 - Explicit empty Pi `ResourceLoader`
 - In-memory Pi settings
@@ -808,8 +814,8 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 - Per-user Git author name/email configuration
 - Projects
 - Runner enrollment bearer token
-- Single outbound runner WebSocket
-- Heartbeat/status UI
+- Single outbound runner Effect RPC WebSocket
+- `WatchRunner` capacity/liveness status UI
 - Basic runner selection
 
 **Exit:** A NATed runner enrolls and appears online using only the gateway URL and enrollment PSK.
@@ -873,7 +879,7 @@ The lean MVP is complete when:
 15. Idle VMs are destroyed while workspace and Pi JSONL remain.
 16. The session can cold-start and continue with the same checkout and conversation.
 17. A pinned session remains unavailable rather than migrating while its runner is offline.
-18. The user can stop and explicitly delete a session; offline deletion removes its catalog card and prevents a stale runner manifest from resurrecting it.
+18. The user can stop and explicitly delete a session; offline deletion removes its catalog card and prevents a stale runner snapshot from resurrecting it.
 
 ## 23. Post-MVP order
 

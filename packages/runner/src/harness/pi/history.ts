@@ -1,5 +1,8 @@
 import { type SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
-import { MAX_SESSION_EVENT_TEXT_BYTES, type SessionConversationEvent } from "@openorb/protocol";
+import {
+  MAX_RPC_SESSION_EVENT_TEXT_BYTES,
+  type SessionConversationEvent,
+} from "@openorb/protocol/runner-api";
 
 import {
   boundedCount,
@@ -23,9 +26,9 @@ export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionCo
       return [{
         type: "context.compacted",
         compactionId: entry.id,
-        summary: truncateUtf8(entry.summary, MAX_SESSION_EVENT_TEXT_BYTES),
+        summary: truncateUtf8(entry.summary, MAX_RPC_SESSION_EVENT_TEXT_BYTES),
         tokensBefore: boundedCount(entry.tokensBefore),
-        usage: entry.usage === undefined ? undefined : sessionUsage(entry.usage),
+        ...(entry.usage === undefined ? {} : { usage: sessionUsage(entry.usage) }),
       }];
     }
     if (entry.type !== "message") return [];
@@ -36,7 +39,7 @@ export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionCo
         ? [{
           type: "user.message" as const,
           messageId: entry.id,
-          text: truncateUtf8(text, MAX_SESSION_EVENT_TEXT_BYTES),
+          text: truncateUtf8(text, MAX_RPC_SESSION_EVENT_TEXT_BYTES),
         }]
         : [];
     }
@@ -50,14 +53,14 @@ export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionCo
               message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join(
                 "",
               ),
-              MAX_SESSION_EVENT_TEXT_BYTES,
+              MAX_RPC_SESSION_EVENT_TEXT_BYTES,
             ),
           ),
           thinking: normalizeCompletedAssistantText(
             truncateUtf8(
               message.content.flatMap((block) => block.type === "thinking" ? [block.thinking] : [])
                 .join(""),
-              MAX_SESSION_EVENT_TEXT_BYTES,
+              MAX_RPC_SESSION_EVENT_TEXT_BYTES,
             ),
           ),
           stopReason: message.stopReason,
@@ -69,7 +72,10 @@ export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionCo
               type: "tool.started" as const,
               toolCallId: block.id,
               toolName: block.name,
-              arguments: truncateUtf8(stringify(block.arguments), MAX_SESSION_EVENT_TEXT_BYTES),
+              arguments: truncateUtf8(
+                stringify(block.arguments),
+                MAX_RPC_SESSION_EVENT_TEXT_BYTES,
+              ),
             }]
             : []
         ),
@@ -80,7 +86,10 @@ export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionCo
         type: "tool.completed" as const,
         toolCallId: message.toolCallId,
         toolName: message.toolName,
-        result: truncateUtf8(messageContentText(message.content), MAX_SESSION_EVENT_TEXT_BYTES),
+        result: truncateUtf8(
+          messageContentText(message.content),
+          MAX_RPC_SESSION_EVENT_TEXT_BYTES,
+        ),
         isError: message.isError,
       }];
     }

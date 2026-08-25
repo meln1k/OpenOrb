@@ -1,13 +1,7 @@
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { parse } from "@remix-run/data-schema";
 
-import {
-  initialPromptPreview,
-  parseRunnerClientMessage,
-  parseRunnerServerMessage,
-  runnerEnrollmentRequestSchema,
-  runnerEnrollmentResponseSchema,
-} from "@/src/index.ts";
+import { runnerEnrollmentRequestSchema, runnerEnrollmentResponseSchema } from "@/src/index.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const ENROLLMENT_PSK = `openorb_enroll_${"a".repeat(43)}`;
@@ -19,13 +13,13 @@ Deno.test("validates runner enrollment request and response payloads", () => {
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "arm64",
-      capabilities: ["heartbeat"],
+      capabilities: ["session-rpc", "session-events"],
     }),
     {
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "arm64",
-      capabilities: ["heartbeat"],
+      capabilities: ["session-rpc", "session-events"],
     },
   );
   assertEquals(
@@ -38,7 +32,7 @@ Deno.test("validates runner enrollment request and response payloads", () => {
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "riscv64",
-      capabilities: ["heartbeat"],
+      capabilities: ["session-rpc"],
     })
   );
   assertThrows(() =>
@@ -46,218 +40,7 @@ Deno.test("validates runner enrollment request and response payloads", () => {
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "x64",
-      capabilities: ["heartbeat", "heartbeat"],
-    })
-  );
-});
-
-Deno.test("validates only the connection messages used by runner enrollment", () => {
-  assertEquals(
-    parseRunnerClientMessage({
-      version: 1,
-      id: "hello-1",
-      type: "runner.hello",
-      payload: { token: RUNNER_TOKEN },
-    }).type,
-    "runner.hello",
-  );
-  assertEquals(
-    parseRunnerClientMessage({
-      version: 1,
-      id: "heartbeat-1",
-      type: "runner.heartbeat",
-      payload: {
-        observedAt: 1234,
-        capacity: {
-          activeSessions: 0,
-          vmCpuCount: 8,
-          vmMemoryMiB: 16_384,
-          diskFreeMiB: 100_000,
-        },
-      },
-    }).type,
-    "runner.heartbeat",
-  );
-  const connected = parseRunnerServerMessage({
-    version: 1,
-    id: "connected-1",
-    type: "runner.connected",
-    payload: { runnerId: RUNNER_ID },
-  });
-  assert(connected.type === "runner.connected");
-  assertEquals(connected.payload.runnerId, RUNNER_ID);
-
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      version: 2,
-      id: "hello-1",
-      type: "runner.hello",
-      payload: { token: RUNNER_TOKEN },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      version: 1,
-      id: "future-1",
-      type: "session.provision",
-      payload: {},
-    })
-  );
-});
-
-Deno.test("validates runner heartbeat capacity", () => {
-  const heartbeat = {
-    version: 1,
-    id: "heartbeat-1",
-    type: "runner.heartbeat",
-    payload: {
-      observedAt: 1234,
-      capacity: {
-        maxConcurrentSessions: 2,
-        activeSessions: 1,
-        vmCpuCount: 4,
-        vmMemoryMiB: 8192,
-        diskFreeMiB: 20_480,
-      },
-    },
-  };
-
-  assertEquals(parseRunnerClientMessage(heartbeat).payload, heartbeat.payload);
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...heartbeat,
-      payload: {
-        ...heartbeat.payload,
-        capacity: { ...heartbeat.payload.capacity, maxConcurrentSessions: 0 },
-      },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...heartbeat,
-      payload: {
-        ...heartbeat.payload,
-        capacity: { ...heartbeat.payload.capacity, maxConcurrentSessions: null },
-      },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...heartbeat,
-      payload: {
-        ...heartbeat.payload,
-        capacity: { ...heartbeat.payload.capacity, activeSessions: -1 },
-      },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...heartbeat,
-      payload: {
-        ...heartbeat.payload,
-        capacity: { ...heartbeat.payload.capacity, unexpected: true },
-      },
-    })
-  );
-});
-
-Deno.test("validates bounded ordered runner session sync messages", () => {
-  const manifestId = "01989d78-65ee-7f6a-a97e-0f16ad134c12";
-  const session = {
-    id: "01989d78-65ee-7f6a-a97e-0f16ad134c13",
-    projectId: "01989d78-65ee-7f6a-a97e-0f16ad134c14",
-    createdAt: "2026-08-17T12:00:00Z",
-    initialPromptPreview: "Inspect the repository",
-    model: "opencode-go/deepseek-v4-flash",
-    orbSize: "medium",
-    state: "created",
-    lastEventCursor: 0,
-  };
-  const start = {
-    version: 1,
-    id: "session-sync-start-1",
-    type: "runner.session-sync.start",
-    payload: { manifestId },
-  };
-  const chunk = {
-    version: 1,
-    id: "session-sync-chunk-1",
-    type: "runner.session-sync.chunk",
-    payload: { manifestId, sequence: 0, sessions: [session] },
-  };
-  const complete = {
-    version: 1,
-    id: "session-sync-complete-1",
-    type: "runner.session-sync.complete",
-    payload: { manifestId, chunkCount: 1, sessionCount: 1 },
-  };
-
-  assertEquals(parseRunnerClientMessage(start).type, "runner.session-sync.start");
-  assertEquals(parseRunnerClientMessage(chunk).payload, chunk.payload);
-  assertEquals(parseRunnerClientMessage(complete).payload, complete.payload);
-  const boundaryPreview = initialPromptPreview(`${"a".repeat(199)} ${"b".repeat(10)}`);
-  assertEquals(boundaryPreview, "a".repeat(199));
-  const boundaryChunk = parseRunnerClientMessage({
-    ...chunk,
-    payload: {
-      ...chunk.payload,
-      sessions: [{ ...session, initialPromptPreview: boundaryPreview }],
-    },
-  });
-  assert(boundaryChunk.type === "runner.session-sync.chunk");
-  assertEquals(boundaryChunk.payload.sessions[0]?.initialPromptPreview, boundaryPreview);
-  const activeChunk = parseRunnerClientMessage({
-    ...chunk,
-    payload: {
-      ...chunk.payload,
-      sessions: [{ ...session, state: "running", activeRunId: "active-run-1" }],
-    },
-  });
-  assert(activeChunk.type === "runner.session-sync.chunk");
-  assertEquals(activeChunk.payload.sessions[0]?.activeRunId, "active-run-1");
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...chunk,
-      payload: { ...chunk.payload, sessions: [] },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...chunk,
-      payload: { ...chunk.payload, sessions: [session, session] },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...chunk,
-      payload: {
-        ...chunk.payload,
-        sessions: [{ ...session, initialPromptPreview: " unnormalized  prompt " }],
-      },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...chunk,
-      payload: {
-        ...chunk.payload,
-        sessions: [{ ...session, state: "running", activeRunId: "" }],
-      },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...chunk,
-      payload: {
-        ...chunk.payload,
-        sessions: [{ ...session, state: "running", activeRunId: "x".repeat(101) }],
-      },
-    })
-  );
-  assertThrows(() =>
-    parseRunnerClientMessage({
-      ...complete,
-      payload: { ...complete.payload, chunkCount: -1 },
+      capabilities: ["session-rpc", "session-rpc"],
     })
   );
 });
