@@ -4,6 +4,8 @@ Before implementing a ticket, read `tickets/README.md` and the complete ticket b
 
 Follow the ticket's security boundaries, scope, dependencies, and acceptance criteria. Do not invent system design, architecture, protocols, persistence formats, or interfaces when they are not explicitly decided; ask the user instead.
 
+When something breaks, log it in `papercuts.md` before fixing it.
+
 <!-- effect-solutions:start -->
 ## Effect Best Practices
 
