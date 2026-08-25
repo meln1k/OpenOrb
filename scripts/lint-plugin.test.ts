@@ -111,7 +111,7 @@ void createAgentSession({ settingsManager: settings });
   assertEquals(
     Deno.lint.runPlugin(
       plugin,
-      "packages/runner/src/pi-session-factory.ts",
+      "packages/runner/src/harness/pi/session.ts",
       source,
     ),
     [],

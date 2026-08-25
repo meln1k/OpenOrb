@@ -13,6 +13,12 @@
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
+    "baseUrl": ".",
+    "paths": {
+      "@openorb/protocol": ["packages/protocol/src/index.ts"],
+      "@openorb/protocol/*": ["packages/protocol/src/*.ts"],
+      "@openorb/result": ["packages/result/src/index.ts"]
+    },
     "plugins": [
       {
         "name": "@effect/language-service"

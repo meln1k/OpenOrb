@@ -23,10 +23,10 @@ import {
   SessionNotFound,
   WatchSessionEvent,
   WatchSessionPayload,
-} from "@/src/runner-api-schemas.ts";
+} from "./runner-api-schemas.ts";
 
-export * from "@/src/runner-api-schemas.ts";
-export * from "@/src/runner-api-session-events.ts";
+export * from "./runner-api-schemas.ts";
+export * from "./runner-api-session-events.ts";
 
 export class IdentifyRunner extends Rpc.make("runner.identify", {
   success: RunnerIdentity,

@@ -2,14 +2,20 @@ import { createAppServices } from "@/app/middleware/services.ts";
 import { createDefaultStore } from "@/app/data/store.ts";
 import { createAppRouter } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
-import { RunnerConnectionGateway } from "@/app/runner-connection-gateway.ts";
+import {
+  RunnerRegistry,
+  runnerRegistryLayer,
+  type RunnerRegistryService,
+} from "@/app/runner-registry.ts";
 import { migrate } from "@/db/migrate.ts";
 import * as DenoHttpClient from "@effect/platform-deno/DenoHttpClient";
 import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
-import { Effect, Layer } from "effect";
+import { Context, Effect, Layer } from "effect";
 import * as HttpEffect from "effect/unstable/http/HttpEffect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as OtlpSerialization from "effect/unstable/observability/OtlpSerialization";
 import * as OtlpTracer from "effect/unstable/observability/OtlpTracer";
 
@@ -26,22 +32,16 @@ const telemetryLayer = OtlpTracer.layerFromConfig({
   ),
 );
 
-function makeGatewayHandler(
+function makeRemixHandler(
   router: InitializedGateway["router"],
-  runnerConnectionGateway: RunnerConnectionGateway,
 ): (request: Request) => Promise<Response> {
-  return async (request) => {
-    if (new URL(request.url).pathname === routes.api.runners.connect.href()) {
-      return runnerConnectionGateway.handleUpgrade(request);
-    }
-    return await router.fetch(request);
-  };
+  return (request) => router.fetch(request);
 }
 
 interface InitializedGateway {
   store: Awaited<ReturnType<typeof createDefaultStore>>;
   router: ReturnType<typeof createAppRouter>;
-  runnerConnectionGateway: RunnerConnectionGateway;
+  runnerRegistry: RunnerRegistryService;
 }
 
 const initializeGateway = Effect.fn("gateway.initialize")(function* () {
@@ -61,22 +61,16 @@ const initializeGateway = Effect.fn("gateway.initialize")(function* () {
     Effect.withSpan("database.migrate"),
   );
 
-  const runnerConnectionGateway = yield* Effect.acquireRelease(
-    Effect.try({
-      try: () => new RunnerConnectionGateway(store),
-      catch: (cause) =>
-        new GatewayInitializationError("Gateway services initialization failed.", cause),
-    }),
-    (runnerConnectionGateway) => Effect.sync(() => runnerConnectionGateway.close()),
-  );
+  const registryContext = yield* Layer.build(runnerRegistryLayer(store));
+  const runnerRegistry = Context.get(registryContext, RunnerRegistry);
 
   const router = yield* Effect.try({
-    try: () => createAppRouter(createAppServices(store, runnerConnectionGateway)),
+    try: () => createAppRouter(createAppServices(store, runnerRegistry)),
     catch: (cause) =>
       new GatewayInitializationError("Gateway services initialization failed.", cause),
   });
 
-  return { store, router, runnerConnectionGateway } satisfies InitializedGateway;
+  return { store, router, runnerRegistry } satisfies InitializedGateway;
 });
 
 class GatewayInitializationError extends Error {
@@ -87,15 +81,23 @@ class GatewayInitializationError extends Error {
 }
 
 const gatewayLive = Effect.scoped(Effect.gen(function* () {
-  const { router, runnerConnectionGateway } = yield* initializeGateway();
+  const { router, runnerRegistry } = yield* initializeGateway();
+  const gatewayScope = yield* Effect.scope;
 
   yield* Layer.launch(
     Layer.effectDiscard(Effect.gen(function* () {
       const server = yield* HttpServer.HttpServer;
+      const remix = HttpEffect.fromWebHandler(makeRemixHandler(router));
       yield* server.serve(
-        HttpEffect.fromWebHandler(
-          makeGatewayHandler(router, runnerConnectionGateway),
-        ),
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.url.split("?", 1)[0] !== routes.api.runners.connect.href()) {
+            return yield* remix;
+          }
+          const socket = yield* request.upgrade;
+          yield* Effect.forkIn(runnerRegistry.accept(socket), gatewayScope);
+          return HttpServerResponse.empty();
+        }),
       );
     })).pipe(
       Layer.provide(

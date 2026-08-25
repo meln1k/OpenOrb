@@ -8,7 +8,7 @@ import { disposableStackRules } from "./lint-rules/disposable-stack-rules.ts";
 import { resultRules } from "./lint-rules/result-rules.ts";
 
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
-const PI_SESSION_FACTORY_PATH = "packages/runner/src/pi-session-factory.ts";
+const PI_SESSION_FACTORY_PATH = "packages/runner/src/harness/pi/session.ts";
 const PI_SESSION_CONSTRUCTORS = new Set([
   "AgentSession",
   "AgentSessionRuntime",
@@ -112,7 +112,7 @@ const plugin = {
               if (specifier.type === "ImportNamespaceSpecifier") {
                 context.report({
                   node: specifier,
-                  message: "Runner code must create Pi sessions through OpenOrbPiSessionFactory.",
+                  message: "Runner code must create Pi sessions through createOpenOrbPiSession.",
                 });
                 continue;
               }
@@ -125,7 +125,7 @@ const plugin = {
               ) {
                 context.report({
                   node: specifier,
-                  message: "Runner code must create Pi sessions through OpenOrbPiSessionFactory.",
+                  message: "Runner code must create Pi sessions through createOpenOrbPiSession.",
                 });
               }
             }

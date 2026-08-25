@@ -6,6 +6,7 @@ import { requireAuth } from "remix/middleware/auth";
 import { getCsrfToken } from "remix/middleware/csrf";
 import { createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
+import { Effect } from "effect";
 
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { isReservedGitCredentialSecretKey } from "@/app/data/git-configuration-repository.ts";
@@ -13,7 +14,7 @@ import type { RunnerRecord } from "@/app/data/runner-repository.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import { MODEL_PROVIDER_OPTIONS } from "@/app/model-provider-catalog.ts";
 import type { AppContext } from "@/app/router.ts";
-import type { RunnerConnectionRegistry } from "@/app/runner-connection-gateway.ts";
+import type { RunnerRegistryService } from "@/app/runner-registry.ts";
 import { routes } from "@/app/routes.ts";
 import {
   SettingsPage,
@@ -190,7 +191,7 @@ async function renderSettings(
       githubCredential={githubCredential}
       gitAuthor={gitAuthor}
       enrollmentToken={enrollmentToken}
-      runners={settingsRunners(userId, runners, context.services.runnerConnections)}
+      runners={await settingsRunners(userId, runners, context.services.runnerConnections)}
       activeTab={settingsTabFromRequest(context.request, intent)}
       error={error}
     />,
@@ -350,7 +351,10 @@ async function revokeRunner(context: SettingsContext): Promise<Response> {
   if (result === "not-found") {
     return await renderSettings(context, "Runner not found.", 404, "revoke-runner");
   }
-  context.services.runnerConnections.disconnectRunner(userId, parsed.value.runnerId);
+  await Effect.runPromise(
+    context.services.runnerConnections.disconnectRunner(userId, parsed.value.runnerId),
+    { signal: context.request.signal },
+  );
   return redirect(settingsTabHref("runners"), 303);
 }
 
@@ -400,14 +404,14 @@ function runnerGatewayUrl(request: Request): string {
   return new URL(publicUrl ?? request.url).origin;
 }
 
-function settingsRunners(
+async function settingsRunners(
   userId: string,
   runners: RunnerRecord[],
-  connections: RunnerConnectionRegistry,
-): SettingsRunner[] {
-  return runners.map((runner) => {
+  connections: RunnerRegistryService,
+): Promise<SettingsRunner[]> {
+  return await Promise.all(runners.map(async (runner) => {
     const liveState = runner.revokedAt === null
-      ? connections.getRunnerLiveState(userId, runner.id)
+      ? await Effect.runPromise(connections.getRunnerLiveState(userId, runner.id))
       : null;
     return {
       id: runner.id,
@@ -416,5 +420,5 @@ function settingsRunners(
       status: runner.revokedAt !== null ? "revoked" : liveState ? "online" : "offline",
       capacity: liveState?.capacity ?? null,
     };
-  });
+  }));
 }

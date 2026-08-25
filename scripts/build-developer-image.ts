@@ -14,7 +14,7 @@ import { err, ok, type Result, tryAsync } from "@openorb/result";
 import {
   type DeveloperImageManifest,
   parseDeveloperImageManifest,
-} from "@/packages/runner/src/developer-image-manifest.ts";
+} from "@/packages/runner/src/environment/gondolin/developer-image/manifest.ts";
 
 export const DEVELOPER_IMAGE_RELEASE_ID = "mvp-2";
 export const DEVELOPER_IMAGE_FILES = [

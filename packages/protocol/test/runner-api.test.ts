@@ -131,6 +131,7 @@ Deno.test("WatchSession events always state their run attribution", () => {
   assertEquals(
     Schema.decodeUnknownSync(WatchSessionEvent)({
       runId: RUN_ID,
+      conversationCursor: 1,
       event: { type: "assistant.text.delta", delta: "Hi" },
     }).runId,
     RUN_ID,

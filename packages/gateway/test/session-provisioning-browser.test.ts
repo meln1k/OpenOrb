@@ -1,21 +1,16 @@
 import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
 
-import {
-  initialPromptPreview,
-  type RunnerSessionSnapshot,
-  type SessionEventPayload,
-} from "@openorb/protocol";
+import { initialPromptPreview } from "@openorb/protocol";
+import { RunnerSessionSnapshot, type WatchSessionEvent } from "@openorb/protocol/runner-api";
+import { Effect, Schema, Stream } from "effect";
 import type {
   AbortSessionInput,
-  AbortSessionResult,
+  OperationResult,
   PromptSessionInput,
-  PromptSessionResult,
   ProvisionSessionInput,
-  ProvisionSessionResult,
-  RunnerConnectionRegistry,
   RunnerLiveState,
-  SessionEventSubscription,
-} from "@/app/runner-connection-gateway.ts";
+  RunnerRegistryService,
+} from "@/app/runner-registry.ts";
 import { createAppServices } from "@/app/middleware/services.ts";
 import { createAppRouter } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
@@ -34,7 +29,7 @@ const OPENAI_MODEL = `${OPENAI_PROVIDER_ID}/gpt-4.1`;
 const OPENAI_PROVIDER_KEY = "browser-provisioning-openai-key";
 const INITIAL_PROMPT = "  Inspect\nthis repository and explain the architecture.  ";
 
-class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
+class BrowserTestRunnerConnections implements RunnerRegistryService {
   runnerId = "";
   userId = "";
   sessionId: string | null = null;
@@ -42,17 +37,17 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
   provisions: ProvisionSessionInput[] = [];
   prompts: PromptSessionInput[] = [];
   aborts: AbortSessionInput[] = [];
-  events: SessionEventPayload[] = [];
+  events: (typeof WatchSessionEvent.Type)[] = [];
   afterCursors: number[] = [];
   subscriptionUnsubscribes = 0;
   beforeAcceptance: ((input: ProvisionSessionInput) => Promise<void>) | undefined = undefined;
   reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
-  promptResult: PromptSessionResult = { status: "accepted" };
-  abortResult: AbortSessionResult = { status: "accepted" };
+  promptResult: OperationResult<unknown> = { status: "accepted", acknowledgement: {} };
+  abortResult: OperationResult<unknown> = { status: "accepted", acknowledgement: {} };
 
-  getRunnerLiveState(userId: string, runnerId: string): RunnerLiveState | null {
-    if (userId !== this.userId || runnerId !== this.runnerId) return null;
-    return {
+  getRunnerLiveState(userId: string, runnerId: string): Effect.Effect<RunnerLiveState | null> {
+    if (userId !== this.userId || runnerId !== this.runnerId) return Effect.succeed(null);
+    return Effect.succeed({
       lastHeartbeatAt: Date.now(),
       capacity: {
         maxConcurrentSessions: 2,
@@ -61,99 +56,114 @@ class BrowserTestRunnerConnections implements RunnerConnectionRegistry {
         vmMemoryMiB: 8192,
         diskFreeMiB: 20_480,
       },
-    };
+    });
   }
 
-  getSessionRunner(userId: string, sessionId: string): string | null {
-    return userId === this.userId && sessionId === this.sessionId ? this.runnerId : null;
+  getSessionRunner(userId: string, sessionId: string): Effect.Effect<string | null> {
+    return Effect.succeed(
+      userId === this.userId && sessionId === this.sessionId ? this.runnerId : null,
+    );
   }
 
-  getSessionSnapshot(userId: string, sessionId: string): RunnerSessionSnapshot | null {
-    return userId === this.userId && sessionId === this.sessionId ? this.snapshot : null;
+  getSessionSnapshot(
+    userId: string,
+    sessionId: string,
+  ): Effect.Effect<RunnerSessionSnapshot | null> {
+    return Effect.succeed(
+      userId === this.userId && sessionId === this.sessionId ? this.snapshot : null,
+    );
   }
 
-  async provisionSession(input: ProvisionSessionInput): Promise<ProvisionSessionResult> {
-    this.provisions.push(input);
-    await this.beforeAcceptance?.(input);
-    if (input.payload.mode === "retry") {
-      assert(this.snapshot);
-      this.snapshot = { ...this.snapshot, state: "created" };
+  provisionSession(input: ProvisionSessionInput): Effect.Effect<OperationResult<unknown>> {
+    return Effect.promise(async () => {
+      this.provisions.push(input);
+      await this.beforeAcceptance?.(input);
+      if (input.payload.mode === "retry") {
+        assert(this.snapshot);
+        this.snapshot = { ...this.snapshot, state: "created" };
+        return {
+          status: "accepted",
+          acknowledgement: {
+            session: this.snapshot,
+            ref: "main",
+            branchName: "openorb/browser-test",
+            checkoutState: "available",
+          },
+        };
+      }
+
+      const snapshot = Schema.decodeUnknownSync(RunnerSessionSnapshot)({
+        id: input.sessionId,
+        projectId: input.payload.projectId,
+        createdAt: "2026-08-17T12:00:00Z",
+        initialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
+        model: input.payload.modelRuntime.model,
+        orbSize: input.payload.orbSize,
+        state: "created",
+        lastEventCursor: 0,
+      });
+      await this.reconcileAcceptance?.(snapshot);
+      this.sessionId = input.sessionId;
+      this.snapshot = snapshot;
       return {
         status: "accepted",
         acknowledgement: {
-          session: this.snapshot,
-          ref: "main",
-          branchName: "openorb/browser-test",
-          checkoutState: "available",
+          session: snapshot,
+          ref: input.payload.ref,
+          branchName: input.payload.branchName,
+          checkoutState: "pending",
         },
       };
-    }
-
-    const snapshot: RunnerSessionSnapshot = {
-      id: input.sessionId,
-      projectId: input.payload.projectId,
-      createdAt: "2026-08-17T12:00:00Z",
-      initialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
-      model: input.payload.modelRuntime.model,
-      orbSize: input.payload.orbSize,
-      state: "created",
-      lastEventCursor: 0,
-    };
-    await this.reconcileAcceptance?.(snapshot);
-    this.sessionId = input.sessionId;
-    this.snapshot = snapshot;
-    return {
-      status: "accepted",
-      acknowledgement: {
-        session: snapshot,
-        ref: input.payload.ref,
-        branchName: input.payload.branchName,
-        checkoutState: "pending",
-      },
-    };
+    });
   }
 
-  promptSession(input: PromptSessionInput): Promise<PromptSessionResult> {
-    this.prompts.push(input);
-    return Promise.resolve(this.promptResult);
+  promptSession(input: PromptSessionInput): Effect.Effect<OperationResult<unknown>> {
+    return Effect.sync(() => {
+      this.prompts.push(input);
+      return this.promptResult;
+    });
   }
 
-  abortSession(input: AbortSessionInput): Promise<AbortSessionResult> {
-    this.aborts.push(input);
-    return Promise.resolve(this.abortResult);
+  abortSession(input: AbortSessionInput): Effect.Effect<OperationResult<unknown>> {
+    return Effect.sync(() => {
+      this.aborts.push(input);
+      return this.abortResult;
+    });
   }
 
-  subscribeToSessionEvents(
+  watchSession(
     userId: string,
     sessionId: string,
     afterCursor: number,
-    listener: (event: SessionEventPayload) => void,
-  ): SessionEventSubscription {
-    const abort = new AbortController();
+  ): Stream.Stream<typeof WatchSessionEvent.Type, unknown> {
     this.afterCursors.push(afterCursor);
-    return {
-      replay: Promise.resolve().then(() => {
-        if (userId !== this.userId || sessionId !== this.sessionId) return;
-        const lastCursor = this.events.reduce(
-          (cursor, event) => "cursor" in event ? Math.max(cursor, event.cursor) : cursor,
-          0,
-        );
-        const reset = afterCursor === 0 || afterCursor > lastCursor;
-        if (reset) listener({ event: { type: "conversation.reset" } });
-        for (const event of this.events) {
-          if (reset || !("cursor" in event) || event.cursor > afterCursor) listener(event);
-        }
-      }),
-      signal: abort.signal,
-      unsubscribe: () => {
-        this.subscriptionUnsubscribes += 1;
-        abort.abort();
-      },
-    };
+    if (userId !== this.userId || sessionId !== this.sessionId) {
+      return Stream.fail(new Error("The pinned runner is offline."));
+    }
+    const durableCursors = this.events.flatMap((event) => "cursor" in event ? [event.cursor] : []);
+    const lastCursor = Math.max(0, ...durableCursors);
+    const reset = afterCursor === 0 || afterCursor > lastCursor;
+    const resetEvents: (typeof WatchSessionEvent.Type)[] = reset
+      ? [{ runId: null, event: { type: "conversation.reset" } }]
+      : [];
+    return Stream.fromIterable(
+      [
+        ...resetEvents,
+        ...this.events.filter((event) =>
+          !("cursor" in event) || reset || event.cursor > afterCursor
+        ),
+      ],
+    )
+      .pipe(
+        Stream.concat(Stream.never),
+        Stream.ensuring(Effect.sync(() => {
+          this.subscriptionUnsubscribes += 1;
+        })),
+      );
   }
 
-  disconnectRunner(): boolean {
-    return false;
+  disconnectRunner(): Effect.Effect<boolean> {
+    return Effect.succeed(false);
   }
 }
 
@@ -213,6 +223,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(createHtml, /large · 8 CPUs · 16 GB memory/);
     assertMatch(createHtml, /xxlarge · 16 CPUs · 32 GB memory/);
     assertNotMatch(createHtml, /aria-label="Runner"/);
+    assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="sessionId"[^>]*value=""/);
     assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="runnerId"[^>]*value=""/);
     assertMatch(createHtml, /aria-label="Orb size"/);
     assertMatch(createHtml, /deepseek-v4-flash/);
@@ -224,12 +235,14 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assert(!createHtml.includes(GITHUB_TOKEN));
     assert(!createHtml.includes(MODEL_PROVIDER_KEY));
 
+    const composerSessionId = crypto.randomUUID();
     const response = await fetch(new URL(routes.app.sessions.create.href(), server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: client.cookie },
       body: new URLSearchParams({
         _csrf: csrfFrom(createHtml),
+        sessionId: composerSessionId,
         projectId: projectResult.project.id,
         model: MODEL,
         ref: "main",
@@ -242,10 +255,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(response.status, 303);
     const location = response.headers.get("location");
     assert(location);
-    assertMatch(location, /^\/app\/sessions\/[0-9a-f-]+$/);
+    assertEquals(location, routes.app.sessions.detail.href({ sessionId: composerSessionId }));
 
     const provision = connections.provisions[0];
     assert(provision?.payload.mode === "create");
+    assertEquals(provision.sessionId, composerSessionId);
     assertEquals(provision.runnerId, connections.runnerId);
     assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
     assertEquals(provision.payload.initialPrompt, INITIAL_PROMPT);
@@ -316,6 +330,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
 
     connections.events = [{
+      runId: null,
       cursor: 1,
       event: { type: "user.message", messageId: "pi:user:1", text: INITIAL_PROMPT },
     }];
@@ -615,6 +630,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     const html = await page.text();
     assertMatch(html, /DeepSeek V4 Flash/);
     assertMatch(html, /GPT-4\.1/);
+    const composerSessionId = crypto.randomUUID();
     const unCsrf = await submitSession(server.baseUrl, client.cookie, {
       projectId: project.project.id,
       model: MODEL,
@@ -627,6 +643,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
 
     const foreign = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
+      sessionId: composerSessionId,
       projectId: foreignProject.project.id,
       model: MODEL,
       ref: "main",
@@ -638,6 +655,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     const foreignHtml = await foreign.text();
     assertMatch(foreignHtml, /<dialog[^>]*id="openorb-new-session"[^>]* open/);
     assertMatch(foreignHtml, /Project is unavailable or does not exist/);
+    assertEquals(sessionIdFrom(foreignHtml), composerSessionId);
     assertEquals(connections.provisions.length, 0);
 
     const unsupportedProvider = await submitSession(server.baseUrl, client.cookie, {
@@ -694,6 +712,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
 
     const alternateProvider = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
+      sessionId: composerSessionId,
       projectId: project.project.id,
       model: OPENAI_MODEL,
       ref: "main",
@@ -704,6 +723,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     assertEquals(alternateProvider.status, 303);
     const alternateProvision = connections.provisions[0];
     assert(alternateProvision?.payload.mode === "create");
+    assertEquals(alternateProvision.sessionId, composerSessionId);
     assertEquals(alternateProvision.payload.modelRuntime, {
       model: OPENAI_MODEL,
       thinkingLevel: "high",
@@ -799,6 +819,12 @@ function csrfFrom(html: string): string {
   return match[1]!;
 }
 
+function sessionIdFrom(html: string): string {
+  const match = html.match(/name="sessionId" value="([^"]+)"/);
+  assert(match, "expected a session ID form field");
+  return match[1]!;
+}
+
 function submitSession(
   baseUrl: URL,
   cookie: string,
@@ -808,7 +834,7 @@ function submitSession(
     method: "POST",
     redirect: "manual",
     headers: { Cookie: cookie },
-    body: new URLSearchParams({ orbSize: "medium", ...body }),
+    body: new URLSearchParams({ sessionId: crypto.randomUUID(), orbSize: "medium", ...body }),
   });
 }
 

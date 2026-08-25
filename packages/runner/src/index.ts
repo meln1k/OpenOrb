@@ -1,16 +1,21 @@
-import { validateRunnerWorkingDirectory } from "@/src/working-directory.ts";
-import { checkRunnerPrerequisites } from "@/src/prerequisites.ts";
-import { maintainRunnerConnection, type RunnerConnectionError } from "@/src/connection.ts";
-import { enrollRunner } from "@/src/enrollment.ts";
-import { readRunnerIdentity, writeRunnerIdentity } from "@/src/identity.ts";
-import { parseRunnerCommand } from "@/src/options.ts";
-import { createRunnerCapacityReporter } from "@/src/capacity.ts";
-import { ensureDeveloperImage } from "@/src/developer-image.ts";
-import { SessionEventRelay } from "@/src/session-event-relay.ts";
-import { SessionProvisioner, type SessionProvisioningError } from "@/src/session-provisioner.ts";
-import { RunnerSessionStore } from "@/src/session-store.ts";
+import { runRunnerRpc } from "./connection/rpc.ts";
+import { ensureDeveloperImage } from "./environment/gondolin/developer-image/installer.ts";
+import { gondolinAgentEnvironmentProviderLayer } from "./environment/gondolin/layer.ts";
+import { piAgentHarnessLayer } from "./harness/pi/layer.ts";
+import { createRunnerCapacityReporter } from "./runtime/capacity.ts";
+import { enrollRunner } from "./runtime/enrollment.ts";
+import { readRunnerIdentity, writeRunnerIdentity } from "./runtime/identity.ts";
+import { parseRunnerCommand } from "./runtime/options.ts";
+import { checkRunnerPrerequisites } from "./runtime/prerequisites.ts";
+import { validateRunnerWorkingDirectory } from "./runtime/working-directory.ts";
+import { SessionEvents, sessionEventsLayer } from "./session/events.ts";
+import { RunnerSessionStore, runnerSessionStoreLayer } from "./session/store.ts";
+import { SessionSupervisor, sessionSupervisorLayer } from "./session/supervisor.ts";
+import { sessionWorkerFactoryLayer } from "./session/worker.ts";
+import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
-import { Effect, Exit, Predicate, Runtime } from "effect";
+import { Effect, Exit, Layer, Predicate, Runtime, Schema } from "effect";
+import { RunnerId } from "@openorb/protocol/runner-api";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
@@ -182,100 +187,64 @@ export async function main(
         : installShutdownListeners(shutdownController);
       using signalCleanup = new DisposableStack();
       signalCleanup.defer(removeSignalListeners);
-      const sessionStore = new RunnerSessionStore({
-        workingDirectory,
-        runnerId: identity.runnerId,
-      });
-      const [, initializationError] = await sessionStore.initialize();
-      if (initializationError !== undefined) {
-        return err(
-          new RunnerRuntimeError(
-            "The runner session store could not be initialized.",
-            initializationError,
-          ),
-        );
-      }
-      const sessionEventRelay = new SessionEventRelay(sessionStore);
       let getActiveSessionCount = () => 0;
       const getCapacity = createRunnerCapacityReporter({
         path: workingDirectory,
-        maxConcurrentSessions: command.options.maxConcurrentSessions,
+        maxConcurrentSessions: command.options.maxConcurrentSessions ?? 1,
         vmCpuCount: command.options.vmCpuCount,
         vmMemoryMiB: command.options.vmMemoryMiB,
         getActiveSessions: () => getActiveSessionCount(),
       });
       const initialCapacity = await getCapacity();
-      const sessionProvisioner = new SessionProvisioner({
-        sessionStore,
-        eventRelay: sessionEventRelay,
-        developerImage,
+      const runnerId = Schema.decodeUnknownSync(RunnerId)(identity.runnerId);
+      const sessionStoreLive = runnerSessionStoreLayer({
+        workingDirectory,
+        runnerId: identity.runnerId,
+      }).pipe(Layer.provide(DenoFileSystem.layer));
+      const sessionEventsLive = sessionEventsLayer.pipe(Layer.provide(sessionStoreLive));
+      const environmentLive = gondolinAgentEnvironmentProviderLayer(developerImage);
+      const harnessLive = piAgentHarnessLayer();
+      const sessionWorkerLive = sessionWorkerFactoryLayer.pipe(
+        Layer.provide(
+          Layer.mergeAll(sessionStoreLive, sessionEventsLive, environmentLive, harnessLive),
+        ),
+      );
+      const sessionSupervisorLive = sessionSupervisorLayer({
         cpuCount: initialCapacity.vmCpuCount,
         memoryMiB: initialCapacity.vmMemoryMiB,
-      });
-      getActiveSessionCount = () => sessionProvisioner.activeSessionCount;
-      let connectionError: RunnerConnectionError | undefined;
-      let provisionerCloseError: SessionProvisioningError | undefined;
-      {
-        await using provisionerCleanup = new AsyncDisposableStack();
-        provisionerCleanup.defer(async () => {
-          [, provisionerCloseError] = await sessionProvisioner.close();
-        });
-        [, connectionError] = await maintainRunnerConnection({
-          gatewayUrl: identity.gatewayUrl,
-          runnerId: identity.runnerId,
-          runnerToken: identity.runnerToken,
-          signal: shutdownController.signal,
-          getCapacity,
-          async getSessionManifest() {
-            const [manifest, manifestError] = await sessionStore.loadSessionManifest();
-            if (manifestError !== undefined) {
-              return err(
-                new RunnerRuntimeError(
-                  "The durable runner session manifest could not be loaded.",
-                  manifestError,
-                ),
-              );
-            }
-            for (const error of manifest.errors) {
-              console.error(
-                `[openorb-runner] session ${error.sessionDirectory}: ${error.message}`,
-              );
-            }
-            return ok(manifest.sessions.map((session) => {
-              const activeRunId = sessionProvisioner.getActiveRunId(session.id);
-              return session.state === "running" && activeRunId !== undefined
-                ? { ...session, activeRunId }
-                : session;
-            }));
-          },
-          sessionEventRelay,
-          onProvisionCommand(command, send) {
-            return sessionProvisioner.handleCommand(command, send);
-          },
-          onPromptCommand(command, send) {
-            return sessionProvisioner.handlePromptCommand(command, send);
-          },
-          onAbortCommand(command, send) {
-            return sessionProvisioner.handleAbortCommand(command, send);
-          },
-          onConnected() {
-            console.log(`[openorb-runner] connected runner ${identity.runnerId}`);
-          },
-          onReconnectScheduled(delay) {
-            console.warn(`[openorb-runner] disconnected; reconnecting in ${delay}ms`);
-          },
-        });
-      }
-      if (connectionError !== undefined) {
-        return err(new RunnerRuntimeError("The runner connection failed.", connectionError));
-      }
-      if (provisionerCloseError !== undefined) {
-        return err(
-          new RunnerRuntimeError(
-            "The session provisioner could not be closed.",
-            provisionerCloseError,
-          ),
-        );
+        maxConcurrentSessions: initialCapacity.maxConcurrentSessions ?? 1,
+      }).pipe(
+        Layer.provide(Layer.merge(sessionStoreLive, sessionWorkerLive)),
+      );
+      const runnerServicesLive = Layer.mergeAll(
+        sessionStoreLive,
+        sessionEventsLive,
+        sessionSupervisorLive,
+      );
+      const rpcExit = await Effect.runPromiseExit(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const sessionStore = yield* RunnerSessionStore;
+            const sessionEvents = yield* SessionEvents;
+            const sessionSupervisor = yield* SessionSupervisor;
+            getActiveSessionCount = sessionSupervisor.activeSessionCount;
+            return yield* runRunnerRpc({
+              gatewayUrl: identity.gatewayUrl,
+              runnerId,
+              runnerToken: identity.runnerToken,
+              runnerVersion: RUNNER_VERSION,
+              protocolVersion: 2,
+              getCapacity,
+              store: sessionStore,
+              supervisor: sessionSupervisor,
+              events: sessionEvents,
+            });
+          }),
+        ).pipe(Effect.provide(runnerServicesLive)),
+        { signal: shutdownController.signal },
+      );
+      if (Exit.isFailure(rpcExit) && !shutdownController.signal.aborted) {
+        return err(new RunnerRuntimeError("The runner RPC service failed.", rpcExit.cause));
       }
       return ok(0);
     })(),

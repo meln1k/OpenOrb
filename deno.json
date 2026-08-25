@@ -14,7 +14,8 @@
     "@effect/platform-deno": "npm:@effect/platform-deno@4.0.0-rc.111",
     "@std/assert": "jsr:@std/assert@1.0.19",
     "@std/tar": "jsr:@std/tar@0.1.10",
-    "effect": "npm:effect@4.0.0-rc.111"
+    "effect": "npm:effect@4.0.0-rc.111",
+    "remix/": "npm:/remix@3.0.0-beta.10/"
   },
   "compilerOptions": {
     "strict": true,
@@ -67,10 +68,10 @@
     "dev:otel:runner": "deno task --filter @openorb/runner dev:otel",
     "check": "deno fmt --check && deno lint && deno check && deno task typecheck:effect",
     "test": "NODE_ENV=test deno test --allow-env --allow-ffi --allow-net=127.0.0.1,localhost --allow-read --allow-write --allow-sys=homedir",
-    "test:gondolin": "OPENORB_RUN_GONDOLIN_TESTS=1 NODE_ENV=test deno test --allow-env --allow-ffi --allow-net --allow-read --allow-write --allow-sys=gid,homedir,networkInterfaces,uid --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img,ps,pwdx packages/runner/test/gondolin-tools.test.ts packages/runner/test/github-mediation.gondolin.test.ts packages/runner/test/session-provisioner.test.ts",
+    "test:gondolin": "OPENORB_RUN_GONDOLIN_TESTS=1 NODE_ENV=test deno test --allow-env --allow-ffi --allow-net --allow-read --allow-write --allow-sys=gid,homedir,networkInterfaces,uid --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img,ps,pwdx packages/runner/test/environment/gondolin/environment.test.ts packages/runner/test/environment/gondolin/github-mediation.integration.test.ts",
     "build:image": "PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin deno run --allow-read --allow-write --allow-net=dl-cdn.alpinelinux.org,github.com,raw.githubusercontent.com,release-assets.githubusercontent.com --allow-env --allow-run=which,mke2fs,mkfs.ext4,sh,du --allow-sys=homedir scripts/build-developer-image.ts",
-    "compile:runner:linux-x64": "deno compile --frozen --target x86_64-unknown-linux-gnu --output dist/openorb-runner-linux-x64 --allow-read=. --allow-write=. --allow-net --allow-env=PATH,PWD,NODE_V8_COVERAGE,TF_BUILD --allow-sys=gid,homedir,networkInterfaces,statfs,systemMemoryInfo,uid --allow-run=qemu-system-x86_64,qemu-img packages/runner/src/index.ts",
-    "compile:runner:linux-arm64": "deno compile --frozen --target aarch64-unknown-linux-gnu --output dist/openorb-runner-linux-arm64 --allow-read=. --allow-write=. --allow-net --allow-env=PATH,PWD,NODE_V8_COVERAGE,TF_BUILD --allow-sys=gid,homedir,networkInterfaces,statfs,systemMemoryInfo,uid --allow-run=qemu-system-aarch64,qemu-img packages/runner/src/index.ts",
+    "compile:runner:linux-x64": "deno compile --frozen --target x86_64-unknown-linux-gnu --output dist/openorb-runner-linux-x64 --allow-read=. --allow-write=. --allow-net --allow-env=PATH,PWD,NODE_V8_COVERAGE,TF_BUILD --allow-sys=gid,homedir,networkInterfaces,osRelease,statfs,systemMemoryInfo,uid --allow-run=qemu-system-x86_64,qemu-img packages/runner/src/index.ts",
+    "compile:runner:linux-arm64": "deno compile --frozen --target aarch64-unknown-linux-gnu --output dist/openorb-runner-linux-arm64 --allow-read=. --allow-write=. --allow-net --allow-env=PATH,PWD,NODE_V8_COVERAGE,TF_BUILD --allow-sys=gid,homedir,networkInterfaces,osRelease,statfs,systemMemoryInfo,uid --allow-run=qemu-system-aarch64,qemu-img packages/runner/src/index.ts",
     "release:runner": {
       "dependencies": [
         "compile:runner:linux-x64",

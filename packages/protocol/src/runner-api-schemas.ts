@@ -4,7 +4,7 @@ import {
   RunnerCheckoutState,
   SessionConversationEvent,
   SessionLiveEvent,
-} from "@/src/runner-api-session-events.ts";
+} from "./runner-api-session-events.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 
@@ -74,6 +74,7 @@ export const RunnerSessionState = Schema.Literals([
   "ready",
   "error",
 ]);
+export type RunnerSessionState = typeof RunnerSessionState.Type;
 
 const ModelProviderId = Schema.String.check(
   Schema.isMinLength(1),
@@ -97,8 +98,9 @@ export const ModelReference = Schema.String.check(
 );
 
 export const OrbSize = Schema.Literals(["tiny", "small", "medium", "large", "xxlarge"]);
+export type OrbSize = typeof OrbSize.Type;
 
-const CreatedAt = Schema.String.check(
+export const RunnerSessionCreatedAt = Schema.String.check(
   Schema.makeFilter((value) =>
     Schema.decodeUnknownResult(Schema.DateTimeUtcFromString)(value)._tag === "Success"
       ? undefined
@@ -119,7 +121,7 @@ export class RunnerSessionSnapshot extends Schema.Class<RunnerSessionSnapshot>(
 )({
   id: SessionId,
   projectId: ProjectId,
-  createdAt: CreatedAt,
+  createdAt: RunnerSessionCreatedAt,
   initialPromptPreview: InitialPromptPreview,
   model: ModelReference,
   orbSize: OrbSize,
@@ -186,14 +188,14 @@ export class SessionModelRuntime extends Schema.Class<SessionModelRuntime>("Sess
   }),
 }) {}
 
-const RepositoryUrl = Schema.String.check(
+export const SessionRepositoryUrl = Schema.String.check(
   Schema.makeFilter((value) =>
     isCanonicalGitHubRepository(value)
       ? undefined
       : "Expected a canonical GitHub HTTPS repository URL."
   ),
 );
-const GitReference = Schema.String.check(
+export const SessionGitReference = Schema.String.check(
   Schema.makeFilter((value) =>
     isSafeGitReference(value) ? undefined : "Expected a valid Git branch or tag reference."
   ),
@@ -217,9 +219,9 @@ const CreateSessionPayload = Schema.Struct({
   mode: Schema.Literal("create"),
   sessionId: SessionId,
   projectId: ProjectId,
-  repositoryUrl: RepositoryUrl,
-  ref: GitReference,
-  branchName: GitReference,
+  repositoryUrl: SessionRepositoryUrl,
+  ref: SessionGitReference,
+  branchName: SessionGitReference,
   orbSize: OrbSize,
   initialPrompt: InitialPrompt,
   modelRuntime: SessionModelRuntime,
@@ -242,8 +244,8 @@ export class ProvisionSessionSuccess extends Schema.Class<ProvisionSessionSucces
   "ProvisionSessionSuccess",
 )({
   session: RunnerSessionSnapshot,
-  ref: GitReference,
-  branchName: GitReference,
+  ref: SessionGitReference,
+  branchName: SessionGitReference,
   checkoutState: RunnerCheckoutState,
 }) {}
 
@@ -288,6 +290,7 @@ const DurableSessionEvent = Schema.Struct({
 
 const LiveSessionEvent = Schema.Struct({
   runId: Schema.NullOr(RunId),
+  conversationCursor: Schema.optionalKey(SessionCursor),
   event: SessionLiveEvent,
 });
 

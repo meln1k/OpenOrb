@@ -1,20 +1,16 @@
-import { assert, assertEquals } from "@std/assert";
-import { ok } from "@openorb/result";
+import { assertEquals } from "@std/assert";
 
 import type { RunnerCapacity } from "@openorb/protocol";
+import { Effect } from "effect";
 import type { RunnerRecord } from "@/app/data/runner-repository.ts";
-import { RunnerConnectionGateway } from "@/app/runner-connection-gateway.ts";
+import type { RunnerRegistryService } from "@/app/runner-registry.ts";
 import {
   MIN_RUNNER_DISK_FREE_MIB,
   type RunnerSelectionResult,
   selectRunnerForUser,
 } from "@/app/runner-selection.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
 
 const USER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
-const OTHER_USER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c10";
-const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c11";
-const RUNNER_TOKEN = `openorb_runner_${"a".repeat(43)}`;
 
 const AVAILABLE_CAPACITY: RunnerCapacity = {
   activeSessions: 0,
@@ -22,82 +18,6 @@ const AVAILABLE_CAPACITY: RunnerCapacity = {
   vmMemoryMiB: 16_384,
   diskFreeMiB: MIN_RUNNER_DISK_FREE_MIB,
 };
-
-Deno.test("heartbeat capacity is tenant scoped and times out the connection", async () => {
-  const gateway = new RunnerConnectionGateway(
-    {
-      authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-      reconcileSessionManifestEntries: emptyReconciliation,
-    },
-    { heartbeatTimeoutMs: 50 },
-  );
-  const server = await createTestServer((request) => gateway.handleUpgrade(request));
-  let socket: WebSocket | undefined;
-
-  try {
-    socket = await openWebSocket(server.baseUrl);
-    socket.send(JSON.stringify({
-      version: 1,
-      id: "hello-1",
-      type: "runner.hello",
-      payload: { token: RUNNER_TOKEN },
-    }));
-    await nextMessage(socket);
-    socket.send(JSON.stringify({
-      version: 1,
-      id: "heartbeat-1",
-      type: "runner.heartbeat",
-      payload: { observedAt: Date.now(), capacity: AVAILABLE_CAPACITY },
-    }));
-
-    await waitFor(() => gateway.getRunnerLiveState(USER_ID, RUNNER_ID) !== null);
-    assertEquals(gateway.getRunnerLiveState(USER_ID, RUNNER_ID)?.capacity, AVAILABLE_CAPACITY);
-    assertEquals(gateway.getRunnerLiveState(OTHER_USER_ID, RUNNER_ID), null);
-
-    const closeEvent = await closed(socket);
-    assertEquals(closeEvent.code, 4408);
-    assertEquals(gateway.getRunnerLiveState(USER_ID, RUNNER_ID), null);
-  } finally {
-    socket?.close();
-    gateway.close();
-    await server.close();
-  }
-});
-
-Deno.test("invalid heartbeat capacity is rejected", async () => {
-  const gateway = new RunnerConnectionGateway({
-    authenticateRunner: () => Promise.resolve({ id: RUNNER_ID, userId: USER_ID }),
-    reconcileSessionManifestEntries: emptyReconciliation,
-  });
-  const server = await createTestServer((request) => gateway.handleUpgrade(request));
-  let socket: WebSocket | undefined;
-
-  try {
-    socket = await openWebSocket(server.baseUrl);
-    socket.send(JSON.stringify({
-      version: 1,
-      id: "hello-1",
-      type: "runner.hello",
-      payload: { token: RUNNER_TOKEN },
-    }));
-    await nextMessage(socket);
-    const closeEvent = closed(socket);
-    socket.send(JSON.stringify({
-      version: 1,
-      id: "heartbeat-1",
-      type: "runner.heartbeat",
-      payload: {
-        observedAt: Date.now(),
-        capacity: { ...AVAILABLE_CAPACITY, diskFreeMiB: -1 },
-      },
-    }));
-    assertEquals((await closeEvent).code, 4400);
-  } finally {
-    socket?.close();
-    gateway.close();
-    await server.close();
-  }
-});
 
 Deno.test("selects deterministically by active sessions and runner id", async () => {
   const runners = [runnerRecord("runner-b"), runnerRecord("runner-a"), runnerRecord("runner-c")];
@@ -186,56 +106,21 @@ function runnerRecord(id: string): RunnerRecord {
   };
 }
 
-function liveConnections(capacities: Map<string, RunnerCapacity>) {
+function liveConnections(
+  capacities: Map<string, RunnerCapacity>,
+): Pick<RunnerRegistryService, "getRunnerLiveState"> {
   return {
     getRunnerLiveState(userId: string, runnerId: string) {
       assertEquals(userId, USER_ID);
       const capacity = capacities.get(runnerId);
-      return capacity ? { capacity, lastHeartbeatAt: Date.now() } : null;
+      return Effect.succeed(
+        capacity
+          ? {
+            capacity: { ...capacity, maxConcurrentSessions: capacity.maxConcurrentSessions ?? 4 },
+            lastHeartbeatAt: Date.now(),
+          }
+          : null,
+      );
     },
   };
-}
-
-async function openWebSocket(url: URL): Promise<WebSocket> {
-  const socketUrl = new URL(url);
-  socketUrl.protocol = "ws:";
-  const socket = new WebSocket(socketUrl);
-  await new Promise<void>((resolve, reject) => {
-    socket.addEventListener("open", () => resolve(), { once: true });
-    socket.addEventListener("error", () => reject(new Error("WebSocket failed to open.")), {
-      once: true,
-    });
-  });
-  return socket;
-}
-
-function nextMessage(socket: WebSocket): Promise<string> {
-  return new Promise((resolve, reject) => {
-    socket.addEventListener("message", (event) => resolve(String(event.data)), { once: true });
-    socket.addEventListener("error", () => reject(new Error("WebSocket message failed.")), {
-      once: true,
-    });
-  });
-}
-
-function closed(socket: WebSocket): Promise<CloseEvent> {
-  return new Promise((resolve) => {
-    socket.addEventListener("close", (event) => resolve(event), { once: true });
-  });
-}
-
-async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1000;
-  while (!predicate()) {
-    assert(Date.now() < deadline, "timed out waiting for runner state");
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-}
-
-function emptyReconciliation() {
-  return Promise.resolve(ok({
-    acceptedSessionIds: [],
-    tombstonedSessionIds: [],
-    rejected: [],
-  }));
 }

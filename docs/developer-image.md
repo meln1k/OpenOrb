@@ -40,9 +40,10 @@ For any guest-content change:
    `images/developer/openorb-image-release`, and the output paths encoded in the checked-in release
    metadata.
 2. Change both architecture configurations together and build both archives.
-3. Compare each generated `.json` file with `packages/runner/src/developer-image-release.ts`. Copy
-   the final per-architecture build ID, manifest SHA-256, byte count, and archive SHA-256 exactly.
-   Use the future immutable GitHub release URL; never use a moving tag or `latest` URL.
+3. Compare each generated `.json` file with
+   `packages/runner/src/environment/gondolin/developer-image/release.ts`. Copy the final
+   per-architecture build ID, manifest SHA-256, byte count, and archive SHA-256 exactly. Use the
+   future immutable GitHub release URL; never use a moving tag or `latest` URL.
 4. Run the normal repository checks and the real Gondolin smoke test on the native architecture:
 
    ```sh

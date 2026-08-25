@@ -29,11 +29,12 @@ callback. In the reduced OpenOrb reproduction, Deno 2.9.5 left that custom-`Dupl
 paused, so the decrypted request never reached Gondolin's HTTP hooks until `TLSSocket._start()` was
 called.
 
-`packages/runner/src/gondolin-tls-compatibility.ts` contains the narrowly scoped workaround. It
-replaces `tls.TLSSocket` once, immediately before the first GitHub-mediated VM starts, and calls the
-private `_start()` method only after a successful asynchronous SNI callback. It does not disable
-certificate validation or broaden the HTTP allowlist. The replacement is process-wide after it is
-installed, relies on a private Deno API, and is validated only for Deno 2.9.5 with Gondolin 0.12.0.
+`packages/runner/src/environment/gondolin/tls-compatibility.ts` contains the narrowly scoped
+workaround. It replaces `tls.TLSSocket` once, immediately before the first GitHub-mediated VM
+starts, and calls the private `_start()` method only after a successful asynchronous SNI callback.
+It does not disable certificate validation or broaden the HTTP allowlist. The replacement is
+process-wide after it is installed, relies on a private Deno API, and is validated only for Deno
+2.9.5 with Gondolin 0.12.0.
 
 There is no Deno flag that supplies the missing handshake continuation. `--cert` changes trusted
 certificate authorities, while `--unsafely-ignore-certificate-errors` weakens outbound certificate

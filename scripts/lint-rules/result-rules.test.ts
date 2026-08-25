@@ -102,7 +102,7 @@ console.log(results.find(([, error]) => error !== undefined)?.[1]);
 
 Deno.test("first-party imported Result producers remain known across module boundaries", () => {
   const source = `
-import { readRunnerIdentity as readIdentity } from "@/src/identity.ts";
+import { readRunnerIdentity as readIdentity } from "@/src/runtime/identity.ts";
 const retained = await readIdentity("/runner");
 console.log(retained[0]);
 `;

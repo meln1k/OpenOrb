@@ -1,0 +1,678 @@
+import { assert, assertEquals } from "@std/assert";
+import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
+import * as DenoSocket from "@effect/platform-deno/DenoSocket";
+import {
+  AbortSessionAccepted,
+  AbortSessionPayload,
+  ProjectId,
+  PromptSessionAccepted,
+  ProvisionSessionSuccess,
+  RunnerApi,
+  RunnerCapacity,
+  RunnerIdentity,
+  RunnerSessionSnapshot,
+  RunnerStateEvent,
+  WatchSessionEvent,
+  WatchSessionPayload,
+} from "@openorb/protocol/runner-api";
+import {
+  Cause,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Queue,
+  Schema,
+  Stream,
+} from "effect";
+import * as HttpServer from "effect/unstable/http/HttpServer";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
+import * as RpcServer from "effect/unstable/rpc/RpcServer";
+import * as Socket from "effect/unstable/socket/Socket";
+import * as SocketServer from "effect/unstable/socket/SocketServer";
+
+import { makeRunnerRegistry, PERMANENT_REJECTION_CLOSE_CODE } from "@/app/runner-registry.ts";
+import type { RejectedSessionManifestEntry } from "@/app/data/session-catalog-repository.ts";
+
+const USER_ID = "user-1";
+const RUNNER_ID = "018f47f2-39b1-7b30-8000-000000000001";
+const SESSION_1 = "018f47f2-39b1-7b30-8000-000000000011";
+const SESSION_2 = "018f47f2-39b1-7b30-8000-000000000012";
+const PROJECT_ID = "018f47f2-39b1-7b30-8000-000000000021";
+const TOKEN = "openorb_runner_test-token";
+
+const decode = Schema.decodeUnknownSync;
+const projectId = decode(ProjectId)(PROJECT_ID);
+
+const capacity = decode(RunnerCapacity)({
+  maxConcurrentSessions: 4,
+  activeSessions: 1,
+  vmCpuCount: 8,
+  vmMemoryMiB: 16_384,
+  diskFreeMiB: 50_000,
+});
+
+function snapshot(id: string, activeRunId?: string) {
+  return decode(RunnerSessionSnapshot)({
+    id,
+    projectId: PROJECT_ID,
+    createdAt: "2026-08-23T12:00:00Z",
+    initialPromptPreview: `Session ${id.slice(-2)}`,
+    model: "opencode-go/deepseek-v4-flash",
+    orbSize: "small",
+    state: activeRunId ? "running" : "ready",
+    lastEventCursor: 3,
+    ...(activeRunId ? { activeRunId } : {}),
+  });
+}
+
+interface Probe {
+  identity: RunnerIdentity;
+  runnerEvents: Queue.Queue<typeof RunnerStateEvent.Type>;
+  identifyCalls: number;
+  watchCalls: number;
+  provisionRequests: unknown[];
+  promptRequests: unknown[];
+  abortRequests: unknown[];
+  watchSessionRequests: unknown[];
+  watchSessionEvents: Queue.Queue<typeof WatchSessionEvent.Type>;
+  provisionBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
+  promptBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
+  watchSessionFinalized: Deferred.Deferred<void>;
+  connectionFinalized: Deferred.Deferred<void>;
+  closeCode: Deferred.Deferred<number>;
+}
+
+const makeProbe = Effect.fn(function* (token = TOKEN) {
+  const watchSessionEvents = yield* Queue.unbounded<typeof WatchSessionEvent.Type>();
+  const probe: Probe = {
+    identity: decode(RunnerIdentity)({
+      token,
+      runnerId: RUNNER_ID,
+      runnerVersion: "test-1",
+      protocolVersion: 2,
+      capabilities: ["sessions"],
+    }),
+    runnerEvents: yield* Queue.unbounded<typeof RunnerStateEvent.Type>(),
+    identifyCalls: 0,
+    watchCalls: 0,
+    provisionRequests: [],
+    promptRequests: [],
+    abortRequests: [],
+    watchSessionRequests: [],
+    watchSessionEvents,
+    provisionBlock: null,
+    promptBlock: null,
+    watchSessionFinalized: yield* Deferred.make<void>(),
+    connectionFinalized: yield* Deferred.make<void>(),
+    closeCode: yield* Deferred.make<number>(),
+  };
+  return probe;
+});
+
+function fakeRepository() {
+  return {
+    authenticateRunner: (token: string) =>
+      Promise.resolve(token === TOKEN ? { id: RUNNER_ID, userId: USER_ID } : null),
+    reconcileSessionManifestEntries: (_userId: string, entries: RunnerSessionSnapshot[]) => {
+      const tombstonedSessionIds: string[] = [];
+      const rejected: RejectedSessionManifestEntry[] = [];
+      return Promise.resolve(
+        [{
+          acceptedSessionIds: entries.map((entry) => entry.id),
+          tombstonedSessionIds,
+          rejected,
+        }, undefined] as const,
+      );
+    },
+  };
+}
+
+const waitUntil = (predicate: () => Effect.Effect<boolean>, message: string) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (yield* predicate()) return;
+      yield* Effect.sleep(10);
+    }
+    return yield* Effect.die(message);
+  });
+
+const publishSnapshot = (probe: Probe, sessions: RunnerSessionSnapshot[], revision = 1) =>
+  Effect.forEach(
+    [
+      ...sessions.map((session) => ({ type: "snapshot.session" as const, session })),
+      {
+        type: "snapshot.complete" as const,
+        revision,
+        sessionCount: sessions.length,
+        observedAt: revision,
+        capacity,
+      },
+    ],
+    (event) => Queue.offer(probe.runnerEvents, decode(RunnerStateEvent)(event)),
+    { discard: true },
+  );
+
+function handlers(probe: Probe) {
+  return RunnerApi.toLayer(RunnerApi.of({
+    "runner.identify": () => Effect.sync(() => (probe.identifyCalls++, probe.identity)),
+    "runner.watch": () => {
+      probe.watchCalls++;
+      return Stream.fromQueue(probe.runnerEvents);
+    },
+    "session.provision": (request) =>
+      Effect.gen(function* () {
+        probe.provisionRequests.push(request);
+        if (probe.provisionBlock) {
+          yield* Deferred.succeed(probe.provisionBlock.started, undefined);
+          yield* Deferred.await(probe.provisionBlock.release);
+        }
+        return decode(ProvisionSessionSuccess)({
+          session: request.mode === "create"
+            ? {
+              id: request.sessionId,
+              projectId: request.projectId,
+              createdAt: "2026-08-23T12:00:00Z",
+              initialPromptPreview: request.initialPrompt,
+              model: request.modelRuntime.model,
+              orbSize: request.orbSize,
+              state: "created",
+              lastEventCursor: 0,
+            }
+            : snapshot(request.sessionId),
+          ref: request.mode === "create" ? request.ref : "main",
+          branchName: request.mode === "create" ? request.branchName : "openorb/test",
+          checkoutState: "available",
+        });
+      }),
+    "session.prompt": (request) =>
+      Effect.gen(function* () {
+        probe.promptRequests.push(request);
+        if (probe.promptBlock) {
+          yield* Deferred.succeed(probe.promptBlock.started, undefined);
+          yield* Deferred.await(probe.promptBlock.release);
+        }
+        return decode(PromptSessionAccepted)({
+          clientRequestId: request.clientRequestId,
+          runId: "run-prompt",
+          mode: "started",
+        });
+      }),
+    "session.abort": (request) =>
+      Effect.sync(() => {
+        probe.abortRequests.push(request);
+        return decode(AbortSessionAccepted)({ runId: request.runId });
+      }),
+    "session.watch": (request) => {
+      probe.watchSessionRequests.push(request);
+      const initial: typeof WatchSessionEvent.Type = {
+        runId: null,
+        event: { type: "agent.started" },
+      };
+      return Stream.make(initial).pipe(
+        Stream.concat(Stream.fromQueue(probe.watchSessionEvents)),
+        Stream.rechunk(1),
+        Stream.ensuring(Deferred.succeed(probe.watchSessionFinalized, undefined)),
+      );
+    },
+  }));
+}
+
+function observeClose(socket: Socket.Socket, probe: Probe): Socket.Socket {
+  const observe = <A, E, R>(effect: Effect.Effect<A, E | Socket.SocketError, R>) =>
+    effect.pipe(
+      Effect.tapError((error) =>
+        Socket.isSocketError(error) && error.reason._tag === "SocketCloseError"
+          ? Deferred.succeed(probe.closeCode, error.reason.code)
+          : Effect.void
+      ),
+    );
+  return Socket.make({
+    runRaw: (handler, options) => observe(socket.runRaw(handler, options)),
+    run: (handler, options) => observe(socket.run(handler, options)),
+    runString: (handler, options) => observe(socket.runString(handler, options)),
+    writer: socket.writer,
+  });
+}
+
+const connectRunner = Effect.fn(function* (url: string, probe: Probe) {
+  const socketLayer = DenoSocket.layerWebSocket(url, { closeCodeIsError: () => true });
+  const socketServer = Layer.effect(
+    SocketServer.SocketServer,
+    Effect.map(Socket.Socket, (socket) =>
+      ({
+        address: { _tag: "TcpAddress" as const, hostname: "outbound", port: 0 },
+        run: (handler) =>
+          handler(observeClose(socket, probe)).pipe(
+            Effect.ensuring(Deferred.succeed(probe.connectionFinalized, undefined)),
+            Effect.exit,
+            Effect.andThen(Effect.never),
+          ),
+      }) satisfies SocketServer.SocketServer["Service"]),
+  ).pipe(Layer.provide(socketLayer));
+  const protocol = RpcServer.layerProtocolSocketServer.pipe(
+    Layer.provide(socketServer),
+    Layer.provide(RpcSerialization.layerJson),
+  );
+  yield* Layer.launch(
+    RpcServer.layer(RunnerApi).pipe(
+      Layer.provide(handlers(probe)),
+      Layer.provide(protocol),
+    ),
+  ).pipe(Effect.forkScoped);
+});
+
+const makeHarness = Effect.fn(function* () {
+  const gateway = yield* makeRunnerRegistry(fakeRepository());
+  const gatewayScope = yield* Effect.scope;
+  const app = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const socket = yield* request.upgrade;
+    yield* Effect.forkIn(gateway.accept(socket), gatewayScope);
+    return HttpServerResponse.empty();
+  });
+  const layer = HttpServer.serve(app).pipe(Layer.provideMerge(DenoHttpServer.layer({
+    hostname: "127.0.0.1",
+    port: 0,
+    onListen: () => {},
+  })));
+  const context = yield* Layer.build(layer);
+  const server = Context.get(context, HttpServer.HttpServer);
+  if (server.address._tag !== "TcpAddress") return yield* Effect.die("Expected TCP server");
+  return { gateway, url: `ws://127.0.0.1:${server.address.port}/runner` };
+});
+
+Deno.test("valid identity and complete snapshot admit; invalid token closes 4401 without watch", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const harness = yield* makeHarness();
+    const valid = yield* makeProbe();
+    yield* connectRunner(harness.url, valid);
+    yield* publishSnapshot(valid, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () =>
+        harness.gateway.getSessionRunner(USER_ID, SESSION_1).pipe(
+          Effect.map((runnerId) => runnerId === RUNNER_ID),
+        ),
+      "route not admitted",
+    );
+    assertEquals(valid.identifyCalls, 1);
+    assertEquals(valid.watchCalls, 1);
+
+    const invalid = yield* makeProbe("openorb_runner_invalid");
+    yield* connectRunner(harness.url, invalid);
+    assertEquals(yield* Deferred.await(invalid.closeCode), PERMANENT_REJECTION_CLOSE_CODE);
+    assertEquals(invalid.watchCalls, 0);
+  }))));
+
+Deno.test("replacement is make-before-break and stale generation cannot overwrite routes", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const first = yield* makeProbe();
+    yield* connectRunner(url, first);
+    yield* publishSnapshot(first, [snapshot(SESSION_1)], 1);
+    yield* waitUntil(
+      () =>
+        gateway.getSessionRunner(USER_ID, SESSION_1).pipe(
+          Effect.map((runnerId) => runnerId === RUNNER_ID),
+        ),
+      "first route missing",
+    );
+
+    const second = yield* makeProbe();
+    yield* connectRunner(url, second);
+    yield* waitUntil(
+      () => Effect.sync(() => second.watchCalls === 1),
+      "replacement did not begin watching",
+    );
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), RUNNER_ID);
+    yield* publishSnapshot(second, [snapshot(SESSION_2)], 10);
+    yield* Deferred.await(first.connectionFinalized);
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_2), RUNNER_ID);
+
+    yield* Queue.offer(
+      first.runnerEvents,
+      decode(RunnerStateEvent)({
+        type: "session.updated",
+        revision: 99,
+        session: snapshot(SESSION_1),
+      }),
+    );
+    yield* Effect.sleep(30);
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals((yield* gateway.getSessionSnapshot(USER_ID, SESSION_2))?.id, SESSION_2);
+  }))));
+
+Deno.test("WatchSession stream cancellation reaches the runner handler finalizer", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+    yield* gateway.watchSession(USER_ID, SESSION_1, 0).pipe(Stream.take(1), Stream.runDrain);
+    yield* Deferred.await(probe.watchSessionFinalized);
+    assertEquals(probe.watchSessionRequests.length, 1);
+  }))));
+
+Deno.test("WatchSession fans out tabs at one cursor and isolates replay cohorts", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    const firstReceived = yield* Deferred.make<void>();
+    const secondReceived = yield* Deferred.make<void>();
+    const thirdReceived = yield* Deferred.make<void>();
+    const first = yield* gateway.watchSession(USER_ID, SESSION_1, 3).pipe(
+      Stream.tap(() => Deferred.succeed(firstReceived, undefined)),
+      Stream.runDrain,
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.await(firstReceived);
+    const second = yield* gateway.watchSession(USER_ID, SESSION_1, 3).pipe(
+      Stream.tap(() => Deferred.succeed(secondReceived, undefined)),
+      Stream.runDrain,
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.await(secondReceived);
+    const third = yield* gateway.watchSession(USER_ID, SESSION_1, 4).pipe(
+      Stream.tap(() => Deferred.succeed(thirdReceived, undefined)),
+      Stream.runDrain,
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.await(thirdReceived);
+
+    assertEquals(probe.watchSessionRequests.length, 2);
+    assertEquals(
+      probe.watchSessionRequests[0],
+      decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 3 }),
+    );
+    assertEquals(
+      probe.watchSessionRequests[1],
+      decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 4 }),
+    );
+    yield* Fiber.interrupt(first);
+    assert(Option.isNone(yield* Deferred.poll(probe.watchSessionFinalized)));
+    yield* Queue.offer(
+      probe.runnerEvents,
+      decode(RunnerStateEvent)({
+        type: "session.removed",
+        revision: 2,
+        sessionId: SESSION_1,
+      }),
+    );
+    yield* Deferred.await(probe.watchSessionFinalized);
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    yield* Fiber.interrupt(second);
+    yield* Fiber.interrupt(third);
+  }))));
+
+Deno.test("concurrent Prompt and Abort both reach the runner for serialized handling", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    const promptBlock = {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+    };
+    probe.promptBlock = promptBlock;
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1, "run-active")]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    const modelRuntime = {
+      model: "opencode-go/deepseek-v4-flash",
+      thinkingLevel: "high" as const,
+      credential: { type: "api_key" as const, value: "secret" },
+    };
+    const prompt = yield* gateway.promptSession({
+      userId: USER_ID,
+      sessionId: SESSION_1,
+      payload: { prompt: "Continue", modelRuntime },
+    }).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(promptBlock.started);
+
+    const abort = yield* gateway.abortSession({ userId: USER_ID, sessionId: SESSION_1 });
+    yield* Deferred.succeed(promptBlock.release, undefined);
+    const promptResult = yield* Fiber.join(prompt);
+
+    assertEquals(promptResult.status, "accepted");
+    assertEquals(abort.status, "accepted");
+    assertEquals(probe.promptRequests.length, 1);
+    assertEquals(probe.abortRequests.length, 1);
+  }))));
+
+Deno.test("disconnect after provisioning dispatch reports uncertain delivery", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    probe.provisionBlock = {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+    };
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, []);
+    yield* waitUntil(
+      () =>
+        gateway.getRunnerLiveState(USER_ID, RUNNER_ID).pipe(Effect.map((live) => live !== null)),
+      "runner not admitted",
+    );
+
+    const provision = yield* gateway.provisionSession({
+      userId: USER_ID,
+      runnerId: RUNNER_ID,
+      sessionId: SESSION_2,
+      payload: {
+        mode: "create",
+        projectId,
+        repositoryUrl: "https://github.com/openorb/test.git",
+        ref: "main",
+        branchName: "openorb/test",
+        orbSize: "small",
+        initialPrompt: "Build it",
+        modelRuntime: {
+          model: "opencode-go/deepseek-v4-flash",
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: "secret" },
+        },
+      },
+    }).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(probe.provisionBlock.started);
+    assert(yield* gateway.disconnectRunner(USER_ID, RUNNER_ID));
+
+    assertEquals((yield* Fiber.join(provision)).status, "delivery-uncertain");
+    assertEquals(probe.provisionRequests.length, 1);
+  }))));
+
+Deno.test("slow shared watcher does not silently lose an evicted durable event", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    const fastStarted = yield* Deferred.make<void>();
+    const slowStarted = yield* Deferred.make<void>();
+    const slowDeliveredCursorOne = yield* Deferred.make<void>();
+    const slowStalled = yield* Deferred.make<void>();
+    const fastReachedSentinel = yield* Deferred.make<void>();
+    const releaseSlow = yield* Deferred.make<void>();
+    const slowDurableCursors: number[] = [];
+    const stallDelta = "stall-slow-watcher";
+    const finalSentinel = "final-ephemeral-sentinel";
+    const fast = yield* gateway.watchSession(USER_ID, SESSION_1, 0).pipe(
+      Stream.tap((item) =>
+        item.event.type === "assistant.text.delta" && item.event.delta === finalSentinel
+          ? Deferred.succeed(fastReachedSentinel, undefined)
+          : Deferred.succeed(fastStarted, undefined)
+      ),
+      Stream.runDrain,
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.await(fastStarted);
+    const slow = yield* gateway.watchSession(USER_ID, SESSION_1, 0).pipe(
+      Stream.mapEffect((item) =>
+        item.event.type === "assistant.text.delta" && item.event.delta === stallDelta
+          ? Deferred.succeed(slowStalled, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseSlow)),
+            Effect.as(item),
+          )
+          : Effect.succeed(item)
+      ),
+      Stream.tap((item) =>
+        Effect.sync(() => {
+          if ("cursor" in item) slowDurableCursors.push(item.cursor);
+        }).pipe(
+          Effect.andThen(
+            "cursor" in item && item.cursor === 1
+              ? Deferred.succeed(slowDeliveredCursorOne, undefined)
+              : Deferred.succeed(slowStarted, undefined),
+          ),
+        )
+      ),
+      Stream.takeUntil((item) =>
+        item.event.type === "assistant.text.delta" && item.event.delta === finalSentinel
+      ),
+      Stream.runDrain,
+      Effect.exit,
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.await(slowStarted);
+
+    yield* Queue.offer(
+      probe.watchSessionEvents,
+      decode(WatchSessionEvent)({
+        runId: "run-active",
+        cursor: 1,
+        event: { type: "user.message", messageId: "message-1", text: "first" },
+      }),
+    );
+    yield* Deferred.await(slowDeliveredCursorOne);
+    yield* Queue.offer(
+      probe.watchSessionEvents,
+      decode(WatchSessionEvent)({
+        runId: "run-active",
+        conversationCursor: 1,
+        event: { type: "assistant.text.delta", delta: stallDelta },
+      }),
+    );
+    yield* Deferred.await(slowStalled);
+    yield* Queue.offer(
+      probe.watchSessionEvents,
+      decode(WatchSessionEvent)({
+        runId: "run-active",
+        cursor: 2,
+        event: { type: "user.message", messageId: "message-2", text: "second" },
+      }),
+    );
+    yield* Effect.forEach(
+      Array.from({ length: 2_049 }),
+      (_, index) =>
+        Queue.offer(
+          probe.watchSessionEvents,
+          decode(WatchSessionEvent)({
+            runId: "run-active",
+            conversationCursor: 2,
+            event: {
+              type: "assistant.text.delta",
+              delta: index === 2_048 ? finalSentinel : `pressure-${index}`,
+            },
+          }),
+        ),
+      { discard: true },
+    );
+    yield* Deferred.await(fastReachedSentinel);
+    yield* Deferred.succeed(releaseSlow, undefined);
+
+    const slowExit = yield* Fiber.join(slow);
+    const receivedCursorTwo = slowDurableCursors.includes(2);
+    const explicitlySignaledLoss = Exit.isFailure(slowExit) &&
+      Cause.pretty(slowExit.cause).includes("lost durable events");
+    const reconnected = probe.watchSessionRequests.length > 1;
+    const consumedThroughSentinel = Exit.isSuccess(slowExit);
+    assert(
+      receivedCursorTwo || explicitlySignaledLoss,
+      `durable cursor 2 was neither delivered nor explicitly signaled as lost ` +
+        `(reconnected=${reconnected}, consumedThroughSentinel=${consumedThroughSentinel}, ` +
+        `durableCursors=${JSON.stringify(slowDurableCursors)})`,
+    );
+    yield* Fiber.interrupt(fast);
+  }))));
+
+Deno.test("typed commands reach handlers and disconnect removes routes and finalizes connection", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1, "run-active")]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    const modelRuntime = {
+      model: "opencode-go/deepseek-v4-flash",
+      thinkingLevel: "high" as const,
+      credential: { type: "api_key" as const, value: "secret" },
+    };
+    assertEquals(
+      (yield* gateway.provisionSession({
+        userId: USER_ID,
+        runnerId: RUNNER_ID,
+        sessionId: SESSION_2,
+        payload: {
+          mode: "create",
+          projectId,
+          repositoryUrl: "https://github.com/openorb/test.git",
+          ref: "main",
+          branchName: "openorb/test",
+          orbSize: "small",
+          initialPrompt: "Build it",
+          modelRuntime,
+        },
+      })).status,
+      "accepted",
+    );
+    assertEquals(
+      (yield* gateway.promptSession({
+        userId: USER_ID,
+        sessionId: SESSION_1,
+        payload: { prompt: "Continue", modelRuntime },
+      })).status,
+      "accepted",
+    );
+    assertEquals(
+      (yield* gateway.abortSession({ userId: USER_ID, sessionId: SESSION_1 })).status,
+      "accepted",
+    );
+    assertEquals(probe.provisionRequests.length, 1);
+    assertEquals(probe.promptRequests.length, 1);
+    assertEquals(probe.abortRequests, [
+      decode(AbortSessionPayload)({ sessionId: SESSION_1, runId: "run-active" }),
+    ]);
+    assert(yield* gateway.disconnectRunner(USER_ID, RUNNER_ID));
+    yield* Deferred.await(probe.connectionFinalized);
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getRunnerLiveState(USER_ID, RUNNER_ID), null);
+  }))));

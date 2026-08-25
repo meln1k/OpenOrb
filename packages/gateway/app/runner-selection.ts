@@ -1,7 +1,8 @@
 import { type OrbSize, orbSizeResources } from "@openorb/protocol";
+import { Effect } from "effect";
 
 import type { RunnerRecord, RunnerRepository } from "@/app/data/runner-repository.ts";
-import type { RunnerConnectionRegistry, RunnerLiveState } from "@/app/runner-connection-gateway.ts";
+import type { RunnerLiveState, RunnerRegistryService } from "@/app/runner-registry.ts";
 
 export const MIN_RUNNER_DISK_FREE_MIB = 10 * 1024;
 
@@ -21,19 +22,19 @@ export async function selectRunnerForUser(
   manualRunnerId: string | undefined,
   orbSize: OrbSize,
   repository: Pick<RunnerRepository, "listRunners">,
-  connections: Pick<RunnerConnectionRegistry, "getRunnerLiveState">,
+  connections: Pick<RunnerRegistryService, "getRunnerLiveState">,
 ): Promise<RunnerSelectionResult> {
   const runners = await repository.listRunners(userId);
 
   if (manualRunnerId !== undefined) {
     const runner = runners.find((candidate) => candidate.id === manualRunnerId);
     if (!runner) return rejected("Runner is unavailable or does not exist.");
-    return assessRunner(userId, runner, orbSize, connections);
+    return await assessRunner(userId, runner, orbSize, connections);
   }
 
   const available: Array<Extract<RunnerSelectionResult, { status: "selected" }>> = [];
   for (const runner of runners) {
-    const assessed = assessRunner(userId, runner, orbSize, connections);
+    const assessed = await assessRunner(userId, runner, orbSize, connections);
     if (assessed.status === "selected") available.push(assessed);
   }
   available.sort((left, right) =>
@@ -46,14 +47,14 @@ export async function selectRunnerForUser(
   );
 }
 
-function assessRunner(
+async function assessRunner(
   userId: string,
   runner: RunnerRecord,
   orbSize: OrbSize,
-  connections: Pick<RunnerConnectionRegistry, "getRunnerLiveState">,
-): RunnerSelectionResult {
+  connections: Pick<RunnerRegistryService, "getRunnerLiveState">,
+): Promise<RunnerSelectionResult> {
   if (runner.revokedAt !== null) return rejected("Runner has been revoked.");
-  const liveState = connections.getRunnerLiveState(userId, runner.id);
+  const liveState = await Effect.runPromise(connections.getRunnerLiveState(userId, runner.id));
   if (!liveState) return rejected("Runner is offline.");
 
   const { activeSessions, diskFreeMiB, maxConcurrentSessions } = liveState.capacity;

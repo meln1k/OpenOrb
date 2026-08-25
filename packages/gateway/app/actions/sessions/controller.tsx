@@ -9,7 +9,7 @@ import {
   sessionIdSchema,
   type SessionModelRuntime,
 } from "@openorb/protocol";
-import { v7 } from "@std/uuid";
+import { ProjectId } from "@openorb/protocol/runner-api";
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
 import { Accept } from "remix/headers/accept";
@@ -17,6 +17,7 @@ import { requireAuth } from "remix/middleware/auth";
 import { getCsrfToken } from "remix/middleware/csrf";
 import { type ContextWithParams, createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
+import { Effect, Schema } from "effect";
 
 import { AppPage } from "@/app/actions/app/page.tsx";
 import { SessionDetailPage } from "@/app/actions/sessions/page.tsx";
@@ -41,6 +42,7 @@ const promptSchema = s.string().refine(
 );
 
 const createSessionSchema = f.object({
+  sessionId: f.field(sessionIdSchema),
   projectId: f.field(projectIdSchema),
   model: f.field(modelReferenceSchema),
   ref: f.field(sessionGitRefSchema),
@@ -137,23 +139,26 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      const sessionId = v7.generate();
-      const provisioned = await context.services.runnerConnections.provisionSession({
-        userId,
-        runnerId: selected.runner.id,
-        sessionId,
-        payload: {
-          mode: "create",
-          projectId: project.id,
-          repositoryUrl: project.repositoryUrl,
-          ref: parsed.value.ref,
-          branchName: parsed.value.branchName,
-          orbSize: parsed.value.orbSize,
-          initialPrompt: parsed.value.initialPrompt,
-          modelRuntime: sessionModelRuntime(parsed.value.model, modelApiKey),
-          githubToken: githubToken ?? undefined,
-        },
-      });
+      const sessionId = parsed.value.sessionId;
+      const provisioned = await Effect.runPromise(
+        context.services.runnerConnections.provisionSession({
+          userId,
+          runnerId: selected.runner.id,
+          sessionId,
+          payload: {
+            mode: "create",
+            projectId: Schema.decodeUnknownSync(ProjectId)(project.id),
+            repositoryUrl: project.repositoryUrl,
+            ref: parsed.value.ref,
+            branchName: parsed.value.branchName,
+            orbSize: parsed.value.orbSize,
+            initialPrompt: parsed.value.initialPrompt,
+            modelRuntime: sessionModelRuntime(parsed.value.model, modelApiKey),
+            ...(githubToken ? { githubToken } : {}),
+          },
+        }),
+        { signal: context.request.signal },
+      );
       if (provisioned.status !== "accepted") {
         return await renderCreateError(context, provisioned.message, 503, submitted);
       }
@@ -179,8 +184,11 @@ export default createController(routes.app.sessions, {
       }
       const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
-      const snapshot = context.services.runnerConnections.getSessionSnapshot(userId, sessionId);
-      if (!snapshot || !context.services.runnerConnections.getSessionRunner(userId, sessionId)) {
+      const [snapshot, runnerId] = await Promise.all([
+        Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
+        Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
+      ]);
+      if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
       }
       if (snapshot.state !== "ready" && snapshot.state !== "running") {
@@ -211,14 +219,17 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      const prompted = await context.services.runnerConnections.promptSession({
-        userId,
-        sessionId,
-        payload: {
-          prompt: parsed.value.prompt,
-          modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
-        },
-      });
+      const prompted = await Effect.runPromise(
+        context.services.runnerConnections.promptSession({
+          userId,
+          sessionId,
+          payload: {
+            prompt: parsed.value.prompt,
+            modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
+          },
+        }),
+        { signal: context.request.signal },
+      );
       if (prompted.status !== "accepted") {
         return await sessionCommandError(
           context,
@@ -235,15 +246,21 @@ export default createController(routes.app.sessions, {
       if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
       const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
-      const snapshot = context.services.runnerConnections.getSessionSnapshot(userId, sessionId);
-      if (!snapshot || !context.services.runnerConnections.getSessionRunner(userId, sessionId)) {
+      const [snapshot, runnerId] = await Promise.all([
+        Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
+        Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
+      ]);
+      if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
       }
       if (snapshot.state !== "running") {
         return await sessionCommandError(context, "There is no active Pi run to abort.", 409);
       }
 
-      const aborted = await context.services.runnerConnections.abortSession({ userId, sessionId });
+      const aborted = await Effect.runPromise(
+        context.services.runnerConnections.abortSession({ userId, sessionId }),
+        { signal: context.request.signal },
+      );
       if (aborted.status !== "accepted") {
         return await sessionCommandError(
           context,
@@ -261,11 +278,15 @@ export default createController(routes.app.sessions, {
       const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
       if (!session) return new Response("Session not found.", { status: 404 });
 
-      const runnerId = context.services.runnerConnections.getSessionRunner(userId, sessionId);
+      const runnerId = await Effect.runPromise(
+        context.services.runnerConnections.getSessionRunner(userId, sessionId),
+      );
       if (!runnerId) {
         return await renderDetailPage(context, "The pinned runner is offline.", 409);
       }
-      const snapshot = context.services.runnerConnections.getSessionSnapshot(userId, sessionId);
+      const snapshot = await Effect.runPromise(
+        context.services.runnerConnections.getSessionSnapshot(userId, sessionId),
+      );
       if (!snapshot || snapshot.state !== "error") {
         return await renderDetailPage(
           context,
@@ -303,16 +324,19 @@ export default createController(routes.app.sessions, {
           409,
         );
       }
-      const provisioned = await context.services.runnerConnections.provisionSession({
-        userId,
-        runnerId,
-        sessionId,
-        payload: {
-          mode: "retry",
-          modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
-          githubToken: githubToken ?? undefined,
-        },
-      });
+      const provisioned = await Effect.runPromise(
+        context.services.runnerConnections.provisionSession({
+          userId,
+          runnerId,
+          sessionId,
+          payload: {
+            mode: "retry",
+            modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
+            ...(githubToken ? { githubToken } : {}),
+          },
+        }),
+        { signal: context.request.signal },
+      );
       if (provisioned.status !== "accepted") {
         return await renderDetailPage(context, provisioned.message, 503);
       }
@@ -385,8 +409,10 @@ async function renderDetailPage(
   if (!session) return new Response("Session not found.", { status: 404 });
   const project = await context.services.store.getProject(userId, session.projectId);
   if (!project) return new Response("Session project not found.", { status: 404 });
-  const runnerId = context.services.runnerConnections.getSessionRunner(userId, sessionId);
-  const snapshot = context.services.runnerConnections.getSessionSnapshot(userId, sessionId);
+  const [runnerId, snapshot] = await Promise.all([
+    Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
+    Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
+  ]);
   return context.render(
     <SessionDetailPage
       composer={composer}
@@ -412,6 +438,7 @@ function parseSessionId(value: string): string | null {
 
 function submittedValues(formData: FormData): SessionComposerValues {
   return {
+    sessionId: stringField(formData, "sessionId"),
     projectId: stringField(formData, "projectId"),
     model: stringField(formData, "model"),
     ref: stringField(formData, "ref"),

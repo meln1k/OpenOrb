@@ -47,6 +47,7 @@ export const SessionUsage = Schema.Struct({
 });
 
 export const RunnerCheckoutState = Schema.Literals(["pending", "available", "unavailable"]);
+export type RunnerCheckoutState = typeof RunnerCheckoutState.Type;
 
 export const SessionProvisioningStage = Schema.Literals([
   "created",

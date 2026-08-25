@@ -1,6 +1,7 @@
 import type { Project } from "@/app/data/project-repository.ts";
 import type { AppServices } from "@/app/middleware/services.ts";
 import { MODEL_OPTIONS } from "@/app/model-provider-catalog.ts";
+import { Effect } from "effect";
 
 export interface SessionComposerData {
   projects: Project[];
@@ -22,9 +23,11 @@ export async function loadSessionComposerData(
     models: MODEL_OPTIONS.filter((model) =>
       providers.some((provider) => provider.providerId === model.providerId)
     ),
-    hasConnectedRunner: runners.some((runner) => {
-      const live = services.runnerConnections.getRunnerLiveState(userId, runner.id);
+    hasConnectedRunner: (await Promise.all(runners.map(async (runner) => {
+      const live = await Effect.runPromise(
+        services.runnerConnections.getRunnerLiveState(userId, runner.id),
+      );
       return live !== null && runner.revokedAt === null;
-    }),
+    }))).some(Boolean),
   };
 }

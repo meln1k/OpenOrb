@@ -6,6 +6,7 @@ import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { sessionIdSchema } from "@openorb/protocol";
 import { createSessionEventStream } from "@/app/actions/api/sessions/session-event-stream.ts";
 import { routes } from "@/app/routes.ts";
+import { Effect } from "effect";
 
 export default createController(routes.api.sessions, {
   middleware: [requireAuth<Administrator>()],
@@ -18,22 +19,22 @@ export default createController(routes.api.sessions, {
       }
       const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
       if (!session) return new Response("Session not found.", { status: 404 });
-      if (!context.services.runnerConnections.getSessionRunner(userId, sessionId)) {
+      if (
+        !await Effect.runPromise(
+          context.services.runnerConnections.getSessionRunner(userId, sessionId),
+        )
+      ) {
         return new Response("The pinned runner is offline.", { status: 503 });
       }
 
       const afterCursor = parseCursor(context.request);
       if (afterCursor === null) return new Response("Invalid event cursor.", { status: 400 });
 
-      const stream = createSessionEventStream(
-        context.request.signal,
-        (listener) =>
-          context.services.runnerConnections.subscribeToSessionEvents(
-            userId,
-            sessionId,
-            afterCursor,
-            listener,
-          ),
+      const stream = await Effect.runPromise(
+        createSessionEventStream(
+          context.services.runnerConnections.watchSession(userId, sessionId, afterCursor),
+        ),
+        { signal: context.request.signal },
       );
 
       return new Response(stream, {

@@ -1,8 +1,9 @@
 import { createContextKey, type Middleware } from "remix/router";
 
 import type { Store } from "@/app/data/store.ts";
-import type { RunnerConnectionRegistry } from "@/app/runner-connection-gateway.ts";
+import type { RunnerRegistryService } from "@/app/runner-registry.ts";
 import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
+import { Effect, Stream } from "effect";
 
 export interface LoginRateLimiter {
   allow(key: string): boolean;
@@ -11,7 +12,7 @@ export interface LoginRateLimiter {
 
 export interface AppServices {
   readonly store: Store;
-  readonly runnerConnections: RunnerConnectionRegistry;
+  readonly runnerConnections: RunnerRegistryService;
   readonly loginRateLimiter: LoginRateLimiter;
   readonly runnerEnrollmentRateLimiter: LoginRateLimiter;
 }
@@ -31,7 +32,7 @@ export function provideAppServices(services: AppServices): Middleware<{
 
 export function createAppServices(
   store: Store,
-  runnerConnections: RunnerConnectionRegistry = disconnectedRunnerRegistry,
+  runnerConnections: RunnerRegistryService = disconnectedRunnerRegistry,
 ): AppServices {
   return {
     store,
@@ -49,22 +50,18 @@ export function createAppServices(
   };
 }
 
-const disconnectedRunnerRegistry: RunnerConnectionRegistry = {
-  getRunnerLiveState: () => null,
-  getSessionRunner: () => null,
-  getSessionSnapshot: () => null,
+const disconnectedRunnerRegistry: RunnerRegistryService = {
+  getRunnerLiveState: () => Effect.succeed(null),
+  getSessionRunner: () => Effect.succeed(null),
+  getSessionSnapshot: () => Effect.succeed(null),
   provisionSession: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
+    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   promptSession: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
+    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   abortSession: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  subscribeToSessionEvents: () => ({
-    replay: Promise.resolve(),
-    signal: AbortSignal.abort(),
-    unsubscribe() {},
-  }),
-  disconnectRunner: () => false,
+    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
+  watchSession: () => Stream.fail(new Error("Runner connections are unavailable.")),
+  disconnectRunner: () => Effect.succeed(false),
 };
 
 export function requestRateLimitKey(request: Request): string {

@@ -27,8 +27,9 @@ described below. The target has five defining properties:
    heartbeat supervision, and finalizers. Replacing or closing it interrupts all of those resources
    exactly once. Process-owned session jobs are deliberately outside the connection scope.
 4. **Durable and live data are not confused.** Pi JSONL remains the only durable conversation
-   transcript. Completed conversation events are always re-derived from it. In-memory streams carry
-   notifications and best-effort live deltas, not a second authoritative history.
+   transcript. Completed conversation events are projected only after their Pi entries are
+   observable, then directly live-tailed with cursors. JSONL is re-read for initial replay and gap
+   recovery, not after every append; the in-memory tail is not a second authoritative history.
 5. **Effect replaces machinery, not domain rules.** Effect supplies typed errors, scopes,
    interruption, schedules, queues, streams, RPC correlation, and stream acknowledgements. OpenOrb
    still owns authentication, application-version validation, idempotency, reconciliation, replay
@@ -413,8 +414,8 @@ as soon as the supervisor owns the job. It must not cover the long-running provi
 The acceptance commit handles durable metadata as follows:
 
 - New matching input creates metadata and installs one supervisor job.
-- Matching metadata in the `created` state with no supervisor job installs the missing job. This
-  repairs interruption or process failure between durable creation and supervisor insertion.
+- Matching metadata in the `created` state with no supervisor job installs the missing job while the
+  current supervisor process is alive.
 - Matching metadata with a live supervisor job or a completed durable state is already accepted. It
   does not start a second job.
 - Matching metadata in the `provisioning` state with no live job indicates a process interruption
@@ -427,6 +428,14 @@ The acceptance commit handles durable metadata as follows:
 
 Supervisor insertion is keyed by session ID and must never replace a live job. These rules make the
 acceptance commit idempotent without making the provisioning side effects automatically retryable.
+
+Before the supervisor becomes available or the runner opens RPC, it reconciles valid durable
+sessions left by the previous process. `created` and `provisioning` become `error` and require an
+explicit provisioning retry. `running` becomes `ready`: the owning Pi process is gone, but Pi JSONL
+and the workspace remain authoritative, so the next prompt cold-continues rather than replaying an
+ambiguous run. Existing `ready` and `error` states remain unchanged. Corrupt manifest entries stay
+isolated, while failure to load or rewrite otherwise valid durable state fails supervisor startup
+instead of advertising known-stale state.
 
 The background provisioning job is held in a process-scoped `FiberMap` keyed by session ID. It is
 not a child of the RPC request or connection. A disconnect after step 3 may lose the RPC response,
@@ -474,31 +483,39 @@ target run may still be stopping.
 
 ### `WatchSession`
 
-Each browser EventSource causes the gateway to invoke one `WatchSession({ sessionId, afterCursor })`
-stream on the routed runner connection. The gateway no longer requests a replay through one
-correlation map and separately subscribes to live gateway fanout.
+The gateway shares one runner `WatchSession({ sessionId, afterCursor })` stream among browser
+EventSources watching the same routed session from the same cursor. A different `afterCursor`
+creates a separate replay cohort: reusing the first browser's cursor would skip or duplicate durable
+history for reconnecting tabs. Each cohort is scoped to the accepted runner connection and uses a
+bounded replaying `Stream.share` sized for 2,048 durable and 512 ephemeral events; removing the
+session or replacing the connection closes its cohorts. Runner-produced live events carry the
+current durable conversation cursor as a watermark. Each browser consumer independently checks both
+durable cursor continuity and that watermark. A gap terminates that consumer and evicts the cohort
+so its EventSource reconnect creates a fresh replay from the last delivered cursor.
 
-The runner's `SessionEvents` service exposes three deliberately different sources:
+The runner's `SessionEvents` service combines two deliberately different event classes in one
+per-session tail:
 
-1. **Conversation history:** Project completed conversation state from Pi JSONL after the cursor. Pi
-   JSONL remains the source of truth.
-2. **Current lifecycle state:** Read the current runner metadata when the stream starts and after a
-   coalesced state-change notification. This recovers the latest state without a generic event log.
-3. **Ephemeral events:** Token deltas and transient progress use a bounded/sliding `PubSub`. They
-   may be dropped without invalidating durable history.
+1. **Conversation history:** Replay completed conversation state from Pi JSONL after the cursor,
+   then directly tail completed events projected from persisted Pi entries. Pi JSONL remains the
+   source of truth.
+2. **Ephemeral events:** Token deltas, current lifecycle state, and transient progress share the
+   bounded tail with durable events. They may be dropped without invalidating durable history.
 
-Durable conversation publication should be a wake-up signal, not the durable payload:
+The Pi adapter publishes each completed conversation payload only after the corresponding durable Pi
+entry is observable. `SessionEvents` initializes the session cursor from the JSONL projection,
+assigns the next cursor to each new payload, and publishes it through a 2,048-element sliding
+`PubSub`. A watcher subscribes before its initial replay, filters queued duplicates by cursor, and
+then consumes the direct tail without rereading JSONL after every append. Publication is serialized:
+ephemeral events are rejected once subscriber lag reaches 512 queued items, reserving the remaining
+capacity for durable events. Durable events are always admitted up to the 2,048-element sliding
+limit and remain recoverable from JSONL if pressure displaces one. The live cursor watermark makes
+that displacement observable even when no later durable event reaches the same consumer.
 
-- subscribe to a capacity-one sliding history-change `PubSub` first;
-- read and project Pi JSONL after the current cursor;
-- publish a notification only after the corresponding durable projection is observable; and
-- after each notification, read again from the new cursor.
-
-A capacity-one sliding notification is sufficient because notifications carry no state. Every
-subscriber retains the latest wake-up even if another subscriber is slow. If ten updates coalesce
-into one wake-up, the next Pi JSONL read still returns all ten durable events. A disconnect causes a
-fresh initial read. This is simpler and safer than attempting to make an in-memory event queue
-lossless.
+The bounded tail is an optimization, not durable storage. If a slow subscriber observes a cursor
+gap, it rereads the missing suffix from Pi JSONL. A disconnect also causes a fresh initial read.
+This keeps Pi JSONL authoritative while avoiding an increasingly expensive full-history read for
+every completed message or tool event.
 
 OpenOrb does not expose Pi branching. `SessionCursor` therefore remains a non-negative position in
 the current linear Pi JSONL projection. If `afterCursor` is zero or is greater than the current
@@ -527,9 +544,9 @@ RunnerRegistry.watchSession(afterCursor)
 ```
 
 `Stream.toReadableStreamEffect` captures the Effect runtime at the Remix edge. Pull demand drives a
-bounded RPC client queue. Cancelling the Web `ReadableStream` interrupts its fiber; closing the RPC
-stream sends a remote interrupt; the runner releases that subscriber's PubSub queues and file
-readers.
+bounded shared RPC client queue. Cancelling the Web `ReadableStream` interrupts that browser's
+fiber. The runner RPC stream remains alive while another browser consumes the same cursor cohort;
+cancelling the last consumer sends the remote interrupt and releases the runner subscription.
 
 Keep the current browser `EventSource` reducer and `Last-Event-ID` behavior. On runner disconnect,
 history failure, or a durable cursor gap, terminate the SSE response. `EventSource` reconnects, and
@@ -589,7 +606,12 @@ GatewayLive
 
 `RunnerRegistry` owns one `SynchronizedRef` containing immutable connection generations, route
 entries, snapshots, reservations, and revocation state. A pure state transition computes each
-change; effects such as catalog reconciliation and scope closure happen at explicit boundaries.
+change; effects such as catalog reconciliation and scope closure happen at explicit boundaries. The
+implementation is a closure-backed `Context.Service` constructed by a Layer, not a mutable registry
+class. Each admitted connection has a scoped runtime containing its RPC client and a `ScopedCache`
+keyed by session and replay cursor. Cache entries own `Stream.share` cohorts, so concurrent tabs
+share one upstream stream while cache invalidation or connection-scope closure releases the cohort
+without application-owned watch maps or allocation semaphores.
 
 An Effect HTTP route upgrades `/api/runners/connect` and transfers the accepted socket to
 `RunnerRegistry`; all other requests pass to Remix through `HttpEffect.fromWebHandler`. The registry
@@ -687,8 +709,8 @@ channels. Their close interrupts the channel fiber and sends reset/end as approp
 | `ProvisionCommandOwner`                                                    | Unary RPC effect, `Effect.timeout`, scoped reservation, runner domain idempotency |
 | `PromptCommandOwner` and `AbortCommandOwner`                               | Unary RPC effects, explicit domain IDs, and transport uncertainty mapping         |
 | `PendingSessionEventReplay` and replay-result messages                     | One `WatchSession(afterCursor)` stream                                            |
-| Gateway live session listener fanout                                       | Direct per-browser runner RPC stream; registry retains only routes/snapshots      |
-| Runner `SessionEventRelay` attachment and Promise gates                    | `SessionEvents` history projection, coalesced change PubSub, ephemeral PubSub     |
+| Gateway live session listener fanout                                       | Scoped `Stream.share` cohorts keyed by route, session, and replay cursor          |
+| Runner `SessionEventRelay` attachment and Promise gates                    | `SessionEvents` JSONL projection plus one selective 2K tail PubSub                |
 | Manual SSE `Channel`, timers, abort listeners, and `ReadableStream` source | Effect stream transformations and `Stream.toReadableStreamEffect`                 |
 | Reconnect loop and heartbeat interval mutation                             | Scoped connection attempt plus `Schedule`, `Stream`, timeout, and RPC ping/pong   |
 | Provisioner Promise job/runtime maps                                       | Process-owned `FiberMap`, scoped VM resources, typed service errors               |
@@ -780,8 +802,9 @@ for runtime dependencies.
 - Replace `RunnerConnectionGateway`, `ProvisionCommandOwner`, `PromptCommandOwner`,
   `AbortCommandOwner`, and `SessionRouteOwner` with the one `RunnerRegistry` and the accepted-socket
   RPC client.
-- Replace the replay command plus gateway fanout path with direct per-browser `WatchSession`
-  streams, then replace the manual SSE channel with `Stream.toReadableStreamEffect`.
+- Replace the replay command plus legacy gateway fanout path with cursor-correct shared
+  `WatchSession` stream cohorts, then replace the manual SSE channel with
+  `Stream.toReadableStreamEffect`.
 - Remove tuple `Result` from the transport, registry, event, and provisioning core. Delete
   `@openorb/result` only if no unrelated users remain.
 
@@ -941,10 +964,12 @@ when all of the following are true:
    before connection admission.
 2. There is no application-owned pending map for ordinary RPC request correlation or session event
    replay.
-3. Browser cancellation demonstrably interrupts and finalizes the matching runner stream.
+3. Cancelling the last browser in a cursor cohort demonstrably interrupts and finalizes the matching
+   runner stream; cancelling one of several consumers does not.
 4. Replacing a connection closes one scope and stale fibers cannot update live registry state.
 5. Disconnecting a connection does not cancel process-owned session work.
-6. Completed conversation events are recovered only from Pi JSONL and survive notification loss.
+6. Completed conversation events live-tail directly only after Pi persistence is observable, and
+   reconnects or cursor gaps recover them from Pi JSONL.
 7. Slow consumers cannot block Pi or runner control; durable events are replayed rather than
    silently dropped.
 8. `PromptSession` preserves idle prompt and native follow-up behavior. `AbortSession` targets one
