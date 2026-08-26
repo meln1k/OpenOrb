@@ -52,18 +52,25 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
       ? directCommand.value
       : parse(taskDefinitionSchema, task).command;
     assert(command);
+    const arguments_ = command.split(/\s+/);
     assertMatch(command, new RegExp(`--target ${expected.target}`));
     assertMatch(command, new RegExp(`--output ${expected.output}`));
     assertMatch(command, /--allow-read=\./);
     assertMatch(command, /--allow-write=\./);
     assertMatch(command, /--allow-net(?:\s|$)/);
-    assertMatch(command, /--allow-env=PATH,PWD,NODE_V8_COVERAGE,TF_BUILD/);
+    assertEquals(
+      arguments_.filter((argument) =>
+        argument === "--allow-env" || argument.startsWith("--allow-env=")
+      ),
+      ["--allow-env=PATH,PWD,NODE_V8_COVERAGE,TF_BUILD"],
+    );
     assertMatch(
       command,
       /--allow-sys=gid,homedir,networkInterfaces,osRelease,statfs,systemMemoryInfo,uid/,
     );
     assertMatch(command, new RegExp(`--allow-run=${expected.qemu}`));
     assertNotMatch(command, /--allow-all|-A(?:\s|$)|--allow-ffi/);
+    assertEquals(arguments_.at(-1), "packages/runner/src/standalone.ts");
   }
 
   const releaseTask = parse(taskDefinitionSchema, rootConfig.tasks?.["release:runner"]);

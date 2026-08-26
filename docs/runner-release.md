@@ -90,10 +90,17 @@ The compile command bakes in:
 - read/write access relative to the canonical runner working directory;
 - unrestricted network access for approved public web access;
 - only `qemu-system-x86_64,qemu-img` or `qemu-system-aarch64,qemu-img` subprocess access;
-- only `PATH` and `PWD` environment access;
+- only `PATH`, `PWD`, and Deno's `NODE_V8_COVERAGE` and `TF_BUILD` runtime toggles as environment
+  access;
 - host UID/GID, home-directory, network-interface, filesystem-capacity, and system-memory
   inspection;
 - no FFI and no `--allow-all`.
+
+The standalone entry evaluates the Node-compatible dependency graph with a temporary null-prototype
+`process.env` containing only `PATH` and `PWD`, then restores the original Deno permission-checked
+environment before starting the runner. This prevents irrelevant import-time agent, CI, and provider
+detection in transitive dependencies from requiring access to host secret variables. Dependency
+upgrades fail closed if they introduce an unapproved environment read after module evaluation.
 
 Production systemd sets `WorkingDirectory=/var/lib/openorb-runner`. The executable does not accept
 `--data-dir`. Deno permissions only govern the runner process; QEMU is a child outside that sandbox.
