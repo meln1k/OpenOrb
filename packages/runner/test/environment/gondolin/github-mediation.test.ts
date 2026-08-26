@@ -32,52 +32,66 @@ Deno.test("creates a fresh guest placeholder and a scoped Git credential helper"
   assertEquals(firstEnvironment.GIT_CONFIG_VALUE_0, "/workspace");
   assertEquals(firstEnvironment.GIT_CONFIG_KEY_1, "safe.directory");
   assertEquals(firstEnvironment.GIT_CONFIG_VALUE_1, "/workspace/*");
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_2, "credential.https://github.com.helper");
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_2, `credential.${REPOSITORY_URL}.helper`);
   assertEquals(firstEnvironment.GIT_CONFIG_VALUE_2, "!gh auth git-credential");
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_3, "credential.https://github.com.useHttpPath");
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_3, `credential.${REPOSITORY_URL}.useHttpPath`);
   assertEquals(firstEnvironment.GIT_CONFIG_VALUE_3, "true");
   assertEquals(first.allowWebSockets, false);
   assertEquals(first.dns, { mode: "synthetic" });
 });
 
-Deno.test("allows only the configured GitHub repository smart-HTTP and metadata paths", async () => {
+Deno.test("allows public HTTP and HTTPS while blocking private destination IPs", async () => {
   const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
 
   for (
-    const [method, url] of [
-      ["GET", `${REPOSITORY_URL}/info/refs?service=git-upload-pack`],
-      ["POST", `${REPOSITORY_URL}/git-upload-pack`],
-      ["GET", `${REPOSITORY_URL}/info/refs?service=git-receive-pack`],
-      ["POST", `${REPOSITORY_URL}/git-receive-pack`],
-      ["GET", "https://api.github.com/repos/meln1k/openorb"],
+    const url of [
+      "http://snapshot.debian.org/archive/debian/20260803T000000Z/dists/trixie/InRelease",
+      "https://registry.npmjs.org/",
+      "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-unknown-linux-gnu.zip",
+      "https://github.com/octocat/Hello-World.git/info/refs?service=git-upload-pack",
+      "https://api.github.com/repos/octocat/Hello-World",
     ] as const
   ) {
-    assert(await requestAllowed(options, method, url), `expected ${method} ${url} to be allowed`);
+    assert(await requestAllowed(options, "GET", url), `expected GET ${url} to be allowed`);
   }
 
+  const ipPolicy = options.httpHooks?.isIpAllowed;
+  assert(ipPolicy);
+  assert(
+    await ipPolicy({
+      hostname: "snapshot.debian.org",
+      ip: "151.101.2.132",
+      family: 4,
+      port: 80,
+      protocol: "http",
+    }),
+  );
   for (
-    const [method, url] of [
-      ["GET", "https://github.com/octocat/Hello-World.git/info/refs?service=git-upload-pack"],
-      ["GET", `${REPOSITORY_URL}/info/refs`],
-      ["GET", `${REPOSITORY_URL}/info/refs?service=git-upload-pack&extra=1`],
-      ["POST", `${REPOSITORY_URL}/info/refs?service=git-upload-pack`],
-      ["GET", `${REPOSITORY_URL}/git-upload-pack`],
-      ["POST", `${REPOSITORY_URL}/objects/pack`],
-      ["GET", "https://api.github.com/repos/octocat/Hello-World"],
-      ["GET", "https://api.github.com/repos/meln1k/openorb/issues"],
-      ["POST", "https://api.github.com/repos/meln1k/openorb"],
-      ["GET", "https://api.github.com/repos/meln1k/openorb?ref=main"],
-      ["GET", "https://example.com/meln1k/openorb.git/info/refs?service=git-upload-pack"],
-      ["GET", "http://github.com/meln1k/openorb.git/info/refs?service=git-upload-pack"],
-      ["GET", "https://github.com:8443/meln1k/openorb.git/info/refs?service=git-upload-pack"],
-      ["GET", "https://user@github.com/meln1k/openorb.git/info/refs?service=git-upload-pack"],
+    const [ip, family] of [
+      ["127.0.0.1", 4],
+      ["10.0.0.1", 4],
+      ["172.16.0.1", 4],
+      ["192.168.1.1", 4],
+      ["169.254.169.254", 4],
+      ["::1", 6],
+      ["fc00::1", 6],
+      ["fe80::1", 6],
     ] as const
   ) {
-    assert(!(await requestAllowed(options, method, url)), `expected ${method} ${url} to be denied`);
+    assert(
+      !(await ipPolicy({
+        hostname: "attacker.example",
+        ip,
+        family,
+        port: 443,
+        protocol: "https",
+      })),
+      `expected ${ip} to be blocked`,
+    );
   }
 });
 
-Deno.test("substitutes the placeholder only in allowed GitHub authorization headers", async () => {
+Deno.test("substitutes the placeholder only for allowed GitHub hosts", async () => {
   const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
   const environment = environmentOf(options.env);
   const placeholder = environment.GH_TOKEN;
@@ -94,6 +108,14 @@ Deno.test("substitutes the placeholder only in allowed GitHub authorization head
   const decoded = atob(authorization.slice("Basic ".length));
   assert(decoded === `x-access-token:${TOKEN}`, "the allowed Basic credential was not mediated");
 
+  const otherRepository = await options.httpHooks?.onRequest?.(
+    new Request("https://api.github.com/repos/octocat/Hello-World", {
+      headers: { authorization: `Bearer ${placeholder}` },
+    }),
+  );
+  assert(otherRepository instanceof Request);
+  assertEquals(otherRepository.headers.get("authorization"), `Bearer ${TOKEN}`);
+
   await assertRejects(
     async () => {
       await options.httpHooks?.onRequest?.(
@@ -105,23 +127,6 @@ Deno.test("substitutes the placeholder only in allowed GitHub authorization head
     Error,
     "not allowed for host",
   );
-});
-
-Deno.test("denies redirect targets outside the configured repository endpoint", async () => {
-  const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
-  for (
-    const target of [
-      "https://github.com/octocat/Hello-World.git/info/refs?service=git-upload-pack",
-      "https://api.github.com/repos/meln1k/openorb/releases",
-      "https://objects.githubusercontent.com/archive",
-      "http://github.com/meln1k/openorb.git/info/refs?service=git-upload-pack",
-    ]
-  ) {
-    assert(
-      !(await requestAllowed(options, "GET", target)),
-      `redirect target was allowed: ${target}`,
-    );
-  }
 });
 
 Deno.test("supports an unauthenticated public policy without exposing GH_TOKEN", () => {

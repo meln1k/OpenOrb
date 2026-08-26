@@ -11,7 +11,7 @@ These tickets split `MVP.md` into dependency-ordered vertical slices. The first 
 - Add only the packages and abstractions required by the ticket being implemented.
 - Every ticket must merge with the repository runnable and tests passing.
 - The temporary macOS harness is for local iteration only. Linux remains the release runner target.
-- MVP Git support is GitHub HTTPS only. Public repositories require no credential; private operations use a guest placeholder `GH_TOKEN` mediated by Gondolin. SSH and non-GitHub hosts are deferred.
+- MVP Git support is GitHub HTTPS only. Public repositories require no credential; private operations use a guest placeholder `GH_TOKEN` mediated by Gondolin. SSH and non-GitHub Git hosts are deferred.
 - Sessions select one `provider/model` reference from configured Pi API-key providers. Tests default to Pi's `opencode-go/deepseek-v4-flash` with thinking level `high`.
 
 ## Remix gateway conventions

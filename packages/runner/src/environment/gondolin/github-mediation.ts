@@ -7,7 +7,6 @@ const OPENORB_WORKSPACE = "/workspace";
 const OPENORB_NESTED_WORKSPACE_REPOSITORIES = "/workspace/*";
 const GITHUB_OWNER_PATTERN = /^(?!-)(?!.*--)[A-Za-z0-9-]{1,39}(?<!-)$/;
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
-const GIT_SERVICES = new Set(["git-upload-pack", "git-receive-pack"]);
 
 export interface OpenOrbGitHubMediationOptions {
   repositoryUrl: string;
@@ -19,17 +18,10 @@ export type OpenOrbGitHubVmOptions = Pick<
   "allowWebSockets" | "dns" | "env" | "httpHooks"
 >;
 
-interface GitHubRepository {
-  owner: string;
-  name: string;
-  gitPath: string;
-  apiPath: string;
-}
-
 export function createOpenOrbGitHubVmOptions(
   options: OpenOrbGitHubMediationOptions,
 ): Result<OpenOrbGitHubVmOptions, GitHubMediationError> {
-  const [repository, repositoryError] = parseCanonicalGitHubRepository(options.repositoryUrl);
+  const [, repositoryError] = validateCanonicalGitHubRepository(options.repositoryUrl);
   if (repositoryError !== undefined) return err(repositoryError);
   const token = options.token;
   if (
@@ -46,10 +38,7 @@ export function createOpenOrbGitHubVmOptions(
   const [hooks, hooksError] = trySync(
     () =>
       createHttpHooks({
-        allowedHosts: [GITHUB_HOST, GITHUB_API_HOST],
-        allowedInternalHosts: [],
         blockInternalRanges: true,
-        replaceSecretsInQuery: false,
         ...(token === undefined ? {} : {
           secrets: {
             GH_TOKEN: {
@@ -58,7 +47,6 @@ export function createOpenOrbGitHubVmOptions(
             },
           },
         }),
-        isRequestAllowed: (request) => isAllowedGitHubRequest(request, repository),
       }),
     (cause) => new GitHubMediationError("GitHub request mediation could not be created.", cause),
   );
@@ -76,9 +64,9 @@ export function createOpenOrbGitHubVmOptions(
     GIT_CONFIG_VALUE_1: OPENORB_NESTED_WORKSPACE_REPOSITORIES,
     GIT_TERMINAL_PROMPT: "0",
     ...(token === undefined ? {} : {
-      GIT_CONFIG_KEY_2: `credential.https://${GITHUB_HOST}.helper`,
+      GIT_CONFIG_KEY_2: `credential.${options.repositoryUrl}.helper`,
       GIT_CONFIG_VALUE_2: "!gh auth git-credential",
-      GIT_CONFIG_KEY_3: `credential.https://${GITHUB_HOST}.useHttpPath`,
+      GIT_CONFIG_KEY_3: `credential.${options.repositoryUrl}.useHttpPath`,
       GIT_CONFIG_VALUE_3: "true",
     }),
   } satisfies Record<string, string>;
@@ -91,9 +79,9 @@ export function createOpenOrbGitHubVmOptions(
   });
 }
 
-function parseCanonicalGitHubRepository(
+function validateCanonicalGitHubRepository(
   repositoryUrl: string,
-): Result<GitHubRepository, GitHubMediationError> {
+): Result<void, GitHubMediationError> {
   const [url, urlError] = trySync(
     () => new URL(repositoryUrl),
     (cause) => invalidRepositoryUrl(cause),
@@ -127,12 +115,7 @@ function parseCanonicalGitHubRepository(
     return err(invalidRepositoryUrl());
   }
 
-  return ok({
-    owner,
-    name,
-    gitPath: `/${owner}/${name}.git`,
-    apiPath: `/repos/${owner}/${name}`,
-  });
+  return ok(undefined);
 }
 
 export class GitHubMediationError extends Error {
@@ -140,35 +123,6 @@ export class GitHubMediationError extends Error {
     super(message, { cause });
     this.name = "GitHubMediationError";
   }
-}
-
-function isAllowedGitHubRequest(request: Request, repository: GitHubRepository): boolean {
-  const url = new URL(request.url);
-  if (
-    url.protocol !== "https:" ||
-    url.port ||
-    url.username ||
-    url.password ||
-    (url.hostname !== GITHUB_HOST && url.hostname !== GITHUB_API_HOST)
-  ) {
-    return false;
-  }
-  if (url.hostname === GITHUB_API_HOST) {
-    return request.method === "GET" && url.pathname === repository.apiPath && !url.search;
-  }
-  if (url.pathname.startsWith(`${repository.gitPath}/`)) {
-    const servicePath = url.pathname.slice(repository.gitPath.length + 1);
-    if (servicePath === "info/refs") {
-      const service = url.searchParams.get("service");
-      return request.method === "GET" &&
-        url.searchParams.size === 1 &&
-        service !== null &&
-        GIT_SERVICES.has(service);
-    }
-    return (servicePath === "git-upload-pack" || servicePath === "git-receive-pack") &&
-      request.method === "POST" && !url.search;
-  }
-  return false;
 }
 
 function invalidRepositoryUrl(cause?: unknown): GitHubMediationError {

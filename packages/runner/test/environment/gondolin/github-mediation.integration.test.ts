@@ -41,7 +41,7 @@ Deno.test({
         sessionLabel: "openorb OO-010 public GitHub integration test",
         github: { repositoryUrl: PUBLIC_REPOSITORY_URL },
         cpuCount: 2,
-        memoryMiB: 4 * 1024,
+        memoryMiB: 2 * 1024,
       });
       runtime = opened.runtime;
       pi = await createPiSession(runtime, temporaryDirectory);
@@ -62,17 +62,38 @@ Deno.test({
       });
       assert(textOf(clone).endsWith("public-clone-ok"));
 
+      const publicEgress = await bash.execute("public-egress", {
+        command: [
+          "set -eu",
+          "python3 -m http.server 38080 --bind 127.0.0.1 >/tmp/openorb-local-server 2>&1 &",
+          "local_server_pid=$!",
+          'cleanup_local_server() { kill "$local_server_pid" 2>/dev/null || true; }',
+          "trap cleanup_local_server EXIT",
+          "for attempt in 1 2 3 4 5; do curl --fail --silent http://127.0.0.1:38080/ >/dev/null && break; sleep 1; done",
+          "curl --fail --silent http://localhost:38080/ >/dev/null",
+          "apt-get update >/tmp/openorb-apt-update",
+          "curl --fail --silent --show-error https://example.com >/dev/null",
+          `git ls-remote --exit-code ${shellQuote(WRONG_REPOSITORY_URL)} HEAD >/dev/null`,
+          "printf public-egress-ok",
+        ].join("\n"),
+        timeout: 240,
+      });
+      assert(textOf(publicEgress).endsWith("public-egress-ok"));
+
       for (
-        const [id, url] of [
-          ["wrong-repository", WRONG_REPOSITORY_URL],
-          ["wrong-host", "https://example.com/meln1k/openorb.git"],
-          ["wrong-protocol", "git://github.com/meln1k/openorb.git"],
+        const [id, command] of [
+          ["wrong-protocol", "git ls-remote git://github.com/meln1k/openorb.git"],
+          ["private-lan", "curl --fail --silent --show-error --max-time 10 http://192.168.1.1/"],
+          [
+            "cloud-metadata",
+            "curl --fail --silent --show-error --max-time 10 http://169.254.169.254/latest/meta-data/",
+          ],
         ] as const
       ) {
         const blockedError = await assertRejects(
           () =>
             bash.execute(id, {
-              command: `git ls-remote ${shellQuote(url)}`,
+              command,
               timeout: 30,
             }),
           Error,
@@ -128,7 +149,7 @@ Deno.test({
         sessionLabel: "openorb OO-010 private GitHub integration test",
         github: { repositoryUrl, token },
         cpuCount: 2,
-        memoryMiB: 4 * 1024,
+        memoryMiB: 2 * 1024,
       });
       runtime = opened.runtime;
       pi = await createPiSession(runtime, temporaryDirectory);
@@ -143,6 +164,7 @@ Deno.test({
           `test \"$(gh api ${
             shellQuote(`repos/${repository.owner}/${repository.name}`)
           } --jq .full_name)\" = ${shellQuote(`${repository.owner}/${repository.name}`)}`,
+          `git ls-remote --exit-code ${shellQuote(WRONG_REPOSITORY_URL)} HEAD >/dev/null`,
           "git -C repository config user.name 'OpenOrb OO-010 Test'",
           "git -C repository config user.email 'openorb-oo-010@example.invalid'",
           `printf '%s\n' ${shellQuote(branch)} > repository/.openorb-oo-010`,
@@ -176,15 +198,16 @@ Deno.test({
       assert(surfaceText.includes("placeholder-present"));
       assert(!surfaceText.includes(token), "the real token appeared on a guest-visible surface");
 
-      const wrongRepositoryError = await assertRejects(
+      const wrongHostError = await assertRejects(
         () =>
-          bash.execute("private-wrong-repository", {
-            command: `git ls-remote ${shellQuote(WRONG_REPOSITORY_URL)}`,
+          bash.execute("private-wrong-host", {
+            command:
+              'curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" https://example.com/',
             timeout: 30,
           }),
         Error,
       );
-      assert(!wrongRepositoryError.message.includes(token), "the real token appeared in an error");
+      assert(!wrongHostError.message.includes(token), "the real token appeared in an error");
       await assertTreeDoesNotContain(workspacePath, token);
 
       await bash.execute("delete-test-branch", {

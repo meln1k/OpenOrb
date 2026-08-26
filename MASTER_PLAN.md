@@ -1018,7 +1018,8 @@ For network operations:
 - Pass the project’s canonical remote URL explicitly instead of trusting an agent-modified `origin` URL.
 - Restrict allowed protocols; deny `file`, `ext`, and arbitrary remote helpers.
 - Do not recurse into submodules automatically.
-- Apply credential and egress policy to the exact configured host/repository.
+- Scope the Git credential helper to the exact configured repository. Public HTTP/HTTPS egress is
+  independent, and GitHub enforces the token's repository permissions.
 
 These controls make OpenOrb-owned actions deterministic, but the main privilege boundary remains Gondolin. An agent can intentionally run Git features that execute repository-controlled code, but that code stays inside the guest.
 
@@ -1026,8 +1027,8 @@ These controls make OpenOrb-owned actions deterministic, but the main privilege 
 
 1. A trusted helper included in the guest image returns generated placeholder username/token values.
 2. Git encodes placeholders into HTTP authorization headers.
-3. Gondolin host hooks substitute the real secret only for the configured Git host and canonical smart-HTTP repository paths.
-4. Other hosts and repository paths never receive substitution.
+3. Gondolin host hooks substitute the real secret only for `github.com` and `api.github.com`.
+4. Non-GitHub hosts never receive substitution; GitHub enforces the token's repository permissions.
 5. The guest can print only placeholders, never the real token.
 
 The real HTTPS credential is not placed in guest environment variables, files, process arguments, or `.git/config`.

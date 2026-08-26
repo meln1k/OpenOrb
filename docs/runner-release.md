@@ -108,9 +108,14 @@ OpenOrb therefore exposes no raw QEMU path/argv/device interface and must create
 trusted typed options passed to the pinned Gondolin `VM` API. OO-023 adds the OS-level systemd
 sandbox.
 
-Unrestricted Deno network permission is not the SSRF boundary. Application/Gondolin policy must deny
-loopback, private, link-local, cloud-metadata, redirect, and DNS-rebinding destinations before
-approved web tools are enabled.
+Unrestricted Deno network permission is not the SSRF boundary. A session may make public HTTP and
+HTTPS requests so setup hooks, package managers, and agent tools can query the web. Gondolin
+resolves and pins the upstream address and reapplies request and IP policy to every redirect: host
+loopback, private, link-local, cloud-metadata, and DNS-rebinding destinations remain blocked.
+Guest-local loopback remains available for development servers. Generic TCP and WebSockets remain
+disabled. GitHub placeholder substitution is independently restricted to `github.com` and
+`api.github.com`; repository authorization follows the GitHub token's own permissions. The Git
+credential helper remains scoped to the configured repository for normal clone, fetch, and push.
 
 ## Guest assets
 

@@ -530,13 +530,13 @@ All of these run inside Gondolin:
 ### GitHub token mediation
 
 1. The guest receives a generated placeholder value as `GH_TOKEN` for GitHub CLI/Git operations.
-2. Gondolin host hooks replace the placeholder only for the configured GitHub endpoints and canonical repository.
+2. Gondolin host hooks replace the placeholder only for `github.com` and `api.github.com`.
 3. The real GitHub token remains in runner memory and never enters guest files, environment values, process arguments, logs, or tool output.
-4. Other hosts and repositories receive no substitution.
+4. Non-GitHub hosts receive no substitution; GitHub enforces the token's repository permissions.
 5. Public repositories work without a credential; private clone/fetch/push use the same mediated token path.
 6. Projects use their owning user's singleton GitHub credential when one is configured; credentials are not selected or persisted per project.
 
-SSH repositories, private keys, and non-GitHub hosts are deferred.
+SSH repositories, private keys, and non-GitHub Git hosts are deferred.
 
 ### Agent workflow
 
@@ -759,7 +759,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 - Hostile `.pi` resources/settings cannot execute or alter Pi configuration.
 - All Pi file/shell tools execute through Gondolin.
 - Real Git and model credentials never appear in guest files, environment variables, logs, process arguments, or tool output.
-- `GH_TOKEN` placeholder substitution is restricted to the configured GitHub endpoints and canonical repository.
+- `GH_TOKEN` placeholder substitution is restricted to `github.com` and `api.github.com`; GitHub enforces repository permissions.
 - Workspace path traversal and escaping symlinks are rejected.
 
 ### End-to-end path
