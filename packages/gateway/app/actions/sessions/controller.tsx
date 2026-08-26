@@ -417,8 +417,6 @@ async function renderDetailPage(
     context.services.store.listSessionCatalogEntries(userId),
   ]);
   if (!session) return new Response("Session not found.", { status: 404 });
-  const project = await context.services.store.getProject(userId, session.projectId);
-  if (!project) return new Response("Session project not found.", { status: 404 });
   const [runnerId, snapshot] = await Promise.all([
     Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
     Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
@@ -428,7 +426,6 @@ async function renderDetailPage(
       composer={composer}
       csrfToken={getCsrfToken(context)}
       session={session}
-      project={project}
       runnerId={runnerId}
       snapshot={snapshot}
       abortHref={routes.app.sessions.abort.href({ sessionId })}

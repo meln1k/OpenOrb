@@ -407,11 +407,12 @@ function removeMatchingOptimisticUserMessage(
   state: SessionTranscriptState,
   text: string,
 ): SessionTranscriptState {
+  const normalizedText = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
   for (let index = state.entries.length - 1; index >= 0; index--) {
     const entry = state.entries[index];
     if (
       entry && "role" in entry && entry.role === "user" && entry.delivery !== undefined &&
-      entry.text === text
+      entry.text.replaceAll("\r\n", "\n").replaceAll("\r", "\n") === normalizedText
     ) {
       return removeEntry(state, index);
     }

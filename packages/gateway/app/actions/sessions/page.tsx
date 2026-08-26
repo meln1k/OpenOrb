@@ -1,7 +1,6 @@
 import type { RunnerSessionSnapshot } from "@openorb/protocol/runner-api";
 import { css, type Handle } from "remix/ui";
 
-import type { Project } from "@/app/data/project-repository.ts";
 import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
 import { modelContextWindow } from "@/app/model-provider-catalog.ts";
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
@@ -13,7 +12,6 @@ interface SessionDetailPageProps {
   composer: SessionComposerData;
   csrfToken: string;
   session: SessionCatalogEntry;
-  project: Project;
   runnerId: string | null;
   snapshot: RunnerSessionSnapshot | null;
   eventsHref: string;
@@ -31,7 +29,6 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
     error,
     eventsHref,
     messageHref,
-    project,
     retryHref,
     runnerId,
     session,
@@ -40,6 +37,7 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
   } = handle.props;
   const state = snapshot?.state ?? (runnerId ? "created" : "offline");
   const canRetry = snapshot?.state === "error" && runnerId !== null;
+  const sessionName = session.initialPromptPreview || "Untitled session";
 
   return () => (
     <AppShell
@@ -47,8 +45,8 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
       composer={composer}
       csrfToken={csrfToken}
       sessions={sidebarSessions}
-      title={`${project.name} session · OpenOrb`}
-      eyebrow="Sessions"
+      title={`${sessionName} · OpenOrb`}
+      topBarTitle={sessionName}
     >
       {error ? <p role="alert" mix={errorStyle}>{error}</p> : null}
       <SessionEventView

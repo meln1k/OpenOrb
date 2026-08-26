@@ -350,6 +350,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const detailHtml = await detail.text();
     assertMatch(detailHtml, /title="Context window use"/);
     assertMatch(detailHtml, /\?\/1\.0M/);
+    assertMatch(
+      detailHtml,
+      /<h1[^>]*data-top-bar-title[^>]*>Inspect this repository and explain the architecture\.<\/h1>/,
+    );
+    assertNotMatch(detailHtml, /aria-label="Breadcrumb"/);
     assertNotMatch(detailHtml, /Session <code>/);
     assertNotMatch(detailHtml, /<span>Repository<\/span>/);
     assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/events`));
@@ -360,6 +365,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
     assertMatch(detailHtml, /<textarea[^>]*name="prompt"[^>]*aria-label="Continue session"/);
     assertMatch(detailHtml, /aria-label="Send prompt"/);
+    assertNotMatch(detailHtml, /data-session-toolbar/);
     assertNotMatch(detailHtml, />Abort<\/button>/);
     assertNotMatch(detailHtml, /data-session-events/);
     assert(!detailHtml.includes(GITHUB_TOKEN));
@@ -433,9 +439,14 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       runningHtml,
       new RegExp(`action="/app/sessions/${provision.sessionId}/abort"`),
     );
-    assertMatch(runningHtml, /aria-label="Queue follow-up"/);
-    assertMatch(runningHtml, /title="Queue follow-up"/);
-    assertMatch(runningHtml, />Abort<\/button>/);
+    assertMatch(
+      runningHtml,
+      new RegExp(`form="session-${provision.sessionId}-abort"`),
+    );
+    assertMatch(runningHtml, /aria-label="Stop active turn"/);
+    assertMatch(runningHtml, /title="Stop active turn"/);
+    assertMatch(runningHtml, /data-slot="stop-icon"/);
+    assertNotMatch(runningHtml, />Abort<\/button>/);
     const busyContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",

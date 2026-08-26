@@ -188,6 +188,26 @@ Deno.test("optimistic user messages reconcile with durable events or retain fail
   }]);
 });
 
+Deno.test("optimistic user messages reconcile after form line-ending normalization", () => {
+  const pending = appendOptimisticUserMessage(
+    createSessionTranscriptState("ready", false),
+    "optimistic-1",
+    "rate the reliability\n",
+  );
+
+  const reconciled = reduceSessionTranscriptState(pending, {
+    type: "user.message",
+    messageId: "pi-user-1",
+    text: "rate the reliability\r\n",
+  });
+
+  assertEquals(reconciled.entries, [{
+    role: "user",
+    messageId: "pi-user-1",
+    text: "rate the reliability\r\n",
+  }]);
+});
+
 Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's live queue", () => {
   const initial = createSessionTranscriptState("running", false);
   const pending = appendOptimisticUserMessage(initial, "optimistic-1", "First follow-up");

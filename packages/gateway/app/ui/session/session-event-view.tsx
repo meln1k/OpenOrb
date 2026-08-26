@@ -81,8 +81,10 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
   );
   let connectionInterrupted = false;
   let promptRequestPending = false;
+  let promptDraftPresent = false;
   let abortPending = false;
   let actionError: string | undefined;
+  const abortFormId = `session-${handle.props.sessionId}-abort`;
 
   async function submitAbort(
     event: Dispatched<SubmitEvent, HTMLFormElement>,
@@ -188,6 +190,11 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
     const canSubmitPrompt = canComposePrompt && !promptRequestPending;
     const canAbort = hasActiveRun && !connectionInterrupted && !abortPending;
     const usage = totalSessionUsage(transcriptState);
+    const status = connectionInterrupted
+      ? "Connection interrupted"
+      : abortPending
+      ? "Aborting…"
+      : transcriptState.status;
 
     return (
       <section
@@ -196,55 +203,27 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
         data-session-state={transcriptState.sessionState}
         mix={sessionFrameStyle}
       >
-        <header data-session-toolbar mix={sessionToolbarStyle}>
-          <Marker mix={sessionStatusMarkerStyle}>
-            <MarkerIcon>
-              {busy ? <span data-slot="spinner" mix={spinnerStyle} /> : <Icon name="sparkles" />}
-            </MarkerIcon>
-            <MarkerContent mix={sessionStatusContentStyle}>
-              <strong role={busy ? "status" : undefined} data-session-status>
-                {connectionInterrupted
-                  ? "Connection interrupted"
-                  : abortPending
-                  ? "Aborting…"
-                  : transcriptState.status}
-              </strong>
-              {renderUsageStatus(
-                usage,
-                transcriptState.latestUsage,
-                transcriptState.contextUsage,
-                handle.props.contextWindow,
-              )}
-            </MarkerContent>
-          </Marker>
-          {hasActiveRun
-            ? (
-              <form
-                method="post"
-                action={handle.props.abortHref}
-                mix={[retryStyle, abortSubmit]}
-              >
-                <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
-                <Button
-                  type="submit"
-                  size="sm"
-                  variant="destructive"
-                  disabled={!canAbort}
-                >
-                  {abortPending ? "Aborting…" : "Abort"}
-                </Button>
-              </form>
-            )
-            : null}
-          {transcriptState.retryVisible
-            ? (
-              <form method="post" action={handle.props.retryHref} mix={retryStyle}>
-                <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
-                <Button type="submit" size="sm">Retry provisioning</Button>
-              </form>
-            )
-            : null}
-        </header>
+        <span role="status" data-session-status mix={screenReaderOnlyStyle}>{status}</span>
+        {hasActiveRun
+          ? (
+            <form
+              id={abortFormId}
+              method="post"
+              action={handle.props.abortHref}
+              mix={abortSubmit}
+            >
+              <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+            </form>
+          )
+          : null}
+        {transcriptState.retryVisible
+          ? (
+            <form method="post" action={handle.props.retryHref} mix={retryStyle}>
+              <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+              <Button type="submit" size="sm">Retry provisioning</Button>
+            </form>
+          )
+          : null}
         {actionError ? <p role="alert" mix={actionErrorStyle}>{actionError}</p> : null}
         <MessageScroller
           autoScroll
@@ -308,12 +287,13 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
                 )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
-          <MessageScrollerButton />
+          <MessageScrollerButton mix={scrollButtonStyle} />
         </MessageScroller>
         <form
           method="post"
           action={handle.props.messageHref}
           mix={[
+            sessionFooterItemStyle,
             promptFormStyle,
             on<HTMLFormElement, "submit">("submit", async (event) => {
               event.preventDefault();
@@ -340,6 +320,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
               );
               const action = form.action;
               form.reset();
+              promptDraftPresent = false;
               await handle.update();
               if (handle.signal.aborted) return;
 
@@ -414,30 +395,63 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
             disabled={!canComposePrompt}
             mix={[
               promptInputStyle,
+              on<HTMLTextAreaElement, "input">("input", (event) => {
+                const nextPromptDraftPresent = event.currentTarget.value.trim().length > 0;
+                if (promptDraftPresent === nextPromptDraftPresent) return;
+                promptDraftPresent = nextPromptDraftPresent;
+                void handle.update();
+              }),
               on<HTMLTextAreaElement, "keydown">("keydown", (event) => {
-                if (
-                  event.key !== "Enter" || event.isComposing ||
-                  (!event.metaKey && !event.ctrlKey)
-                ) return;
+                if (event.key !== "Enter" || event.isComposing || event.shiftKey) return;
                 event.preventDefault();
                 if (!event.currentTarget.disabled) event.currentTarget.form?.requestSubmit();
               }),
             ]}
           />
-          <Button
-            type="submit"
-            size="icon-lg"
-            aria-label={hasActiveRun ? "Queue follow-up" : "Send prompt"}
-            title={canSubmitPrompt
-              ? hasActiveRun ? "Queue follow-up" : "Send prompt"
-              : promptRequestPending
-              ? "Wait for prompt acknowledgement"
-              : "Session cannot accept a prompt"}
-            disabled={!canSubmitPrompt}
-          >
-            <Icon name="arrow-right" size={20} />
-          </Button>
+          {!hasActiveRun || promptDraftPresent
+            ? (
+              <Button
+                type="submit"
+                size="icon-lg"
+                aria-label={hasActiveRun ? "Queue follow-up" : "Send prompt"}
+                title={canSubmitPrompt
+                  ? hasActiveRun ? "Queue follow-up" : "Send prompt"
+                  : promptRequestPending
+                  ? "Wait for prompt acknowledgement"
+                  : "Session cannot accept a prompt"}
+                disabled={!canSubmitPrompt}
+                mix={sendButtonStyle}
+              >
+                <Icon name="arrow-right" size={16} />
+              </Button>
+            )
+            : null}
+          {hasActiveRun
+            ? (
+              <Button
+                type="submit"
+                form={abortFormId}
+                size="icon-lg"
+                aria-label="Stop active turn"
+                title={canAbort
+                  ? "Stop active turn"
+                  : abortPending
+                  ? "Stopping active turn"
+                  : "Active turn cannot be stopped"}
+                disabled={!canAbort}
+                mix={sendButtonStyle}
+              >
+                <span aria-hidden="true" data-slot="stop-icon" mix={stopIconStyle} />
+              </Button>
+            )
+            : null}
         </form>
+        {renderUsageStatus(
+          usage,
+          transcriptState.latestUsage,
+          transcriptState.contextUsage,
+          handle.props.contextWindow,
+        )}
       </section>
     );
   };
@@ -654,16 +668,8 @@ function renderUsageStatus(
     ? contextTokens / contextWindow * 100
     : undefined;
 
-  if (
-    usage.inputTokens === 0 &&
-    usage.outputTokens === 0 &&
-    usage.cacheWriteTokens === 0 &&
-    usage.totalCost === 0 &&
-    contextWindow <= 0
-  ) return null;
-
   return (
-    <div data-session-usage mix={sessionUsageStyle}>
+    <div data-session-usage mix={[sessionFooterItemStyle, sessionUsageStyle]}>
       {usage.inputTokens > 0
         ? (
           <span title="Cumulative input tokens">
@@ -772,40 +778,34 @@ const sessionFrameStyle = css({
   maxWidth: "1100px",
   height: "calc(100svh - 80px)",
   minHeight: "440px",
+  marginInline: "auto",
   overflow: "hidden",
   color: "var(--foreground)",
-  background: "var(--card)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-xl)",
-  boxShadow: "0 1px 3px rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
-  [media.md]: { height: "calc(100svh - 104px)" },
+  background: "transparent",
+  [media.md]: {
+    // Extend into 8px of shell padding without changing the frame's outer size.
+    height: "calc(100svh - 104px + 8px)",
+    marginBottom: "-8px",
+  },
 });
-const sessionToolbarStyle = css({
-  display: "flex",
-  alignItems: "center",
-  gap: "12px",
+const sessionFooterItemStyle = css({
+  boxSizing: "border-box",
   flexShrink: 0,
-  minHeight: "56px",
-  padding: "12px 16px",
-  borderBottom: "1px solid var(--border)",
-});
-const sessionStatusMarkerStyle = css({ flex: 1, minWidth: 0, width: "auto" });
-const sessionStatusContentStyle = css({
-  display: "flex",
-  alignItems: "baseline",
-  flexWrap: "wrap",
-  columnGap: "12px",
-  rowGap: "4px",
+  width: "min(calc(100% - 16px), calc(50% + 400px))",
   minWidth: 0,
-  "& strong": { color: "var(--foreground)", fontSize: "14px", fontWeight: 500 },
+  marginInline: "auto",
 });
 const sessionUsageStyle = css({
   display: "flex",
   alignItems: "baseline",
+  justifyContent: "flex-start",
   flexWrap: "wrap",
   columnGap: "10px",
   rowGap: "2px",
-  minWidth: 0,
+  minHeight: "18px",
+  marginBlock: 0,
+  paddingInline: "12px",
+  color: "var(--muted-foreground)",
   fontSize: "12px",
   fontVariantNumeric: "tabular-nums",
   "& > span": { whiteSpace: "nowrap" },
@@ -816,7 +816,6 @@ const actionErrorStyle = css({
   padding: "10px 16px",
   color: "var(--destructive)",
   background: "color-mix(in oklab, var(--destructive) 10%, transparent)",
-  borderBottom: "1px solid color-mix(in oklab, var(--destructive) 30%, var(--border))",
   fontSize: "13px",
 });
 const userMessageStyle = css({
@@ -834,7 +833,6 @@ const userMessageStyle = css({
   "&[data-delivery='failed']": {
     color: "var(--destructive)",
     background: "color-mix(in oklab, var(--destructive) 10%, var(--background))",
-    border: "1px solid color-mix(in oklab, var(--destructive) 35%, var(--border))",
   },
   "& [data-prompt-delivery]": {
     color: "var(--muted-foreground)",
@@ -937,35 +935,51 @@ const emptyConversationStyle = css({
 const promptFormStyle = css({
   display: "flex",
   alignItems: "flex-end",
-  gap: "10px",
-  flexShrink: 0,
-  padding: "12px 16px",
-  background: "var(--muted)",
-  borderTop: "1px solid var(--border)",
+  gap: "8px",
+  minHeight: "104px",
+  marginBlock: "0 8px",
+  padding: "12px",
+  background: "color-mix(in oklab, var(--muted) 50%, var(--background))",
+  border: "1px solid var(--border)",
+  borderRadius: "12px",
+  boxShadow: "0 1px 3px rgb(0 0 0 / 0.08)",
+  transition: "border-color 150ms ease",
+  "&:focus-within": {
+    borderColor: "color-mix(in oklab, var(--border) 88%, black)",
+  },
 });
 const promptInputStyle = css({
   boxSizing: "border-box",
   flex: 1,
   width: "100%",
   minWidth: 0,
-  minHeight: "44px",
+  minHeight: "76px",
   maxHeight: "160px",
-  padding: "11px 13px",
+  padding: "8px",
   color: "var(--foreground)",
-  background: "var(--background)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-md)",
+  background: "transparent",
+  border: 0,
+  borderRadius: 0,
   outline: "none",
-  resize: "vertical",
+  resize: "none",
   font: "inherit",
   fontSize: "14px",
   lineHeight: 1.5,
-  "&:focus": {
-    borderColor: "var(--ring)",
-    boxShadow: "0 0 0 3px color-mix(in oklab, var(--ring) 35%, transparent)",
-  },
+  "&:focus": { boxShadow: "none" },
   "&:disabled": { cursor: "not-allowed", opacity: 0.6 },
 });
+const sendButtonStyle = css({
+  width: "33px",
+  height: "33px",
+  borderRadius: "999px",
+});
+const stopIconStyle = css({
+  width: "10px",
+  height: "10px",
+  background: "currentColor",
+  borderRadius: "2px",
+});
+const scrollButtonStyle = css({ border: 0 });
 const spinnerStyle = css({
   display: "block",
   width: "14px",

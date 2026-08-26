@@ -50,6 +50,7 @@ export interface AppShellProps {
   heading?: string;
   sessions: SessionCatalogEntry[];
   title: string;
+  topBarTitle?: string;
 }
 
 const MOBILE_SIDEBAR_ID = "openorb-mobile-sidebar";
@@ -79,7 +80,16 @@ export function AppShell(handle: Handle<AppShellProps>) {
           <header mix={topBarStyle}>
             <div mix={topBarContentStyle}>
               <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
-              {handle.props.eyebrow
+              {handle.props.topBarTitle
+                ? (
+                  <>
+                    <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                    <h1 data-top-bar-title mix={topBarTitleStyle}>
+                      {handle.props.topBarTitle}
+                    </h1>
+                  </>
+                )
+                : handle.props.eyebrow
                 ? (
                   <>
                     <Separator orientation="vertical" mix={topBarSeparatorStyle} />
@@ -338,6 +348,19 @@ const topBarContentStyle = css({
   [media.md]: { paddingLeft: "56px" },
 });
 const topBarSeparatorStyle = css({ height: "16px", marginRight: "8px" });
+const topBarTitleStyle = css({
+  minWidth: 0,
+  maxWidth: "min(70vw, 720px)",
+  margin: 0,
+  overflow: "hidden",
+  color: "var(--foreground)",
+  fontSize: "18px",
+  fontWeight: 650,
+  letterSpacing: "-0.02em",
+  lineHeight: 1.2,
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+});
 const desktopBreadcrumbItemStyle = css({
   display: "none",
   [media.md]: { display: "inline-flex" },
