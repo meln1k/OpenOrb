@@ -8,7 +8,7 @@ import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
 import { createGondolinAgentEnvironment } from "@/src/environment/gondolin/layer.ts";
 import { createOpenOrbPiSession, type OpenOrbPiSession } from "@/src/harness/pi/session.ts";
 import { createPiTools } from "@/src/harness/pi/tools.ts";
-import { installLocalDeveloperImage } from "@/test/environment/gondolin/local-developer-image.ts";
+import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
 
 const PUBLIC_REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
 const WRONG_REPOSITORY_URL = "https://github.com/octocat/Hello-World.git";
@@ -37,7 +37,7 @@ Deno.test({
     try {
       opened = await openRuntime({
         workspacePath,
-        developerImage: await installLocalDeveloperImage(temporaryDirectory),
+        guestImage: await installLocalGuestImage(temporaryDirectory),
         sessionLabel: "openorb OO-010 public GitHub integration test",
         github: { repositoryUrl: PUBLIC_REPOSITORY_URL },
         cpuCount: 2,
@@ -124,7 +124,7 @@ Deno.test({
     try {
       opened = await openRuntime({
         workspacePath,
-        developerImage: await installLocalDeveloperImage(temporaryDirectory),
+        guestImage: await installLocalGuestImage(temporaryDirectory),
         sessionLabel: "openorb OO-010 private GitHub integration test",
         github: { repositoryUrl, token },
         cpuCount: 2,

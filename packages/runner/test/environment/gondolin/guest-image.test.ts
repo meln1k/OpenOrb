@@ -6,11 +6,11 @@ import { TarStream, type TarStreamInput } from "@std/tar";
 import type { Result } from "@openorb/result";
 
 import {
-  currentDeveloperImageArchitecture,
-  ensureDeveloperImage,
-  prepareDeveloperImageForVm,
-} from "@/src/environment/gondolin/developer-image/installer.ts";
-import type { DeveloperImageRelease } from "@/src/environment/gondolin/developer-image/release.ts";
+  currentGuestImageArchitecture,
+  ensureGuestImage,
+  prepareGuestImageForVm,
+} from "@/src/environment/gondolin/guest-image/installer.ts";
+import type { GuestImageRelease } from "@/src/environment/gondolin/guest-image/release.ts";
 
 const BUILD_ID = "0cc0ad9d-c995-58cb-8382-a9037aa2d4cc";
 const ASSET_CONTENTS = {
@@ -21,7 +21,7 @@ const ASSET_CONTENTS = {
   "krun-empty-initrd": new Uint8Array(),
 } as const;
 
-Deno.test("installs and reuses a verified developer image atomically", async () => {
+Deno.test("installs and reuses a verified guest image atomically", async () => {
   const fixture = await createImageFixture();
   const workingDirectory = await Deno.makeTempDir();
   let downloads = 0;
@@ -32,7 +32,7 @@ Deno.test("installs and reuses a verified developer image atomically", async () 
 
   try {
     const first = success(
-      await ensureDeveloperImage({
+      await ensureGuestImage({
         workingDirectory,
         architecture: "x64",
         release: fixture.release,
@@ -40,7 +40,7 @@ Deno.test("installs and reuses a verified developer image atomically", async () 
       }),
     );
     const second = success(
-      await ensureDeveloperImage({
+      await ensureGuestImage({
         workingDirectory,
         architecture: "x64",
         release: fixture.release,
@@ -89,7 +89,7 @@ for (
     const workingDirectory = await Deno.makeTempDir();
     try {
       const error = failure(
-        await ensureDeveloperImage({
+        await ensureGuestImage({
           workingDirectory,
           architecture: "x64",
           release: fixture.release,
@@ -118,7 +118,7 @@ Deno.test("reports an unavailable image download without a partial install", asy
   const workingDirectory = await Deno.makeTempDir();
   try {
     const error = failure(
-      await ensureDeveloperImage({
+      await ensureGuestImage({
         workingDirectory,
         architecture: "x64",
         release: fixture.release,
@@ -126,7 +126,7 @@ Deno.test("reports an unavailable image download without a partial install", asy
       }),
     );
     assertMatch(error.message, /download failed with HTTP 404/);
-    assertMatch(error.message, /https:\/\/example\.test\/developer-image\.tar\.gz/);
+    assertMatch(error.message, /https:\/\/example\.test\/guest-image\.tar\.gz/);
     assertEquals(await releaseDirectoryEntries(workingDirectory), []);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
@@ -151,7 +151,7 @@ for (
     const workingDirectory = await Deno.makeTempDir();
     try {
       const error = failure(
-        await ensureDeveloperImage({
+        await ensureGuestImage({
           workingDirectory,
           architecture: "x64",
           release: fixture.release,
@@ -193,7 +193,7 @@ for (
     const workingDirectory = await Deno.makeTempDir();
     try {
       const error = failure(
-        await ensureDeveloperImage({
+        await ensureGuestImage({
           workingDirectory,
           architecture: "x64",
           release: fixture.release,
@@ -213,7 +213,7 @@ Deno.test("fails clearly instead of replacing a corrupt cached image", async () 
   const workingDirectory = await Deno.makeTempDir();
   try {
     const image = success(
-      await ensureDeveloperImage({
+      await ensureGuestImage({
         workingDirectory,
         architecture: "x64",
         release: fixture.release,
@@ -223,7 +223,7 @@ Deno.test("fails clearly instead of replacing a corrupt cached image", async () 
     await Deno.writeTextFile(join(image.path, "rootfs.ext4"), "corrupt");
 
     const error = failure(
-      await ensureDeveloperImage({
+      await ensureGuestImage({
         workingDirectory,
         architecture: "x64",
         release: fixture.release,
@@ -244,7 +244,7 @@ Deno.test("rejects a changed asset even when its manifest checksum is rewritten"
   const workingDirectory = await Deno.makeTempDir();
   try {
     const image = success(
-      await ensureDeveloperImage({
+      await ensureGuestImage({
         workingDirectory,
         architecture: "x64",
         release: fixture.release,
@@ -259,7 +259,7 @@ Deno.test("rejects a changed asset even when its manifest checksum is rewritten"
     await Deno.writeTextFile(manifestPath, JSON.stringify(manifest));
 
     const error = failure(
-      await ensureDeveloperImage({
+      await ensureGuestImage({
         workingDirectory,
         architecture: "x64",
         release: fixture.release,
@@ -274,26 +274,26 @@ Deno.test("rejects a changed asset even when its manifest checksum is rewritten"
   }
 });
 
-Deno.test("reverifies a developer image immediately before VM use", async () => {
+Deno.test("reverifies a guest image immediately before VM use", async () => {
   const fixture = await createImageFixture();
   const workingDirectory = await Deno.makeTempDir();
   try {
     const image = success(
-      await ensureDeveloperImage({
+      await ensureGuestImage({
         workingDirectory,
         architecture: "x64",
         release: fixture.release,
         fetch: () => Promise.resolve(responseFor(fixture.archive)),
       }),
     );
-    assertEquals(success(await prepareDeveloperImageForVm(image)), {
+    assertEquals(success(await prepareGuestImageForVm(image)), {
       kernelPath: join(image.path, "vmlinuz-virt"),
       initrdPath: join(image.path, "initramfs.cpio.lz4"),
       rootfsPath: join(image.path, "rootfs.ext4"),
     });
 
     await Deno.writeTextFile(join(image.path, "vmlinuz-virt"), "changed kernel");
-    const error = failure(await prepareDeveloperImageForVm(image));
+    const error = failure(await prepareGuestImageForVm(image));
     assertMatch(error.message, /asset checksum does not match manifest\.json/);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
@@ -301,10 +301,10 @@ Deno.test("reverifies a developer image immediately before VM use", async () => 
 });
 
 Deno.test("maps supported host architecture names", () => {
-  assertEquals(currentDeveloperImageArchitecture("x86_64"), "x64");
-  assertEquals(currentDeveloperImageArchitecture("amd64"), "x64");
-  assertEquals(currentDeveloperImageArchitecture("aarch64"), "arm64");
-  assertEquals(currentDeveloperImageArchitecture("arm64"), "arm64");
+  assertEquals(currentGuestImageArchitecture("x86_64"), "x64");
+  assertEquals(currentGuestImageArchitecture("amd64"), "x64");
+  assertEquals(currentGuestImageArchitecture("aarch64"), "arm64");
+  assertEquals(currentGuestImageArchitecture("arm64"), "arm64");
 });
 
 function success<T, E>(result: Result<T, E>): T {
@@ -385,12 +385,12 @@ function releaseFor(
   archive: Uint8Array,
   buildId: string,
   manifestSha256: string,
-): DeveloperImageRelease {
+): GuestImageRelease {
   const asset = {
     gondolinArchitecture: "x86_64" as const,
     gondolinBuildId: buildId,
     manifestSha256,
-    url: "https://example.test/developer-image.tar.gz",
+    url: "https://example.test/guest-image.tar.gz",
     sizeBytes: archive.byteLength,
     sha256: sha256(archive),
   };

@@ -14,7 +14,7 @@ import {
 import { resolveAgentWorkspacePath } from "@/src/environment/agent-environment.ts";
 import { createOpenOrbPiSession } from "@/src/harness/pi/session.ts";
 import { createPiTools } from "@/src/harness/pi/tools.ts";
-import { installLocalDeveloperImage } from "@/test/environment/gondolin/local-developer-image.ts";
+import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
 
 Deno.test("workspace path mapping rejects lexical escapes", () => {
   assertEquals(resolveAgentWorkspacePath("file.txt"), "/workspace/file.txt");
@@ -61,7 +61,7 @@ Deno.test({
     await Deno.mkdir(workspacePath);
     const opened = await openRuntime({
       workspacePath,
-      developerImage: await installLocalDeveloperImage(temporaryDirectory),
+      guestImage: await installLocalGuestImage(temporaryDirectory),
       sessionLabel: "openorb output observer failure test",
       cpuCount: 2,
       memoryMiB: 4 * 1024,
@@ -118,10 +118,10 @@ Deno.test({
     await Deno.symlink("../host-secret", `${workspacePath}/relative-escape`);
     Deno.env.set("OPENORB_HOST_PROCESS_MARKER", hostProcessMarker);
 
-    const developerImage = await installLocalDeveloperImage(temporaryDirectory);
+    const guestImage = await installLocalGuestImage(temporaryDirectory);
     const opened = await openRuntime({
       workspacePath,
-      developerImage,
+      guestImage,
       sessionLabel: "openorb OO-008 integration test",
       cpuCount: 2,
       memoryMiB: 4 * 1024,
@@ -156,12 +156,27 @@ Deno.test({
         undefined,
       );
 
-      const imageProbe = await bash.execute("developer-image", {
+      const imageProbe = await bash.execute("guest-image", {
         command: [
           "set -eu",
-          'test "$(cat /etc/openorb-image-release)" = mvp-2',
-          'for command in bash git gh curl jq rg file tar unzip zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
+          'test "$(cat /etc/openorb-image-release)" = mvp-5',
+          ". /etc/os-release",
+          'test "$ID" = debian && test "$VERSION_ID" = 13',
+          'for command in agent-browser apt-get autoconf automake bash bun bunx bzip2 certutil corepack curl dpkg-buildpackage ffmpeg file find fzf g++ gcc gh git hg ip jq less lsof magick make node npm npx openssl patch perl ping pip pip3 pkg-config pnpm pnpx python python3 rg sed socat ssh svn tar time tmux unzip vim websocat wget xz yarn yarnpkg zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
           "test -s /etc/ssl/certs/ca-certificates.crt",
+          'for command in chromium chromium-browser google-chrome; do ! command -v "$command" >/dev/null; done',
+          "test ! -e /root/.agent-browser/browsers",
+          "agent-browser --version",
+          "agent-browser --help >/dev/null",
+          "agent-browser skills get core >/dev/null",
+          "agent-browser close >/dev/null 2>&1 || true",
+          "set +e",
+          "timeout 10s agent-browser --session custom-browser-smoke --executable-path /bin/false open about:blank >/tmp/custom-browser 2>&1",
+          "custom_browser_status=$?",
+          "set -e",
+          'test "$custom_browser_status" -ne 124',
+          "agent-browser --session custom-browser-smoke close >/dev/null 2>&1 || true",
+          "test ! -e /root/.agent-browser/browsers",
           "git --version",
           "gh --version",
           "set +e",
@@ -169,9 +184,11 @@ Deno.test({
           "gh_status=$?",
           "set -e",
           'test "$gh_status" -ne 0 && test "$gh_status" -ne 124',
-          'for command in deno node python python3 go cargo rustc; do ! command -v "$command" >/dev/null; done',
-          'test -z "$(find /var/cache/apk -type f -print -quit 2>/dev/null)"',
+          'for command in apk deno go cargo rustc java javac dotnet ruby php lua R docker podman buildah nerdctl qemu-system-x86_64 qemu-img firecracker sqlite3 psql mysql mariadb redis-cli mongosh duckdb sshd; do ! command -v "$command" >/dev/null; done',
+          'test -z "$(find /var/cache/apt/archives /var/lib/apt/lists -type f -print -quit 2>/dev/null)"',
+          "test ! -e /root/.npm",
           "test ! -e /sbin/openrc",
+          "test ! -x /usr/lib/systemd/systemd",
           "test ! -e /usr/sbin/sshd",
           "printf image-ok",
         ].join("\n"),
@@ -186,7 +203,35 @@ Deno.test({
       );
       assertStringIncludes(
         imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
+        "agent-browser 0.35.0",
+      );
+      assertStringIncludes(
+        imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
         "image-ok",
+      );
+
+      const browserProbe = await bash.execute("guest-image-browser", {
+        command: [
+          "set -eu",
+          "browser_session=openorb-image-smoke",
+          'cleanup() { agent-browser --session "$browser_session" close >/dev/null 2>&1 || true; }',
+          "trap cleanup EXIT",
+          'timeout 360s agent-browser --session "$browser_session" open https://example.com',
+          'case "$(uname -m)" in x86_64) test -n "$(find /root/.agent-browser/browsers -type f -name chrome -perm /111 -print -quit)" ;; aarch64) command -v chromium >/dev/null ;; *) exit 1 ;; esac',
+          'test "$(timeout 30s agent-browser --session "$browser_session" get title)" = "Example Domain"',
+          'test "$(timeout 30s agent-browser --session "$browser_session" eval "1+1")" = 2',
+          'timeout 30s agent-browser --session "$browser_session" eval \'document.body.textContent="browser-ok"; "ok"\' >/dev/null',
+          'test "$(timeout 30s agent-browser --session "$browser_session" get text body)" = browser-ok',
+          'timeout 60s agent-browser --session "$browser_session" screenshot /tmp/openorb-image-smoke.png >/dev/null',
+          "test -s /tmp/openorb-image-smoke.png",
+          "file /tmp/openorb-image-smoke.png | rg 'PNG image data'",
+          "printf browser-ok",
+        ].join("\n"),
+        timeout: 420,
+      });
+      assertStringIncludes(
+        browserProbe.content[0]?.type === "text" ? browserProbe.content[0].text : "",
+        "browser-ok",
       );
 
       await write.execute("write", { path: "nested/message.txt", content: "before\n" });

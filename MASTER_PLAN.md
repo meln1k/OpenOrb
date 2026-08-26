@@ -67,7 +67,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - User-defined push branch names
 - Project `.agents/setup` and `.agents/resume` hooks, executed only inside Gondolin
 - Explicit allowlist-only Pi `ResourceLoader` with no project resource discovery and in-memory Pi settings
-- Batteries-included Gondolin developer image
+- Batteries-included Gondolin guest image
 - Shared package download caches
 - Archive and explicit deletion
 - Minimal user-owned gateway live-session catalog (project, creation time, trimmed initial prompt) plus user-owned deleted-session ID/time markers; all full session data is runner-backed
@@ -911,22 +911,18 @@ Setup documentation must tell projects not to rely on checkpoint persistence und
 - Use a bounded blocking period; surface failure rather than silently continuing.
 - Hooks execute inside Gondolin from `/workspace`.
 
-### 15.4 Developer image
+### 15.4 Guest image
 
-Gondolin currently builds Alpine images, so the initial OpenOrb image should be a batteries-included Alpine developer environment containing at least:
+Gondolin currently implements an Alpine boot-image pipeline, but it accepts an OCI rootfs. The OpenOrb guest image uses a pinned Debian OCI userspace with Gondolin's Alpine kernel/initramfs boot layer. Its shared development environment contains:
 
-- Bash and coreutils
-- Git and OpenSSH
-- curl/wget and CA certificates
-- ripgrep, jq, file, tar, unzip, zstd
-- Node.js and npm/corepack/pnpm/Yarn inside the guest only when required by supported project workflows; these are not runner-host prerequisites
-- Python, pip, and uv if practical
-- C/C++ build toolchain, make, pkg-config
-- `gh`
-- SQLite client
-- Process/service supervision utility
-- Common network/process debugging utilities
-- `sshd` and Gondolin guest helpers
+- Shell, text, archive, editor, network, and media utilities comparable to a fresh Amp orb
+- Git, `gh`, GCC/G++, Make, Autoconf, Automake, and pkg-config
+- Python/pip, Node.js/npm/Corepack/pnpm/Yarn, Bun, and Perl
+- `apt` for repository-specific setup
+- The pinned native agent-browser CLI and browser runtime libraries
+- Gondolin guest helpers and its minimal init
+
+The image does not embed Chromium. An OpenOrb wrapper serializes on-demand installation before the first browser command: it fetches current Stable Chrome for Testing with the guest's Gondolin-compatible `curl` on x86-64, while ARM64 installs snapshot-pinned Debian Chromium because Google does not publish a Linux ARM64 Chrome for Testing build. The browser lands in the writable copy-on-write rootfs. The image does not include Amp/E2B internals, Deno, Go, Rust, Java, host container/VM/database tooling, a package cache, service supervisor, SSH daemon, terminal service, or preview service.
 
 Image builds must be versioned and reproducible. Runner identity capabilities report supported image build IDs. Checkpoint resume requires the matching image.
 
@@ -1972,7 +1968,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 
 - Guest-side public repository clone with no native host Git against the workspace
 - Session storage layout
-- Developer image build and distribution
+- Guest image build and distribution
 - Per-session VM creation with CPU/memory
 - `/workspace` and cache mounts
 - `.agents/setup`/`.agents/resume`
@@ -2101,7 +2097,7 @@ A release is MVP-complete when all of the following are true:
 
 **Risk:** Experimental APIs, Alpine-only image builder, disk-only checkpoints, and serialized guest exec behavior.
 
-**Mitigation:** Pin versions/build IDs, own a tested developer image, use SSH for terminal, supervise background services, and maintain real-QEMU integration tests.
+**Mitigation:** Pin versions/build IDs and Debian OCI inputs, own a tested guest image, keep services explicitly process-managed, and maintain real-QEMU integration tests.
 
 ### Pi discovery defaults
 

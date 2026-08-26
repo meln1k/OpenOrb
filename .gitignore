@@ -6,3 +6,4 @@ dist/
 *.log
 dogfood-output/
 .amp/portal-proxy.mjs
+.amp/portals/*

@@ -1,5 +1,5 @@
 import { runRunnerRpc } from "./connection/rpc.ts";
-import { ensureDeveloperImage } from "./environment/gondolin/developer-image/installer.ts";
+import { ensureGuestImage } from "./environment/gondolin/guest-image/installer.ts";
 import { gondolinAgentEnvironmentProviderLayer } from "./environment/gondolin/layer.ts";
 import { piAgentHarnessLayer } from "./harness/pi/layer.ts";
 import { createRunnerCapacityReporter } from "./runtime/capacity.ts";
@@ -103,8 +103,8 @@ export async function main(
     return 1;
   }
 
-  console.log("[openorb-runner] checking pinned developer image");
-  const [developerImage, imageError] = await ensureDeveloperImage({ workingDirectory });
+  console.log("[openorb-runner] checking pinned guest image");
+  const [guestImage, imageError] = await ensureGuestImage({ workingDirectory });
   if (imageError !== undefined) {
     console.error(`[openorb-runner] error: ${imageError.message}`);
     return 1;
@@ -121,10 +121,10 @@ export async function main(
       denoVersion: report.denoVersion,
       runtime: Deno.build.standalone ? "denort" : "deno",
       qemu: report.qemu,
-      developerImage: {
-        releaseId: developerImage.releaseId,
-        gondolinBuildId: developerImage.gondolinBuildId,
-        path: developerImage.path,
+      guestImage: {
+        releaseId: guestImage.releaseId,
+        gondolinBuildId: guestImage.gondolinBuildId,
+        path: guestImage.path,
       },
     }),
   );
@@ -202,7 +202,7 @@ export async function main(
         runnerId: identity.runnerId,
       }).pipe(Layer.provide(DenoFileSystem.layer));
       const sessionEventsLive = sessionEventsLayer.pipe(Layer.provide(sessionStoreLive));
-      const environmentLive = gondolinAgentEnvironmentProviderLayer(developerImage);
+      const environmentLive = gondolinAgentEnvironmentProviderLayer(guestImage);
       const harnessLive = piAgentHarnessLayer();
       const sessionWorkerLive = sessionWorkerFactoryLayer.pipe(
         Layer.provide(

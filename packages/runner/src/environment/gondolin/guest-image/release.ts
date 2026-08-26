@@ -1,6 +1,6 @@
-export type DeveloperImageArchitecture = "arm64" | "x64";
+export type GuestImageArchitecture = "arm64" | "x64";
 
-export interface DeveloperImageAssetRelease {
+export interface GuestImageAssetRelease {
   gondolinArchitecture: "aarch64" | "x86_64";
   gondolinBuildId: string;
   manifestSha256: string;
@@ -9,12 +9,12 @@ export interface DeveloperImageAssetRelease {
   sha256: string;
 }
 
-export interface DeveloperImageRelease {
+export interface GuestImageRelease {
   id: string;
-  assets: Record<DeveloperImageArchitecture, DeveloperImageAssetRelease>;
+  assets: Record<GuestImageArchitecture, GuestImageAssetRelease>;
 }
 
-export const DEVELOPER_IMAGE_RELEASE: DeveloperImageRelease = {
+export const GUEST_IMAGE_RELEASE: GuestImageRelease = {
   id: "mvp-2",
   assets: {
     arm64: {

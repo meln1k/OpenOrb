@@ -1,33 +1,23 @@
 {
-  "arch": "x86_64",
+  "arch": "aarch64",
   "distro": "alpine",
   "alpine": {
     "version": "3.23.0",
     "branch": "v3.23",
     "kernelPackage": "linux-virt",
     "kernelImage": "vmlinuz-virt",
-    "rootfsPackages": [
-      "linux-virt",
-      "rng-tools",
-      "bash",
-      "coreutils",
-      "git",
-      "github-cli",
-      "ca-certificates",
-      "curl",
-      "jq",
-      "ripgrep",
-      "file",
-      "tar",
-      "unzip",
-      "zstd"
-    ],
     "initramfsPackages": [],
     "krunfwVersion": "v5.2.1"
   },
+  "oci": {
+    "image": "localhost/openorb-guest-debian:aarch64",
+    "runtime": "podman",
+    "platform": "linux/arm64",
+    "pullPolicy": "never"
+  },
   "rootfs": {
     "label": "gondolin-root",
-    "sizeMb": 512
+    "sizeMb": 2560
   },
   "postBuild": {
     "copy": [

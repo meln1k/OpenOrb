@@ -5,14 +5,14 @@ import { UntarStream } from "@std/tar";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
 import {
-  DEVELOPER_IMAGE_RELEASE,
-  type DeveloperImageArchitecture,
-  type DeveloperImageAssetRelease,
-  type DeveloperImageRelease,
+  GUEST_IMAGE_RELEASE,
+  type GuestImageArchitecture,
+  type GuestImageAssetRelease,
+  type GuestImageRelease,
 } from "./release.ts";
-import { type DeveloperImageManifest, parseDeveloperImageManifest } from "./manifest.ts";
+import { type GuestImageManifest, parseGuestImageManifest } from "./manifest.ts";
 
-const VERIFIED_DEVELOPER_IMAGE = Symbol("verified OpenOrb developer image");
+const VERIFIED_GUEST_IMAGE = Symbol("verified OpenOrb guest image");
 const IMAGE_FILES = new Set([
   "manifest.json",
   "vmlinuz-virt",
@@ -22,7 +22,7 @@ const IMAGE_FILES = new Set([
   "krun-empty-initrd",
 ]);
 const MAX_MANIFEST_BYTES = 128 * 1024;
-const MAX_UNCOMPRESSED_IMAGE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UNCOMPRESSED_IMAGE_BYTES = 3 * 1024 * 1024 * 1024;
 const RELEASE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MANIFEST_ASSETS = {
@@ -40,15 +40,15 @@ const MANIFEST_ASSET_NAMES = [
   "krunInitrd",
 ] as const;
 
-export interface DeveloperImage {
+export interface GuestImage {
   readonly path: string;
   readonly releaseId: string;
-  readonly architecture: DeveloperImageArchitecture;
+  readonly architecture: GuestImageArchitecture;
   readonly gondolinBuildId: string;
-  readonly [VERIFIED_DEVELOPER_IMAGE]: DeveloperImageRelease;
+  readonly [VERIFIED_GUEST_IMAGE]: GuestImageRelease;
 }
 
-export interface DeveloperImageVmAssets {
+export interface GuestImageVmAssets {
   readonly kernelPath: string;
   readonly initrdPath: string;
   readonly rootfsPath: string;
@@ -58,25 +58,25 @@ interface FetchImage {
   (input: string | URL | Request, init?: RequestInit): Promise<Response>;
 }
 
-export interface EnsureDeveloperImageOptions {
+export interface EnsureGuestImageOptions {
   workingDirectory: string;
-  architecture?: DeveloperImageArchitecture;
-  release?: DeveloperImageRelease;
+  architecture?: GuestImageArchitecture;
+  release?: GuestImageRelease;
   fetch?: FetchImage;
 }
 
-export interface VerifyDeveloperImageOptions {
-  architecture?: DeveloperImageArchitecture;
-  release?: DeveloperImageRelease;
+export interface VerifyGuestImageOptions {
+  architecture?: GuestImageArchitecture;
+  release?: GuestImageRelease;
 }
 
-export async function ensureDeveloperImage(
-  options: EnsureDeveloperImageOptions,
-): Promise<Result<DeveloperImage, DeveloperImageError>> {
+export async function ensureGuestImage(
+  options: EnsureGuestImageOptions,
+): Promise<Result<GuestImage, GuestImageError>> {
   const [configuration, configurationError] = trySync(
     () => {
-      const release = options.release ?? DEVELOPER_IMAGE_RELEASE;
-      const architecture = options.architecture ?? currentDeveloperImageArchitecture();
+      const release = options.release ?? GUEST_IMAGE_RELEASE;
+      const architecture = options.architecture ?? currentGuestImageArchitecture();
       validateReleaseId(release.id);
       const asset = release.assets[architecture];
       validateReleaseAsset(asset, architecture);
@@ -91,7 +91,7 @@ export async function ensureDeveloperImage(
         imageDirectory: join(releaseDirectory, architecture),
       };
     },
-    (cause) => developerImageError("Developer image configuration is invalid", cause),
+    (cause) => guestImageError("Guest image configuration is invalid", cause),
   );
   if (configurationError !== undefined) return err(configurationError);
   const { release, architecture, asset, imagesDirectory, releaseDirectory, imageDirectory } =
@@ -99,21 +99,21 @@ export async function ensureDeveloperImage(
 
   const [imageExists, existenceError] = await pathExists(imageDirectory);
   if (existenceError !== undefined) return err(existenceError);
-  if (imageExists) return await verifyDeveloperImage(imageDirectory, { architecture, release });
+  if (imageExists) return await verifyGuestImage(imageDirectory, { architecture, release });
 
   const [, directoryError] = await tryAsync(
     (async () => {
       await ensureRealDirectory(imagesDirectory);
       await ensureRealDirectory(releaseDirectory);
     })(),
-    (cause) => developerImageError("Developer image directories could not be prepared", cause),
+    (cause) => guestImageError("Guest image directories could not be prepared", cause),
   );
   if (directoryError !== undefined) return err(directoryError);
   const nonce = crypto.randomUUID();
   const archivePath = join(releaseDirectory, `.${architecture}.${nonce}.tar.gz`);
   const temporaryDirectory = join(releaseDirectory, `.${architecture}.${nonce}.installing`);
 
-  const [installedImage, installError] = await installDeveloperImage(
+  const [installedImage, installError] = await installGuestImage(
     asset,
     archivePath,
     temporaryDirectory,
@@ -132,15 +132,15 @@ export async function ensureDeveloperImage(
   return ok(installedImage);
 }
 
-async function installDeveloperImage(
-  asset: DeveloperImageAssetRelease,
+async function installGuestImage(
+  asset: GuestImageAssetRelease,
   archivePath: string,
   temporaryDirectory: string,
   imageDirectory: string,
-  architecture: DeveloperImageArchitecture,
-  release: DeveloperImageRelease,
+  architecture: GuestImageArchitecture,
+  release: GuestImageRelease,
   fetchImage: FetchImage,
-): Promise<Result<DeveloperImage, DeveloperImageError>> {
+): Promise<Result<GuestImage, GuestImageError>> {
   const [, installError] = await tryAsync(
     (async () => {
       await downloadArchive(asset, archivePath, fetchImage);
@@ -149,28 +149,28 @@ async function installDeveloperImage(
       return undefined;
     })(),
     (cause) =>
-      developerImageError(
-        `Unable to install OpenOrb developer image ${release.id} for ${architecture}: ${
+      guestImageError(
+        `Unable to install OpenOrb guest image ${release.id} for ${architecture}: ${
           errorMessage(cause)
         }`,
         cause,
       ),
   );
   if (installError !== undefined) return err(installError);
-  const [verified, verificationError] = await verifyDeveloperImage(temporaryDirectory, {
+  const [verified, verificationError] = await verifyGuestImage(temporaryDirectory, {
     architecture,
     release,
   });
   if (verificationError !== undefined) return err(verificationError);
   const [, renameError] = await tryAsync(
     Deno.rename(temporaryDirectory, imageDirectory),
-    (cause) => developerImageError("Developer image installation could not be committed", cause),
+    (cause) => guestImageError("Guest image installation could not be committed", cause),
   );
   if (renameError !== undefined) {
     const [concurrentInstallExists, concurrentExistenceError] = await pathExists(imageDirectory);
     if (concurrentExistenceError !== undefined) return err(concurrentExistenceError);
     if (!concurrentInstallExists) return err(renameError);
-    return await verifyDeveloperImage(imageDirectory, { architecture, release });
+    return await verifyGuestImage(imageDirectory, { architecture, release });
   }
   return ok({ ...verified, path: resolve(imageDirectory) });
 }
@@ -178,7 +178,7 @@ async function installDeveloperImage(
 async function cleanupInstallation(
   archivePath: string,
   temporaryDirectory: string,
-): Promise<Result<void, DeveloperImageError>> {
+): Promise<Result<void, GuestImageError>> {
   const [, archiveCleanupError] = await removeIfPresent(archivePath);
   if (archiveCleanupError !== undefined) return err(archiveCleanupError);
   const [, directoryCleanupError] = await removeIfPresent(temporaryDirectory, true);
@@ -186,27 +186,27 @@ async function cleanupInstallation(
   return ok(undefined);
 }
 
-export async function verifyDeveloperImage(
+export async function verifyGuestImage(
   imageDirectory: string,
-  options: VerifyDeveloperImageOptions = {},
-): Promise<Result<DeveloperImage, DeveloperImageError>> {
-  const release = options.release ?? DEVELOPER_IMAGE_RELEASE;
+  options: VerifyGuestImageOptions = {},
+): Promise<Result<GuestImage, GuestImageError>> {
+  const release = options.release ?? GUEST_IMAGE_RELEASE;
   const expectedPath = resolve(imageDirectory);
   return await tryAsync(
-    verifyDeveloperImageValue(imageDirectory, options),
+    verifyGuestImageValue(imageDirectory, options),
     (cause) =>
       cause instanceof Deno.errors.NotFound
         ? invalidImageError(release.id, expectedPath, "the image directory is missing")
-        : developerImageError(`Developer image verification failed for ${imageDirectory}`, cause),
+        : guestImageError(`Guest image verification failed for ${imageDirectory}`, cause),
   );
 }
 
-async function verifyDeveloperImageValue(
+async function verifyGuestImageValue(
   imageDirectory: string,
-  options: VerifyDeveloperImageOptions,
-): Promise<DeveloperImage> {
-  const release = options.release ?? DEVELOPER_IMAGE_RELEASE;
-  const architecture = options.architecture ?? currentDeveloperImageArchitecture();
+  options: VerifyGuestImageOptions,
+): Promise<GuestImage> {
+  const release = options.release ?? GUEST_IMAGE_RELEASE;
+  const architecture = options.architecture ?? currentGuestImageArchitecture();
   validateReleaseId(release.id);
   const asset = release.assets[architecture];
   validateReleaseAsset(asset, architecture);
@@ -265,25 +265,25 @@ async function verifyDeveloperImageValue(
     releaseId: release.id,
     architecture,
     gondolinBuildId: asset.gondolinBuildId,
-    [VERIFIED_DEVELOPER_IMAGE]: pinRelease(release),
+    [VERIFIED_GUEST_IMAGE]: pinRelease(release),
   };
 }
 
-export async function prepareDeveloperImageForVm(
-  image: DeveloperImage,
-): Promise<Result<DeveloperImageVmAssets, DeveloperImageError>> {
-  const release = image[VERIFIED_DEVELOPER_IMAGE];
+export async function prepareGuestImageForVm(
+  image: GuestImage,
+): Promise<Result<GuestImageVmAssets, GuestImageError>> {
+  const release = image[VERIFIED_GUEST_IMAGE];
   const asset = release?.assets[image.architecture];
   if (
     !asset || release.id !== image.releaseId ||
     asset.gondolinBuildId !== image.gondolinBuildId
   ) {
     return err(
-      new DeveloperImageError("The OpenOrb developer image handle is invalid.", undefined),
+      new GuestImageError("The OpenOrb guest image handle is invalid.", undefined),
     );
   }
 
-  const [verified, verificationError] = await verifyDeveloperImage(image.path, {
+  const [verified, verificationError] = await verifyGuestImage(image.path, {
     architecture: image.architecture,
     release,
   });
@@ -295,30 +295,30 @@ export async function prepareDeveloperImageForVm(
   });
 }
 
-export function currentDeveloperImageArchitecture(
+export function currentGuestImageArchitecture(
   architecture: string = Deno.build.arch,
-): DeveloperImageArchitecture {
+): GuestImageArchitecture {
   if (architecture === "x86_64" || architecture === "x64" || architecture === "amd64") {
     return "x64";
   }
   if (architecture === "aarch64" || architecture === "arm64") return "arm64";
-  throw new DeveloperImageError(
-    `No OpenOrb developer image is available for host architecture "${architecture}".`,
+  throw new GuestImageError(
+    `No OpenOrb guest image is available for host architecture "${architecture}".`,
     undefined,
   );
 }
 
 async function downloadArchive(
-  asset: DeveloperImageAssetRelease,
+  asset: GuestImageAssetRelease,
   destination: string,
   fetchImage: FetchImage,
 ): Promise<void> {
   const response = await fetchImage(asset.url, {
-    headers: { "user-agent": "openorb-runner/developer-image" },
+    headers: { "user-agent": "openorb-runner/guest-image" },
     redirect: "follow",
   });
   if (!response.ok || !response.body) {
-    throw new DeveloperImageError(
+    throw new GuestImageError(
       `download failed with HTTP ${response.status} ${response.statusText} from ${asset.url}`,
       undefined,
     );
@@ -326,7 +326,7 @@ async function downloadArchive(
   const contentLength = response.headers.get("content-length");
   if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) !== asset.sizeBytes) {
     await response.body.cancel();
-    throw new DeveloperImageError(
+    throw new GuestImageError(
       `download size header is ${contentLength} bytes; expected ${asset.sizeBytes} bytes`,
       undefined,
     );
@@ -342,7 +342,7 @@ async function downloadArchive(
   for await (const chunk of response.body) {
     received += chunk.byteLength;
     if (received > asset.sizeBytes) {
-      throw new DeveloperImageError(
+      throw new GuestImageError(
         `download exceeded the pinned size of ${asset.sizeBytes} bytes from ${asset.url}`,
         undefined,
       );
@@ -353,14 +353,14 @@ async function downloadArchive(
   await file.sync();
 
   if (received !== asset.sizeBytes) {
-    throw new DeveloperImageError(
+    throw new GuestImageError(
       `downloaded ${received} bytes; expected ${asset.sizeBytes} bytes`,
       undefined,
     );
   }
   const checksum = hash.digest("hex");
   if (checksum !== asset.sha256) {
-    throw new DeveloperImageError(
+    throw new GuestImageError(
       `download SHA-256 is ${checksum}; expected ${asset.sha256}`,
       undefined,
     );
@@ -378,21 +378,21 @@ async function extractArchive(archivePath: string, destination: string): Promise
   for await (const entry of entries) {
     if (!IMAGE_FILES.has(entry.path) || seen.has(entry.path) || !entry.readable) {
       await entry.readable?.cancel();
-      throw new DeveloperImageError(
+      throw new GuestImageError(
         `image archive contains an invalid entry: ${entry.path}`,
         undefined,
       );
     }
     if (entry.header.typeflag !== "0" && entry.header.typeflag !== "\0") {
       await entry.readable.cancel();
-      throw new DeveloperImageError(
+      throw new GuestImageError(
         `image archive entry is not a regular file: ${entry.path}`,
         undefined,
       );
     }
     if (!Number.isSafeInteger(entry.header.size) || entry.header.size < 0) {
       await entry.readable.cancel();
-      throw new DeveloperImageError(
+      throw new GuestImageError(
         `image archive entry has an invalid size: ${entry.path}`,
         undefined,
       );
@@ -400,8 +400,8 @@ async function extractArchive(archivePath: string, destination: string): Promise
     totalBytes += entry.header.size;
     if (totalBytes > MAX_UNCOMPRESSED_IMAGE_BYTES) {
       await entry.readable.cancel();
-      throw new DeveloperImageError(
-        "image archive expands beyond the 2 GiB safety limit",
+      throw new GuestImageError(
+        "image archive expands beyond the 3 GiB safety limit",
         undefined,
       );
     }
@@ -415,7 +415,7 @@ async function extractArchive(archivePath: string, destination: string): Promise
     for await (const chunk of entry.readable) {
       written += chunk.byteLength;
       if (written > entry.header.size) {
-        throw new DeveloperImageError(
+        throw new GuestImageError(
           `image archive entry exceeds its declared size: ${entry.path}`,
           undefined,
         );
@@ -424,7 +424,7 @@ async function extractArchive(archivePath: string, destination: string): Promise
     }
     await output.sync();
     if (written !== entry.header.size) {
-      throw new DeveloperImageError(
+      throw new GuestImageError(
         `image archive entry ${entry.path} contains ${written} bytes; expected ${entry.header.size}`,
         undefined,
       );
@@ -434,18 +434,18 @@ async function extractArchive(archivePath: string, destination: string): Promise
 
   for (const expected of IMAGE_FILES) {
     if (!seen.has(expected)) {
-      throw new DeveloperImageError(`image archive is missing ${expected}`, undefined);
+      throw new GuestImageError(`image archive is missing ${expected}`, undefined);
     }
   }
 }
 
-function parseManifest(text: string): DeveloperImageManifest {
-  return parseDeveloperImageManifest(JSON.parse(text));
+function parseManifest(text: string): GuestImageManifest {
+  return parseGuestImageManifest(JSON.parse(text));
 }
 
 function validateManifest(
-  manifest: DeveloperImageManifest,
-  asset: DeveloperImageAssetRelease,
+  manifest: GuestImageManifest,
+  asset: GuestImageAssetRelease,
   imagePath: string,
   releaseId: string,
 ): void {
@@ -472,7 +472,7 @@ function validateManifest(
 
 async function verifyManifestChecksums(
   imagePath: string,
-  manifest: DeveloperImageManifest,
+  manifest: GuestImageManifest,
 ): Promise<boolean> {
   for (const name of MANIFEST_ASSET_NAMES) {
     if (await fileSha256(join(imagePath, MANIFEST_ASSETS[name])) !== manifest.checksums[name]) {
@@ -495,8 +495,8 @@ async function fileSha256(path: string): Promise<string> {
 }
 
 function validateReleaseAsset(
-  asset: DeveloperImageAssetRelease,
-  architecture: DeveloperImageArchitecture,
+  asset: GuestImageAssetRelease,
+  architecture: GuestImageArchitecture,
 ): void {
   const expectedGondolinArchitecture = architecture === "x64" ? "x86_64" : "aarch64";
   if (
@@ -505,15 +505,15 @@ function validateReleaseAsset(
     !SHA256_PATTERN.test(asset.manifestSha256) ||
     !SHA256_PATTERN.test(asset.sha256) || new URL(asset.url).protocol !== "https:"
   ) {
-    throw new DeveloperImageError(
-      `Invalid OpenOrb developer image release metadata for ${architecture}.`,
+    throw new GuestImageError(
+      `Invalid OpenOrb guest image release metadata for ${architecture}.`,
       undefined,
     );
   }
 }
 
-function pinRelease(release: DeveloperImageRelease): DeveloperImageRelease {
-  const pinned: DeveloperImageRelease = {
+function pinRelease(release: GuestImageRelease): GuestImageRelease {
+  const pinned: GuestImageRelease = {
     id: release.id,
     assets: {
       arm64: { ...release.assets.arm64 },
@@ -528,16 +528,16 @@ function pinRelease(release: DeveloperImageRelease): DeveloperImageRelease {
 
 function validateReleaseId(releaseId: string): void {
   if (!RELEASE_ID_PATTERN.test(releaseId)) {
-    throw new DeveloperImageError(
-      `Invalid OpenOrb developer image release ID: ${releaseId}.`,
+    throw new GuestImageError(
+      `Invalid OpenOrb guest image release ID: ${releaseId}.`,
       undefined,
     );
   }
 }
 
-function invalidImageError(releaseId: string, path: string, reason: string): DeveloperImageError {
-  return new DeveloperImageError(
-    `OpenOrb developer image ${releaseId} at ${path} is unavailable or incompatible: ${reason}. ` +
+function invalidImageError(releaseId: string, path: string, reason: string): GuestImageError {
+  return new GuestImageError(
+    `OpenOrb guest image ${releaseId} at ${path} is unavailable or incompatible: ${reason}. ` +
       "Remove that image directory and restart the runner to download a verified copy.",
     undefined,
   );
@@ -547,7 +547,7 @@ async function ensureRealDirectory(path: string): Promise<void> {
   await Deno.mkdir(path, { recursive: true, mode: 0o700 });
   const info = await Deno.lstat(path);
   if (!info.isDirectory || info.isSymlink || await Deno.realPath(path) !== resolve(path)) {
-    throw new DeveloperImageError(
+    throw new GuestImageError(
       `Runner image directory must be a real directory: ${path}`,
       undefined,
     );
@@ -559,10 +559,10 @@ async function writeAll(file: Deno.FsFile, bytes: Uint8Array): Promise<void> {
   while (offset < bytes.byteLength) offset += await file.write(bytes.subarray(offset));
 }
 
-async function pathExists(path: string): Promise<Result<boolean, DeveloperImageError>> {
+async function pathExists(path: string): Promise<Result<boolean, GuestImageError>> {
   const [, inspectionError] = await tryAsync(
     Deno.lstat(path),
-    (cause) => developerImageError(`Developer image path could not be inspected: ${path}`, cause),
+    (cause) => guestImageError(`Guest image path could not be inspected: ${path}`, cause),
   );
   if (inspectionError !== undefined) {
     if (inspectionError.cause instanceof Deno.errors.NotFound) return ok(false);
@@ -574,11 +574,10 @@ async function pathExists(path: string): Promise<Result<boolean, DeveloperImageE
 async function removeIfPresent(
   path: string,
   recursive = false,
-): Promise<Result<void, DeveloperImageError>> {
+): Promise<Result<void, GuestImageError>> {
   const [, removalError] = await tryAsync(
     Deno.remove(path, { recursive }),
-    (cause) =>
-      developerImageError(`Developer image temporary path could not be removed: ${path}`, cause),
+    (cause) => guestImageError(`Guest image temporary path could not be removed: ${path}`, cause),
   );
   if (removalError !== undefined) {
     if (removalError.cause instanceof Deno.errors.NotFound) return ok(undefined);
@@ -587,17 +586,17 @@ async function removeIfPresent(
   return ok(undefined);
 }
 
-export class DeveloperImageError extends Error {
+export class GuestImageError extends Error {
   constructor(message: string, override readonly cause: unknown) {
     super(message, { cause });
-    this.name = "DeveloperImageError";
+    this.name = "GuestImageError";
   }
 }
 
-function developerImageError(message: string, cause: unknown): DeveloperImageError {
-  return cause instanceof DeveloperImageError
+function guestImageError(message: string, cause: unknown): GuestImageError {
+  return cause instanceof GuestImageError
     ? cause
-    : new DeveloperImageError(`${message}: ${errorMessage(cause)}`, cause);
+    : new GuestImageError(`${message}: ${errorMessage(cause)}`, cause);
 }
 
 function errorMessage(error: unknown): string {

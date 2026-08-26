@@ -1,17 +1,17 @@
-# OO-009 — Minimal versioned developer image
+# OO-009 — Minimal versioned guest image
 
 **Slice:** 2 — Prove the security boundary  
 **Depends on:** OO-008
 
 ## Outcome
 
-OpenOrb can boot a pinned, reproducible Gondolin image containing only the tools required by the lean MVP's real path.
+OpenOrb can boot a pinned, reproducible Gondolin image with a practical development CLI comparable to a fresh Amp orb.
 
 ## Scope
 
 - Add Gondolin image build configuration compatible with the current Linux orb harness and the supported Linux x86-64 and ARM64 runners.
-- Include the commands required now: Bash/coreutils, Git, GitHub CLI, CA certificates, and utilities used by setup and controlled reports.
-- Add guest language/package tooling only if required by the chosen real acceptance repository; ask before expanding the image. Such guest tooling does not add a Node.js requirement to the Deno runner host.
+- Include Bash/coreutils, Git/GitHub CLI, compiler and build tooling, Python and Node/Bun package tooling, editors, archive tools, network diagnostics, and media utilities used in a fresh Amp development orb.
+- Include the native agent-browser CLI and browser runtime libraries, but provision Chrome or Chromium on first browser use instead of embedding it in the immutable image.
 - Pin the Gondolin package and one exact image build ID with architecture-specific asset URLs, sizes, and SHA-256 hashes in runner release metadata. Never use `latest` in production.
 - Distribute QEMU-consumed assets separately from the standalone runner executable. Download atomically into `images/<build-id>/`, verify every asset before use, and pass only verified real filesystem paths to Gondolin.
 - Make missing, tampered, incompatible, and download/build failures actionable.
@@ -19,9 +19,10 @@ OpenOrb can boot a pinned, reproducible Gondolin image containing only the tools
 ## Acceptance criteria
 
 - A clean image boots through the harness and reports expected pinned identity.
-- `bash`, `git`, and `gh` run inside the guest.
+- The documented development commands, including `bash`, `git`, `gh`, GCC, Python, Node, Bun, and agent-browser, run inside the guest.
+- Chrome/Chromium is absent from the built image; agent-browser downloads it on demand and completes a real browser automation flow.
 - Image configuration and release metadata are reproducible and committed; tampered assets are rejected before Gondolin/QEMU use.
-- No package cache, service supervisor, SSH daemon, terminal, preview, or speculative language toolchain is added without a demonstrated current need.
+- No package cache, service supervisor, SSH daemon, terminal, preview, Amp/E2B internal, host infrastructure tool, or unapproved language toolchain is included.
 - Runner startup detects an unavailable/incompatible image before provisioning.
 
 ## Tests
@@ -33,4 +34,4 @@ OpenOrb can boot a pinned, reproducible Gondolin image containing only the tools
 
 ## Not included
 
-Shared caches, checkpoints, managed services, SSH transport, or a broad batteries-included toolchain not needed by the first repository.
+Shared caches, checkpoints, managed services, SSH transport, Amp/E2B internals, container/VM/database host tooling, or additional language ecosystems such as Deno, Go, Rust, and Java.

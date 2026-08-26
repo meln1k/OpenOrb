@@ -45,10 +45,13 @@ install_system_packages() {
     cpio
     curl
     e2fsprogs
+    fuse-overlayfs
     lz4
     openssl
+    podman
     postgresql
     qemu-utils
+    uidmap
     unzip
     "$qemu_package"
   )

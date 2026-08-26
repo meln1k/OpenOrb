@@ -50,7 +50,7 @@ Unless a ticket explicitly says otherwise:
 |---|---|
 | [OO-007](OO-007-audited-pi-session-factory.md) | Pi cannot discover or execute workspace resources on the host |
 | [OO-008](OO-008-gondolin-backed-pi-tools.md) | Pi file and shell tools execute only in a real Gondolin VM |
-| [OO-009](OO-009-minimal-developer-image.md) | A pinned Gondolin image has the tools needed by the full path |
+| [OO-009](OO-009-minimal-guest-image.md) | A pinned Gondolin image has the tools needed by the full path |
 | [OO-010](OO-010-github-token-mediation.md) | Public/private GitHub operations work without exposing the token |
 
 **Slice exit:** Local hostile fixtures cannot cross the Pi, filesystem, Git, or credential boundaries, and real GitHub access works inside Gondolin.

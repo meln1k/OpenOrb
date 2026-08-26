@@ -825,7 +825,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 ### Milestone 2 — Session provisioning
 
 - Session storage
-- Gondolin developer image
+- Gondolin guest image
 - Predefined per-session orb sizes
 - Guest-side public/private GitHub clone through mediated `GH_TOKEN`
 - Session branch

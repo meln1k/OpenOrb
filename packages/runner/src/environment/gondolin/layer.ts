@@ -4,7 +4,7 @@ import { RealFSProvider, VM } from "@earendil-works/gondolin";
 import { Effect, Layer, type Scope, Semaphore } from "effect";
 import type { Result } from "@openorb/result";
 
-import { type DeveloperImage, prepareDeveloperImageForVm } from "./developer-image/installer.ts";
+import { type GuestImage, prepareGuestImageForVm } from "./guest-image/installer.ts";
 import {
   createOpenOrbGitHubVmOptions,
   type OpenOrbGitHubMediationOptions,
@@ -22,7 +22,7 @@ import {
 export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
 
 export interface GondolinAgentEnvironmentConfig extends AgentEnvironmentOptions {
-  readonly developerImage: DeveloperImage;
+  readonly guestImage: GuestImage;
 }
 
 interface RunningVm {
@@ -38,19 +38,19 @@ interface GondolinEnvironmentInternals extends AgentEnvironment {
 }
 
 export function makeGondolinAgentEnvironmentProvider(
-  developerImage: DeveloperImage,
+  guestImage: GuestImage,
 ): AgentEnvironmentProvider {
   return AgentEnvironmentProvider.of({
-    make: (options) => createGondolinAgentEnvironment({ ...options, developerImage }),
+    make: (options) => createGondolinAgentEnvironment({ ...options, guestImage }),
   });
 }
 
 export function gondolinAgentEnvironmentProviderLayer(
-  developerImage: DeveloperImage,
+  guestImage: GuestImage,
 ): Layer.Layer<AgentEnvironmentProvider> {
   return Layer.succeed(
     AgentEnvironmentProvider,
-    makeGondolinAgentEnvironmentProvider(developerImage),
+    makeGondolinAgentEnvironmentProvider(guestImage),
   );
 }
 
@@ -77,7 +77,7 @@ export function createGondolinAgentEnvironment(
       });
       const environment = yield* makeGondolinEnvironment(
         workspacePath,
-        options.developerImage,
+        options.guestImage,
         options.cpuCount,
         options.memoryMiB,
         options.sessionLabel,
@@ -92,7 +92,7 @@ export function createGondolinAgentEnvironment(
 
 function makeGondolinEnvironment(
   workspacePath: string,
-  developerImage: DeveloperImage,
+  guestImage: GuestImage,
   cpuCount: number,
   memoryMiB: number,
   sessionLabel = `openorb ${basename(workspacePath)}`,
@@ -105,8 +105,8 @@ function makeGondolinEnvironment(
 
     const startVm: Effect.Effect<RunningVm, AgentEnvironmentError> = Effect.gen(function* () {
       const imagePath = yield* fromLegacyResult(
-        prepareDeveloperImageForVm(developerImage),
-        (cause) => new AgentEnvironmentError("The developer image could not be prepared.", cause),
+        prepareGuestImageForVm(guestImage),
+        (cause) => new AgentEnvironmentError("The guest image could not be prepared.", cause),
       );
       const githubOptions = github
         ? yield* fromLegacyResult(
@@ -116,7 +116,7 @@ function makeGondolinEnvironment(
         : undefined;
       const vm = yield* Effect.tryPromise({
         try: () => {
-          if (githubOptions) installGondolinTlsCompatibility();
+          installGondolinTlsCompatibility();
           return VM.create({
             sessionLabel,
             cpus: cpuCount,

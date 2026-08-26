@@ -11,7 +11,7 @@ const manifestAssetFilesSchema = object(
   { unknownKeys: "error" },
 );
 
-const developerImageManifestSchema = object(
+const guestImageManifestSchema = object(
   {
     version: number(),
     buildId: optional(string()),
@@ -26,8 +26,8 @@ const developerImageManifestSchema = object(
   { unknownKeys: "passthrough" },
 );
 
-export function parseDeveloperImageManifest(input: unknown) {
-  return parse(developerImageManifestSchema, input);
+export function parseGuestImageManifest(input: unknown) {
+  return parse(guestImageManifestSchema, input);
 }
 
-export type DeveloperImageManifest = ReturnType<typeof parseDeveloperImageManifest>;
+export type GuestImageManifest = ReturnType<typeof parseGuestImageManifest>;

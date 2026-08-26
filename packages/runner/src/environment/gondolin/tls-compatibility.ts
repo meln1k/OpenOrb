@@ -38,7 +38,7 @@ export function installGondolinTlsCompatibility(): void {
   if (installed) return;
   if (Deno.version.deno !== GONDOLIN_TLS_COMPATIBILITY.denoVersion) {
     throw new GondolinTlsCompatibilityError(
-      `The Gondolin TLS compatibility shim is validated only with Deno ${GONDOLIN_TLS_COMPATIBILITY.denoVersion}; found ${Deno.version.deno}. Follow the compatibility review in docs/runner-release.md before using GitHub mediation with a different Deno version.`,
+      `The Gondolin TLS compatibility shim is validated only with Deno ${GONDOLIN_TLS_COMPATIBILITY.denoVersion}; found ${Deno.version.deno}. Follow the compatibility review in docs/runner-release.md before using Gondolin HTTPS egress with a different Deno version.`,
     );
   }
 

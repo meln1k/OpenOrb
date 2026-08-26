@@ -33,7 +33,7 @@ brew install qemu
 Development primarily uses Linux Amp orbs. The macOS runner entry point remains an optional temporary
 local harness, not a supported release target. Release runners target glibc Linux x86-64 and ARM64;
 musl hosts are not supported. The current Deno 2.9.5 artifacts require glibc 2.27 or newer. `gh`
-belongs in the guest developer image introduced by OO-009, not on the runner host.
+belongs in the guest image introduced by OO-009, not on the runner host.
 
 ## Install and run
 
@@ -137,7 +137,7 @@ Outputs:
 
 The executables contain denort and do not need an installed Deno or Node executable. They must start from the canonical runner working directory; `--data-dir` is intentionally unsupported. Production compilation bakes in runner-directory read/write access, unrestricted network access, `PATH`/`PWD` environment access, and only the architecture-appropriate `qemu-system-*` plus `qemu-img` subprocess permission. It does not grant `--allow-all` or FFI.
 
-Guest VM assets are not embedded in the standalone executables. The runner installs the architecture-specific pinned developer image under its canonical working directory, verifies its byte count, SHA-256, Gondolin build ID, architecture, and internal asset checksums, and passes only those explicit local paths to Gondolin. See [the developer image release process](docs/developer-image.md).
+Guest VM assets are not embedded in the standalone executables. The runner installs the architecture-specific pinned guest image under its canonical working directory, verifies its byte count, SHA-256, Gondolin build ID, architecture, and internal asset checksums, and passes only those explicit local paths to Gondolin. See [the guest image release process](docs/guest-image.md).
 
 ## Pinned Remix scaffold
 
