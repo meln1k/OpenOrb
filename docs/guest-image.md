@@ -1,18 +1,17 @@
 # Guest image release process
 
 OO-009 defines one OpenOrb guest-image release with immutable Gondolin assets for each supported
-runner architecture. The runner currently uses the published `mvp-2` release. The source image
-configuration builds the Debian-based `mvp-5` candidate; it must not replace the runner release
-metadata until its exact archives have been approved and published. An OpenOrb release ID is not
-derived from the Gondolin package version or either architecture-specific Gondolin build ID.
+runner architecture. The runner uses the published Debian-based `mvp-5` release. An OpenOrb release
+ID is not derived from the Gondolin package version or either architecture-specific Gondolin build
+ID.
 
-The candidate guest userspace is Debian 13 and provides an Amp-orb-like development command line:
-Git and GitHub CLI; GCC/G++, Make, Autoconf, Automake, and pkg-config; Python/pip; Node.js/npm,
-Corepack, pnpm, Yarn, and Bun; Perl; FFmpeg and ImageMagick; Vim, tmux, and fzf; archive, network,
-SSH-client, and text-processing utilities; plus agent-browser 0.35.0. Versions supplied by Debian
-come from one immutable snapshot. Standalone tools and npm packages are versioned and verified by
-SHA-256. The image intentionally excludes Amp/E2B internals, Deno, Go, Rust, Java, database CLIs,
-container and VM tooling, GUI desktop components, systemd, the SSH daemon, and other services.
+The guest userspace is Debian 13 and provides an Amp-orb-like development command line: Git and
+GitHub CLI; GCC/G++, Make, Autoconf, Automake, and pkg-config; Python/pip; Node.js/npm, Corepack,
+pnpm, Yarn, and Bun; Perl; FFmpeg and ImageMagick; Vim, tmux, and fzf; archive, network, SSH-client,
+and text-processing utilities; plus agent-browser 0.35.0. Versions supplied by Debian come from one
+immutable snapshot. Standalone tools and npm packages are versioned and verified by SHA-256. The
+image intentionally excludes Amp/E2B internals, Deno, Go, Rust, Java, database CLIs, container and
+VM tooling, GUI desktop components, systemd, the SSH daemon, and other services.
 `/etc/openorb-image-release` contains the OpenOrb release ID.
 
 The image contains the native agent-browser CLI and browser runtime libraries, but no Chromium or
@@ -96,9 +95,9 @@ ID, URLs, architecture-specific build IDs, manifest hashes, exact byte counts, a
 Never use a moving tag or `latest` URL. Publishing a release or assets is an external write and must
 never be part of an ordinary build or test run.
 
-The published `mvp-2` URLs retain their legacy `developer-image` tag and
+The historical `mvp-2` release retains its legacy `developer-image` tag and
 `gondolin-image-openorb-developer-*` filenames. Those immutable compatibility strings must not be
-renamed in release metadata.
+renamed or reused.
 
 ## Runner installation and recovery
 
