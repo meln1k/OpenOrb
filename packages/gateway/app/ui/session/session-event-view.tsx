@@ -18,6 +18,7 @@ import {
   MessageScrollerViewport,
 } from "@/app/ui/components/message-scroller.tsx";
 import { media } from "@/app/ui/responsive.ts";
+import { AssistantMarkdown } from "@/app/ui/session/session-markdown.tsx";
 import {
   activeActivityId,
   appendOptimisticUserMessage,
@@ -27,7 +28,6 @@ import {
   reduceSessionTranscriptState,
   removeOptimisticUserMessage,
   type SessionState,
-  settleSessionTranscriptState,
   type ToolEntry,
   totalSessionUsage,
   type TranscriptEntry,
@@ -138,15 +138,15 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
 
   handle.queueTask(() => {
     if (handle.props.initialState === "offline") return;
-    let updateTimer: ReturnType<typeof setTimeout> | undefined;
+    let updateFrame: number | undefined;
     const stream = new EventSource(handle.props.eventsHref);
-    // Remix flushes updates in microtasks, so use a timer task to coalesce replay bursts.
+    // Reconcile at most once per paint while retaining every event in transcriptState.
     const scheduleUpdate = () => {
-      if (updateTimer !== undefined) return;
-      updateTimer = setTimeout(() => {
-        updateTimer = undefined;
+      if (updateFrame !== undefined) return;
+      updateFrame = requestAnimationFrame(() => {
+        updateFrame = undefined;
         if (!handle.signal.aborted) void handle.update();
-      }, 0);
+      });
     };
     stream.addEventListener("open", () => {
       if (!connectionInterrupted) return;
@@ -166,16 +166,14 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
       scheduleUpdate();
     });
     stream.addEventListener("error", () => {
-      const next = settleSessionTranscriptState(transcriptState);
-      if (next !== transcriptState || !connectionInterrupted) {
-        transcriptState = next;
+      if (!connectionInterrupted) {
         connectionInterrupted = true;
         scheduleUpdate();
       }
     });
     handle.signal.addEventListener("abort", () => {
       stream.close();
-      if (updateTimer !== undefined) clearTimeout(updateTimer);
+      if (updateFrame !== undefined) cancelAnimationFrame(updateFrame);
     }, {
       once: true,
     });
@@ -546,7 +544,7 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
                 </Marker>
               )
               : null}
-            {hasText ? <p data-assistant-text>{entry.text}</p> : null}
+            {hasText ? <AssistantMarkdown text={entry.text} completed={entry.completed} /> : null}
           </article>
         </MessageScrollerItem>
       );
@@ -844,14 +842,8 @@ const userMessageStyle = css({
 const assistantMessageStyle = css({
   display: "grid",
   gap: "16px",
+  minWidth: 0,
   color: "var(--foreground)",
-  "& > p": {
-    margin: 0,
-    fontSize: "15px",
-    lineHeight: 1.75,
-    whiteSpace: "pre-wrap",
-    overflowWrap: "anywhere",
-  },
 });
 const toolItemStyle = css({ marginTop: "-16px" });
 const richMarkerStyle = css({ alignItems: "flex-start" });

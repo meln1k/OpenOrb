@@ -38,6 +38,7 @@
     "npm:@remix-run/data-schema@0.3.0": "0.3.0",
     "npm:effect@4.0.0-rc.111": "4.0.0-rc.111",
     "npm:lucide@1.31.0": "1.31.0",
+    "npm:marked@18.0.5": "18.0.5",
     "npm:pg@*": "8.16.3",
     "npm:pg@8.16.3": "8.16.3",
     "npm:remix@3.0.0-beta.10": "3.0.0-beta.10_pg@8.16.3_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2",
@@ -2645,6 +2646,7 @@
           "jsr:@std/uuid@1.1.1",
           "npm:@earendil-works/pi-ai@0.84.2",
           "npm:lucide@1.31.0",
+          "npm:marked@18.0.5",
           "npm:pg@8.16.3",
           "npm:remix@3.0.0-beta.10"
         ]

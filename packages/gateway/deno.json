@@ -19,6 +19,7 @@
     "@std/streams/limited-bytes-transform-stream": "jsr:@std/streams@1.1.2/limited-bytes-transform-stream",
     "@std/uuid": "jsr:@std/uuid@1.1.1",
     "lucide": "npm:lucide@1.31.0",
+    "marked": "npm:marked@18.0.5",
     "pg": "npm:pg@8.16.3",
     "remix/": "npm:/remix@3.0.0-beta.10/"
   },
