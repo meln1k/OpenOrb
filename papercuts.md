@@ -227,3 +227,53 @@
 - 2026-08-27: The first live Markdown reconciliation probe double-escaped newline fixtures, so the
   browser correctly treated them as literal `\\n` text and produced one paragraph; browser eval
   fixtures need JavaScript newline escapes after shell/JSON quoting, not another escaped layer.
+- 2026-08-27: The initial durable-conversation refactor exposed two Effect/TypeScript ownership
+  mismatches: the SessionManager observer option erased its required Scope, and an exact-optional
+  cache field could not be cleared by assignment.
+- 2026-08-27: Runner test compilation exposed stale per-run harness and durable-publication test
+  fixtures, plus direct audited-factory tests that did not scope the newly cache-aware factory.
+- 2026-08-27: The first targeted run showed that eagerly activating the cache in a cold-restart
+  lifecycle-state fixture also eagerly captured its pre-update metadata state.
+- 2026-08-27: Full static checks rejected imperative exception swallowing in the synchronous Pi
+  decorator and a test helper that crossed Effect runtimes to close its cache scope.
+- 2026-08-27: The Gondolin E2E task could not start because this fresh orb has no locally built
+  x86_64 guest image (and no `qemu-system-aarch64` binary, which is non-blocking for x86_64 tests).
+- 2026-08-27: After building the x86_64 guest image, two Gondolin environment E2Es still could not
+  start their 4 GiB VMs in this memory-constrained orb (`pc.ram: Cannot allocate memory`); the
+  lower-memory public GitHub mediation E2E passed.
+- 2026-08-27: Replacing the browser's handwritten session-event types with the canonical Effect
+  schema exposed two hidden type differences: Effect outputs are readonly, and optional fields do
+  not accept an explicitly supplied `undefined` under exact optional property types.
+- 2026-08-27: Gateway asset verification showed that directly decoding the canonical Effect schema
+  in client code would require allowing and shipping the Effect runtime through the browser asset
+  server, so the canonical wire model needs a lightweight browser validator adapter instead.
+- 2026-08-27: Removing the duplicate browser validator exposed that the gateway lint policy forbids
+  ad-hoc `unknown` narrowing, even for same-deployment SSE already validated by the gateway; parsing
+  therefore needs an explicitly trusted owner-boundary helper rather than a partial second schema.
+- 2026-08-27: The real browser/gateway/runner E2E initially inherited the orb service manager's
+  `PUBLIC_URL`, so the gateway correctly rejected localhost setup submissions as an invalid CSRF
+  origin until the isolated E2E service pinned its own public origin.
+- 2026-08-27: A real browser/gateway/runner E2E did start exactly one 2 GiB, one-vCPU Gondolin VM,
+  but the repository's full `.agents/setup` under QEMU TCG drove the 4 GiB host into sustained
+  resource starvation: browser reads returned `EAGAIN` and new shell control commands stopped
+  scheduling before the first Pi prompt could begin.
+- 2026-08-27: A temporary E2E database helper outside the workspace could not resolve the gateway's
+  bare `pg` import because it did not inherit `packages/gateway/deno.json`'s import map.
+- 2026-08-27: Pinning that helper's direct `pg` import still left the imported gateway password
+  module's `@openorb/result` workspace alias unresolved until Deno was given the gateway config.
+- 2026-08-27: The same helper's initially narrow Deno environment permission omitted `USER`, which
+  the pinned `pg` package reads while initializing its defaults even with a connection string.
+- 2026-08-27: Moving conversation projection ownership into the Pi adapter exposed two callers that
+  explicitly passed `undefined` to an exact-optional `create` dependency instead of omitting it.
+- 2026-08-27: The aggregate repository check is blocked at `deno fmt --check` by four pre-existing
+  formatting violations in `.agents/skills/domain-modeling` and `.agents/skills/grilling`.
+- 2026-08-27: Recreating the real browser E2E fixture initially used `deno run` permission flags
+  with `deno eval`, whose Deno 2 CLI rejects those flags before evaluating the setup helper.
+- 2026-08-27: A real E2E progress query assumed runner lifecycle state was stored directly on the
+  gateway `sessions` row; lifecycle state is delivered by the runner instead.
+- 2026-08-27: The successful real E2E cleanup's final zero-process assertion piped `rg` into `wc`
+  under `pipefail`, so the expected absence of QEMU produced a nonzero shell status.
+- 2026-08-27: The OpenCode-backed E2E initially assumed restarting a runner would eagerly recreate
+  the ready session VM, but no QEMU process appeared within the 90-second observation window.
+- 2026-08-27: A follow-up E2E inspection also assumed the gateway `sessions` table stored a
+  `runner_id`; runner assignment is not a column on that catalog row.

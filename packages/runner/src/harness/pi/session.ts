@@ -1,18 +1,24 @@
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { parseModelReference } from "@openorb/protocol";
-import type { SessionModelRuntime } from "@openorb/protocol/runner-api";
-import { Effect } from "effect";
+import type {
+  DurableSessionEvent,
+  SessionId,
+  SessionModelRuntime,
+} from "@openorb/protocol/runner-api";
+import { Effect, Result, type Scope } from "effect";
 import {
   createAgentSession,
   createExtensionRuntime,
   ModelRuntime,
   type ResourceLoader,
+  type SessionEntry,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
 import { AgentHarnessError } from "../agent-harness.ts";
+import { eventsFromPiEntries } from "./history.ts";
 
 export const OPENORB_GUEST_WORKSPACE = "/workspace";
 export const OPENORB_SYSTEM_PROMPT =
@@ -20,16 +26,39 @@ export const OPENORB_SYSTEM_PROMPT =
 
 /** Audited construction options for the Pi harness adapter. */
 export interface OpenOrbPiSessionOptions {
+  sessionId: SessionId;
   runnerSessionFile: string;
   runnerAgentDirectory: string;
   modelRuntime: SessionModelRuntime;
   tools: readonly ToolDefinition[];
+  conversationProjection: ConversationProjectionSink;
+}
+
+export interface ActiveConversationProjection {
+  readonly update: (
+    conversation: readonly DurableSessionEvent[] | undefined,
+  ) => void;
+  readonly dispose: () => void;
+}
+
+export interface ConversationProjectionSink {
+  readonly activate: (
+    sessionId: SessionId,
+    initial: readonly DurableSessionEvent[],
+  ) => Effect.Effect<ActiveConversationProjection, AgentHarnessError, Scope.Scope>;
+}
+
+export interface OpenOrbPiSessionDependencies {
+  readonly createAgentSession?: typeof createAgentSession;
 }
 
 export type OpenOrbPiSession = Awaited<ReturnType<typeof createAgentSession>>;
 
 export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
-  function* (options: OpenOrbPiSessionOptions) {
+  function* (
+    options: OpenOrbPiSessionOptions,
+    dependencies: OpenOrbPiSessionDependencies = {},
+  ) {
     const toolNames = options.tools.map((tool) => tool.name);
     const settingsManager = SettingsManager.inMemory(
       {
@@ -87,25 +116,78 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
     }
     const thinkingLevel = options.modelRuntime.thinkingLevel;
 
+    const sessionManager = SessionManager.open(
+      options.runnerSessionFile,
+      undefined,
+      OPENORB_GUEST_WORKSPACE,
+    );
+    const activeConversation = yield* options.conversationProjection.activate(
+      options.sessionId,
+      eventsFromPiEntries(sessionManager.getBranch()),
+    );
+    observeSessionManagerPersistence(sessionManager, () => {
+      const projected = Result.try(() => eventsFromPiEntries(sessionManager.getBranch()));
+      activeConversation.update(Result.getOrElse(projected, () => undefined));
+    });
+
     return yield* Effect.tryPromise({
       try: () =>
-        createAgentSession({
+        (dependencies.createAgentSession ?? createAgentSession)({
           cwd: OPENORB_GUEST_WORKSPACE,
           agentDir: options.runnerAgentDirectory,
           model,
           modelRuntime,
           resourceLoader,
-          sessionManager: SessionManager.open(
-            options.runnerSessionFile,
-            undefined,
-            OPENORB_GUEST_WORKSPACE,
-          ),
+          sessionManager,
           settingsManager,
           thinkingLevel,
           tools: toolNames,
           customTools: [...options.tools],
         }),
       catch: (cause) => new AgentHarnessError("Could not create the Pi agent session.", cause),
-    });
+    }).pipe(
+      Effect.onError(() => Effect.sync(activeConversation.dispose)),
+    );
   },
 );
+
+/** Decorates Pi's real manager so observers only see entries after synchronous persistence returns. */
+export function observeSessionManagerPersistence(
+  manager: SessionManager,
+  onPersisted: (entry: SessionEntry) => void,
+): SessionManager {
+  const notify = (id: string): void => {
+    const entry = manager.getEntry(id);
+    if (entry === undefined) return;
+    // Persistence already succeeded. Observer failures must not change Pi's write result.
+    Result.try(() => onPersisted(entry));
+  };
+
+  const appendMessage = manager.appendMessage.bind(manager);
+  // SAFETY: The wrapper forwards the exact public method parameters and return value unchanged.
+  manager.appendMessage = ((...args: Parameters<SessionManager["appendMessage"]>) => {
+    const id = appendMessage(...args);
+    notify(id);
+    return id;
+  }) as SessionManager["appendMessage"];
+
+  const appendCustomMessageEntry = manager.appendCustomMessageEntry.bind(manager);
+  // SAFETY: The wrapper forwards the exact public method parameters and return value unchanged.
+  manager.appendCustomMessageEntry = ((
+    ...args: Parameters<SessionManager["appendCustomMessageEntry"]>
+  ) => {
+    const id = appendCustomMessageEntry(...args);
+    notify(id);
+    return id;
+  }) as SessionManager["appendCustomMessageEntry"];
+
+  const appendCompaction = manager.appendCompaction.bind(manager);
+  // SAFETY: The wrapper forwards the exact public method parameters and return value unchanged.
+  manager.appendCompaction = ((...args: Parameters<SessionManager["appendCompaction"]>) => {
+    const id = appendCompaction(...args);
+    notify(id);
+    return id;
+  }) as SessionManager["appendCompaction"];
+
+  return manager;
+}

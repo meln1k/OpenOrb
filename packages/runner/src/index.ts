@@ -203,7 +203,7 @@ export async function main(
       }).pipe(Layer.provide(DenoFileSystem.layer));
       const sessionEventsLive = sessionEventsLayer.pipe(Layer.provide(sessionStoreLive));
       const environmentLive = gondolinAgentEnvironmentProviderLayer(guestImage);
-      const harnessLive = piAgentHarnessLayer();
+      const harnessLive = piAgentHarnessLayer().pipe(Layer.provide(sessionEventsLive));
       const sessionWorkerLive = sessionWorkerFactoryLayer.pipe(
         Layer.provide(
           Layer.mergeAll(sessionStoreLive, sessionEventsLive, environmentLive, harnessLive),

@@ -24,7 +24,11 @@ import { join } from "node:path";
 
 import type { AgentEnvironment } from "../environment/agent-environment.ts";
 import { AgentEnvironmentProvider } from "../environment/agent-environment.ts";
-import { type ActiveAgentRun, AgentHarness } from "../harness/agent-harness.ts";
+import {
+  type ActiveAgentRun,
+  AgentHarness,
+  type AgentHarnessSession,
+} from "../harness/agent-harness.ts";
 import { SessionEvents } from "./events.ts";
 import { type RunnerSessionMetadata, RunnerSessionStore } from "./store.ts";
 
@@ -68,16 +72,22 @@ export const SessionWorkerFactory: Context.Service<SessionWorkerFactory, Session
 
 type WorkerState =
   | { readonly _tag: "Provisioning"; readonly environment?: AgentEnvironment }
-  | { readonly _tag: "Ready"; readonly environment: AgentEnvironment }
+  | {
+    readonly _tag: "Ready";
+    readonly environment: AgentEnvironment;
+    readonly agentSession: AgentHarnessSession;
+  }
   | {
     readonly _tag: "Running";
     readonly environment: AgentEnvironment;
+    readonly agentSession: AgentHarnessSession;
     readonly runId: RunId;
     readonly run: ActiveAgentRun;
   }
   | {
     readonly _tag: "Aborting";
     readonly environment: AgentEnvironment;
+    readonly agentSession: AgentHarnessSession;
     readonly runId: RunId;
     readonly run: ActiveAgentRun;
   }
@@ -201,7 +211,8 @@ function makeSessionWorker(
               Effect.asVoid,
             );
         }
-        yield* transition({ _tag: "Ready", environment });
+        const agentSession = yield* openAgentSession(environment, options.modelRuntime);
+        yield* transition({ _tag: "Ready", environment, agentSession });
       }).pipe(
         Effect.catch((error) =>
           failProvision(options.metadata, options.correlationId, {
@@ -259,7 +270,7 @@ function makeSessionWorker(
       }
       // SAFETY: Run identifiers are generated UUIDs.
       const runId = crypto.randomUUID() as RunId;
-      return continuePrompt(payload, runId, current.environment, reply).pipe(
+      return continuePrompt(payload, runId, current.environment, current.agentSession, reply).pipe(
         Effect.catch(() => Effect.void),
         Effect.forkChild,
         Effect.andThen(Deferred.await(reply)),
@@ -419,15 +430,16 @@ function makeSessionWorker(
           }
         }
 
+        const agentSession = yield* openAgentSession(environment, modelRuntime);
         // SAFETY: Provisioning correlation identifiers are generated UUIDs.
         yield* runAgentPrompt(
           metadata,
           environment,
-          modelRuntime,
+          agentSession,
           correlationId as RunId,
           metadata.initialPrompt,
         );
-        yield* transition({ _tag: "Ready", environment });
+        yield* transition({ _tag: "Ready", environment, agentSession });
         metadata = yield* store.updateProvisioning(sessionId, {
           state: "ready",
           checkoutState: metadata.checkoutState,
@@ -480,6 +492,7 @@ function makeSessionWorker(
       payload: PromptSessionPayload,
       runId: RunId,
       environment: AgentEnvironment,
+      agentSession: AgentHarnessSession,
       reply: Deferred.Deferred<PromptAcceptance>,
     ): Effect.Effect<void, SessionWorkerError> {
       return Effect.gen(function* () {
@@ -497,7 +510,7 @@ function makeSessionWorker(
         const promptFiber = yield* runAgentPrompt(
           metadata,
           environment,
-          payload.modelRuntime,
+          agentSession,
           runId,
           payload.prompt,
           accepted,
@@ -508,7 +521,7 @@ function makeSessionWorker(
         );
         if (!acceptedByHarness) {
           yield* Fiber.await(promptFiber);
-          const restored = yield* restoreReady(metadata, environment, runId).pipe(
+          const restored = yield* restoreReady(metadata, environment, agentSession, runId).pipe(
             Effect.as(true),
             Effect.orElseSucceed(() => false),
           );
@@ -524,10 +537,10 @@ function makeSessionWorker(
         yield* Fiber.join(promptFiber).pipe(
           Effect.matchEffect({
             onFailure: (promptError) =>
-              restoreReady(metadata, environment, runId).pipe(
+              restoreReady(metadata, environment, agentSession, runId).pipe(
                 Effect.andThen(Effect.fail(promptError)),
               ),
-            onSuccess: () => restoreReady(metadata, environment, runId),
+            onSuccess: () => restoreReady(metadata, environment, agentSession, runId),
           }),
         );
       });
@@ -536,63 +549,67 @@ function makeSessionWorker(
     function runAgentPrompt(
       metadata: RunnerSessionMetadata,
       environment: AgentEnvironment,
-      modelRuntime: SessionModelRuntime,
+      agentSession: AgentHarnessSession,
       runId: RunId,
       prompt: string,
       acceptance?: Deferred.Deferred<boolean>,
     ): Effect.Effect<void, SessionWorkerError> {
-      return Effect.scoped(
-        Effect.gen(function* () {
-          const paths = yield* store.getSessionPiPaths(sessionId).pipe(
-            Effect.mapError(workerError),
-          );
-          const run = yield* harness.start({
-            input: prompt,
-            environment,
-            modelRuntime,
-            state: {
-              sessionFile: paths.sessionFile,
-              agentDirectory: paths.agentDirectory,
-            },
-          }).pipe(Effect.mapError(workerError));
-          yield* store.updateProvisioning(sessionId, {
-            state: "running",
-            checkoutState: metadata.checkoutState,
-            ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-          }).pipe(
-            Effect.mapError(workerError),
-            Effect.flatMap((running) => emitState(running, "running", runId)),
-            Effect.catch((error) =>
-              run.abort.pipe(
-                Effect.ignore,
-                Effect.andThen(Effect.fail(error)),
-              )
-            ),
-          );
-          yield* transition({ _tag: "Running", environment, runId, run });
-          if (acceptance) yield* Deferred.succeed(acceptance, true);
-          yield* run.events.pipe(
-            Stream.runForEach((event) =>
-              event._tag === "ConversationAppended"
-                ? publish(events.publishConversation(sessionId))
-                : publish(events.publishLive(sessionId, runId, event.event))
-            ),
-            Effect.mapError(workerError),
-          );
+      return Effect.gen(function* () {
+        const run = yield* agentSession.start(prompt).pipe(Effect.mapError(workerError));
+        yield* store.updateProvisioning(sessionId, {
+          state: "running",
+          checkoutState: metadata.checkoutState,
+          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
         }).pipe(
-          Effect.ensuring(
-            acceptance ? Deferred.succeed(acceptance, false) : Effect.void,
+          Effect.mapError(workerError),
+          Effect.flatMap((running) => emitState(running, "running", runId)),
+          Effect.catch((error) =>
+            run.abort.pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.fail(error)),
+            )
           ),
+        );
+        yield* transition({ _tag: "Running", environment, agentSession, runId, run });
+        if (acceptance) yield* Deferred.succeed(acceptance, true);
+        yield* run.events.pipe(
+          Stream.runForEach((event) => publish(events.publishLive(sessionId, runId, event))),
+          Effect.mapError(workerError),
+        );
+      }).pipe(
+        Effect.ensuring(
+          acceptance ? Deferred.succeed(acceptance, false) : Effect.void,
         ),
       );
+    }
+
+    function openAgentSession(
+      environment: AgentEnvironment,
+      modelRuntime: SessionModelRuntime,
+    ): Effect.Effect<AgentHarnessSession, SessionWorkerError, Scope.Scope> {
+      return Effect.gen(function* () {
+        const paths = yield* store.getSessionPiPaths(sessionId).pipe(
+          Effect.mapError(workerError),
+        );
+        return yield* harness.open({
+          sessionId,
+          environment,
+          modelRuntime,
+          state: {
+            sessionFile: paths.sessionFile,
+            agentDirectory: paths.agentDirectory,
+          },
+        }).pipe(Effect.mapError(workerError));
+      });
     }
 
     function restoreReady(
       metadata: RunnerSessionMetadata,
       environment: AgentEnvironment,
+      agentSession: AgentHarnessSession,
       runId: RunId,
     ): Effect.Effect<void, SessionWorkerError> {
-      return transition({ _tag: "Ready", environment }).pipe(
+      return transition({ _tag: "Ready", environment, agentSession }).pipe(
         Effect.andThen(store.updateProvisioning(sessionId, {
           state: "ready",
           checkoutState: metadata.checkoutState,

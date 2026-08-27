@@ -1,9 +1,9 @@
 import { Schema } from "effect";
 
 import {
+  DurableSessionEvent,
+  EphemeralSessionEvent,
   RunnerCheckoutState,
-  SessionConversationEvent,
-  SessionLiveEvent,
 } from "./runner-api-session-events.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
@@ -287,18 +287,21 @@ export class WatchSessionPayload extends Schema.Class<WatchSessionPayload>("Watc
   afterCursor: SessionCursor,
 }) {}
 
-const DurableSessionEvent = Schema.Struct({
+const DurableSessionEventDelivery = Schema.Struct({
   runId: Schema.NullOr(RunId),
   cursor: Schema.Int.check(Schema.isGreaterThan(0)),
-  event: SessionConversationEvent,
+  event: DurableSessionEvent,
 });
 
-const LiveSessionEvent = Schema.Struct({
+const EphemeralSessionEventDelivery = Schema.Struct({
   runId: Schema.NullOr(RunId),
-  event: SessionLiveEvent,
+  event: EphemeralSessionEvent,
 });
 
-export const WatchSessionEvent = Schema.Union([DurableSessionEvent, LiveSessionEvent]);
+export const WatchSessionEvent = Schema.Union([
+  DurableSessionEventDelivery,
+  EphemeralSessionEventDelivery,
+]);
 
 export class RunnerIdentityError extends Schema.TaggedError<RunnerIdentityError>()(
   "RunnerIdentityError",

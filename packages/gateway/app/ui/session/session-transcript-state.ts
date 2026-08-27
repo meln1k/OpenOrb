@@ -239,7 +239,7 @@ export function isSessionBusy(state: SessionState): boolean {
 }
 
 export function totalSessionUsage(state: SessionTranscriptState): SessionUsage {
-  const total: SessionUsage = {
+  const total = {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,

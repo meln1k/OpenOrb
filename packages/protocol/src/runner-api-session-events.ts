@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import * as Schema from "effect/Schema";
 
 export const MAX_RPC_SESSION_EVENT_TEXT_BYTES = 32 * 1024;
 export const MAX_RPC_QUEUED_SESSION_MESSAGES = 8;
@@ -316,16 +316,18 @@ const BashOutputDeltaEvent = Schema.Struct({
   delta: boundedText(MAX_RPC_SESSION_EVENT_TEXT_BYTES, "Bash output deltas"),
 });
 
-export const SessionConversationEvent = Schema.Union([
+/** Replayable event payloads projected from Pi's durable session branch. */
+export const DurableSessionEvent = Schema.Union([
   UserMessageEvent,
   AssistantCompletedEvent,
   ToolStartedEvent,
   ToolCompletedEvent,
   ContextCompactedEvent,
 ]);
-export type SessionConversationEvent = typeof SessionConversationEvent.Type;
+export type DurableSessionEvent = typeof DurableSessionEvent.Type;
 
-export const SessionLiveEvent = Schema.Union([
+/** Transient event payloads observed while a session is running. */
+export const EphemeralSessionEvent = Schema.Union([
   ProvisioningStateEvent,
   ConversationResetEvent,
   ProvisioningLogEvent,
@@ -361,7 +363,11 @@ export const SessionLiveEvent = Schema.Union([
   ThinkingLevelChangedEvent,
   BashOutputDeltaEvent,
 ]);
-export type SessionLiveEvent = typeof SessionLiveEvent.Type;
+export type EphemeralSessionEvent = typeof EphemeralSessionEvent.Type;
+
+/** The single authoritative schema for every session event payload on the wire. */
+export const SessionEvent = Schema.Union([DurableSessionEvent, EphemeralSessionEvent]);
+export type SessionEvent = typeof SessionEvent.Type;
 
 function eventIdentifier(label: string) {
   return Schema.String.check(

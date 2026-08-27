@@ -1,8 +1,4 @@
-import {
-  type SessionEvent,
-  sessionEventSchema,
-  type SessionUsage,
-} from "@openorb/protocol/browser-session-events";
+import type { SessionEvent, SessionUsage } from "@openorb/protocol/browser-session-events";
 import { tryAsync, trySync } from "../../../../result/src/index.ts";
 import { literal, object, parseSafe, string } from "remix/data-schema";
 import { clientEntry, css, type Dispatched, type Handle, on } from "remix/ui";
@@ -762,11 +758,15 @@ function formatCost(cost: number): string {
 
 function parseSessionEvent(source: string): SessionEvent | null {
   const [value, parseError] = trySync(
-    () => parseSafe(sessionEventSchema, JSON.parse(source)),
+    () => {
+      // SAFETY: The gateway emits only runner events decoded by the canonical WatchSessionEvent
+      // schema, and serves the matching browser assets in the same deployment.
+      return JSON.parse(source) as SessionEvent;
+    },
     () => true,
   );
   if (parseError !== undefined) return null;
-  return value.success ? value.value : null;
+  return value;
 }
 
 const sessionFrameStyle = css({

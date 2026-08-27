@@ -1,7 +1,7 @@
 import { type SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
+  type DurableSessionEvent,
   MAX_RPC_SESSION_EVENT_TEXT_BYTES,
-  type SessionConversationEvent,
 } from "@openorb/protocol/runner-api";
 
 import {
@@ -15,13 +15,13 @@ import {
 
 export async function readPiSessionEvents(
   sessionFile: string,
-): Promise<SessionConversationEvent[]> {
+): Promise<DurableSessionEvent[]> {
   if (!(await Deno.readTextFile(sessionFile)).trim()) return [];
   return eventsFromPiEntries(SessionManager.open(sessionFile).getBranch());
 }
 
-export function eventsFromPiEntries(entries: readonly SessionEntry[]): SessionConversationEvent[] {
-  return entries.flatMap((entry): SessionConversationEvent[] => {
+export function eventsFromPiEntries(entries: readonly SessionEntry[]): DurableSessionEvent[] {
+  return entries.flatMap((entry): DurableSessionEvent[] => {
     if (entry.type === "compaction") {
       return [{
         type: "context.compacted",

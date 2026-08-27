@@ -2,7 +2,8 @@ import { basename } from "node:path";
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { Effect, Exit, Scope } from "effect";
+import { SessionId } from "@openorb/protocol/runner-api";
+import { Effect, Exit, Schema, Scope } from "effect";
 
 import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
 import { createGondolinAgentEnvironment } from "@/src/environment/gondolin/layer.ts";
@@ -20,6 +21,12 @@ const RUN_PRIVATE_TEST = RUN_GONDOLIN_TESTS &&
   PRIVATE_REPOSITORY_URL !== undefined &&
   PRIVATE_TOKEN !== undefined &&
   RUN_GITHUB_WRITE_TESTS;
+const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c10",
+);
+const CONVERSATION_PROJECTION = {
+  activate: () => Effect.succeed({ update() {}, dispose() {} }),
+};
 
 Deno.test({
   name:
@@ -249,7 +256,8 @@ Deno.test({
 async function createPiSession(runtime: AgentEnvironment, temporaryDirectory: string) {
   const sessionFile = `${temporaryDirectory}/pi-session.jsonl`;
   await Deno.writeTextFile(sessionFile, "");
-  return await Effect.runPromise(createOpenOrbPiSession({
+  return await Effect.runPromise(Effect.scoped(createOpenOrbPiSession({
+    sessionId: SESSION_ID,
     runnerSessionFile: sessionFile,
     runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
     modelRuntime: {
@@ -258,7 +266,8 @@ async function createPiSession(runtime: AgentEnvironment, temporaryDirectory: st
       credential: { type: "api_key", value: "test-model-provider-key" },
     },
     tools: createPiTools(runtime),
-  }));
+    conversationProjection: CONVERSATION_PROJECTION,
+  })));
 }
 
 async function openRuntime(

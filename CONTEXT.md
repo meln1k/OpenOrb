@@ -21,6 +21,15 @@ follow-ups and automatic continuations, and ending when the agent settles. _Avoi
 **Follow-up**: Input added to the current Agent Run rather than starting a new Agent Run. _Avoid_:
 New run, prompt run
 
+**Session Event**: A fact about a Session expressed in OpenOrb's stable event vocabulary,
+independent of the provider-specific source that reported it.
+
+**Durable Session Event**: A Session Event backed by Harness State and addressable by a replay
+cursor.
+
+**Ephemeral Session Event**: A Session Event observed during live activity without a replay
+guarantee. _Avoid_: Durable event, conversation event
+
 **Project Workspace**: The host-backed project filesystem mounted into an Agent Environment. It
 persists independently of the Agent Environment and its snapshots. _Avoid_: VM workspace
 

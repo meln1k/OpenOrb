@@ -1,10 +1,10 @@
 import { Context, Effect, Layer, PubSub, Schema, type Scope, Semaphore, Stream } from "effect";
 import {
+  DurableSessionEvent,
+  EphemeralSessionEvent,
   HistoryReadError,
   type RunId,
-  SessionConversationEvent,
   type SessionId,
-  SessionLiveEvent,
   SessionNotFound,
   type WatchSessionEvent,
 } from "@openorb/protocol/runner-api";
@@ -15,7 +15,7 @@ type EventError = HistoryReadError | SessionNotFound;
 type ReadHistory = (
   sessionId: SessionId,
   sessionFile: string,
-) => Effect.Effect<Array<typeof SessionConversationEvent.Type>, EventError>;
+) => Effect.Effect<Array<typeof DurableSessionEvent.Type>, EventError>;
 
 const SESSION_LIVE_TAIL_CAPACITY = 512;
 
@@ -23,7 +23,18 @@ interface SessionFeed {
   readonly sessionFile: string;
   readonly conversationChanged: PubSub.PubSub<void>;
   readonly liveEvents: PubSub.PubSub<typeof WatchSessionEvent.Type>;
+  activeHistory?: {
+    events: Array<typeof DurableSessionEvent.Type>;
+    valid: boolean;
+  };
   latestState: typeof WatchSessionEvent.Type;
+}
+
+interface ActiveConversation {
+  readonly update: (
+    conversation: readonly typeof DurableSessionEvent.Type[] | undefined,
+  ) => void;
+  readonly dispose: () => void;
 }
 
 export interface SessionEvents {
@@ -32,9 +43,10 @@ export interface SessionEvents {
     afterCursor: number,
   ) => Stream.Stream<typeof WatchSessionEvent.Type, EventError>;
   readonly watchStateChanges: () => Stream.Stream<SessionId>;
-  readonly publishConversation: (
+  readonly activateConversation: (
     sessionId: SessionId,
-  ) => Effect.Effect<void, EventError>;
+    initial: readonly typeof DurableSessionEvent.Type[],
+  ) => Effect.Effect<ActiveConversation, EventError, Scope.Scope>;
   readonly publishLive: (
     sessionId: SessionId,
     correlationId: string,
@@ -99,8 +111,14 @@ export function makeSessionEvents(options: {
         // replay therefore remains observable after the replay-to-tail handoff.
         const conversationChanges = yield* PubSub.subscribe(session.conversationChanged);
         const liveEvents = yield* PubSub.subscribe(session.liveEvents);
+        const loadHistory = (): ReturnType<ReadHistory> => {
+          const active = session.activeHistory;
+          return active?.valid
+            ? Effect.succeed([...active.events])
+            : readHistory(sessionId, session.sessionFile);
+        };
         const missingHistory = Effect.map(
-          readHistory(sessionId, session.sessionFile),
+          Effect.suspend(loadHistory),
           (events): Array<typeof WatchSessionEvent.Type> => {
             const reset = cursor === 0 || cursor > events.length;
             const first = reset ? 0 : cursor;
@@ -149,14 +167,38 @@ export function makeSessionEvents(options: {
     return SessionEvents.of({
       watch,
       watchStateChanges: () => Stream.fromPubSub(stateChanged),
-      publishConversation: (sessionId) =>
+      activateConversation: (sessionId, initial) =>
         Effect.gen(function* () {
           const feed = yield* sessionFeed(sessionId);
-          yield* PubSub.publish(feed.conversationChanged, undefined);
+          const active = {
+            events: [...initial],
+            valid: true,
+          };
+          feed.activeHistory = active;
+          const update = (
+            conversation: readonly typeof DurableSessionEvent.Type[] | undefined,
+          ): void => {
+            if (feed.activeHistory !== active) return;
+            if (conversation === undefined) {
+              // The JSONL write already succeeded. Fall back to the durable file until recovery.
+              active.valid = false;
+            } else {
+              active.events = [...conversation];
+              active.valid = true;
+            }
+            PubSub.publishUnsafe(feed.conversationChanged, undefined);
+          };
+          const dispose = (): void => {
+            if (feed.activeHistory !== active) return;
+            delete feed.activeHistory;
+            PubSub.publishUnsafe(feed.conversationChanged, undefined);
+          };
+          yield* Effect.addFinalizer(() => Effect.sync(dispose));
+          return { update, dispose };
         }),
       publishLive: (sessionId, correlationId, event) =>
         Effect.gen(function* () {
-          const decoded = yield* Schema.decodeUnknownEffect(SessionLiveEvent)(event);
+          const decoded = yield* Schema.decodeUnknownEffect(EphemeralSessionEvent)(event);
           const feed = yield* sessionFeed(sessionId);
           // SAFETY: Pi run identifiers are generated UUIDs.
           const runId = correlationId as RunId;
@@ -185,7 +227,7 @@ function readHistoryFile(sessionId: SessionId, path: string): ReturnType<ReadHis
     catch: () => historyReadFailure(sessionId),
   }).pipe(
     Effect.flatMap((events) =>
-      Effect.forEach(events, (event) => Schema.decodeUnknownEffect(SessionConversationEvent)(event))
+      Effect.forEach(events, (event) => Schema.decodeUnknownEffect(DurableSessionEvent)(event))
     ),
     Effect.map((events) => Array.from(events)),
     Effect.mapError(() => historyReadFailure(sessionId)),

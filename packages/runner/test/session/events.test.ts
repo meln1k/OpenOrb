@@ -7,10 +7,15 @@ import {
   type SessionId,
   SessionId as SessionIdSchema,
 } from "@openorb/protocol/runner-api";
-import { Deferred, Effect, Fiber, Schema, Stream } from "effect";
+import { Effect, Exit, Fiber, Schema, Scope, Stream } from "effect";
 
 import { makeSessionEvents, type SessionEvents } from "@/src/session/events.ts";
-import { readPiSessionEvents } from "@/src/harness/pi/history.ts";
+import { eventsFromPiEntries, readPiSessionEvents } from "@/src/harness/pi/history.ts";
+import { AgentHarnessError } from "@/src/harness/agent-harness.ts";
+import {
+  createOpenOrbPiSession,
+  observeSessionManagerPersistence,
+} from "@/src/harness/pi/session.ts";
 import { makeRunnerSessionStore, RunnerSessionStore } from "@/src/session/store.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
@@ -19,6 +24,11 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionIdSchema)(
 );
 const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)("01989d78-65ee-7f6a-a97e-0f16ad134c11");
 const SESSION_LIVE_TAIL_CAPACITY = 512;
+const MODEL_RUNTIME = {
+  model: "opencode-go/deepseek-v4-flash",
+  thinkingLevel: "high" as const,
+  credential: { type: "api_key" as const, value: "test-model-provider-key" },
+};
 
 Deno.test("WatchSession emits the current lifecycle state after a runner restart", async () => {
   const workingDirectory = await Deno.makeTempDir();
@@ -44,7 +54,7 @@ Deno.test("WatchSession emits the current lifecycle state after a runner restart
           },
         },
       ]);
-    });
+    }, { active: false });
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -82,11 +92,9 @@ Deno.test("WatchSession retains the latest lifecycle state across watch reconnec
   }
 });
 
-Deno.test("WatchSession rereads JSONL across the replay handoff without duplicates", async () => {
+Deno.test("active conversation reads use the cache and coalesced updates preserve every cursor", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const initialReadStarted = await Effect.runPromise(Deferred.make<void>());
-    const releaseInitialRead = await Effect.runPromise(Deferred.make<void>());
     let historyReads = 0;
     await withSession(workingDirectory, SESSION_ID, async ({ events, pi }) => {
       const firstMessageId = pi.appendMessage({
@@ -94,37 +102,37 @@ Deno.test("WatchSession rereads JSONL across the replay handoff without duplicat
         content: "Inspect the repository",
         timestamp: 1,
       });
-      const cursorTwoDelivered = await Effect.runPromise(Deferred.make<void>());
+      const replayed = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
       const waiting = Effect.runFork(
         events.watch(SESSION_ID, 0).pipe(
+          Stream.filter((item) => "cursor" in item),
           Stream.tap((item) =>
-            "cursor" in item && item.cursor === 2
-              ? Deferred.succeed(cursorTwoDelivered, undefined)
+            item.cursor === 1
+              ? Effect.promise(() => {
+                replayed.resolve();
+                return release.promise;
+              })
               : Effect.void
           ),
-          Stream.filter((item) => item.event.type === "conversation.reset" || "cursor" in item),
-          Stream.take(4),
+          Stream.take(3),
           Stream.runCollect,
         ),
       );
-      await Effect.runPromise(Deferred.await(initialReadStarted));
+      await replayed.promise;
       const secondMessageId = pi.appendMessage({
         role: "user",
         content: "Now inspect the tests",
         timestamp: 2,
       });
-      await Effect.runPromise(events.publishConversation(SESSION_ID));
-      await Effect.runPromise(Deferred.succeed(releaseInitialRead, undefined));
-      await Effect.runPromise(Deferred.await(cursorTwoDelivered));
       const thirdMessageId = pi.appendMessage({
         role: "user",
         content: "Then inspect the documentation",
         timestamp: 3,
       });
-      await Effect.runPromise(events.publishConversation(SESSION_ID));
+      release.resolve();
 
       assertEquals(Array.from(await Effect.runPromise(Fiber.join(waiting))), [
-        { runId: null, event: { type: "conversation.reset" } },
         {
           runId: null,
           cursor: 1,
@@ -153,18 +161,162 @@ Deno.test("WatchSession rereads JSONL across the replay handoff without duplicat
           },
         },
       ]);
-      assertEquals(historyReads >= 2, true);
+      assertEquals(historyReads, 0);
     }, {
-      readHistory: (_sessionId, sessionFile) =>
-        Effect.gen(function* () {
-          historyReads++;
-          if (historyReads === 1) {
-            yield* Deferred.succeed(initialReadStarted, undefined);
-            yield* Deferred.await(releaseInitialRead);
-          }
-          return yield* Effect.promise(() => readPiSessionEvents(sessionFile));
-        }),
+      eventOptions: {
+        readHistory: () =>
+          Effect.sync(() => {
+            historyReads++;
+            return [];
+          }),
+      },
     });
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("cold conversation reads project directly from Pi JSONL", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    let historyReads = 0;
+    await withSession(workingDirectory, SESSION_ID, async ({ events, pi }) => {
+      const messageId = pi.appendMessage({ role: "user", content: "Cold history", timestamp: 1 });
+      const replay = await Effect.runPromise(
+        events.watch(SESSION_ID, 0).pipe(
+          Stream.filter((item) => "cursor" in item),
+          Stream.take(1),
+          Stream.runCollect,
+        ),
+      );
+      assertEquals(Array.from(replay), [{
+        runId: null,
+        cursor: 1,
+        event: { type: "user.message", messageId, text: "Cold history" },
+      }]);
+      assertEquals(historyReads, 1);
+    }, {
+      active: false,
+      eventOptions: {
+        readHistory: (_sessionId, sessionFile) =>
+          Effect.promise(() => {
+            historyReads++;
+            return readPiSessionEvents(sessionFile);
+          }),
+      },
+    });
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("disposing an active cache restores JSONL-backed reads", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    let historyReads = 0;
+    await withSession(
+      workingDirectory,
+      SESSION_ID,
+      async ({ events, pi, disposeCache }) => {
+        pi.appendMessage({ role: "user", content: "Cached", timestamp: 1 });
+        disposeCache();
+        const messageId = pi.appendMessage({
+          role: "user",
+          content: "After disposal",
+          timestamp: 2,
+        });
+        const replay = await Effect.runPromise(
+          events.watch(SESSION_ID, 1).pipe(
+            Stream.filter((item) => "cursor" in item),
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        );
+        assertEquals(Array.from(replay), [{
+          runId: null,
+          cursor: 2,
+          event: { type: "user.message", messageId, text: "After disposal" },
+        }]);
+        assertEquals(historyReads, 1);
+      },
+      {
+        eventOptions: {
+          readHistory: (_sessionId, sessionFile) =>
+            Effect.promise(() => {
+              historyReads++;
+              return readPiSessionEvents(sessionFile);
+            }),
+        },
+      },
+    );
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("failed Pi creation disposes its active cache before the worker scope closes", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    let historyReads = 0;
+    await withSession(
+      workingDirectory,
+      SESSION_ID,
+      async ({ events, pi, sessionFile, scope }) => {
+        const failed = await Effect.runPromiseExit(
+          createOpenOrbPiSession({
+            sessionId: SESSION_ID,
+            runnerSessionFile: sessionFile,
+            runnerAgentDirectory: `${workingDirectory}/pi-agent`,
+            modelRuntime: MODEL_RUNTIME,
+            tools: [],
+            conversationProjection: {
+              activate: (sessionId, initial) =>
+                events.activateConversation(sessionId, initial).pipe(
+                  Effect.mapError((cause) =>
+                    new AgentHarnessError("Could not activate the conversation cache.", cause)
+                  ),
+                ),
+            },
+          }, {
+            createAgentSession: () => Promise.reject(new Error("Pi creation failed")),
+          }).pipe(Effect.provideService(Scope.Scope, scope)),
+        );
+        assertEquals(failed._tag, "Failure");
+
+        const messageId = pi.appendMessage({
+          role: "user",
+          content: "Read from JSONL after rollback",
+          timestamp: 1,
+        });
+        const replay = await Effect.runPromise(
+          events.watch(SESSION_ID, 0).pipe(
+            Stream.filter((item) => "cursor" in item),
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        );
+        assertEquals(Array.from(replay), [{
+          runId: null,
+          cursor: 1,
+          event: {
+            type: "user.message",
+            messageId,
+            text: "Read from JSONL after rollback",
+          },
+        }]);
+        assertEquals(historyReads, 1);
+      },
+      {
+        active: false,
+        eventOptions: {
+          readHistory: (_sessionId, sessionFile) =>
+            Effect.promise(() => {
+              historyReads++;
+              return readPiSessionEvents(sessionFile);
+            }),
+        },
+      },
+    );
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -225,7 +377,6 @@ Deno.test("coalesced conversation notifications deliver every missing JSONL even
       await replayed.promise;
       for (let cursor = 2; cursor <= 10; cursor++) {
         pi.appendMessage({ role: "user", content: `message-${cursor}`, timestamp: cursor });
-        await Effect.runPromise(events.publishConversation(SESSION_ID));
       }
       release.resolve();
 
@@ -286,7 +437,6 @@ Deno.test("live pressure is bounded independently from durable JSONL catch-up", 
         content: "Now inspect the tests",
         timestamp: 2,
       });
-      await Effect.runPromise(events.publishConversation(SESSION_ID));
       release.resolve();
 
       const received = Array.from(await Effect.runPromise(Fiber.join(watching)));
@@ -330,9 +480,14 @@ async function withSession(
       pi: SessionManager;
       sessionFile: string;
       store: RunnerSessionStore;
+      scope: Scope.Scope;
+      disposeCache: () => void;
     },
   ) => Promise<void>,
-  options: Parameters<typeof makeSessionEvents>[0] = {},
+  options: {
+    active?: boolean;
+    eventOptions?: Parameters<typeof makeSessionEvents>[0];
+  } = {},
 ) {
   const store = await Effect.runPromise(
     makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
@@ -352,13 +507,29 @@ async function withSession(
   }));
   const paths = await Effect.runPromise(store.getSessionPiPaths(sessionId));
   const pi = SessionManager.open(paths.sessionFile, undefined, "/workspace");
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.flatMap(
-        makeSessionEvents(options).pipe(Effect.provideService(RunnerSessionStore, store)),
-        (events) =>
-          Effect.promise(() => use({ events, pi, sessionFile: paths.sessionFile, store })),
+  const scope = await Effect.runPromise(Scope.make());
+  try {
+    const events = await Effect.runPromise(
+      makeSessionEvents(options.eventOptions).pipe(
+        Effect.provideService(RunnerSessionStore, store),
+        Effect.provideService(Scope.Scope, scope),
       ),
-    ),
-  );
+    );
+    let disposeCache = () => {};
+    if (options.active !== false) {
+      const activeConversation = await Effect.runPromise(
+        events.activateConversation(sessionId, eventsFromPiEntries(pi.getBranch())).pipe(
+          Effect.provideService(Scope.Scope, scope),
+        ),
+      );
+      disposeCache = activeConversation.dispose;
+      observeSessionManagerPersistence(
+        pi,
+        () => activeConversation.update(eventsFromPiEntries(pi.getBranch())),
+      );
+    }
+    await use({ events, pi, sessionFile: paths.sessionFile, store, scope, disposeCache });
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+  }
 }

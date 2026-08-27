@@ -1,10 +1,12 @@
 import { assert, assertEquals } from "@std/assert";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool } from "@earendil-works/pi-coding-agent";
-import { Effect } from "effect";
+import { defineTool, SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionId } from "@openorb/protocol/runner-api";
+import { Effect, Schema } from "effect";
 
 import {
   createOpenOrbPiSession,
+  observeSessionManagerPersistence,
   OPENORB_GUEST_WORKSPACE,
   OPENORB_SYSTEM_PROMPT,
 } from "@/src/harness/pi/session.ts";
@@ -17,8 +19,69 @@ const MODEL_RUNTIME = {
   thinkingLevel: "high" as const,
   credential: { type: "api_key" as const, value: "test-model-provider-key" },
 };
+const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c10",
+);
+const CONVERSATION_PROJECTION = {
+  activate: () => Effect.succeed({ update() {}, dispose() {} }),
+};
 const RUN_REAL_MODEL_TEST = Deno.env.get("OPENORB_RUN_PI_MODEL_TESTS") === "1";
 const REAL_MODEL_API_KEY = Deno.env.get("OPENCODE_API_KEY");
+
+Deno.test("SessionManager observer runs post-write for every durable conversation append", async () => {
+  const temporaryDirectory = await Deno.makeTempDir();
+  try {
+    const sessionFile = `${temporaryDirectory}/session.jsonl`;
+    await Deno.writeTextFile(sessionFile, "");
+    const manager = SessionManager.open(sessionFile, undefined, "/workspace");
+    const originalAppendMessage = manager.appendMessage.bind(manager);
+    let originalReturned = false;
+    // SAFETY: The test wrapper forwards the exact method parameters and return value unchanged.
+    manager.appendMessage = ((...args: Parameters<SessionManager["appendMessage"]>) => {
+      const id = originalAppendMessage(...args);
+      originalReturned = true;
+      return id;
+    }) as SessionManager["appendMessage"];
+    const observed: string[] = [];
+    observeSessionManagerPersistence(manager, (entry) => {
+      assert(originalReturned, "observer ran before Pi's append method returned");
+      assertEquals(manager.getEntry(entry.id), entry);
+      assert(Deno.readTextFileSync(sessionFile).includes(`\"id\":\"${entry.id}\"`));
+      observed.push(entry.type);
+    });
+
+    const messageId = manager.appendMessage({ role: "user", content: "Inspect", timestamp: 1 });
+    originalReturned = true;
+    manager.appendCustomMessageEntry("openorb-test", "Context", true);
+    manager.appendCompaction("Summary", messageId, 100);
+
+    assertEquals(observed, ["message", "custom_message", "compaction"]);
+  } finally {
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("SessionManager observer is infallible and is not called after a failed append", () => {
+  const manager = SessionManager.inMemory("/workspace");
+  // SAFETY: A function that always throws is assignable for every appendMessage input and output.
+  manager.appendMessage = (() => {
+    throw new Error("write failed");
+  }) as SessionManager["appendMessage"];
+  let calls = 0;
+  observeSessionManagerPersistence(manager, () => calls++);
+  try {
+    manager.appendMessage({ role: "user", content: "Inspect", timestamp: 1 });
+  } catch {
+    // Expected original failure.
+  }
+  assertEquals(calls, 0);
+
+  const healthy = SessionManager.inMemory("/workspace");
+  observeSessionManagerPersistence(healthy, () => {
+    throw new Error("cache failed");
+  });
+  assert(healthy.appendMessage({ role: "user", content: "Still persisted", timestamp: 2 }));
+});
 
 Deno.test("the audited factory ignores hostile workspace and global Pi resources", async () => {
   const temporaryDirectory = await Deno.makeTempDir();
@@ -34,12 +97,14 @@ Deno.test("the audited factory ignores hostile workspace and global Pi resources
     const sessionFile = `${sessionDirectory}/session.jsonl`;
     await Deno.writeTextFile(sessionFile, "");
 
-    const result = await Effect.runPromise(createOpenOrbPiSession({
+    const result = await Effect.runPromise(Effect.scoped(createOpenOrbPiSession({
+      sessionId: SESSION_ID,
       runnerSessionFile: sessionFile,
       runnerAgentDirectory: `${hostileFixture}/global-agent`,
       modelRuntime: MODEL_RUNTIME,
       tools: [],
-    }));
+      conversationProjection: CONVERSATION_PROJECTION,
+    })));
     try {
       const loader = result.session.resourceLoader;
       const extensions = loader.getExtensions();
@@ -107,12 +172,14 @@ Deno.test("the factory allowlists supplied tools without enabling Pi host tools"
     const sessionFile = `${temporaryDirectory}/session.jsonl`;
     const agentDirectory = `${temporaryDirectory}/pi-agent`;
     await Deno.writeTextFile(sessionFile, "");
-    const result = await Effect.runPromise(createOpenOrbPiSession({
+    const result = await Effect.runPromise(Effect.scoped(createOpenOrbPiSession({
+      sessionId: SESSION_ID,
       runnerSessionFile: sessionFile,
       runnerAgentDirectory: agentDirectory,
       modelRuntime: MODEL_RUNTIME,
       tools: [guestTool],
-    }));
+      conversationProjection: CONVERSATION_PROJECTION,
+    })));
     try {
       assertEquals(result.session.getActiveToolNames(), ["guest-test"]);
       assertEquals(
@@ -141,7 +208,8 @@ Deno.test({
       const agentDirectory = `${temporaryDirectory}/agent`;
       await Deno.writeTextFile(sessionFile, "");
       await Deno.mkdir(agentDirectory);
-      const result = await Effect.runPromise(createOpenOrbPiSession({
+      const result = await Effect.runPromise(Effect.scoped(createOpenOrbPiSession({
+        sessionId: SESSION_ID,
         runnerSessionFile: sessionFile,
         runnerAgentDirectory: agentDirectory,
         modelRuntime: {
@@ -149,7 +217,8 @@ Deno.test({
           credential: { type: "api_key", value: apiKey },
         },
         tools: [],
-      }));
+        conversationProjection: CONVERSATION_PROJECTION,
+      })));
       let responseText = "";
       let sawTextDelta = false;
       let sawThinkingDelta = false;

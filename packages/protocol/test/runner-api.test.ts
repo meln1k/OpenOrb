@@ -8,6 +8,8 @@ import {
   AbortSessionPayload,
   type CapacityExceeded,
   ClientRequestId,
+  DurableSessionEvent,
+  EphemeralSessionEvent,
   type HistoryReadError,
   ProjectId,
   type PromptRejected,
@@ -27,6 +29,7 @@ import {
   type RunnerWatchError,
   type SessionConflict,
   type SessionCorrupt,
+  SessionEvent,
   SessionId,
   SessionModelRuntime,
   type SessionNotFound,
@@ -142,6 +145,25 @@ Deno.test("WatchSession events always state their run attribution", () => {
       event: { type: "user.message", messageId: "message-1", text: "Hello" },
     })
   );
+});
+
+Deno.test("one SessionEvent schema validates durable and ephemeral wire payloads", () => {
+  const durable = {
+    type: "user.message" as const,
+    messageId: "message-1",
+    text: "Hello",
+  };
+  const ephemeral = {
+    type: "assistant.text.delta" as const,
+    delta: "Hi",
+  };
+
+  assertEquals(Schema.decodeUnknownSync(SessionEvent)(durable), durable);
+  assertEquals(Schema.decodeUnknownSync(SessionEvent)(ephemeral), ephemeral);
+  assertEquals(Schema.decodeUnknownSync(DurableSessionEvent)(durable), durable);
+  assertEquals(Schema.decodeUnknownSync(EphemeralSessionEvent)(ephemeral), ephemeral);
+  assertThrows(() => Schema.decodeUnknownSync(DurableSessionEvent)(ephemeral));
+  assertThrows(() => Schema.decodeUnknownSync(EphemeralSessionEvent)(durable));
 });
 
 Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest", async () => {

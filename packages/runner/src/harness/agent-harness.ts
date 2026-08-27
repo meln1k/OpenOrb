@@ -1,7 +1,7 @@
 import { Context, Data, type Effect, type Scope, type Stream } from "effect";
 import type {
-  SessionConversationEvent,
-  SessionLiveEvent,
+  EphemeralSessionEvent,
+  SessionId,
   SessionModelRuntime,
 } from "@openorb/protocol/runner-api";
 
@@ -12,29 +12,29 @@ export interface AgentHarnessState {
   readonly agentDirectory: string;
 }
 
-export interface AgentHarnessStartOptions {
-  readonly input: string;
+export interface AgentHarnessOpenOptions {
+  readonly sessionId: SessionId;
   readonly environment: AgentEnvironment;
   readonly modelRuntime: SessionModelRuntime;
   readonly state: AgentHarnessState;
 }
 
-export type AgentHarnessEvent =
-  | { readonly _tag: "ConversationAppended"; readonly event: SessionConversationEvent }
-  | { readonly _tag: "Live"; readonly event: SessionLiveEvent };
-
 /** A single accepted run. Its finite event stream ends only after the run settles. */
 export interface ActiveAgentRun {
-  readonly events: Stream.Stream<AgentHarnessEvent, AgentHarnessError>;
+  readonly events: Stream.Stream<EphemeralSessionEvent, AgentHarnessError>;
   readonly followUp: (input: string) => Effect.Effect<void, AgentHarnessError>;
   /** Clears pending follow-ups before aborting the underlying run. */
   readonly abort: Effect.Effect<void, AgentHarnessError>;
 }
 
+export interface AgentHarnessSession {
+  readonly start: (input: string) => Effect.Effect<ActiveAgentRun, AgentHarnessError>;
+}
+
 export interface AgentHarness {
-  readonly start: (
-    options: AgentHarnessStartOptions,
-  ) => Effect.Effect<ActiveAgentRun, AgentHarnessError, Scope.Scope>;
+  readonly open: (
+    options: AgentHarnessOpenOptions,
+  ) => Effect.Effect<AgentHarnessSession, AgentHarnessError, Scope.Scope>;
 }
 
 export const AgentHarness: Context.Service<AgentHarness, AgentHarness> = Context.Service(

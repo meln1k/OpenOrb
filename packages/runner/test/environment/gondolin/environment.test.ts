@@ -5,7 +5,8 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { Effect, Exit, Scope } from "effect";
+import { SessionId } from "@openorb/protocol/runner-api";
+import { Effect, Exit, Schema, Scope } from "effect";
 
 import {
   createGondolinAgentEnvironment,
@@ -15,6 +16,13 @@ import { resolveAgentWorkspacePath } from "@/src/environment/agent-environment.t
 import { createOpenOrbPiSession } from "@/src/harness/pi/session.ts";
 import { createPiTools } from "@/src/harness/pi/tools.ts";
 import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
+
+const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c10",
+);
+const CONVERSATION_PROJECTION = {
+  activate: () => Effect.succeed({ update() {}, dispose() {} }),
+};
 
 Deno.test("workspace path mapping rejects lexical escapes", () => {
   assertEquals(resolveAgentWorkspacePath("file.txt"), "/workspace/file.txt");
@@ -129,7 +137,8 @@ Deno.test({
     const runtime = opened.runtime;
     const piSessionFile = `${temporaryDirectory}/pi-session.jsonl`;
     await Deno.writeTextFile(piSessionFile, "");
-    const pi = await Effect.runPromise(createOpenOrbPiSession({
+    const pi = await Effect.runPromise(Effect.scoped(createOpenOrbPiSession({
+      sessionId: SESSION_ID,
       runnerSessionFile: piSessionFile,
       runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
       modelRuntime: {
@@ -138,7 +147,8 @@ Deno.test({
         credential: { type: "api_key", value: "test-model-provider-key" },
       },
       tools: createPiTools(runtime),
-    }));
+      conversationProjection: CONVERSATION_PROJECTION,
+    })));
 
     try {
       assertEquals(

@@ -81,7 +81,6 @@ Deno.test("compaction invalidates context usage until a valid assistant completi
     compactionId: "compaction-1",
     summary: "Condensed prior work",
     tokensBefore: 110,
-    usage: undefined,
   });
   assertEquals(compacted.contextUsage, undefined);
 

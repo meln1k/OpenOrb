@@ -15,7 +15,7 @@ import {
   type AgentEnvironment,
   AgentEnvironmentProvider,
 } from "../../src/environment/agent-environment.ts";
-import { AgentHarness } from "../../src/harness/agent-harness.ts";
+import { AgentHarness, AgentHarnessError } from "../../src/harness/agent-harness.ts";
 import { type CreateRawPiSession, makePiAgentHarness } from "../../src/harness/pi/layer.ts";
 import type { OpenOrbPiSessionOptions } from "../../src/harness/pi/session.ts";
 import { makeSessionEvents, SessionEvents } from "../../src/session/events.ts";
@@ -76,6 +76,21 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
   try {
     const store = await makeStore(directory);
     const runtime = new FakeEnvironment();
+    let piCreations = 0;
+    let piDisposals = 0;
+    const createPiSession: CreateRawPiSession = (options) =>
+      Effect.map(createSettlingPiSession(options), (created) => {
+        piCreations++;
+        return {
+          session: {
+            ...created.session,
+            dispose: () => {
+              piDisposals++;
+              created.session.dispose();
+            },
+          },
+        };
+      });
     const payload = Schema.decodeUnknownSync(ProvisionSessionPayload)({
       mode: "create",
       sessionId: SESSION_ID,
@@ -94,7 +109,7 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
         cpuCount: 4,
         memoryMiB: 8192,
         maxConcurrentSessions: 2,
-        createPiSession: createSettlingPiSession,
+        createPiSession,
       },
       store,
       fakeEnvironmentProvider(runtime),
@@ -120,9 +135,11 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
         assertEquals(promptAccepted.mode, "started");
         assert(String(promptAccepted.runId) !== String(prompt.clientRequestId));
         await waitForState(store, "ready");
+        assertEquals(piCreations, 1);
       },
     );
     assert(runtime.closed);
+    assertEquals(piDisposals, 1);
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
@@ -642,7 +659,17 @@ async function withSupervisor(
         const events = yield* makeSessionEvents().pipe(
           Effect.provideService(RunnerSessionStore, store),
         );
-        const harness = makePiAgentHarness(options.createPiSession);
+        const harness = makePiAgentHarness({
+          conversationProjection: {
+            activate: (sessionId, initial) =>
+              events.activateConversation(sessionId, initial).pipe(
+                Effect.mapError((cause) =>
+                  new AgentHarnessError("Could not activate the conversation cache.", cause)
+                ),
+              ),
+          },
+          ...(options.createPiSession === undefined ? {} : { create: options.createPiSession }),
+        });
         const workerFactory = yield* makeSessionWorkerFactory().pipe(
           Effect.provideService(RunnerSessionStore, store),
           Effect.provideService(SessionEvents, events),

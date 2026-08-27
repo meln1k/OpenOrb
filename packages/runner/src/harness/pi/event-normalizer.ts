@@ -2,10 +2,9 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { Effect, Result } from "effect";
 import {
+  type EphemeralSessionEvent,
   MAX_RPC_QUEUED_SESSION_MESSAGES,
   MAX_RPC_SESSION_EVENT_TEXT_BYTES,
-  type SessionConversationEvent,
-  type SessionLiveEvent,
   type SessionUsage,
 } from "@openorb/protocol/runner-api";
 import { array, literal, object, parseSafe, string, union } from "@remix-run/data-schema";
@@ -17,14 +16,9 @@ const toolResultSchema = object({
   ])),
 });
 
-type PiMessage = Extract<AgentSessionEvent, { type: "message_end" }>["message"];
-
 /** Converts provider-specific Pi callbacks into OpenOrb's stable event vocabulary. */
 export interface PiEventNormalizerOptions {
-  getCompactionEntryId(): string | undefined;
-  getMessageEntryId(message: PiMessage): string | undefined;
-  publishConversation(event: SessionConversationEvent): Effect.Effect<void, unknown>;
-  publishLive(event: SessionLiveEvent): Effect.Effect<void, unknown>;
+  publishLive(event: EphemeralSessionEvent): Effect.Effect<void, unknown>;
   secrets?: readonly string[];
 }
 
@@ -38,30 +32,16 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
   };
   const safeText = (value: string, maxBytes: number): string =>
     truncateUtf8(sanitizeText(redact(value)), maxBytes);
-  const safeCompletedAssistantText = (value: string, maxBytes: number): string =>
-    truncateUtf8(normalizeCompletedAssistantText(sanitizeText(redact(value))), maxBytes);
   const safeIdentifier = (value: string, fallback: string): string =>
     boundedIdentifier(redact(value), fallback);
   const queuedMessages = (messages: readonly string[]): string[] =>
     messages.slice(0, MAX_RPC_QUEUED_SESSION_MESSAGES).map((message) =>
       safeText(message, MAX_RPC_SESSION_EVENT_TEXT_BYTES)
     );
-  const captureMessageEntryId = (message: PiMessage) =>
-    Effect.yieldNow.pipe(
-      Effect.andThen(Effect.try({
-        try: () => options.getMessageEntryId(message),
-        catch: (cause) =>
-          new PiEventNormalizationError("Could not inspect Pi's durable message entry.", cause),
-      })),
-    );
-
   return Effect.fn("PiEventNormalizer.handle")(function* (event: AgentSessionEvent) {
     const publications: Array<Effect.Effect<void, unknown>> = [];
-    const publishLive = (event: SessionLiveEvent): void => {
+    const publishLive = (event: EphemeralSessionEvent): void => {
       publications.push(options.publishLive(event));
-    };
-    const publishConversation = (event: SessionConversationEvent): void => {
-      publications.push(options.publishConversation(event));
     };
 
     switch (event.type) {
@@ -87,93 +67,6 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
         normalizeAssistantUpdate(event, publishLive, safeText, safeIdentifier);
         break;
       case "message_end": {
-        if (event.message.role === "user") {
-          const text = messageContentText(event.message.content);
-          if (text) {
-            publications.push(
-              captureMessageEntryId(event.message).pipe(
-                Effect.flatMap((messageId) =>
-                  messageId === undefined
-                    ? Effect.fail(
-                      new PiEventNormalizationError(
-                        "Pi completed a user message without a durable session entry.",
-                        undefined,
-                      ),
-                    )
-                    : options.publishConversation({
-                      type: "user.message",
-                      messageId,
-                      text: truncateUtf8(text, MAX_RPC_SESSION_EVENT_TEXT_BYTES),
-                    })
-                ),
-              ),
-            );
-          }
-        } else if (event.message.role === "assistant") {
-          const message = event.message;
-          const content = message.content;
-          publications.push(
-            captureMessageEntryId(message).pipe(
-              Effect.flatMap((messageId) =>
-                messageId === undefined ? Effect.void : Effect.forEach(
-                  [
-                    {
-                      type: "assistant.completed" as const,
-                      messageId,
-                      text: safeCompletedAssistantText(
-                        content.flatMap((block) => block.type === "text" ? [block.text] : []).join(
-                          "",
-                        ),
-                        MAX_RPC_SESSION_EVENT_TEXT_BYTES,
-                      ),
-                      thinking: safeCompletedAssistantText(
-                        content.flatMap((block) =>
-                          block.type === "thinking" ? [block.thinking] : []
-                        ).join(""),
-                        MAX_RPC_SESSION_EVENT_TEXT_BYTES,
-                      ),
-                      stopReason: message.stopReason,
-                      usage: sessionUsage(message.usage),
-                    },
-                    ...content.flatMap((block) =>
-                      block.type === "toolCall"
-                        ? [{
-                          type: "tool.started" as const,
-                          toolCallId: safeIdentifier(block.id, "tool"),
-                          toolName: safeIdentifier(block.name, "unknown"),
-                          arguments: safeText(
-                            stringify(block.arguments),
-                            MAX_RPC_SESSION_EVENT_TEXT_BYTES,
-                          ),
-                        }]
-                        : []
-                    ),
-                  ] satisfies SessionConversationEvent[],
-                  options.publishConversation,
-                  { discard: true },
-                )
-              ),
-            ),
-          );
-        } else if (event.message.role === "toolResult") {
-          const message = event.message;
-          publications.push(
-            captureMessageEntryId(message).pipe(
-              Effect.flatMap((messageId) =>
-                messageId === undefined ? Effect.void : options.publishConversation({
-                  type: "tool.completed",
-                  toolCallId: safeIdentifier(message.toolCallId, "tool"),
-                  toolName: safeIdentifier(message.toolName, "unknown"),
-                  result: safeText(
-                    messageContentText(message.content),
-                    MAX_RPC_SESSION_EVENT_TEXT_BYTES,
-                  ),
-                  isError: message.isError,
-                })
-              ),
-            ),
-          );
-        }
         publishLive({ type: "message.completed", role: event.message.role });
         break;
       }
@@ -208,25 +101,6 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
           ? undefined
           : safeText(result.summary, MAX_RPC_SESSION_EVENT_TEXT_BYTES);
         const tokensBefore = result === undefined ? undefined : boundedCount(result.tokensBefore);
-        if (result !== undefined) {
-          const entryId = options.getCompactionEntryId();
-          if (entryId === undefined) {
-            publications.push(Effect.fail(
-              new PiEventNormalizationError(
-                "Pi completed compaction without a durable session entry.",
-                undefined,
-              ),
-            ));
-          } else {
-            publishConversation({
-              type: "context.compacted",
-              compactionId: entryId,
-              summary: summary ?? "",
-              tokensBefore: tokensBefore ?? 0,
-              ...(result.usage === undefined ? {} : { usage: sessionUsage(result.usage) }),
-            });
-          }
-        }
         publishLive({
           type: "compaction.completed",
           reason: event.reason,
@@ -318,7 +192,7 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
 
 function normalizeAssistantUpdate(
   event: Extract<AgentSessionEvent, { type: "message_update" }>,
-  publishLive: (event: SessionLiveEvent) => void,
+  publishLive: (event: EphemeralSessionEvent) => void,
   safeText: (value: string, maxBytes: number) => string,
   safeIdentifier: (value: string, fallback: string) => string,
 ): void {
@@ -401,13 +275,6 @@ function normalizeAssistantUpdate(
       return;
   }
   return assertNever(update);
-}
-
-class PiEventNormalizationError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
-    super(message, { cause });
-    this.name = "PiEventNormalizationError";
-  }
 }
 
 export function normalizeCompletedAssistantText(value: string): string {
