@@ -1,6 +1,7 @@
 {
   "name": "@openorb/gateway",
   "version": "0.0.0",
+  "license": "AGPL-3.0-or-later",
   "exports": {
     ".": "./app/router.ts",
     "./server": "./server.ts"

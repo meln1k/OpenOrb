@@ -277,3 +277,8 @@
   the ready session VM, but no QEMU process appeared within the 90-second observation window.
 - 2026-08-27: A follow-up E2E inspection also assumed the gateway `sessions` table stored a
   `runner_id`; runner assignment is not a column on that catalog row.
+- 2026-08-28: The Codex patch format accepted move-only file operations syntactically but rejected
+  them as no-op updates, so canonical license files fetched outside the workspace could not be moved
+  into package directories without first making an actual hunk change.
+- 2026-08-28: Targeted formatting found that the manually wrapped move-only-patch papercut did not
+  match Deno's Markdown wrapping.
