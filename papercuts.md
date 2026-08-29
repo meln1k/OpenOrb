@@ -503,3 +503,15 @@
 - 2026-08-29: A Git-only restore could win admission before `session.wake`, causing the supervisor
   to return the existing credential-less worker and acknowledge wake without delivering its model
   runtime to the worker.
+- 2026-08-29: Git Snapshot update notifications are not replayed after the browser reconnects to the
+  session event stream, so an open Changes panel can remain stale until another update arrives.
+- 2026-08-29: The first browser reconnect check used `agent-browser offline`; offline emulation is
+  configured with `agent-browser set offline` instead.
+- 2026-08-29: A transient failed Git Snapshot GET leaves the Changes panel stale because its refresh
+  loop records the error without scheduling another attempt.
+- 2026-08-29: A scoped search for existing browser retry timers stalled without output and had to be
+  terminated.
+- 2026-08-29: Concurrent format, lint, and type checks stalled while the development runner held
+  about 2.3 GiB; they had to be terminated before stopping the runner and gateway services.
+- 2026-08-29: Newly appended papercut lines exceeded Deno's Markdown wrapping and required
+  formatting.

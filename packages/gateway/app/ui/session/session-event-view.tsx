@@ -158,7 +158,15 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
         if (!handle.signal.aborted) void handle.update();
       });
     };
+    const reconcileGitSnapshot = () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("openorb:session-git-snapshot-changed", {
+          detail: { sessionId: handle.props.sessionId },
+        }),
+      );
+    };
     stream.addEventListener("open", () => {
+      reconcileGitSnapshot();
       if (!connectionInterrupted) return;
       connectionInterrupted = false;
       scheduleUpdate();
@@ -171,11 +179,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
       if (!event) return;
       if (event.type === "session.state" && event.stage !== "running") abortPending = false;
       if (event.type === "git.snapshot.updated") {
-        globalThis.dispatchEvent(
-          new CustomEvent("openorb:session-git-snapshot-changed", {
-            detail: { sessionId: handle.props.sessionId },
-          }),
-        );
+        reconcileGitSnapshot();
       }
       const next = reduceSessionTranscriptState(transcriptState, event);
       if (next === transcriptState) return;
