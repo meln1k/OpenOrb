@@ -1,4 +1,5 @@
 import {
+  isSafeGitReference,
   MAX_SESSION_GIT_SNAPSHOT_FILES,
   MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
@@ -49,6 +50,12 @@ interface GitSnapshotFiles {
   readonly unstaged: SessionGitFile[];
 }
 
+interface ParsedGitStatus {
+  readonly branch?: string;
+  readonly head?: string;
+  readonly files: ParsedGitFile[];
+}
+
 interface ParsedGitFile {
   readonly path: string;
   readonly displayPath: string;
@@ -91,6 +98,7 @@ export function generateSessionGitSnapshot(
       status: captureSnapshotGit(environment, [
         "status",
         "--porcelain=v2",
+        "--branch",
         "-z",
         "--untracked-files=all",
         "--no-ahead-behind",
@@ -127,8 +135,9 @@ export function generateSessionGitSnapshot(
 
     const parsedStaged = parseDiffCapture(stagedDiff);
     const parsedUnstaged = parseDiffCapture(unstagedDiff);
+    const parsedStatus = parsePorcelain(status.stdout);
     const files = sectionFiles(
-      parsePorcelain(status.stdout),
+      parsedStatus.files,
       parsedStaged.binaryPaths,
       parsedUnstaged.binaryPaths,
     );
@@ -169,6 +178,8 @@ export function generateSessionGitSnapshot(
 
     return new SessionGitSnapshot({
       generatedAt: new Date().toISOString(),
+      ...(parsedStatus.branch === undefined ? {} : { branch: parsedStatus.branch }),
+      ...(parsedStatus.head === undefined ? {} : { head: parsedStatus.head }),
       completeness,
       stale: false,
       truncated,
@@ -236,6 +247,8 @@ export function sameGitSnapshotContents(
   right: SessionGitSnapshot,
 ): boolean {
   return left.completeness === right.completeness &&
+    left.branch === right.branch &&
+    left.head === right.head &&
     left.truncated === right.truncated &&
     left.message === right.message &&
     JSON.stringify(left.sections) === JSON.stringify(right.sections);
@@ -461,12 +474,25 @@ function parseUntrackedDiffCapture(
   };
 }
 
-function parsePorcelain(output: string): ParsedGitFile[] {
+function parsePorcelain(output: string): ParsedGitStatus {
   const records = output.split("\0");
   const files: ParsedGitFile[] = [];
+  let branch: string | undefined;
+  let head: string | undefined;
   for (let index = 0; index < records.length;) {
     const record = records[index++];
     if (!record) continue;
+    if (record.startsWith("# branch.oid ")) {
+      const candidate = record.slice("# branch.oid ".length);
+      if (/^[0-9a-f]{40,64}$/.test(candidate)) head = candidate;
+      continue;
+    }
+    if (record.startsWith("# branch.head ")) {
+      const candidate = record.slice("# branch.head ".length);
+      if (isSafeGitReference(candidate)) branch = candidate;
+      continue;
+    }
+    if (record.startsWith("# ")) continue;
     if (record.startsWith("? ")) {
       const path = record.slice(2);
       files.push({
@@ -503,7 +529,12 @@ function parsePorcelain(output: string): ParsedGitFile[] {
       untracked: false,
     });
   }
-  return files.sort((left, right) => left.displayPath.localeCompare(right.displayPath));
+  files.sort((left, right) => left.displayPath.localeCompare(right.displayPath));
+  return {
+    ...(branch === undefined ? {} : { branch }),
+    ...(head === undefined ? {} : { head }),
+    files,
+  };
 }
 
 function sectionFiles(

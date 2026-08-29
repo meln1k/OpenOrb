@@ -22,6 +22,18 @@ const sessionGitDiffStateSchema = union([
   literal("binary" as const),
   literal("truncated" as const),
 ]);
+const sessionGitBranchSchema = string().refine(
+  (value) =>
+    value.length > 0 && value.length <= 255 &&
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) && !value.includes("..") &&
+    !value.includes("//") && !value.includes("@{") && !value.endsWith("/") &&
+    !value.endsWith(".") && !value.endsWith(".lock"),
+  "Expected a valid Git branch name.",
+);
+const sessionGitHeadSchema = string().refine(
+  (value) => /^[0-9a-f]{40,64}$/.test(value),
+  "Expected a Git object identifier.",
+);
 const sessionGitFileBase = {
   path: sessionGitPathSchema,
   displayPath: sessionGitPathSchema,
@@ -90,6 +102,8 @@ const sessionGitSectionsSchema = object({
 
 export const sessionGitSnapshotSchema = object({
   generatedAt: string(),
+  branch: optional(sessionGitBranchSchema),
+  head: optional(sessionGitHeadSchema),
   completeness: union([literal("complete" as const), literal("incomplete" as const)]),
   stale: booleanSchema,
   truncated: booleanSchema,

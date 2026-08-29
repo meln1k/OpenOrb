@@ -2,10 +2,12 @@ import { assertEquals } from "@std/assert";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import {
+  GitAuthor,
   ProjectId,
   RunId,
   type SessionId,
   SessionId as SessionIdSchema,
+  UserId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Fiber, Schema, Scope, Stream } from "effect";
 
@@ -16,6 +18,7 @@ import {
   createOpenOrbPiSession,
   observeSessionManagerPersistence,
 } from "@/src/harness/pi/session.ts";
+import { RunnerSessionDefinition } from "@/src/session/definition.ts";
 import { makeRunnerSessionStore, RunnerSessionStore } from "@/src/session/store.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
@@ -23,6 +26,8 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionIdSchema)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
 const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)("01989d78-65ee-7f6a-a97e-0f16ad134c11");
+const USER_ID = Schema.decodeUnknownSync(UserId)("01989d78-65ee-7f6a-a97e-0f16ad134c12");
+const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
 const SESSION_LIVE_TAIL_CAPACITY = 512;
 const MODEL_RUNTIME = {
   model: "opencode-go/deepseek-v4-flash",
@@ -267,6 +272,8 @@ Deno.test("failed Pi creation disposes its active cache before the worker scope 
             sessionId: SESSION_ID,
             runnerSessionFile: sessionFile,
             runnerAgentDirectory: `${workingDirectory}/pi-agent`,
+            repositoryUrl: "https://github.com/meln1k/openorb.git",
+            branchName: "openorb/session-events-test",
             modelRuntime: MODEL_RUNTIME,
             tools: [],
             conversationProjection: {
@@ -494,17 +501,21 @@ async function withSession(
       Effect.provide(DenoFileSystem.layer),
     ),
   );
-  await Effect.runPromise(store.createSession({
-    id: sessionId,
-    projectId: PROJECT_ID,
-    repositoryUrl: "https://github.com/meln1k/openorb.git",
-    ref: "main",
-    branchName: "openorb/session-events-test",
-    initialPrompt: "Inspect the repository",
-    model: "opencode-go/deepseek-v4-flash",
-    orbSize: "small",
-    createdAt: "2026-08-23T12:00:00Z",
-  }));
+  await Effect.runPromise(store.ensureSession(
+    sessionId,
+    new RunnerSessionDefinition({
+      userId: USER_ID,
+      projectId: PROJECT_ID,
+      repositoryUrl: "https://github.com/meln1k/openorb.git",
+      ref: "main",
+      branchName: "openorb/session-events-test",
+      gitAuthor: GIT_AUTHOR,
+      initialPrompt: "Inspect the repository",
+      model: "opencode-go/deepseek-v4-flash",
+      orbSize: "small",
+    }),
+    "2026-08-23T12:00:00Z",
+  ));
   const paths = await Effect.runPromise(store.getSessionPiPaths(sessionId));
   const pi = SessionManager.open(paths.sessionFile, undefined, "/workspace");
   const scope = await Effect.runPromise(Scope.make());

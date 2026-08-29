@@ -15,6 +15,10 @@ export interface AgentHarnessState {
 export interface AgentHarnessOpenOptions {
   readonly sessionId: SessionId;
   readonly environment: AgentEnvironment;
+  readonly git: {
+    readonly repositoryUrl: string;
+    readonly branchName: string;
+  };
   readonly modelRuntime: SessionModelRuntime;
   readonly state: AgentHarnessState;
 }

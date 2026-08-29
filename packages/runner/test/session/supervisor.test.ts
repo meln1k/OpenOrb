@@ -3,22 +3,26 @@ import { delay } from "@std/async/delay";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import {
   AbortSessionPayload,
+  GitAuthor,
   ProjectId,
   PromptSessionPayload,
   ProvisionSessionPayload,
   SessionId,
   UpdateSessionGitFilePayload,
+  UserId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema } from "effect";
 import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
 
 import {
   type AgentEnvironment,
+  type AgentEnvironmentOptions,
   AgentEnvironmentProvider,
 } from "../../src/environment/agent-environment.ts";
 import { AgentHarness, AgentHarnessError } from "../../src/harness/agent-harness.ts";
 import { type CreateRawPiSession, makePiAgentHarness } from "../../src/harness/pi/layer.ts";
 import type { OpenOrbPiSessionOptions } from "../../src/harness/pi/session.ts";
+import { RunnerSessionDefinition } from "../../src/session/definition.ts";
 import { makeSessionEvents, SessionEvents } from "../../src/session/events.ts";
 import {
   makeSessionSupervisor,
@@ -45,11 +49,29 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c11",
 );
+const USER_ID = Schema.decodeUnknownSync(UserId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c12",
+);
+const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
 const MODEL_RUNTIME = {
   model: "opencode-go/deepseek-v4-flash",
   thinkingLevel: "high" as const,
   credential: { type: "api_key" as const, value: "model-secret" },
 };
+
+function sessionDefinition(branchName: string): RunnerSessionDefinition {
+  return new RunnerSessionDefinition({
+    userId: USER_ID,
+    projectId: PROJECT_ID,
+    repositoryUrl: "https://github.com/meln1k/openorb.git",
+    ref: "main",
+    branchName,
+    gitAuthor: GIT_AUTHOR,
+    initialPrompt: "Inspect the repository",
+    model: MODEL_RUNTIME.model,
+    orbSize: "small",
+  });
+}
 
 class FakeEnvironment implements AgentEnvironment {
   readonly commands: string[][] = [];
@@ -100,10 +122,12 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
     const payload = Schema.decodeUnknownSync(ProvisionSessionPayload)({
       mode: "create",
       sessionId: SESSION_ID,
+      userId: USER_ID,
       projectId: PROJECT_ID,
       repositoryUrl: "https://github.com/meln1k/openorb.git",
       ref: "main",
       branchName: "openorb/session-supervisor-test",
+      gitAuthor: GIT_AUTHOR,
       orbSize: "small",
       initialPrompt: "Inspect the repository",
       modelRuntime: MODEL_RUNTIME,
@@ -150,6 +174,72 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
     );
     assert(runtime.closed);
     assertEquals(piDisposals, 1);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("session owners retain separate immutable Git identities in guest environments", async () => {
+  const directory = await Deno.makeTempDir();
+  const identities = [
+    {
+      userId: USER_ID,
+      gitAuthor: GIT_AUTHOR,
+    },
+    {
+      userId: Schema.decodeUnknownSync(UserId)(
+        "01989d78-65ee-7f6a-a97e-0f16ad134c13",
+      ),
+      gitAuthor: new GitAuthor({ name: "Second User", email: "second@example.com" }),
+    },
+  ] as const;
+  const observed: AgentEnvironmentOptions[] = [];
+
+  try {
+    for (const [index, identity] of identities.entries()) {
+      const sessionDirectory = `${directory}/${index}`;
+      await Deno.mkdir(sessionDirectory);
+      const store = await makeStore(sessionDirectory);
+      const environment = new FakeEnvironment();
+      const environmentProvider: AgentEnvironmentProvider = {
+        make: (options) => {
+          observed.push(options);
+          return Effect.acquireRelease(
+            Effect.succeed(environment),
+            () => Effect.sync(() => environment.closed = true),
+          );
+        },
+      };
+      const payload = Schema.decodeUnknownSync(ProvisionSessionPayload)({
+        ...createProvisionPayload(`openorb/identity-${index}`),
+        userId: identity.userId,
+        gitAuthor: identity.gitAuthor,
+      });
+      if (payload.mode !== "create") throw new Error("Expected a create payload.");
+
+      await withSupervisor(
+        {
+          cpuCount: 4,
+          memoryMiB: 8192,
+          maxConcurrentSessions: 1,
+          createPiSession: createSettlingPiSession,
+        },
+        store,
+        environmentProvider,
+        async (supervisor) => {
+          await Effect.runPromise(supervisor.provision(payload));
+          await waitForState(store, "ready");
+          const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
+          assertEquals(metadata.definition.userId, identity.userId);
+          assertEquals(metadata.definition.gitAuthor, identity.gitAuthor);
+        },
+      );
+    }
+
+    assertEquals(
+      observed.map((options) => options.github?.gitAuthor),
+      identities.map((identity) => identity.gitAuthor),
+    );
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
@@ -254,10 +344,12 @@ Deno.test("SessionSupervisor aborts only the exact active run after clearing fol
     const provision = Schema.decodeUnknownSync(ProvisionSessionPayload)({
       mode: "create",
       sessionId: SESSION_ID,
+      userId: USER_ID,
       projectId: PROJECT_ID,
       repositoryUrl: "https://github.com/meln1k/openorb.git",
       ref: "main",
       branchName: "openorb/abort-test",
+      gitAuthor: GIT_AUTHOR,
       orbSize: "small",
       initialPrompt: "Inspect",
       modelRuntime: MODEL_RUNTIME,
@@ -369,16 +461,9 @@ Deno.test("SessionSupervisor lazily restores a ready worker for Git file updates
   try {
     const store = await makeStore(directory);
     const payload = createProvisionPayload("openorb/restart-git-update-test");
-    await Effect.runPromise(store.createSession({
-      id: payload.sessionId,
-      projectId: payload.projectId,
-      repositoryUrl: payload.repositoryUrl,
-      ref: payload.ref,
-      branchName: payload.branchName,
-      initialPrompt: payload.initialPrompt,
-      model: payload.modelRuntime.model,
-      orbSize: payload.orbSize,
-    }));
+    await Effect.runPromise(
+      store.ensureSession(payload.sessionId, sessionDefinition(payload.branchName)),
+    );
     await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
       state: "ready",
       checkoutState: "available",
@@ -440,16 +525,9 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
   try {
     const store = await makeStore(directory);
     const payload = createProvisionPayload("openorb/git-then-prompt-test");
-    await Effect.runPromise(store.createSession({
-      id: payload.sessionId,
-      projectId: payload.projectId,
-      repositoryUrl: payload.repositoryUrl,
-      ref: payload.ref,
-      branchName: payload.branchName,
-      initialPrompt: payload.initialPrompt,
-      model: payload.modelRuntime.model,
-      orbSize: payload.orbSize,
-    }));
+    await Effect.runPromise(
+      store.ensureSession(payload.sessionId, sessionDefinition(payload.branchName)),
+    );
     await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
       state: "ready",
       checkoutState: "available",
@@ -518,16 +596,9 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
   try {
     const store = await makeStore(directory);
     const payload = createProvisionPayload("openorb/lazy-open-retry-test");
-    await Effect.runPromise(store.createSession({
-      id: payload.sessionId,
-      projectId: payload.projectId,
-      repositoryUrl: payload.repositoryUrl,
-      ref: payload.ref,
-      branchName: payload.branchName,
-      initialPrompt: payload.initialPrompt,
-      model: payload.modelRuntime.model,
-      orbSize: payload.orbSize,
-    }));
+    await Effect.runPromise(
+      store.ensureSession(payload.sessionId, sessionDefinition(payload.branchName)),
+    );
     await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
       state: "ready",
       checkoutState: "available",
@@ -588,16 +659,9 @@ Deno.test("SessionSupervisor marks durable created metadata for explicit retry",
   try {
     const store = await makeStore(directory);
     const payload = createProvisionPayload("openorb/restart-created-test");
-    await Effect.runPromise(store.createSession({
-      id: payload.sessionId,
-      projectId: payload.projectId,
-      repositoryUrl: payload.repositoryUrl,
-      ref: payload.ref,
-      branchName: payload.branchName,
-      initialPrompt: payload.initialPrompt,
-      model: payload.modelRuntime.model,
-      orbSize: payload.orbSize,
-    }));
+    await Effect.runPromise(
+      store.ensureSession(payload.sessionId, sessionDefinition(payload.branchName)),
+    );
 
     await withSupervisor(
       {
@@ -652,16 +716,9 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
       ["error", ids.error],
     ] as const;
     for (const [state, id] of sessions) {
-      await Effect.runPromise(store.createSession({
-        id,
-        projectId: PROJECT_ID,
-        repositoryUrl: "https://github.com/meln1k/openorb.git",
-        ref: "main",
-        branchName: `openorb/reconcile-${state}`,
-        initialPrompt: "Inspect the repository",
-        model: MODEL_RUNTIME.model,
-        orbSize: "small",
-      }));
+      await Effect.runPromise(
+        store.ensureSession(id, sessionDefinition(`openorb/reconcile-${state}`)),
+      );
       if (state !== "created") {
         await Effect.runPromise(store.updateSessionState(id, state));
       }
@@ -855,10 +912,12 @@ function createProvisionPayload(
   const payload = Schema.decodeUnknownSync(ProvisionSessionPayload)({
     mode: "create",
     sessionId: SESSION_ID,
+    userId: USER_ID,
     projectId: PROJECT_ID,
     repositoryUrl: "https://github.com/meln1k/openorb.git",
     ref: "main",
     branchName,
+    gitAuthor: GIT_AUTHOR,
     orbSize: "small",
     initialPrompt: "Inspect the repository",
     modelRuntime: MODEL_RUNTIME,

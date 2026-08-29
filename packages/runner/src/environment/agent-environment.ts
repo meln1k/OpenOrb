@@ -54,6 +54,10 @@ export interface AgentEnvironmentOptions {
   readonly sessionLabel?: string;
   readonly github?: {
     readonly repositoryUrl: string;
+    readonly gitAuthor: {
+      readonly name: string;
+      readonly email: string;
+    };
     readonly token?: string;
   };
   readonly cpuCount: number;

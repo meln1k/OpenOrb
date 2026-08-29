@@ -41,6 +41,7 @@ import {
   SessionModelRuntime,
   type SessionNotFound,
   UpdateSessionGitFilePayload,
+  UserId,
   type WakeRejected,
   WakeSessionAccepted,
   WakeSessionPayload,
@@ -71,6 +72,7 @@ type RunnerApiError =
   | WakeRejected;
 
 const SESSION_ID = SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
+const USER_ID = UserId.make("01989d78-65ee-7f6a-a97e-0f16ad134c12");
 const PROJECT_ID = ProjectId.make("01989d78-65ee-7f6a-a97e-0f16ad134c10");
 const RUNNER_ID = RunnerId.make("01989d78-65ee-7f6a-a97e-0f16ad134c11");
 const RUN_ID = RunId.make("run-1");
@@ -99,19 +101,30 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
   const provision = Schema.decodeUnknownSync(ProvisionSessionPayload)({
     mode: "create",
     sessionId: SESSION_ID,
+    userId: USER_ID,
     projectId: PROJECT_ID,
     repositoryUrl: "https://github.com/openorb/example.git",
     ref: "main",
     branchName: "openorb/session",
+    gitAuthor: { name: "OpenOrb User", email: "user@example.com" },
     orbSize: "medium",
     initialPrompt: "Implement the change.",
     modelRuntime: modelRuntime(),
   });
   assertEquals(provision.sessionId, SESSION_ID);
+  assertEquals(provision.mode, "create");
+  if (provision.mode !== "create") throw new Error("Expected a create payload.");
+  assertEquals(provision.userId, USER_ID);
   assertThrows(() =>
     Schema.decodeUnknownSync(ProvisionSessionPayload)({
       ...provision,
       repositoryUrl: "https://example.com/openorb/example.git",
+    })
+  );
+  assertThrows(() =>
+    Schema.decodeUnknownSync(ProvisionSessionPayload)({
+      ...provision,
+      gitAuthor: { name: "OpenOrb User", email: "not-an-email" },
     })
   );
 
@@ -558,6 +571,8 @@ function gitSnapshot(overrides: {
 } = {}) {
   return {
     generatedAt: "2026-08-23T12:00:00Z",
+    branch: "openorb/session",
+    head: "0123456789abcdef0123456789abcdef01234567",
     completeness: "complete",
     stale: false,
     truncated: false,

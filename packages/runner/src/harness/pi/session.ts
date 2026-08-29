@@ -21,14 +21,30 @@ import { AgentHarnessError } from "../agent-harness.ts";
 import { eventsFromPiEntries } from "./history.ts";
 
 export const OPENORB_GUEST_WORKSPACE = "/workspace";
-export const OPENORB_SYSTEM_PROMPT =
-  "You are OpenOrb's coding agent. Use only the tools provided by OpenOrb.";
+
+export function createOpenOrbSystemPrompt(repositoryUrl: string, branchName: string): string {
+  return [
+    "You are OpenOrb's coding agent. Use only the tools provided by OpenOrb.",
+    "Follow this trusted Git policy:",
+    "- Create commits or push them only when the user explicitly requests that operation.",
+    `- Keep all work on the session branch ${
+      JSON.stringify(branchName)
+    } and push only that branch.`,
+    `- Push only to the canonical configured repository ${
+      JSON.stringify(repositoryUrl)
+    }; do not use an agent-modified remote destination.`,
+    "- Preserve existing commits; do not amend, squash, reset, or otherwise rewrite them.",
+    "- Never force-push and never use a force option for Git or GitHub CLI operations.",
+  ].join("\n");
+}
 
 /** Audited construction options for the Pi harness adapter. */
 export interface OpenOrbPiSessionOptions {
   sessionId: SessionId;
   runnerSessionFile: string;
   runnerAgentDirectory: string;
+  repositoryUrl: string;
+  branchName: string;
   modelRuntime: SessionModelRuntime;
   tools: readonly ToolDefinition[];
   conversationProjection: ConversationProjectionSink;
@@ -78,7 +94,7 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
       getPrompts: () => ({ prompts: [], diagnostics: [] }),
       getThemes: () => ({ themes: [], diagnostics: [] }),
       getAgentsFiles: () => ({ agentsFiles: [] }),
-      getSystemPrompt: () => OPENORB_SYSTEM_PROMPT,
+      getSystemPrompt: () => createOpenOrbSystemPrompt(options.repositoryUrl, options.branchName),
       getSystemPromptSource: () => undefined,
       getAppendSystemPrompt: () => [],
       getAppendSystemPromptSources: () => [],

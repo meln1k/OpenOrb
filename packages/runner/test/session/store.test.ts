@@ -2,14 +2,17 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import {
+  GitAuthor,
   ProjectId,
   RunnerSessionSnapshot,
   SessionGitSnapshot,
   SessionId,
+  UserId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema } from "effect";
 import { join } from "node:path";
 
+import { RunnerSessionDefinition } from "@/src/session/definition.ts";
 import { makeRunnerSessionStore } from "@/src/session/store.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
@@ -19,32 +22,49 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c11",
 );
+const USER_ID = Schema.decodeUnknownSync(UserId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c12",
+);
+const OTHER_USER_ID = Schema.decodeUnknownSync(UserId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c13",
+);
+const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
+const OTHER_GIT_AUTHOR = new GitAuthor({ name: "Another User", email: "other@example.com" });
 const CREATED_AT = "2026-08-17T12:00:00Z";
 const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
 const REF = "main";
 const BRANCH_NAME = "openorb/session-test";
 const MODEL = "opencode-go/deepseek-v4-flash";
 
+function sessionDefinition(
+  initialPrompt = "Inspect the repository",
+  orbSize: "small" | "medium" = "small",
+): RunnerSessionDefinition {
+  return new RunnerSessionDefinition({
+    userId: USER_ID,
+    projectId: PROJECT_ID,
+    repositoryUrl: REPOSITORY_URL,
+    ref: REF,
+    branchName: BRANCH_NAME,
+    gitAuthor: GIT_AUTHOR,
+    initialPrompt,
+    model: MODEL,
+    orbSize,
+  });
+}
+
 Deno.test("creates private runner session files and atomically reloads metadata", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     const store = await makeStore(workingDirectory);
     const prompt = `  inspect\n\tthis   ${"😀".repeat(205)}  `;
-    const metadata = await Effect.runPromise(
-      store.createSession({
-        id: SESSION_ID,
-        projectId: PROJECT_ID,
-        repositoryUrl: REPOSITORY_URL,
-        ref: REF,
-        branchName: BRANCH_NAME,
-        initialPrompt: prompt,
-        model: MODEL,
-        orbSize: "small",
-        createdAt: CREATED_AT,
-      }),
+    const ensured = await Effect.runPromise(
+      store.ensureSession(SESSION_ID, sessionDefinition(prompt), CREATED_AT),
     );
+    const metadata = ensured.metadata;
+    assertEquals(ensured.disposition, "created");
     assertEquals(metadata.state, "created");
-    assertEquals(metadata.orbSize, "small");
+    assertEquals(metadata.definition.orbSize, "small");
 
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
     for (const directory of ["workspace", "pi", "logs", "snapshots"]) {
@@ -68,18 +88,23 @@ Deno.test("creates private runner session files and atomically reloads metadata"
       "error",
     );
     assertEquals((await Effect.runPromise(restarted.readMetadata(SESSION_ID))).state, "error");
-    const duplicateError = await Effect.runPromise(Effect.flip(restarted.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: REPOSITORY_URL,
-      ref: REF,
-      branchName: BRANCH_NAME,
-      initialPrompt: "Duplicate session",
-      model: MODEL,
-      orbSize: "small",
-      createdAt: CREATED_AT,
-    })));
-    assertEquals(duplicateError._tag, "RunnerSessionAlreadyExists");
+    const replay = await Effect.runPromise(
+      restarted.ensureSession(SESSION_ID, sessionDefinition(prompt)),
+    );
+    assertEquals(replay.disposition, "existing");
+    assertEquals(replay.metadata, await Effect.runPromise(restarted.readMetadata(SESSION_ID)));
+    for (
+      const differingDefinition of [
+        sessionDefinition("Duplicate session"),
+        new RunnerSessionDefinition({ ...metadata.definition, userId: OTHER_USER_ID }),
+        new RunnerSessionDefinition({ ...metadata.definition, gitAuthor: OTHER_GIT_AUTHOR }),
+      ]
+    ) {
+      const duplicateError = await Effect.runPromise(Effect.flip(
+        restarted.ensureSession(SESSION_ID, differingDefinition),
+      ));
+      assertEquals(duplicateError._tag, "RunnerSessionDefinitionConflict");
+    }
     assertEquals((await Effect.runPromise(restarted.readMetadata(SESSION_ID))).state, "error");
 
     const manifest = await Effect.runPromise(restarted.loadSessionManifest());
@@ -109,17 +134,11 @@ Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () 
   try {
     const store = await makeStore(workingDirectory);
     await Effect.runPromise(
-      store.createSession({
-        id: SESSION_ID,
-        projectId: PROJECT_ID,
-        repositoryUrl: REPOSITORY_URL,
-        ref: REF,
-        branchName: BRANCH_NAME,
-        initialPrompt: "Inspect the repository",
-        model: MODEL,
-        orbSize: "medium",
-        createdAt: CREATED_AT,
-      }),
+      store.ensureSession(
+        SESSION_ID,
+        sessionDefinition("Inspect the repository", "medium"),
+        CREATED_AT,
+      ),
     );
     const sessionFile = join(workingDirectory, "sessions", SESSION_ID, "pi", "session.jsonl");
     const pi = SessionManager.open(sessionFile, undefined, "/workspace");
@@ -175,17 +194,7 @@ Deno.test("atomically stores private validated Git Snapshots outside the workspa
   const workingDirectory = await Deno.makeTempDir();
   try {
     const store = await makeStore(workingDirectory);
-    await Effect.runPromise(store.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: REPOSITORY_URL,
-      ref: REF,
-      branchName: BRANCH_NAME,
-      initialPrompt: "Inspect the repository",
-      model: MODEL,
-      orbSize: "small",
-      createdAt: CREATED_AT,
-    }));
+    await Effect.runPromise(store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT));
     const snapshot = new SessionGitSnapshot({
       generatedAt: CREATED_AT,
       completeness: "complete",
@@ -241,24 +250,17 @@ Deno.test("strictly validates persisted session metadata", async () => {
   try {
     const store = await makeStore(workingDirectory);
     await Effect.runPromise(
-      store.createSession({
-        id: SESSION_ID,
-        projectId: PROJECT_ID,
-        repositoryUrl: REPOSITORY_URL,
-        ref: REF,
-        branchName: BRANCH_NAME,
-        initialPrompt: "Inspect the repository",
-        model: MODEL,
-        orbSize: "small",
-        createdAt: CREATED_AT,
-      }),
+      store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT),
     );
     const metadataPath = join(workingDirectory, "sessions", SESSION_ID, "metadata.json");
     const metadata = await Effect.runPromise(
       store.readMetadata(SESSION_ID),
     );
-    const { orbSize: _orbSize, ...missingOrbSize } = metadata;
-    await Deno.writeTextFile(metadataPath, `${JSON.stringify(missingOrbSize)}\n`);
+    const { orbSize: _orbSize, ...missingOrbSize } = metadata.definition;
+    await Deno.writeTextFile(
+      metadataPath,
+      `${JSON.stringify({ ...metadata, definition: missingOrbSize })}\n`,
+    );
 
     const missingFieldError = await Effect.runPromise(Effect.flip(store.readMetadata(SESSION_ID)));
     assertEquals(missingFieldError._tag, "RunnerSessionStoreFailure");

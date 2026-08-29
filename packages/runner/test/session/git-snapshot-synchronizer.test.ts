@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  GitAuthor,
   ModelReference,
   ProjectId,
   RunnerId,
@@ -8,10 +9,12 @@ import {
   SessionGitSnapshot,
   SessionId,
   SessionRepositoryUrl,
+  UserId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema } from "effect";
 
 import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
+import { RunnerSessionDefinition } from "@/src/session/definition.ts";
 import { makeGitSnapshotSynchronizer } from "@/src/session/git-snapshot-synchronizer.ts";
 import type { RunnerSessionGitSnapshotState, RunnerSessionMetadata } from "@/src/session/store.ts";
 
@@ -19,23 +22,29 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
 const METADATA: RunnerSessionMetadata = {
-  version: 1,
+  version: 2,
   id: SESSION_ID,
-  projectId: Schema.decodeUnknownSync(ProjectId)(
-    "01989d78-65ee-7f6a-a97e-0f16ad134c11",
-  ),
+  definition: new RunnerSessionDefinition({
+    userId: Schema.decodeUnknownSync(UserId)(
+      "01989d78-65ee-7f6a-a97e-0f16ad134c12",
+    ),
+    projectId: Schema.decodeUnknownSync(ProjectId)(
+      "01989d78-65ee-7f6a-a97e-0f16ad134c11",
+    ),
+    repositoryUrl: Schema.decodeUnknownSync(SessionRepositoryUrl)(
+      "https://github.com/meln1k/openorb.git",
+    ),
+    ref: Schema.decodeUnknownSync(SessionGitReference)("main"),
+    branchName: Schema.decodeUnknownSync(SessionGitReference)("openorb/snapshot-test"),
+    gitAuthor: new GitAuthor({ name: "OpenOrb User", email: "user@example.com" }),
+    initialPrompt: "Inspect the repository",
+    model: Schema.decodeUnknownSync(ModelReference)("opencode-go/deepseek-v4-flash"),
+    orbSize: "small",
+  }),
   runnerId: Schema.decodeUnknownSync(RunnerId)(
     "01989d78-65ee-7f6a-a97e-0f16ad134c09",
   ),
   createdAt: Schema.decodeUnknownSync(RunnerSessionCreatedAt)("2026-08-27T12:00:00Z"),
-  repositoryUrl: Schema.decodeUnknownSync(SessionRepositoryUrl)(
-    "https://github.com/meln1k/openorb.git",
-  ),
-  ref: Schema.decodeUnknownSync(SessionGitReference)("main"),
-  branchName: Schema.decodeUnknownSync(SessionGitReference)("openorb/snapshot-test"),
-  initialPrompt: "Inspect the repository",
-  model: Schema.decodeUnknownSync(ModelReference)("opencode-go/deepseek-v4-flash"),
-  orbSize: "small",
   state: "running",
   checkoutState: "available",
   baseCommit: "0123456789abcdef0123456789abcdef01234567",
@@ -128,6 +137,8 @@ Deno.test("Git Snapshot refresh failures retain useful data and recovery clears 
     synchronizer.refresh(ENVIRONMENT, METADATA, crypto.randomUUID()),
   );
   assertEquals(stale.generatedAt, complete.generatedAt);
+  assertEquals(stale.branch, complete.branch);
+  assertEquals(stale.head, complete.head);
   assertEquals(stale.sections, complete.sections);
   assertEquals(stale.completeness, "incomplete");
   assertEquals(stale.stale, true);
@@ -168,6 +179,8 @@ Deno.test("Git Snapshot refresh failure without prior data stores an empty stale
 function completeSnapshot(generatedAt: string): SessionGitSnapshot {
   return new SessionGitSnapshot({
     generatedAt,
+    branch: "openorb/snapshot-test",
+    head: "0123456789abcdef0123456789abcdef01234567",
     completeness: "complete",
     stale: false,
     truncated: false,

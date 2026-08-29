@@ -252,11 +252,14 @@ function makeSessionWorker(
         const workspacePath = yield* store.getSessionWorkspacePath(sessionId).pipe(
           Effect.mapError(workerError),
         );
-        const resources = orbSizeResources(metadata.orbSize);
+        const resources = orbSizeResources(metadata.definition.orbSize);
         const environment = yield* environmentProvider.make({
           workspacePath,
           sessionLabel: `openorb session ${sessionId}`,
-          github: { repositoryUrl: metadata.repositoryUrl },
+          github: {
+            repositoryUrl: metadata.definition.repositoryUrl,
+            gitAuthor: metadata.definition.gitAuthor,
+          },
           cpuCount: resources.cpuCount,
           memoryMiB: resources.memoryMiB,
         }).pipe(Effect.mapError(workerError));
@@ -299,7 +302,7 @@ function makeSessionWorker(
       reply: Deferred.Deferred<WakeAcceptance>,
     ): Effect.Effect<void, never, Scope.Scope> {
       const current = MutableRef.get(state);
-      if (input.metadata.model !== modelRuntime.model) {
+      if (input.metadata.definition.model !== modelRuntime.model) {
         return Deferred.succeed(reply, {
           ok: false,
           message: "The session model cannot change during restoration.",
@@ -476,12 +479,13 @@ function makeSessionWorker(
         const workspacePath = yield* store.getSessionWorkspacePath(sessionId).pipe(
           Effect.mapError(workerError),
         );
-        const resources = orbSizeResources(metadata.orbSize);
+        const resources = orbSizeResources(metadata.definition.orbSize);
         const environment = yield* environmentProvider.make({
           workspacePath,
           sessionLabel: `openorb session ${sessionId}`,
           github: {
-            repositoryUrl: metadata.repositoryUrl,
+            repositoryUrl: metadata.definition.repositoryUrl,
+            gitAuthor: metadata.definition.gitAuthor,
             ...(githubToken === undefined ? {} : { token: githubToken }),
           },
           cpuCount: resources.cpuCount,
@@ -503,9 +507,9 @@ function makeSessionWorker(
               "clone",
               "--no-recurse-submodules",
               "--branch",
-              metadata.ref,
+              metadata.definition.ref,
               "--single-branch",
-              metadata.repositoryUrl,
+              metadata.definition.repositoryUrl,
               ".",
             ],
             correlationId,
@@ -538,7 +542,7 @@ function makeSessionWorker(
             yield* emitState(metadata, "creating-branch", correlationId);
             const branch = yield* runCommand(
               environment,
-              ["/usr/bin/git", "switch", "-c", metadata.branchName],
+              ["/usr/bin/git", "switch", "-c", metadata.definition.branchName],
               correlationId,
               logBudget,
             );
@@ -584,7 +588,7 @@ function makeSessionWorker(
           environment,
           agentSession,
           correlationId as RunId,
-          metadata.initialPrompt,
+          metadata.definition.initialPrompt,
         );
         yield* transition({ _tag: "Ready", environment, agentSession });
         metadata = yield* store.updateProvisioning(sessionId, {
@@ -647,7 +651,7 @@ function makeSessionWorker(
         const metadata = yield* store.readMetadata(sessionId).pipe(
           Effect.mapError(workerError),
         );
-        if (metadata.model !== payload.modelRuntime.model) {
+        if (metadata.definition.model !== payload.modelRuntime.model) {
           yield* Deferred.succeed(reply, {
             ok: false,
             message: "The session model cannot change during continuation.",
@@ -774,6 +778,10 @@ function makeSessionWorker(
         return yield* harness.open({
           sessionId,
           environment,
+          git: {
+            repositoryUrl: input.metadata.definition.repositoryUrl,
+            branchName: input.metadata.definition.branchName,
+          },
           modelRuntime,
           state: {
             sessionFile: paths.sessionFile,

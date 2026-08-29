@@ -1,9 +1,5 @@
 import {
   initialPromptPreview,
-  ModelReference,
-  type OrbSize,
-  OrbSize as OrbSizeSchema,
-  ProjectId,
   type RunnerCheckoutState,
   RunnerCheckoutState as RunnerCheckoutStateSchema,
   RunnerId,
@@ -11,48 +7,30 @@ import {
   RunnerSessionSnapshot,
   type RunnerSessionState,
   RunnerSessionState as RunnerSessionStateSchema,
-  SessionGitReference,
+  SessionGitHead,
   SessionGitSnapshot,
   SessionId,
-  SessionRepositoryUrl,
 } from "@openorb/protocol/runner-api";
 import { Context, Data, DateTime, Effect, FileSystem, Layer, Schema } from "effect";
 import { dirname, join } from "node:path";
 
 import { readPiSessionEvents } from "../harness/pi/history.ts";
+import { RunnerSessionDefinition, runnerSessionDefinitionsEqual } from "./definition.ts";
 
 const SESSIONS_DIRECTORY = "sessions";
 const METADATA_FILE = "metadata.json";
 const PI_SESSION_FILE = join("pi", "session.jsonl");
 const GIT_SNAPSHOT_FILE = join("snapshots", "git-snapshot.json");
 
-const StoredInitialPrompt = Schema.String.check(
-  Schema.makeFilter((value) =>
-    initialPromptPreview(value).length > 0
-      ? undefined
-      : "The initial prompt must contain non-whitespace text."
-  ),
-);
-const BaseCommit = Schema.String.check(
-  Schema.isPattern(/^[0-9a-f]{40,64}$/, {
-    message: "Base commits must be hexadecimal object identifiers.",
-  }),
-);
 const metadataSchema = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literal(2),
   id: SessionId,
-  projectId: ProjectId,
+  definition: RunnerSessionDefinition,
   runnerId: RunnerId,
   createdAt: RunnerSessionCreatedAt,
-  repositoryUrl: SessionRepositoryUrl,
-  ref: SessionGitReference,
-  branchName: SessionGitReference,
-  initialPrompt: StoredInitialPrompt,
-  model: ModelReference,
-  orbSize: OrbSizeSchema,
   state: RunnerSessionStateSchema,
   checkoutState: RunnerCheckoutStateSchema,
-  baseCommit: Schema.optionalKey(BaseCommit),
+  baseCommit: Schema.optionalKey(SessionGitHead),
 });
 const gitSnapshotStateSchema = Schema.Struct({
   snapshot: SessionGitSnapshot,
@@ -65,16 +43,9 @@ const strictSchemaOptions = { onExcessProperty: "error" } as const;
 export type RunnerSessionMetadata = typeof metadataSchema.Type;
 export type RunnerSessionGitSnapshotState = typeof gitSnapshotStateSchema.Type;
 
-export interface CreateRunnerSessionInput {
-  id: SessionId;
-  projectId: ProjectId;
-  repositoryUrl: string;
-  ref: string;
-  branchName: string;
-  initialPrompt: string;
-  model: string;
-  orbSize: OrbSize;
-  createdAt?: typeof RunnerSessionCreatedAt.Type;
+export interface EnsureRunnerSessionResult {
+  readonly disposition: "created" | "existing";
+  readonly metadata: RunnerSessionMetadata;
 }
 
 export interface RunnerSessionPiPaths {
@@ -100,7 +71,7 @@ export interface RunnerSessionManifest {
 
 export type RunnerSessionStoreOperation =
   | "initialize"
-  | "create-session"
+  | "ensure-session"
   | "read-metadata"
   | "update-session-state"
   | "update-provisioning"
@@ -111,10 +82,11 @@ export type RunnerSessionStoreOperation =
   | "get-session-snapshot"
   | "load-session-manifest";
 
-export class RunnerSessionAlreadyExists extends Data.TaggedError("RunnerSessionAlreadyExists")<{
+export class RunnerSessionDefinitionConflict extends Data.TaggedError(
+  "RunnerSessionDefinitionConflict",
+)<{
   readonly sessionId: SessionId;
   readonly message: string;
-  readonly cause: unknown;
 }> {}
 
 export class RunnerSessionStoreFailure extends Data.TaggedError("RunnerSessionStoreFailure")<{
@@ -123,12 +95,14 @@ export class RunnerSessionStoreFailure extends Data.TaggedError("RunnerSessionSt
   readonly cause: unknown;
 }> {}
 
-export type RunnerSessionStoreError = RunnerSessionAlreadyExists | RunnerSessionStoreFailure;
+export type RunnerSessionStoreError = RunnerSessionDefinitionConflict | RunnerSessionStoreFailure;
 
 export interface RunnerSessionStore {
-  readonly createSession: (
-    input: CreateRunnerSessionInput,
-  ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
+  readonly ensureSession: (
+    sessionId: SessionId,
+    definition: RunnerSessionDefinition,
+    createdAt?: typeof RunnerSessionCreatedAt.Type,
+  ) => Effect.Effect<EnsureRunnerSessionResult, RunnerSessionStoreError>;
   readonly readMetadata: (
     sessionId: SessionId,
   ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
@@ -262,27 +236,45 @@ export function makeRunnerSessionStore(
       });
 
     const store = RunnerSessionStore.of({
-      createSession: Effect.fn("RunnerSessionStore.createSession")(
-        function* (input: CreateRunnerSessionInput) {
-          const createdAt = input.createdAt ?? DateTime.formatIso(yield* DateTime.now);
-          const metadata = yield* parseMetadata({
-            version: 1,
-            id: input.id,
-            projectId: input.projectId,
-            runnerId,
-            createdAt,
-            repositoryUrl: input.repositoryUrl,
-            ref: input.ref,
-            branchName: input.branchName,
-            initialPrompt: input.initialPrompt,
-            model: input.model,
-            orbSize: input.orbSize,
-            state: "created",
-            checkoutState: "pending",
-          });
-          const path = sessionPath(metadata.id);
-          yield* createSessionDirectory(path, metadata.id);
+      ensureSession: Effect.fn("RunnerSessionStore.ensureSession")(
+        function* (
+          sessionId: SessionId,
+          definition: RunnerSessionDefinition,
+          requestedCreatedAt?: typeof RunnerSessionCreatedAt.Type,
+        ) {
+          const parsedDefinition = yield* Schema.decodeUnknownEffect(RunnerSessionDefinition)(
+            definition,
+            strictSchemaOptions,
+          ).pipe(Effect.mapError(sessionDataError));
+          const path = sessionPath(sessionId);
+          const disposition = yield* createSessionDirectory(path).pipe(
+            Effect.as("created" as const),
+            Effect.catchTag(
+              "RunnerSessionDirectoryAlreadyExists",
+              () => Effect.succeed("existing" as const),
+            ),
+          );
+          if (disposition === "existing") {
+            const metadata = yield* readMetadataValue(sessionId);
+            if (!runnerSessionDefinitionsEqual(metadata.definition, parsedDefinition)) {
+              return yield* new RunnerSessionDefinitionConflict({
+                sessionId,
+                message: "A session with different immutable create fields already exists.",
+              });
+            }
+            return { disposition, metadata };
+          }
           return yield* Effect.gen(function* () {
+            const createdAt = requestedCreatedAt ?? DateTime.formatIso(yield* DateTime.now);
+            const metadata = yield* parseMetadata({
+              version: 2,
+              id: sessionId,
+              definition: parsedDefinition,
+              runnerId,
+              createdAt,
+              state: "created",
+              checkoutState: "pending",
+            });
             yield* Effect.forEach(
               ["workspace", "pi", "logs", "snapshots"],
               (directory) => fileSystem(fs.makeDirectory(join(path, directory), { mode: 0o700 })),
@@ -292,16 +284,16 @@ export function makeRunnerSessionStore(
             yield* writeNewPrivateFile(join(path, PI_SESSION_FILE), new Uint8Array());
             yield* writeMetadataFile(join(path, METADATA_FILE), metadata);
             yield* syncDirectory(dirname(path));
-            return metadata;
+            return { disposition, metadata };
           }).pipe(
             Effect.onError(() =>
               fileSystem(fs.remove(path, { recursive: true })).pipe(Effect.ignore)
             ),
           );
         },
-        (effect, input) =>
+        (effect, sessionId) =>
           effect.pipe(Effect.mapError(
-            storeError("create-session", `Could not create runner session ${input.id}`),
+            storeError("ensure-session", `Could not ensure runner session ${sessionId}`),
           )),
       ),
 
@@ -489,17 +481,12 @@ function asyncBoundary<A>(
 
 function createSessionDirectory(
   path: string,
-  sessionId: SessionId,
-): Effect.Effect<void, RunnerSessionAlreadyExists | RunnerSessionDataError> {
+): Effect.Effect<void, RunnerSessionDirectoryAlreadyExists | RunnerSessionDataError> {
   return Effect.tryPromise({
     try: () => Deno.mkdir(path, { mode: 0o700 }),
     catch: (cause) =>
       cause instanceof Deno.errors.AlreadyExists
-        ? new RunnerSessionAlreadyExists({
-          sessionId,
-          message: "This session already exists on the runner.",
-          cause,
-        })
+        ? new RunnerSessionDirectoryAlreadyExists({ cause })
         : sessionDataError(cause),
   });
 }
@@ -511,11 +498,11 @@ function snapshotFrom(
 ): RunnerSessionSnapshot {
   return new RunnerSessionSnapshot({
     id: metadata.id,
-    projectId: metadata.projectId,
+    projectId: metadata.definition.projectId,
     createdAt: metadata.createdAt,
-    initialPromptPreview: initialPromptPreview(metadata.initialPrompt),
-    model: metadata.model,
-    orbSize: metadata.orbSize,
+    initialPromptPreview: initialPromptPreview(metadata.definition.initialPrompt),
+    model: metadata.definition.model,
+    orbSize: metadata.definition.orbSize,
     state,
     lastEventCursor,
   });
@@ -699,6 +686,12 @@ class RunnerSessionDataError extends Data.TaggedError("RunnerSessionDataError")<
   }
 }
 
+class RunnerSessionDirectoryAlreadyExists extends Data.TaggedError(
+  "RunnerSessionDirectoryAlreadyExists",
+)<{
+  readonly cause: unknown;
+}> {}
+
 function sessionDataError(cause: unknown): RunnerSessionDataError {
   return cause instanceof RunnerSessionDataError
     ? cause
@@ -710,7 +703,7 @@ function storeError(
   context: string,
 ): (cause: unknown) => RunnerSessionStoreError {
   return (cause) =>
-    cause instanceof RunnerSessionAlreadyExists ? cause : new RunnerSessionStoreFailure({
+    cause instanceof RunnerSessionDefinitionConflict ? cause : new RunnerSessionStoreFailure({
       operation,
       message: `${context}: ${errorMessage(cause)}`,
       cause,

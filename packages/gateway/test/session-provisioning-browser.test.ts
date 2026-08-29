@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
 
 import {
+  GitAuthor,
   GitFileUpdateAccepted,
   initialPromptPreview,
   RunnerSessionSnapshot,
@@ -36,6 +37,10 @@ const MODEL = `${PROVIDER_ID}/deepseek-v4-flash`;
 const OPENAI_PROVIDER_ID = "openai";
 const OPENAI_MODEL = `${OPENAI_PROVIDER_ID}/gpt-4.1`;
 const OPENAI_PROVIDER_KEY = "browser-provisioning-openai-key";
+const GIT_AUTHOR = {
+  authorName: "Browser Provisioning User",
+  authorEmail: "browser-provisioning@example.com",
+};
 const INITIAL_PROMPT = "  Inspect\nthis repository and explain the architecture.  ";
 
 class BrowserTestRunnerConnections implements RunnerRegistryService {
@@ -96,6 +101,8 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
       status: "accepted" as const,
       acknowledgement: new SessionGitSnapshot({
         generatedAt: "2026-08-23T12:00:00Z",
+        branch: "openorb/browser-test",
+        head: "0123456789abcdef0123456789abcdef01234567",
         completeness: "complete",
         stale: false,
         truncated: false,
@@ -239,6 +246,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assert(projectResult.status === "saved");
     await store.saveGitHubCredential(client.userId, GITHUB_TOKEN);
+    await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
     await store.saveModelProviderCredential(client.userId, PROVIDER_ID, MODEL_PROVIDER_KEY);
     const enrolled = await enrollRunner(store, client.userId);
     connections.runnerId = enrolled.runnerId;
@@ -319,6 +327,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(provision.sessionId, composerSessionId);
     assertEquals(provision.runnerId, connections.runnerId);
     assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
+    assertEquals(
+      provision.payload.gitAuthor,
+      new GitAuthor({
+        name: GIT_AUTHOR.authorName,
+        email: GIT_AUTHOR.authorEmail,
+      }),
+    );
     assertEquals(provision.payload.initialPrompt, INITIAL_PROMPT);
     assertEquals(provision.payload.orbSize, "small");
     assertEquals(
@@ -459,6 +474,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(gitSnapshotResponse.status, 200);
     assertEquals(gitSnapshotResponse.headers.get("cache-control"), "no-store");
     const gitSnapshot = await gitSnapshotResponse.json();
+    assertEquals(gitSnapshot.branch, "openorb/browser-test");
+    assertEquals(gitSnapshot.head, "0123456789abcdef0123456789abcdef01234567");
     assertEquals(gitSnapshot.sections.staged.files, []);
     assertEquals(gitSnapshot.sections.unstaged.files, []);
     assertEquals("summary" in gitSnapshot, false);
@@ -587,7 +604,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       headers: { Cookie: client.cookie },
       body: new URLSearchParams({
         _csrf: csrfFrom(detailHtml),
-        prompt: "Implement the next step",
+        prompt: "Commit the reviewed changes and push the session branch.",
       }),
     });
     assertEquals(continued.status, 303);
@@ -596,7 +613,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       userId: client.userId,
       sessionId: provision.sessionId,
       payload: {
-        prompt: "Implement the next step",
+        prompt: "Commit the reviewed changes and push the session branch.",
         modelRuntime: new SessionModelRuntime({
           model: MODEL,
           thinkingLevel: "high",
@@ -907,6 +924,20 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     });
     assertEquals(invalidOrbSize.status, 400);
     assertEquals(connections.provisions.length, 0);
+
+    const missingAuthor = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: connections.runnerId,
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(missingAuthor.status, 409);
+    assertMatch(await missingAuthor.text(), /Configure your Git author name and email/);
+    assertEquals(connections.provisions.length, 0);
+    await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
 
     const alternateProvider = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),

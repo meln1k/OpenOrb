@@ -72,7 +72,7 @@ Deno.test({
       guestImage: await installLocalGuestImage(temporaryDirectory),
       sessionLabel: "openorb output observer failure test",
       cpuCount: 2,
-      memoryMiB: 4 * 1024,
+      memoryMiB: 2 * 1024,
     });
     const runtime = opened.runtime;
 
@@ -132,7 +132,7 @@ Deno.test({
       guestImage,
       sessionLabel: "openorb OO-008 integration test",
       cpuCount: 2,
-      memoryMiB: 4 * 1024,
+      memoryMiB: 2 * 1024,
     });
     const runtime = opened.runtime;
     const piSessionFile = `${temporaryDirectory}/pi-session.jsonl`;
@@ -141,6 +141,8 @@ Deno.test({
       sessionId: SESSION_ID,
       runnerSessionFile: piSessionFile,
       runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
+      repositoryUrl: "https://github.com/meln1k/openorb.git",
+      branchName: "openorb/gondolin-environment-test",
       modelRuntime: {
         model: "opencode-go/deepseek-v4-flash",
         thinkingLevel: "high",

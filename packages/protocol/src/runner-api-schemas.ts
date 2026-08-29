@@ -16,7 +16,7 @@ import {
 } from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 9;
+export const RUNNER_PROTOCOL_VERSION = 10;
 
 export * from "./runner-api-limits.ts";
 
@@ -30,6 +30,9 @@ export type ProjectId = typeof ProjectId.Type;
 
 export const RunnerId = Uuid.pipe(Schema.brand("RunnerId"));
 export type RunnerId = typeof RunnerId.Type;
+
+export const UserId = Uuid.pipe(Schema.brand("UserId"));
+export type UserId = typeof UserId.Type;
 
 export const RunId = boundedString(1, 100, "Run identifiers").pipe(Schema.brand("RunId"));
 export type RunId = typeof RunId.Type;
@@ -187,6 +190,25 @@ const Secret = Schema.String.check(
   Schema.isMaxLength(4_096),
 );
 
+const GitAuthorName = Schema.String.check(
+  Schema.isTrimmed(),
+  Schema.isMinLength(1),
+  Schema.isMaxLength(200),
+  Schema.makeFilter((value) =>
+    value.includes("\0") ? "Git author names must not contain NUL bytes." : undefined
+  ),
+);
+const GitAuthorEmail = Schema.String.check(
+  Schema.isTrimmed(),
+  Schema.isMaxLength(254),
+  Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, { message: "Expected a valid Git author email." }),
+);
+
+export class GitAuthor extends Schema.Class<GitAuthor>("GitAuthor")({
+  name: GitAuthorName,
+  email: GitAuthorEmail,
+}) {}
+
 export class SessionModelRuntime extends Schema.Class<SessionModelRuntime>("SessionModelRuntime")({
   model: ModelReference,
   thinkingLevel: ThinkingLevel,
@@ -208,6 +230,11 @@ export const SessionGitReference = Schema.String.check(
     isSafeGitReference(value) ? undefined : "Expected a valid Git branch or tag reference."
   ),
 );
+export const SessionGitHead = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{40,64}$/, {
+    message: "Expected a Git object identifier.",
+  }),
+);
 const InitialPrompt = Schema.String.check(
   Schema.makeFilter((value) =>
     value.trim().length > 0 && utf8Length(value) <= MAX_RPC_INITIAL_PROMPT_BYTES
@@ -226,10 +253,12 @@ const Prompt = Schema.String.check(
 const CreateSessionPayload = Schema.Struct({
   mode: Schema.Literal("create"),
   sessionId: SessionId,
+  userId: UserId,
   projectId: ProjectId,
   repositoryUrl: SessionRepositoryUrl,
   ref: SessionGitReference,
   branchName: SessionGitReference,
+  gitAuthor: GitAuthor,
   orbSize: OrbSize,
   initialPrompt: InitialPrompt,
   modelRuntime: SessionModelRuntime,
@@ -396,6 +425,8 @@ const SessionGitSections = Schema.Struct({
 export class SessionGitSnapshot extends Schema.Class<SessionGitSnapshot>("SessionGitSnapshot")(
   Schema.Struct({
     generatedAt: RunnerSessionCreatedAt,
+    branch: Schema.optionalKey(SessionGitReference),
+    head: Schema.optionalKey(SessionGitHead),
     completeness: Schema.Literals(["complete", "incomplete"]),
     stale: Schema.Boolean,
     truncated: Schema.Boolean,

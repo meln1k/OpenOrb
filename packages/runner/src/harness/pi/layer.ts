@@ -90,6 +90,8 @@ function openPiSession(
         sessionId: options.sessionId,
         runnerSessionFile: options.state.sessionFile,
         runnerAgentDirectory: options.state.agentDirectory,
+        repositoryUrl: options.git.repositoryUrl,
+        branchName: options.git.branchName,
         modelRuntime: options.modelRuntime,
         tools: createPiTools(options.environment),
         conversationProjection,

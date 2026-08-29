@@ -20,6 +20,7 @@ import {
   SessionId,
   SessionNotFound,
   UpdateSessionGitFilePayload,
+  UserId,
   WakeRejected,
   type WakeSessionAccepted,
   type WatchSessionEvent,
@@ -74,7 +75,7 @@ export interface ProvisionSessionInput {
   userId: string;
   runnerId: string;
   sessionId: string;
-  payload: OmitUnion<Parameters<Client["session.provision"]>[0], "sessionId">;
+  payload: OmitUnion<Parameters<Client["session.provision"]>[0], "sessionId" | "userId">;
 }
 export interface PromptSessionInput {
   userId: string;
@@ -566,6 +567,9 @@ const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
     const request = Schema.decodeUnknownSync(ProvisionSessionPayload)({
       ...input.payload,
       sessionId,
+      ...(input.payload.mode === "create"
+        ? { userId: Schema.decodeUnknownSync(UserId)(input.userId) }
+        : {}),
     });
     return yield* reserved.connection.runtime.client["session.provision"](request).pipe(
       Effect.timeout(OPERATION_TIMEOUT_MS),

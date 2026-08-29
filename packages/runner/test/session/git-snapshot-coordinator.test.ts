@@ -104,6 +104,16 @@ Deno.test("Git Snapshot semantic equality ignores timestamp and stale metadata",
     ),
     false,
   );
+  assertEquals(
+    sameGitSnapshotContents(
+      first,
+      new SessionGitSnapshot({
+        ...later,
+        head: "abcdef0123456789abcdef0123456789abcdef01",
+      }),
+    ),
+    false,
+  );
 });
 
 function runWithTestClock(effect: Effect.Effect<void, never, Scope.Scope>) {
@@ -115,6 +125,8 @@ function runWithTestClock(effect: Effect.Effect<void, never, Scope.Scope>) {
 function gitSnapshot(generatedAt: string, stale: boolean): SessionGitSnapshot {
   return new SessionGitSnapshot({
     generatedAt,
+    branch: "openorb/snapshot-test",
+    head: "0123456789abcdef0123456789abcdef01234567",
     completeness: "complete",
     stale,
     truncated: false,

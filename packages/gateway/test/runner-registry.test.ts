@@ -4,9 +4,11 @@ import * as DenoSocket from "@effect/platform-deno/DenoSocket";
 import {
   AbortSessionAccepted,
   AbortSessionPayload,
+  GitAuthor,
   GitFileUpdateAccepted,
   ProjectId,
   PromptSessionAccepted,
+  ProvisionSessionPayload,
   ProvisionSessionSuccess,
   ReadSessionGitSnapshotPayload,
   RUNNER_PROTOCOL_VERSION,
@@ -34,12 +36,13 @@ import * as SocketServer from "effect/unstable/socket/SocketServer";
 import { makeRunnerRegistry, PERMANENT_REJECTION_CLOSE_CODE } from "@/app/runner-registry.ts";
 import type { RejectedSessionManifestEntry } from "@/app/data/session-catalog-repository.ts";
 
-const USER_ID = "user-1";
+const USER_ID = "018f47f2-39b1-7b30-8000-000000000000";
 const RUNNER_ID = "018f47f2-39b1-7b30-8000-000000000001";
 const SESSION_1 = "018f47f2-39b1-7b30-8000-000000000011";
 const SESSION_2 = "018f47f2-39b1-7b30-8000-000000000012";
 const PROJECT_ID = "018f47f2-39b1-7b30-8000-000000000021";
 const TOKEN = "openorb_runner_test-token";
+const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
 
 const decode = Schema.decodeUnknownSync;
 const projectId = decode(ProjectId)(PROJECT_ID);
@@ -564,6 +567,7 @@ Deno.test("disconnect after provisioning dispatch reports uncertain delivery", (
         repositoryUrl: "https://github.com/openorb/test.git",
         ref: "main",
         branchName: "openorb/test",
+        gitAuthor: GIT_AUTHOR,
         orbSize: "small",
         initialPrompt: "Build it",
         modelRuntime: {
@@ -651,6 +655,7 @@ Deno.test("typed commands reach handlers during a run and disconnect finalizes t
           repositoryUrl: "https://github.com/openorb/test.git",
           ref: "main",
           branchName: "openorb/test",
+          gitAuthor: GIT_AUTHOR,
           orbSize: "small",
           initialPrompt: "Build it",
           modelRuntime,
@@ -673,6 +678,11 @@ Deno.test("typed commands reach handlers during a run and disconnect finalizes t
     const gitSnapshot = yield* gateway.getSessionGitSnapshot(USER_ID, SESSION_1);
     assertEquals(gitSnapshot.status, "accepted");
     assertEquals(probe.provisionRequests.length, 1);
+    const provisionRequest = decode(ProvisionSessionPayload)(probe.provisionRequests[0]);
+    assertEquals(provisionRequest.mode, "create");
+    if (provisionRequest.mode !== "create") throw new Error("Expected a create payload.");
+    assertEquals(provisionRequest.userId, USER_ID);
+    assertEquals(provisionRequest.gitAuthor, GIT_AUTHOR);
     assertEquals(probe.promptRequests.length, 1);
     assertEquals(probe.abortRequests, [
       decode(AbortSessionPayload)({ sessionId: SESSION_1, runId: "run-active" }),

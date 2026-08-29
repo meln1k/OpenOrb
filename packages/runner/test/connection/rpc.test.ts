@@ -239,7 +239,8 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session worker"
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const store = {
       loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
-      readMetadata: () => Effect.succeed({ model: "opencode-go/deepseek-v4-flash" }),
+      readMetadata: () =>
+        Effect.succeed({ definition: { model: "opencode-go/deepseek-v4-flash" } }),
     } as unknown as RunnerSessionStore;
     const events = {
       watchStateChanges: () => Stream.empty,

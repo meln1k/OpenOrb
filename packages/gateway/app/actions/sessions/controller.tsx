@@ -1,5 +1,6 @@
 import { modelReferenceSchema, orbSizeSchema, parseModelReference } from "@openorb/protocol";
 import {
+  GitAuthor,
   isSafeGitReference,
   MAX_RPC_INITIAL_PROMPT_BYTES,
   ProjectId,
@@ -113,11 +114,15 @@ export default createController(routes.app.sessions, {
         return await renderCreateError(context, selected.message, 409, submitted);
       }
 
-      const [[githubToken, gitCredentialError], [modelApiKey, modelCredentialError]] = await Promise
-        .all([
-          store.getGitHubToken(userId),
-          store.getModelProviderApiKey(userId, providerId),
-        ]);
+      const [
+        [githubToken, gitCredentialError],
+        [modelApiKey, modelCredentialError],
+        gitAuthor,
+      ] = await Promise.all([
+        store.getGitHubToken(userId),
+        store.getModelProviderApiKey(userId, providerId),
+        store.getGitAuthorConfiguration(userId),
+      ]);
       if (gitCredentialError !== undefined) {
         return await renderCreateError(
           context,
@@ -142,6 +147,14 @@ export default createController(routes.app.sessions, {
           submitted,
         );
       }
+      if (gitAuthor === null) {
+        return await renderCreateError(
+          context,
+          "Configure your Git author name and email before starting a session.",
+          409,
+          submitted,
+        );
+      }
 
       const sessionId = parsed.value.sessionId;
       const provisioned = await Effect.runPromise(
@@ -155,6 +168,10 @@ export default createController(routes.app.sessions, {
             repositoryUrl: project.repositoryUrl,
             ref: parsed.value.ref,
             branchName: parsed.value.branchName,
+            gitAuthor: new GitAuthor({
+              name: gitAuthor.authorName,
+              email: gitAuthor.authorEmail,
+            }),
             orbSize: parsed.value.orbSize,
             initialPrompt: parsed.value.initialPrompt,
             modelRuntime: sessionModelRuntime(parsed.value.model, modelApiKey),

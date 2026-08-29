@@ -12,8 +12,9 @@ import { type OrbSize, orbSizeResources } from "@openorb/protocol";
 import type { ProvisionSessionPayload, SessionId } from "@openorb/protocol/runner-api";
 import { ProvisionRejected, ProvisionSessionSuccess } from "@openorb/protocol/runner-api";
 
+import { RunnerSessionDefinition } from "./definition.ts";
 import {
-  RunnerSessionAlreadyExists,
+  RunnerSessionDefinitionConflict,
   type RunnerSessionMetadata,
   RunnerSessionStore,
   type RunnerSessionStoreError,
@@ -75,62 +76,45 @@ export function makeSessionSupervisor(
       const resources = orbSizeResources(orbSize);
       return resources.cpuCount <= options.cpuCount && resources.memoryMiB <= options.memoryMiB;
     };
-    const createMetadata = (
+    const definitionFromCreate = (
       payload: Extract<typeof ProvisionSessionPayload.Type, { mode: "create" }>,
     ) =>
-      store.createSession({
-        id: payload.sessionId,
+      new RunnerSessionDefinition({
+        userId: payload.userId,
         projectId: payload.projectId,
         repositoryUrl: payload.repositoryUrl,
         ref: payload.ref,
         branchName: payload.branchName,
+        gitAuthor: payload.gitAuthor,
         initialPrompt: payload.initialPrompt,
         model: payload.modelRuntime.model,
         orbSize: payload.orbSize,
       });
-    const createFieldsMatch = (
-      metadata: RunnerSessionMetadata,
+    const prepareCreate = Effect.fn("SessionSupervisor.prepareCreate")(function* (
       payload: Extract<typeof ProvisionSessionPayload.Type, { mode: "create" }>,
-    ) =>
-      metadata.projectId === payload.projectId &&
-      metadata.repositoryUrl === payload.repositoryUrl &&
-      metadata.ref === payload.ref &&
-      metadata.branchName === payload.branchName &&
-      metadata.initialPrompt === payload.initialPrompt &&
-      metadata.model === payload.modelRuntime.model &&
-      metadata.orbSize === payload.orbSize;
-    const reconcileCreate = (
-      payload: Extract<typeof ProvisionSessionPayload.Type, { mode: "create" }>,
-    ) =>
-      createMetadata(payload).pipe(
-        Effect.catchTag("RunnerSessionAlreadyExists", () =>
-          Effect.gen(function* () {
-            const metadata = yield* store.readMetadata(payload.sessionId);
-            if (!createFieldsMatch(metadata, payload)) {
-              return yield* new RunnerSessionAlreadyExists({
-                sessionId: payload.sessionId,
-                message: "A session with different immutable create fields already exists.",
-                cause: undefined,
-              });
-            }
-            if (metadata.state === "provisioning" || metadata.state === "running") {
-              yield* store.updateProvisioning(payload.sessionId, {
-                state: "error",
-                checkoutState: metadata.checkoutState,
-                ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-              });
-              return yield* new InterruptedProvisioning({});
-            }
-            if (metadata.state === "error") {
-              return yield* new RunnerSessionAlreadyExists({
-                sessionId: payload.sessionId,
-                message: "A failed session must use the explicit retry operation.",
-                cause: undefined,
-              });
-            }
-            return metadata;
-          })),
+    ) {
+      const ensured = yield* store.ensureSession(
+        payload.sessionId,
+        definitionFromCreate(payload),
       );
+      const metadata = ensured.metadata;
+      if (ensured.disposition === "created") return metadata;
+      if (MutableHashMap.has(workers, metadata.id)) return metadata;
+      if (metadata.state === "provisioning" || metadata.state === "running") {
+        yield* store.updateProvisioning(payload.sessionId, {
+          state: "error",
+          checkoutState: metadata.checkoutState,
+          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+        });
+        return yield* new InterruptedProvisioning({});
+      }
+      if (metadata.state === "error") {
+        return yield* new SessionCreateRejected(
+          "A failed session must use the explicit retry operation.",
+        );
+      }
+      return metadata;
+    });
     const prepareRetry = (
       payload: Extract<typeof ProvisionSessionPayload.Type, { mode: "retry" }>,
     ) =>
@@ -139,11 +123,11 @@ export function makeSessionSupervisor(
         if (metadata.state !== "error") {
           return yield* new RetryRejected("Only a failed provisioning attempt can be retried.");
         }
-        if (metadata.model !== payload.modelRuntime.model) {
+        if (metadata.definition.model !== payload.modelRuntime.model) {
           return yield* new RetryRejected("A session retry must use its original model.");
         }
-        if (!supportsOrbSize(metadata.orbSize)) {
-          return yield* new RetryRejected(unsupportedOrbSizeMessage(metadata.orbSize));
+        if (!supportsOrbSize(metadata.definition.orbSize)) {
+          return yield* new RetryRejected(unsupportedOrbSizeMessage(metadata.definition.orbSize));
         }
         return yield* store.updateProvisioning(payload.sessionId, {
           state: "created",
@@ -158,24 +142,8 @@ export function makeSessionSupervisor(
         if (payload.mode === "create" && !supportsOrbSize(payload.orbSize)) {
           return { ok: false, message: unsupportedOrbSizeMessage(payload.orbSize) } as const;
         }
-        if (payload.mode === "create") {
-          const existing = Option.getOrUndefined(MutableHashMap.get(workers, payload.sessionId));
-          if (existing) {
-            const metadata = yield* store.readMetadata(payload.sessionId).pipe(Effect.option);
-            if (Option.isNone(metadata) || !createFieldsMatch(metadata.value, payload)) {
-              return { ok: false, message: "This session already exists on the runner." } as const;
-            }
-            const snapshot = yield* store.getSessionSnapshot(metadata.value.id).pipe(Effect.option);
-            return Option.isSome(snapshot)
-              ? { ok: true, value: provisionSuccess(metadata.value, snapshot.value) } as const
-              : {
-                ok: false,
-                message: "The runner could not read the durable session snapshot.",
-              } as const;
-          }
-        }
         const preparation: Effect.Effect<RunnerSessionMetadata, unknown> = payload.mode === "create"
-          ? reconcileCreate(payload)
+          ? prepareCreate(payload)
           : prepareRetry(payload);
         const prepared = yield* Effect.match(
           preparation,
@@ -300,6 +268,14 @@ class InterruptedProvisioning extends Data.TaggedError("InterruptedProvisioning"
   Record<PropertyKey, never>
 > {}
 
+class SessionCreateRejected extends Data.TaggedError("SessionCreateRejected")<{
+  readonly message: string;
+}> {
+  constructor(message: string) {
+    super({ message });
+  }
+}
+
 function reconcilePersistedSessions(
   store: RunnerSessionStore,
 ): Effect.Effect<void, SessionSupervisorInitializationError> {
@@ -353,19 +329,20 @@ function provisionSuccess(
 ): ProvisionSessionSuccess {
   return new ProvisionSessionSuccess({
     session: snapshot,
-    ref: metadata.ref,
-    branchName: metadata.branchName,
+    ref: metadata.definition.ref,
+    branchName: metadata.definition.branchName,
     checkoutState: metadata.checkoutState,
   });
 }
 
 function commandRejectionMessage(mode: "create" | "retry", error: unknown): string {
   if (error instanceof RetryRejected) return error.message;
+  if (error instanceof SessionCreateRejected) return error.message;
   if (error instanceof InterruptedProvisioning) {
     return "The previous provisioning attempt was interrupted and must be retried explicitly.";
   }
   if (mode === "retry") return "The runner could not prepare this session retry.";
-  if (error instanceof RunnerSessionAlreadyExists) {
+  if (error instanceof RunnerSessionDefinitionConflict) {
     return "This session already exists on the runner.";
   }
   return "The runner could not durably create the session.";

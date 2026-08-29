@@ -253,6 +253,22 @@ export const SessionChangesPanel = clientEntry<SessionChangesPanelProps>(
                     </div>
                   )
                   : null}
+                {loaded.snapshot.branch || loaded.snapshot.head
+                  ? (
+                    <div data-slot="git-revision" mix={gitRevisionStyle}>
+                      {loaded.snapshot.branch
+                        ? <span title={loaded.snapshot.branch}>{loaded.snapshot.branch}</span>
+                        : <span>Detached HEAD</span>}
+                      {loaded.snapshot.head
+                        ? (
+                          <code title={loaded.snapshot.head}>
+                            {loaded.snapshot.head.slice(0, 12)}
+                          </code>
+                        )
+                        : null}
+                    </div>
+                  )
+                  : null}
                 {loaded.snapshot.message
                   ? <p role="status" mix={snapshotNoticeStyle}>{loaded.snapshot.message}</p>
                   : null}
@@ -346,6 +362,18 @@ const snapshotNoticeStyle = css({
   background: "var(--muted)",
   borderBottom: "1px solid var(--sidebar-border)",
   fontSize: "12px",
+});
+const gitRevisionStyle = css({
+  display: "flex",
+  gap: "8px",
+  justifyContent: "space-between",
+  minWidth: 0,
+  padding: "8px 14px",
+  color: "var(--muted-foreground)",
+  borderBottom: "1px solid var(--sidebar-border)",
+  fontSize: "12px",
+  "& span": { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  "& code": { flexShrink: 0, color: "var(--foreground)" },
 });
 const operationErrorStyle = css({
   margin: 0,

@@ -68,7 +68,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           })
         ),
         Effect.flatMap((metadata) =>
-          metadata.model !== payload.modelRuntime.model
+          metadata.definition.model !== payload.modelRuntime.model
             ? new WakeRejected({
               sessionId: payload.sessionId,
               message: "The session model cannot change during restoration.",

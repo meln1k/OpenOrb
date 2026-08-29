@@ -6,9 +6,9 @@ import { Effect, Schema } from "effect";
 
 import {
   createOpenOrbPiSession,
+  createOpenOrbSystemPrompt,
   observeSessionManagerPersistence,
   OPENORB_GUEST_WORKSPACE,
-  OPENORB_SYSTEM_PROMPT,
 } from "@/src/harness/pi/session.ts";
 
 const hostileFixture = decodeURIComponent(
@@ -22,11 +22,23 @@ const MODEL_RUNTIME = {
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
+const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
+const BRANCH_NAME = "openorb/pi-session-test";
+const SYSTEM_PROMPT = createOpenOrbSystemPrompt(REPOSITORY_URL, BRANCH_NAME);
 const CONVERSATION_PROJECTION = {
   activate: () => Effect.succeed({ update() {}, dispose() {} }),
 };
 const RUN_REAL_MODEL_TEST = Deno.env.get("OPENORB_RUN_PI_MODEL_TESTS") === "1";
 const REAL_MODEL_API_KEY = Deno.env.get("OPENCODE_API_KEY");
+
+Deno.test("trusted prompt requires an explicit request and pins safe Git destinations", () => {
+  assert(SYSTEM_PROMPT.includes("only when the user explicitly requests that operation"));
+  assert(SYSTEM_PROMPT.includes(JSON.stringify(REPOSITORY_URL)));
+  assert(SYSTEM_PROMPT.includes(JSON.stringify(BRANCH_NAME)));
+  assert(SYSTEM_PROMPT.includes("Preserve existing commits"));
+  assert(SYSTEM_PROMPT.includes("Never force-push"));
+  assert(!SYSTEM_PROMPT.includes("Push the changes now"));
+});
 
 Deno.test("SessionManager observer runs post-write for every durable conversation append", async () => {
   const temporaryDirectory = await Deno.makeTempDir();
@@ -101,6 +113,8 @@ Deno.test("the audited factory ignores hostile workspace and global Pi resources
       sessionId: SESSION_ID,
       runnerSessionFile: sessionFile,
       runnerAgentDirectory: `${hostileFixture}/global-agent`,
+      repositoryUrl: REPOSITORY_URL,
+      branchName: BRANCH_NAME,
       modelRuntime: MODEL_RUNTIME,
       tools: [],
       conversationProjection: CONVERSATION_PROJECTION,
@@ -120,13 +134,13 @@ Deno.test("the audited factory ignores hostile workspace and global Pi resources
       assertEquals(loader.getAgentsFiles(), { agentsFiles: [] });
       assertEquals(loader.getAppendSystemPrompt(), []);
       assertEquals(loader.getAppendSystemPromptSources(), []);
-      assertEquals(loader.getSystemPrompt(), OPENORB_SYSTEM_PROMPT);
+      assertEquals(loader.getSystemPrompt(), SYSTEM_PROMPT);
       assertEquals(loader.getSystemPromptSource(), undefined);
       assertEquals(result.session.getActiveToolNames(), []);
       assertEquals(result.session.getAllTools(), []);
       assertEquals(
         result.session.systemPrompt,
-        `${OPENORB_SYSTEM_PROMPT}\nCurrent working directory: ${OPENORB_GUEST_WORKSPACE}\n`,
+        `${SYSTEM_PROMPT}\nCurrent working directory: ${OPENORB_GUEST_WORKSPACE}\n`,
       );
       assertEquals(result.session.sessionFile, sessionFile);
       assertEquals(result.session.settingsManager.getGlobalSettings().packages, []);
@@ -176,6 +190,8 @@ Deno.test("the factory allowlists supplied tools without enabling Pi host tools"
       sessionId: SESSION_ID,
       runnerSessionFile: sessionFile,
       runnerAgentDirectory: agentDirectory,
+      repositoryUrl: REPOSITORY_URL,
+      branchName: BRANCH_NAME,
       modelRuntime: MODEL_RUNTIME,
       tools: [guestTool],
       conversationProjection: CONVERSATION_PROJECTION,
@@ -212,6 +228,8 @@ Deno.test({
         sessionId: SESSION_ID,
         runnerSessionFile: sessionFile,
         runnerAgentDirectory: agentDirectory,
+        repositoryUrl: REPOSITORY_URL,
+        branchName: BRANCH_NAME,
         modelRuntime: {
           ...MODEL_RUNTIME,
           credential: { type: "api_key", value: apiKey },

@@ -10,6 +10,10 @@ const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 
 export interface OpenOrbGitHubMediationOptions {
   repositoryUrl: string;
+  gitAuthor: {
+    readonly name: string;
+    readonly email: string;
+  };
   token?: string;
 }
 
@@ -23,6 +27,8 @@ export function createOpenOrbGitHubVmOptions(
 ): Result<OpenOrbGitHubVmOptions, GitHubMediationError> {
   const [, repositoryError] = validateCanonicalGitHubRepository(options.repositoryUrl);
   if (repositoryError !== undefined) return err(repositoryError);
+  const authorError = validateGitAuthor(options.gitAuthor);
+  if (authorError !== undefined) return err(authorError);
   const token = options.token;
   if (
     token !== undefined && (token.length === 0 || token.length > 4096 || token.trim() !== token)
@@ -57,17 +63,21 @@ export function createOpenOrbGitHubVmOptions(
     ...secretEnvironment,
     GH_HOST: GITHUB_HOST,
     GH_PROMPT_DISABLED: "1",
-    GIT_CONFIG_COUNT: token === undefined ? "2" : "4",
+    GIT_CONFIG_COUNT: token === undefined ? "4" : "6",
     GIT_CONFIG_KEY_0: "safe.directory",
     GIT_CONFIG_VALUE_0: OPENORB_WORKSPACE,
     GIT_CONFIG_KEY_1: "safe.directory",
     GIT_CONFIG_VALUE_1: OPENORB_NESTED_WORKSPACE_REPOSITORIES,
+    GIT_CONFIG_KEY_2: "user.name",
+    GIT_CONFIG_VALUE_2: options.gitAuthor.name,
+    GIT_CONFIG_KEY_3: "user.email",
+    GIT_CONFIG_VALUE_3: options.gitAuthor.email,
     GIT_TERMINAL_PROMPT: "0",
     ...(token === undefined ? {} : {
-      GIT_CONFIG_KEY_2: `credential.${options.repositoryUrl}.helper`,
-      GIT_CONFIG_VALUE_2: "!gh auth git-credential",
-      GIT_CONFIG_KEY_3: `credential.${options.repositoryUrl}.useHttpPath`,
-      GIT_CONFIG_VALUE_3: "true",
+      GIT_CONFIG_KEY_4: `credential.${options.repositoryUrl}.helper`,
+      GIT_CONFIG_VALUE_4: "!gh auth git-credential",
+      GIT_CONFIG_KEY_5: `credential.${options.repositoryUrl}.useHttpPath`,
+      GIT_CONFIG_VALUE_5: "true",
     }),
   } satisfies Record<string, string>;
 
@@ -77,6 +87,27 @@ export function createOpenOrbGitHubVmOptions(
     env,
     httpHooks,
   });
+}
+
+function validateGitAuthor(
+  author: OpenOrbGitHubMediationOptions["gitAuthor"],
+): GitHubMediationError | undefined {
+  if (
+    author.name.trim() !== author.name || author.name.length === 0 || author.name.length > 200 ||
+    author.name.includes("\0")
+  ) {
+    return new GitHubMediationError(
+      "The Git author name must be a non-empty trimmed value of at most 200 characters.",
+      undefined,
+    );
+  }
+  if (
+    author.email.trim() !== author.email || author.email.length > 254 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(author.email)
+  ) {
+    return new GitHubMediationError("Expected a valid Git author email.", undefined);
+  }
+  return undefined;
 }
 
 function validateCanonicalGitHubRepository(

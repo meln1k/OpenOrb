@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
-import { ProjectId, SessionId } from "@openorb/protocol/runner-api";
+import { GitAuthor, ProjectId, SessionId, UserId } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Schema, Scope } from "effect";
 
 import type {
@@ -8,6 +8,7 @@ import type {
   AgentEnvironmentCommandOptions,
 } from "@/src/environment/agent-environment.ts";
 import { createGondolinAgentEnvironment } from "@/src/environment/gondolin/layer.ts";
+import { RunnerSessionDefinition } from "@/src/session/definition.ts";
 import { generateSessionGitSnapshot, updateSessionGitFile } from "@/src/session/git-snapshot.ts";
 import { makeRunnerSessionStore } from "@/src/session/store.ts";
 import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
@@ -19,7 +20,25 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c11",
 );
+const USER_ID = Schema.decodeUnknownSync(UserId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c12",
+);
+const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
 const BASE_COMMIT = "0123456789abcdef0123456789abcdef01234567";
+
+function sessionDefinition(branchName: string): RunnerSessionDefinition {
+  return new RunnerSessionDefinition({
+    userId: USER_ID,
+    projectId: PROJECT_ID,
+    repositoryUrl: "https://github.com/meln1k/openorb.git",
+    ref: "main",
+    branchName,
+    gitAuthor: GIT_AUTHOR,
+    initialPrompt: "Inspect the repository",
+    model: "opencode-go/deepseek-v4-flash",
+    orbSize: "small",
+  });
+}
 
 class GitSnapshotEnvironment implements AgentEnvironment {
   readonly commands: string[][] = [];
@@ -44,6 +63,8 @@ class GitSnapshotEnvironment implements AgentEnvironment {
     let stdout = "";
     if (this.scenario === "bounds" && args.includes("status")) {
       stdout = [
+        `# branch.oid ${BASE_COMMIT}`,
+        "# branch.head openorb/snapshot-test",
         "1 .M N... 100644 100644 100644 aaaaaaa bbbbbbb binary.dat",
         ...Array.from(
           { length: 12_000 },
@@ -62,6 +83,8 @@ class GitSnapshotEnvironment implements AgentEnvironment {
       );
     } else if (args.includes("status")) {
       stdout = [
+        `# branch.oid ${BASE_COMMIT}`,
+        "# branch.head openorb/snapshot-test",
         "1 MM N... 100644 100644 100644 aaaaaaa bbbbbbb src/modified.ts",
         "1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb src/staged.ts",
         "1 A. N... 000000 100644 100644 0000000 bbbbbbb src/staged-added.ts",
@@ -194,16 +217,12 @@ Deno.test("Git Snapshot is generated through bounded direct guest commands", asy
         Effect.provide(DenoFileSystem.layer),
       ),
     );
-    await Effect.runPromise(store.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: "https://github.com/meln1k/openorb.git",
-      ref: "main",
-      branchName: "openorb/snapshot-test",
-      initialPrompt: "Inspect the repository",
-      model: "opencode-go/deepseek-v4-flash",
-      orbSize: "small",
-    }));
+    await Effect.runPromise(store.ensureSession(
+      SESSION_ID,
+      sessionDefinition(
+        "openorb/snapshot-test",
+      ),
+    ));
     const metadata = await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
       state: "running",
       checkoutState: "available",
@@ -213,6 +232,8 @@ Deno.test("Git Snapshot is generated through bounded direct guest commands", asy
     const snapshot = await Effect.runPromise(generateSessionGitSnapshot(environment, metadata));
 
     assertEquals(snapshot.completeness, "complete");
+    assertEquals(snapshot.branch, "openorb/snapshot-test");
+    assertEquals(snapshot.head, BASE_COMMIT);
     assertEquals(
       snapshot.sections.staged.files.map((file) => ({
         kind: file.kind,
@@ -367,16 +388,12 @@ Deno.test("Git file updates proxy fixed direct mutation commands", async () => {
         Effect.provide(DenoFileSystem.layer),
       ),
     );
-    await Effect.runPromise(store.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: "https://github.com/meln1k/openorb.git",
-      ref: "main",
-      branchName: "openorb/git-mutation-test",
-      initialPrompt: "Inspect the repository",
-      model: "opencode-go/deepseek-v4-flash",
-      orbSize: "small",
-    }));
+    await Effect.runPromise(store.ensureSession(
+      SESSION_ID,
+      sessionDefinition(
+        "openorb/git-mutation-test",
+      ),
+    ));
     const metadata = await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
       state: "ready",
       checkoutState: "available",
@@ -445,16 +462,12 @@ Deno.test("Git Snapshot bounds large file lists and binary/control patch output"
         Effect.provide(DenoFileSystem.layer),
       ),
     );
-    await Effect.runPromise(store.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: "https://github.com/meln1k/openorb.git",
-      ref: "main",
-      branchName: "openorb/snapshot-bounds-test",
-      initialPrompt: "Inspect the repository",
-      model: "opencode-go/deepseek-v4-flash",
-      orbSize: "small",
-    }));
+    await Effect.runPromise(store.ensureSession(
+      SESSION_ID,
+      sessionDefinition(
+        "openorb/snapshot-bounds-test",
+      ),
+    ));
     const metadata = await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
       state: "running",
       checkoutState: "available",
@@ -498,16 +511,12 @@ Deno.test({
         Effect.provide(DenoFileSystem.layer),
       ),
     );
-    await Effect.runPromise(store.createSession({
-      id: SESSION_ID,
-      projectId: PROJECT_ID,
-      repositoryUrl: "https://github.com/meln1k/openorb.git",
-      ref: "main",
-      branchName: "openorb/hostile-snapshot-test",
-      initialPrompt: "Inspect the repository",
-      model: "opencode-go/deepseek-v4-flash",
-      orbSize: "small",
-    }));
+    await Effect.runPromise(store.ensureSession(
+      SESSION_ID,
+      sessionDefinition(
+        "openorb/hostile-snapshot-test",
+      ),
+    ));
     const workspacePath = await Effect.runPromise(store.getSessionWorkspacePath(SESSION_ID));
     const scope = await Effect.runPromise(Scope.make());
     const runtime = await Effect.runPromise(
@@ -515,7 +524,10 @@ Deno.test({
         workspacePath,
         guestImage: await installLocalGuestImage(workingDirectory),
         sessionLabel: "openorb OO-016 hostile Git Snapshot test",
-        github: { repositoryUrl: "https://github.com/meln1k/openorb.git" },
+        github: {
+          repositoryUrl: "https://github.com/meln1k/openorb.git",
+          gitAuthor: GIT_AUTHOR,
+        },
         cpuCount: 1,
         memoryMiB: 1024,
       }).pipe(Effect.provideService(Scope.Scope, scope)),
