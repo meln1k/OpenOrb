@@ -57,6 +57,10 @@ export type GitFileUpdateAcceptance =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string };
 
+export type WakeAcceptance =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string };
+
 const rejectGitFileUpdate = (message: string): GitFileUpdateAcceptance => ({
   ok: false,
   message,
@@ -69,13 +73,14 @@ interface SessionWorkerInputBase {
 }
 
 export type SessionWorkerInput =
-  | (SessionWorkerInputBase & { readonly restore: true; modelRuntime?: SessionModelRuntime })
+  | (SessionWorkerInputBase & { readonly restore: true })
   | (SessionWorkerInputBase & { readonly restore?: false; modelRuntime: SessionModelRuntime });
 
 export interface SessionWorker {
   readonly sessionId: SessionId;
   readonly activeRunId: string | undefined;
   readonly active: boolean;
+  readonly wake: (modelRuntime: SessionModelRuntime) => Effect.Effect<WakeAcceptance>;
   readonly prompt: (payload: PromptSessionPayload) => Effect.Effect<PromptAcceptance>;
   readonly abort: (payload: AbortSessionPayload) => Effect.Effect<AbortAcceptance>;
   readonly updateGitFile: (
@@ -117,6 +122,11 @@ type WorkerState =
   | { readonly _tag: "Failed"; readonly environment?: AgentEnvironment };
 
 type WorkerCommand =
+  | {
+    readonly _tag: "Wake";
+    readonly modelRuntime: SessionModelRuntime;
+    readonly reply: Deferred.Deferred<WakeAcceptance>;
+  }
   | {
     readonly _tag: "Prompt";
     readonly payload: PromptSessionPayload;
@@ -261,20 +271,13 @@ function makeSessionWorker(
               Effect.asVoid,
             );
         }
-        const agentSession = options.modelRuntime === undefined
-          ? undefined
-          : yield* openAgentSession(environment, options.modelRuntime);
-        yield* transition({
-          _tag: "Ready",
-          environment,
-          ...(agentSession === undefined ? {} : { agentSession }),
-        });
+        yield* transition({ _tag: "Ready", environment });
       }).pipe(
         Effect.catch((error) =>
           failProvision(options.metadata, options.correlationId, {
             remainingBytes: MAX_PROVISIONING_LOG_BYTES,
             truncated: false,
-            secrets: options.modelRuntime ? [options.modelRuntime.credential.value] : [],
+            secrets: [],
           }, error)
         ),
       );
@@ -282,11 +285,52 @@ function makeSessionWorker(
 
     function handle(command: WorkerCommand): Effect.Effect<void, never, Scope.Scope> {
       switch (command._tag) {
+        case "Wake":
+          return handleWake(command.modelRuntime, command.reply);
         case "Prompt":
           return handlePrompt(command.payload, command.reply);
         case "Abort":
           return handleAbort(command.payload, command.reply);
       }
+    }
+
+    function handleWake(
+      modelRuntime: SessionModelRuntime,
+      reply: Deferred.Deferred<WakeAcceptance>,
+    ): Effect.Effect<void, never, Scope.Scope> {
+      const current = MutableRef.get(state);
+      if (input.metadata.model !== modelRuntime.model) {
+        return Deferred.succeed(reply, {
+          ok: false,
+          message: "The session model cannot change during restoration.",
+        }).pipe(Effect.asVoid);
+      }
+      if (current._tag === "Running" || current._tag === "Aborting") {
+        return Deferred.succeed(reply, { ok: true }).pipe(Effect.asVoid);
+      }
+      if (current._tag !== "Ready") {
+        return Deferred.succeed(reply, {
+          ok: false,
+          message: "The session environment could not be restored.",
+        }).pipe(Effect.asVoid);
+      }
+      if (current.agentSession !== undefined) {
+        return Deferred.succeed(reply, { ok: true }).pipe(Effect.asVoid);
+      }
+      return openAgentSession(current.environment, modelRuntime).pipe(
+        Effect.matchEffect({
+          onFailure: () =>
+            Deferred.succeed(reply, {
+              ok: false,
+              message: "The agent session could not be restored.",
+            }),
+          onSuccess: (agentSession) =>
+            transition({ _tag: "Ready", environment: current.environment, agentSession }).pipe(
+              Effect.andThen(Deferred.succeed(reply, { ok: true })),
+            ),
+        }),
+        Effect.asVoid,
+      );
     }
 
     function handlePrompt(
@@ -842,6 +886,13 @@ function makeSessionWorker(
       );
     }
 
+    const wake = Effect.fn("SessionWorker.wake")(function* (
+      modelRuntime: SessionModelRuntime,
+    ) {
+      const reply = yield* Deferred.make<WakeAcceptance>();
+      yield* Queue.offer(commands, { _tag: "Wake", modelRuntime, reply });
+      return yield* Deferred.await(reply);
+    });
     const prompt = Effect.fn("SessionWorker.prompt")(function* (
       payload: PromptSessionPayload,
     ) {
@@ -874,6 +925,7 @@ function makeSessionWorker(
         const current = MutableRef.get(state);
         return current._tag !== "Failed" || current.environment !== undefined;
       },
+      wake,
       prompt,
       abort,
       updateGitFile,

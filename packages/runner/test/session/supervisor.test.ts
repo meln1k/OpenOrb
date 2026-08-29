@@ -351,7 +351,7 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
           modelRuntime: MODEL_RUNTIME,
         });
         const worker = await Effect.runPromise(
-          restarted.findOrRestoreWorker(SESSION_ID, MODEL_RUNTIME),
+          restarted.findOrRestoreWorker(SESSION_ID),
         );
         assert(worker);
         const accepted = await Effect.runPromise(worker.prompt(prompt));
@@ -390,6 +390,7 @@ Deno.test("SessionSupervisor lazily restores a ready worker for Git file updates
       sessionId: SESSION_ID,
       activeRunId: undefined,
       active: true,
+      wake: () => Effect.die("unexpected wake"),
       prompt: () => Effect.die("unexpected prompt"),
       abort: () => Effect.die("unexpected abort"),
       updateGitFile: (update) =>
@@ -434,7 +435,7 @@ Deno.test("SessionSupervisor lazily restores a ready worker for Git file updates
   }
 });
 
-Deno.test("a Git-only restore opens one persistent Pi session on the next prompt", async () => {
+Deno.test("a Git-only restore handles concurrent Git update and wake credentials", async () => {
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
@@ -470,10 +471,24 @@ Deno.test("a Git-only restore opens one persistent Pi session on the next prompt
           action: "stage",
           path: "src/main.ts",
         });
+        const [updated, woken] = await Effect.runPromise(Effect.all([
+          supervisor.findOrRestoreWorker(SESSION_ID).pipe(
+            Effect.flatMap((worker) =>
+              worker ? worker.updateGitFile(update) : Effect.die("Git worker unavailable")
+            ),
+          ),
+          supervisor.findOrRestoreWorker(SESSION_ID).pipe(
+            Effect.flatMap((worker) =>
+              worker ? worker.wake(MODEL_RUNTIME) : Effect.die("Wake worker unavailable")
+            ),
+          ),
+        ], { concurrency: "unbounded" }));
+        assertEquals(updated, { ok: true });
+        assertEquals(woken, { ok: true });
+        assertEquals(piCreations, 1);
+
         const worker = await Effect.runPromise(supervisor.findOrRestoreWorker(SESSION_ID));
         assert(worker);
-        assertEquals(await Effect.runPromise(worker.updateGitFile(update)), { ok: true });
-        assertEquals(piCreations, 0);
 
         const prompt = (text: string) =>
           Schema.decodeUnknownSync(PromptSessionPayload)({

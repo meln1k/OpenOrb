@@ -9,11 +9,7 @@ import {
   Semaphore,
 } from "effect";
 import { type OrbSize, orbSizeResources } from "@openorb/protocol";
-import type {
-  ProvisionSessionPayload,
-  SessionId,
-  SessionModelRuntime,
-} from "@openorb/protocol/runner-api";
+import type { ProvisionSessionPayload, SessionId } from "@openorb/protocol/runner-api";
 import { ProvisionRejected, ProvisionSessionSuccess } from "@openorb/protocol/runner-api";
 
 import {
@@ -40,7 +36,6 @@ export interface SessionSupervisor {
   readonly findWorker: (sessionId: SessionId) => SessionWorker | undefined;
   readonly findOrRestoreWorker: (
     sessionId: SessionId,
-    modelRuntime?: SessionModelRuntime,
   ) => Effect.Effect<SessionWorker | undefined>;
   readonly provision: (
     payload: typeof ProvisionSessionPayload.Type,
@@ -237,7 +232,6 @@ export function makeSessionSupervisor(
       });
     const findOrRestoreWorker = (
       sessionId: SessionId,
-      modelRuntime?: SessionModelRuntime,
     ): Effect.Effect<SessionWorker | undefined> => {
       const existing = Option.getOrUndefined(MutableHashMap.get(workers, sessionId));
       if (existing) return Effect.succeed(existing.worker);
@@ -248,13 +242,9 @@ export function makeSessionSupervisor(
         for (const [, candidate] of workers) if (candidate.worker.active) activeWorkers++;
         if (activeWorkers >= options.maxConcurrentSessions) return undefined;
         const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
-        if (
-          Option.isNone(metadata) || metadata.value.state !== "ready" ||
-          (modelRuntime !== undefined && metadata.value.model !== modelRuntime.model)
-        ) return undefined;
+        if (Option.isNone(metadata) || metadata.value.state !== "ready") return undefined;
         const worker = yield* workerFactory.spawn({
           metadata: metadata.value,
-          ...(modelRuntime === undefined ? {} : { modelRuntime }),
           correlationId: crypto.randomUUID(),
           restore: true,
         });

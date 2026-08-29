@@ -73,18 +73,26 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
               sessionId: payload.sessionId,
               message: "The session model cannot change during restoration.",
             })
-            : options.supervisor.findOrRestoreWorker(payload.sessionId, payload.modelRuntime).pipe(
+            : options.supervisor.findOrRestoreWorker(payload.sessionId).pipe(
               Effect.flatMap((worker) =>
-                worker ? Effect.succeed(new WakeSessionAccepted({})) : new WakeRejected({
+                worker ? worker.wake(payload.modelRuntime) : Effect.succeed(
+                  {
+                    ok: false,
+                    message: "The session environment could not be restored.",
+                  } as const,
+                )
+              ),
+              Effect.flatMap((result) =>
+                result.ok ? Effect.succeed(new WakeSessionAccepted({})) : new WakeRejected({
                   sessionId: payload.sessionId,
-                  message: "The session environment could not be restored.",
+                  message: result.message,
                 })
               ),
             )
         ),
       ),
     "session.prompt": (payload) =>
-      options.supervisor.findOrRestoreWorker(payload.sessionId, payload.modelRuntime).pipe(
+      options.supervisor.findOrRestoreWorker(payload.sessionId).pipe(
         Effect.flatMap((worker) =>
           worker ? worker.prompt(payload) : Effect.succeed(
             {

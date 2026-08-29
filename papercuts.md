@@ -500,3 +500,6 @@
   service's startup must be checked with repeated plain log reads instead.
 - 2026-08-28: Both `amp orb service stop` calls hung without stopping their services, and an
   unprivileged `systemctl stop` fallback required interactive authorization.
+- 2026-08-29: A Git-only restore could win admission before `session.wake`, causing the supervisor
+  to return the existing credential-less worker and acknowledge wake without delivering its model
+  runtime to the worker.

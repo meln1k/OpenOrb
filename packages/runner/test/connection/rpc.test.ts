@@ -235,7 +235,7 @@ Deno.test("Git file update RPC resolves and calls the session worker", () =>
     yield* Fiber.interrupt(launched);
   }))));
 
-Deno.test("Wake RPC restores a session worker with model credentials", () =>
+Deno.test("Wake RPC dispatches model credentials to the resolved session worker", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const store = {
       loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
@@ -245,14 +245,17 @@ Deno.test("Wake RPC restores a session worker with model credentials", () =>
       watchStateChanges: () => Stream.empty,
       watch: () => Stream.empty,
     } as unknown as SessionEvents;
-    const restorations: unknown[] = [];
+    const wakes: unknown[] = [];
+    const worker = {
+      wake: (modelRuntime: unknown) =>
+        Effect.sync(() => {
+          wakes.push(modelRuntime);
+          return { ok: true as const };
+        }),
+    };
     const supervisor = {
       getActiveRunId: () => undefined,
-      findOrRestoreWorker: (_sessionId: unknown, modelRuntime: unknown) =>
-        Effect.sync(() => {
-          restorations.push(modelRuntime);
-          return {};
-        }),
+      findOrRestoreWorker: () => Effect.succeed(worker),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
     const launched = yield* runRunnerRpc({
@@ -276,7 +279,7 @@ Deno.test("Wake RPC restores a session worker with model credentials", () =>
     });
     assertEquals(result.status, "accepted");
     assert(result.status === "accepted" && result.acknowledgement instanceof WakeSessionAccepted);
-    assertEquals(restorations, [new SessionModelRuntime(modelRuntime)]);
+    assertEquals(wakes, [new SessionModelRuntime(modelRuntime)]);
     yield* Fiber.interrupt(launched);
   }))));
 
