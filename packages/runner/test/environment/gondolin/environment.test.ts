@@ -141,7 +141,7 @@ Deno.test({
       sessionId: SESSION_ID,
       runnerSessionFile: piSessionFile,
       runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
-      repositoryUrl: "https://github.com/meln1k/openorb.git",
+      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
       branchName: "openorb/gondolin-environment-test",
       modelRuntime: {
         model: "opencode-go/deepseek-v4-flash",

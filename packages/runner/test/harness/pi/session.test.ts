@@ -22,7 +22,7 @@ const MODEL_RUNTIME = {
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
-const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
+const REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 const BRANCH_NAME = "openorb/pi-session-test";
 const SYSTEM_PROMPT = createOpenOrbSystemPrompt(REPOSITORY_URL, BRANCH_NAME);
 const CONVERSATION_PROJECTION = {

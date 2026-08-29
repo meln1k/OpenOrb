@@ -242,7 +242,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     connections.userId = client.userId;
     const projectResult = await store.saveProject(client.userId, {
       name: "OpenOrb",
-      repositoryUrl: "https://github.com/meln1k/openorb.git",
+      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
     });
     assert(projectResult.status === "saved");
     await store.saveGitHubCredential(client.userId, GITHUB_TOKEN);

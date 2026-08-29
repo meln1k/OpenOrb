@@ -30,7 +30,7 @@ function sessionDefinition(branchName: string): RunnerSessionDefinition {
   return new RunnerSessionDefinition({
     userId: USER_ID,
     projectId: PROJECT_ID,
-    repositoryUrl: "https://github.com/meln1k/openorb.git",
+    repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
     ref: "main",
     branchName,
     gitAuthor: GIT_AUTHOR,
@@ -525,7 +525,7 @@ Deno.test({
         guestImage: await installLocalGuestImage(workingDirectory),
         sessionLabel: "openorb OO-016 hostile Git Snapshot test",
         github: {
-          repositoryUrl: "https://github.com/meln1k/openorb.git",
+          repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
           gitAuthor: GIT_AUTHOR,
         },
         cpuCount: 1,

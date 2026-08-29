@@ -11,9 +11,9 @@ import { createOpenOrbPiSession, type OpenOrbPiSession } from "@/src/harness/pi/
 import { createPiTools } from "@/src/harness/pi/tools.ts";
 import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
 
-const PUBLIC_REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
+const PUBLIC_REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 const WRONG_REPOSITORY_URL = "https://github.com/octocat/Hello-World.git";
-const WRONG_HOST_REPOSITORY_URL = "https://example.com/openorb.git";
+const WRONG_HOST_REPOSITORY_URL = "https://example.com/openorb-test-repo.git";
 const GIT_AUTHOR = {
   name: "OpenOrb GitHub Integration Test",
   email: "openorb-github-integration@example.invalid",
@@ -98,7 +98,10 @@ Deno.test({
 
       for (
         const [id, command] of [
-          ["wrong-protocol", "git ls-remote git://github.com/meln1k/openorb.git"],
+          [
+            "wrong-protocol",
+            "git ls-remote git://github.com/meln1k/openorb-test-repo.git",
+          ],
           ["private-lan", "curl --fail --silent --show-error --max-time 10 http://192.168.1.1/"],
           [
             "cloud-metadata",

@@ -32,7 +32,7 @@ const METADATA: RunnerSessionMetadata = {
       "01989d78-65ee-7f6a-a97e-0f16ad134c11",
     ),
     repositoryUrl: Schema.decodeUnknownSync(SessionRepositoryUrl)(
-      "https://github.com/meln1k/openorb.git",
+      "https://github.com/meln1k/openorb-test-repo.git",
     ),
     ref: Schema.decodeUnknownSync(SessionGitReference)("main"),
     branchName: Schema.decodeUnknownSync(SessionGitReference)("openorb/snapshot-test"),

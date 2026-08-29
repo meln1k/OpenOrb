@@ -7,7 +7,7 @@ import {
   type OpenOrbGitHubVmOptions,
 } from "@/src/environment/gondolin/github-mediation.ts";
 
-const REPOSITORY_URL = "https://github.com/meln1k/openorb.git";
+const REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 const MODIFIED_REPOSITORY_URL = "https://github.com/octocat/Hello-World.git";
 const TOKEN = "github-test-token-4e63d197c57a";
 const GIT_AUTHOR = { name: "OpenOrb User", email: "user@example.com" };
@@ -166,16 +166,16 @@ Deno.test("credential helper remains scoped to the canonical repository after or
 Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
   for (
     const repositoryUrl of [
-      "meln1k/openorb",
-      "http://github.com/meln1k/openorb.git",
-      "https://github.com/meln1k/openorb",
-      "https://github.com/meln1k/openorb.git/",
-      "https://github.com/meln1k/openorb.git?ref=main",
-      "https://github.com/meln1k/openorb.git#readme",
-      "https://github.com/meln1k/openorb/extra.git",
-      "https://github.com/meln1k/%6fpenorb.git",
-      "https://api.github.com/meln1k/openorb.git",
-      "ssh://git@github.com/meln1k/openorb.git",
+      "meln1k/openorb-test-repo",
+      "http://github.com/meln1k/openorb-test-repo.git",
+      "https://github.com/meln1k/openorb-test-repo",
+      "https://github.com/meln1k/openorb-test-repo.git/",
+      "https://github.com/meln1k/openorb-test-repo.git?ref=main",
+      "https://github.com/meln1k/openorb-test-repo.git#readme",
+      "https://github.com/meln1k/openorb-test-repo/extra.git",
+      "https://github.com/meln1k/%6fpenorb-test-repo.git",
+      "https://api.github.com/meln1k/openorb-test-repo.git",
+      "ssh://git@github.com/meln1k/openorb-test-repo.git",
     ]
   ) {
     const repositoryError = failure(

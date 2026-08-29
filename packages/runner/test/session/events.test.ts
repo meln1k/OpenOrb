@@ -272,7 +272,7 @@ Deno.test("failed Pi creation disposes its active cache before the worker scope 
             sessionId: SESSION_ID,
             runnerSessionFile: sessionFile,
             runnerAgentDirectory: `${workingDirectory}/pi-agent`,
-            repositoryUrl: "https://github.com/meln1k/openorb.git",
+            repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
             branchName: "openorb/session-events-test",
             modelRuntime: MODEL_RUNTIME,
             tools: [],
@@ -506,7 +506,7 @@ async function withSession(
     new RunnerSessionDefinition({
       userId: USER_ID,
       projectId: PROJECT_ID,
-      repositoryUrl: "https://github.com/meln1k/openorb.git",
+      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
       ref: "main",
       branchName: "openorb/session-events-test",
       gitAuthor: GIT_AUTHOR,

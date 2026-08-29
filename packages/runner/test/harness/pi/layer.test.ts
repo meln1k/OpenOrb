@@ -58,7 +58,7 @@ Deno.test("Pi harness exposes a finite, ordered, lossless run stream", async () 
       sessionId: SESSION_ID,
       environment: EMPTY_ENVIRONMENT,
       git: {
-        repositoryUrl: "https://github.com/meln1k/openorb.git",
+        repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
         branchName: "openorb/pi-layer-test",
       },
       modelRuntime: MODEL_RUNTIME,
@@ -115,7 +115,7 @@ Deno.test("Pi harness atomically clears queued follow-ups before aborting", asyn
       sessionId: SESSION_ID,
       environment: EMPTY_ENVIRONMENT,
       git: {
-        repositoryUrl: "https://github.com/meln1k/openorb.git",
+        repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
         branchName: "openorb/pi-layer-test",
       },
       modelRuntime: MODEL_RUNTIME,
