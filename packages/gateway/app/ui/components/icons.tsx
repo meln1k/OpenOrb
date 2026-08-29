@@ -8,10 +8,14 @@ import Bell from "lucide/dist/esm/icons/bell.mjs";
 import BookOpenText from "lucide/dist/esm/icons/book-open-text.mjs";
 import Brain from "lucide/dist/esm/icons/brain.mjs";
 import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
+import ChevronRight from "lucide/dist/esm/icons/chevron-right.mjs";
 import ChevronsUpDown from "lucide/dist/esm/icons/chevrons-up-down.mjs";
+import CircleMinus from "lucide/dist/esm/icons/circle-minus.mjs";
+import CirclePlus from "lucide/dist/esm/icons/circle-plus.mjs";
 import Cpu from "lucide/dist/esm/icons/cpu.mjs";
 import CreditCard from "lucide/dist/esm/icons/credit-card.mjs";
 import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
+import FileDiff from "lucide/dist/esm/icons/file-diff.mjs";
 import Folder from "lucide/dist/esm/icons/folder.mjs";
 import GitBranch from "lucide/dist/esm/icons/git-branch.mjs";
 import KeyRound from "lucide/dist/esm/icons/key-round.mjs";
@@ -20,6 +24,7 @@ import LogOut from "lucide/dist/esm/icons/log-out.mjs";
 import MessageSquare from "lucide/dist/esm/icons/message-square.mjs";
 import MemoryStick from "lucide/dist/esm/icons/memory-stick.mjs";
 import PanelLeft from "lucide/dist/esm/icons/panel-left.mjs";
+import PanelRight from "lucide/dist/esm/icons/panel-right.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
 import Server from "lucide/dist/esm/icons/server.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
@@ -38,11 +43,15 @@ export type IconName =
   | "book-open-text"
   | "brain"
   | "chevron-down"
+  | "chevron-right"
   | "chevrons-up-down"
+  | "circle-minus"
+  | "circle-plus"
   | "cpu"
   | "credit-card"
   | "secrets"
   | "dashboard"
+  | "file-diff"
   | "folder"
   | "github"
   | "logout"
@@ -50,6 +59,7 @@ export type IconName =
   | "memory"
   | "more-horizontal"
   | "panel-left"
+  | "panel-right"
   | "plus"
   | "server"
   | "settings"
@@ -113,11 +123,15 @@ const iconNodes = {
   "book-open-text": BookOpenText,
   brain: Brain,
   "chevron-down": ChevronDown,
+  "chevron-right": ChevronRight,
   "chevrons-up-down": ChevronsUpDown,
+  "circle-minus": CircleMinus,
+  "circle-plus": CirclePlus,
   cpu: Cpu,
   "credit-card": CreditCard,
   secrets: KeyRound,
   dashboard: LayoutDashboard,
+  "file-diff": FileDiff,
   folder: Folder,
   github: GitBranch,
   logout: LogOut,
@@ -125,6 +139,7 @@ const iconNodes = {
   memory: MemoryStick,
   "more-horizontal": Ellipsis,
   "panel-left": PanelLeft,
+  "panel-right": PanelRight,
   plus: Plus,
   server: Server,
   settings: Settings,

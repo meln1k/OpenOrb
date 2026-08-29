@@ -1,6 +1,5 @@
 import { ENROLLMENT_PSK_PREFIX, RUNNER_TOKEN_PREFIX } from "@openorb/protocol";
 import type { RunnerArchitecture, RunnerEnrollmentRequest } from "@openorb/protocol";
-import { array, parseSafe, string } from "remix/data-schema";
 import type { Database } from "remix/data-table";
 import { v7 } from "@std/uuid";
 
@@ -12,8 +11,6 @@ import {
   runners,
 } from "@/app/data/schema.ts";
 
-const runnerCapabilitiesSchema = array(string());
-
 export interface RunnerEnrollmentToken {
   id: string;
   token: string;
@@ -24,7 +21,6 @@ export interface RunnerRecord {
   id: string;
   name: string;
   architecture: RunnerArchitecture;
-  capabilities: string[];
   createdAt: Temporal.Instant;
   revokedAt: Temporal.Instant | null;
 }
@@ -95,7 +91,6 @@ export function createRunnerRepository(database: Database): RunnerRepository {
           enrollment_token_id: enrollmentToken.id,
           name: input.name.trim(),
           architecture: input.architecture,
-          capabilities: JSON.stringify(input.capabilities),
           token_hash: await hashRunnerSecret(runnerToken),
           created_at: Temporal.Now.instant().toString(),
           revoked_at: null,
@@ -192,10 +187,6 @@ function mapEnrollmentToken(row: RunnerEnrollmentTokenRow): RunnerEnrollmentToke
 }
 
 function mapRunner(row: RunnerRow): RunnerRecord {
-  const capabilities = parseSafe(runnerCapabilitiesSchema, JSON.parse(row.capabilities));
-  if (!capabilities.success) {
-    throw new RunnerPersistenceIntegrityError(`Runner ${row.id} has invalid stored capabilities.`);
-  }
   if (row.architecture !== "x64" && row.architecture !== "arm64") {
     throw new RunnerPersistenceIntegrityError(
       `Runner ${row.id} has an invalid stored architecture.`,
@@ -205,7 +196,6 @@ function mapRunner(row: RunnerRow): RunnerRecord {
     id: row.id,
     name: row.name,
     architecture: row.architecture,
-    capabilities: capabilities.value,
     createdAt: Temporal.Instant.from(row.created_at),
     revokedAt: row.revoked_at === null ? null : Temporal.Instant.from(row.revoked_at),
   };

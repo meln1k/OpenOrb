@@ -742,6 +742,7 @@ function activityForEvent(event: SessionEvent): ActivityUpdate | null {
     case "thinking-level.changed":
     case "bash.output.delta":
     case "conversation.reset":
+    case "git.snapshot.updated":
     case "provisioning.log":
     case "session.state":
     case "user.message":

@@ -4,6 +4,7 @@ import { css, type Handle } from "remix/ui";
 import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
 import { modelContextWindow } from "@/app/model-provider-catalog.ts";
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
+import { SessionChangesPanel } from "@/app/ui/session/session-changes-panel.tsx";
 import { SessionEventView } from "@/app/ui/session/session-event-view.tsx";
 import { AppShell } from "@/app/ui/shell.tsx";
 
@@ -11,12 +12,15 @@ interface SessionDetailPageProps {
   abortHref: string;
   composer: SessionComposerData;
   csrfToken: string;
+  changesHref: string;
+  gitSnapshotHref: string;
   session: SessionCatalogEntry;
   runnerId: string | null;
   snapshot: RunnerSessionSnapshot | null;
   eventsHref: string;
   messageHref: string;
   retryHref: string;
+  wakeHref: string;
   sidebarSessions: SessionCatalogEntry[];
   error: string | undefined;
 }
@@ -26,6 +30,8 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
     abortHref,
     composer,
     csrfToken,
+    changesHref,
+    gitSnapshotHref,
     error,
     eventsHref,
     messageHref,
@@ -34,6 +40,7 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
     session,
     sidebarSessions,
     snapshot,
+    wakeHref,
   } = handle.props;
   const state = snapshot?.state ?? (runnerId ? "created" : "offline");
   const canRetry = snapshot?.state === "error" && runnerId !== null;
@@ -47,6 +54,14 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
       sessions={sidebarSessions}
       title={`${sessionName} · OpenOrb`}
       topBarTitle={sessionName}
+      rightSidebar={
+        <SessionChangesPanel
+          changesHref={changesHref}
+          csrfToken={csrfToken}
+          gitSnapshotHref={gitSnapshotHref}
+          sessionId={session.id}
+        />
+      }
     >
       {error ? <p role="alert" mix={errorStyle}>{error}</p> : null}
       <SessionEventView
@@ -59,6 +74,7 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
         messageHref={messageHref}
         retryHref={retryHref}
         sessionId={session.id}
+        wakeHref={wakeHref}
       />
     </AppShell>
   );

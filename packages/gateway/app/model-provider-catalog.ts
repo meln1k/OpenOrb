@@ -1,5 +1,6 @@
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { modelReference } from "@openorb/protocol";
+import { DEFAULT_SESSION_THINKING_LEVEL, modelReference } from "@openorb/protocol";
+import { SessionModelRuntime } from "@openorb/protocol/runner-api";
 
 export interface ModelProviderOption {
   id: string;
@@ -51,4 +52,12 @@ export function modelContextWindow(value: string): number | undefined {
 
 export function modelProviderName(providerId: string): string {
   return MODEL_PROVIDER_OPTIONS.find((provider) => provider.id === providerId)?.name ?? providerId;
+}
+
+export function sessionModelRuntime(model: string, apiKey: string): SessionModelRuntime {
+  return new SessionModelRuntime({
+    model,
+    thinkingLevel: DEFAULT_SESSION_THINKING_LEVEL,
+    credential: { type: "api_key", value: apiKey },
+  });
 }

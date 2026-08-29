@@ -1,14 +1,8 @@
-import {
-  DEFAULT_SESSION_THINKING_LEVEL,
-  modelReferenceSchema,
-  orbSizeSchema,
-  parseModelReference,
-} from "@openorb/protocol";
+import { modelReferenceSchema, orbSizeSchema, parseModelReference } from "@openorb/protocol";
 import {
   isSafeGitReference,
   MAX_RPC_INITIAL_PROMPT_BYTES,
   ProjectId,
-  SessionModelRuntime,
 } from "@openorb/protocol/runner-api";
 import { validate as validateUuid } from "@std/uuid";
 import * as s from "remix/data-schema";
@@ -28,7 +22,7 @@ import type { AppContext } from "@/app/router.ts";
 import { selectRunnerForUser } from "@/app/runner-selection.ts";
 import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
-import { isModelReference } from "@/app/model-provider-catalog.ts";
+import { isModelReference, sessionModelRuntime } from "@/app/model-provider-catalog.ts";
 import type { SessionComposerValues } from "@/app/ui/session-composer.tsx";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
@@ -430,8 +424,11 @@ async function renderDetailPage(
       snapshot={snapshot}
       abortHref={routes.app.sessions.abort.href({ sessionId })}
       eventsHref={routes.api.sessions.events.href({ sessionId })}
+      gitSnapshotHref={routes.api.sessions.gitSnapshot.href({ sessionId })}
+      changesHref={routes.api.sessions.changes.href({ sessionId })}
       messageHref={routes.app.sessions.message.href({ sessionId })}
       retryHref={routes.app.sessions.retry.href({ sessionId })}
+      wakeHref={routes.api.sessions.wake.href({ sessionId })}
       sidebarSessions={sidebarSessions}
       error={error}
     />,
@@ -453,14 +450,6 @@ function submittedValues(formData: FormData): SessionComposerValues {
     branchName: stringField(formData, "branchName"),
     initialPrompt: stringField(formData, "initialPrompt"),
   };
-}
-
-function sessionModelRuntime(model: string, apiKey: string): SessionModelRuntime {
-  return new SessionModelRuntime({
-    model,
-    thinkingLevel: DEFAULT_SESSION_THINKING_LEVEL,
-    credential: { type: "api_key" as const, value: apiKey },
-  });
 }
 
 function stringField(formData: FormData, name: string): string {

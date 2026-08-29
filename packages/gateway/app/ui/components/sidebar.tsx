@@ -15,21 +15,35 @@ export function SidebarLayout(handle: Handle<Props<"div">>) {
   };
 }
 
-export function SidebarDesktop(handle: Handle<Props<"details">>) {
+type SidebarDesktopProps = Props<"details"> & {
+  side?: "left" | "right";
+};
+
+export function SidebarDesktop(handle: Handle<SidebarDesktopProps>) {
   return () => {
-    const { children, mix, open = true, ...props } = handle.props;
+    const { children, mix, open = true, side = "left", ...props } = handle.props;
+    const label = side === "right" ? "changes sidebar" : "sidebar";
     return (
-      <details {...props} open={open} data-slot="sidebar-desktop" mix={[desktopStyle, mix]}>
+      <details
+        {...props}
+        open={open}
+        data-side={side}
+        data-slot="sidebar-desktop"
+        mix={[desktopStyle, mix]}
+      >
         <summary
-          aria-label="Toggle sidebar"
-          title="Toggle sidebar"
+          aria-label={`Toggle ${label}`}
+          title={`Toggle ${label}`}
           data-slot="sidebar-desktop-trigger"
           mix={desktopTriggerStyle}
         >
-          <Icon name="panel-left" />
-          <span mix={screenReaderOnlyStyle}>Toggle sidebar</span>
+          <Icon name={side === "right" ? "panel-right" : "panel-left"} />
+          <span mix={screenReaderOnlyStyle}>Toggle {label}</span>
         </summary>
-        <aside aria-label="Primary navigation" mix={desktopPanelStyle}>
+        <aside
+          aria-label={side === "right" ? "Session changes" : "Primary navigation"}
+          mix={desktopPanelStyle}
+        >
           {children}
         </aside>
       </details>
@@ -248,13 +262,20 @@ const layoutStyle = css({
   background: "var(--sidebar)",
 });
 
+const rightDesktopWidth = "clamp(400px, 38vw, 560px)";
+
 const desktopStyle = css({
   display: "none",
   flex: "0 0 0",
   width: 0,
   color: "var(--sidebar-foreground)",
-  "&[open]": { flexBasis: "256px", width: "256px" },
-  [media.md]: { display: "block" },
+  "&[data-side='left'][open]": { flexBasis: "256px", width: "256px" },
+  "&[data-side='right'][open]": {
+    flexBasis: rightDesktopWidth,
+    width: rightDesktopWidth,
+  },
+  [media.md]: { "&[data-side='left']": { display: "block" } },
+  [media.xl]: { "&[data-side='right']": { display: "block" } },
 });
 
 const desktopPanelStyle = css({
@@ -263,16 +284,22 @@ const desktopPanelStyle = css({
   zIndex: 10,
   display: "flex",
   flexDirection: "column",
-  width: "240px",
   minHeight: 0,
   color: "var(--sidebar-foreground)",
   background: "var(--sidebar)",
+  "[data-slot='sidebar-desktop'][data-side='left'] > &": {
+    inset: "8px auto 8px 8px",
+    width: "240px",
+  },
+  "[data-slot='sidebar-desktop'][data-side='right'] > &": {
+    inset: "8px 8px 8px auto",
+    width: `calc(${rightDesktopWidth} - 16px)`,
+  },
 });
 
 const desktopTriggerStyle = css({
   position: "fixed",
   top: "26px",
-  left: "20px",
   zIndex: 30,
   display: "flex",
   alignItems: "center",
@@ -285,7 +312,12 @@ const desktopTriggerStyle = css({
   outline: "none",
   listStyle: "none",
   cursor: "pointer",
-  "[data-slot='sidebar-desktop'][open] > &": { left: "272px" },
+  "[data-slot='sidebar-desktop'][data-side='left'] > &": { right: "auto", left: "20px" },
+  "[data-slot='sidebar-desktop'][data-side='left'][open] > &": { left: "272px" },
+  "[data-slot='sidebar-desktop'][data-side='right'] > &": { right: "20px", left: "auto" },
+  "[data-slot='sidebar-desktop'][data-side='right'][open] > &": {
+    right: `calc(${rightDesktopWidth} + 16px)`,
+  },
   "&::-webkit-details-marker": { display: "none" },
   "&:hover": { background: "var(--accent)" },
   "&:focus-visible": { boxShadow: "0 0 0 2px var(--ring)" },
@@ -353,9 +385,10 @@ const insetStyle = css({
     margin: "8px 8px 8px 0",
     borderRadius: "var(--radius-xl)",
     boxShadow: "0 1px 3px rgb(0 0 0 / 0.08)",
-    "[data-slot='sidebar-wrapper']:has([data-slot='sidebar-desktop']:not([open])) > &": {
-      marginLeft: "8px",
-    },
+    "[data-slot='sidebar-wrapper']:has([data-slot='sidebar-desktop'][data-side='left']:not([open])) > &":
+      {
+        marginLeft: "8px",
+      },
   },
 });
 

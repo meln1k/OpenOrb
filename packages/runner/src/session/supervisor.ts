@@ -10,19 +10,11 @@ import {
 } from "effect";
 import { type OrbSize, orbSizeResources } from "@openorb/protocol";
 import type {
-  AbortSessionPayload,
-  PromptSessionPayload,
   ProvisionSessionPayload,
   SessionId,
+  SessionModelRuntime,
 } from "@openorb/protocol/runner-api";
-import {
-  AbortRejected,
-  AbortSessionAccepted,
-  PromptRejected,
-  PromptSessionAccepted,
-  ProvisionRejected,
-  ProvisionSessionSuccess,
-} from "@openorb/protocol/runner-api";
+import { ProvisionRejected, ProvisionSessionSuccess } from "@openorb/protocol/runner-api";
 
 import {
   RunnerSessionAlreadyExists,
@@ -45,15 +37,14 @@ interface WorkerRegistryEntry {
 export interface SessionSupervisor {
   readonly activeSessionCount: () => number;
   readonly getActiveRunId: (sessionId: SessionId) => string | undefined;
+  readonly findWorker: (sessionId: SessionId) => SessionWorker | undefined;
+  readonly findOrRestoreWorker: (
+    sessionId: SessionId,
+    modelRuntime?: SessionModelRuntime,
+  ) => Effect.Effect<SessionWorker | undefined>;
   readonly provision: (
     payload: typeof ProvisionSessionPayload.Type,
   ) => Effect.Effect<ProvisionSessionSuccess, ProvisionRejected>;
-  readonly prompt: (
-    payload: PromptSessionPayload,
-  ) => Effect.Effect<PromptSessionAccepted, PromptRejected>;
-  readonly abort: (
-    payload: AbortSessionPayload,
-  ) => Effect.Effect<AbortSessionAccepted, AbortRejected>;
 }
 
 export const SessionSupervisor: Context.Service<SessionSupervisor, SessionSupervisor> = Context
@@ -244,6 +235,33 @@ export function makeSessionSupervisor(
         MutableHashMap.set(workers, metadata.id, { worker });
         return { ok: true, value: provisionSuccess(metadata, snapshot.value) } as const;
       });
+    const findOrRestoreWorker = (
+      sessionId: SessionId,
+      modelRuntime?: SessionModelRuntime,
+    ): Effect.Effect<SessionWorker | undefined> => {
+      const existing = Option.getOrUndefined(MutableHashMap.get(workers, sessionId));
+      if (existing) return Effect.succeed(existing.worker);
+      return admission.withPermit(Effect.gen(function* () {
+        const current = Option.getOrUndefined(MutableHashMap.get(workers, sessionId));
+        if (current) return current.worker;
+        let activeWorkers = 0;
+        for (const [, candidate] of workers) if (candidate.worker.active) activeWorkers++;
+        if (activeWorkers >= options.maxConcurrentSessions) return undefined;
+        const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
+        if (
+          Option.isNone(metadata) || metadata.value.state !== "ready" ||
+          (modelRuntime !== undefined && metadata.value.model !== modelRuntime.model)
+        ) return undefined;
+        const worker = yield* workerFactory.spawn({
+          metadata: metadata.value,
+          ...(modelRuntime === undefined ? {} : { modelRuntime }),
+          correlationId: crypto.randomUUID(),
+          restore: true,
+        });
+        MutableHashMap.set(workers, sessionId, { worker });
+        return worker;
+      }));
+    };
 
     return SessionSupervisor.of({
       activeSessionCount: () => {
@@ -255,6 +273,9 @@ export function makeSessionSupervisor(
       },
       getActiveRunId: (sessionId) =>
         Option.getOrUndefined(MutableHashMap.get(workers, sessionId))?.worker.activeRunId,
+      findWorker: (sessionId) =>
+        Option.getOrUndefined(MutableHashMap.get(workers, sessionId))?.worker,
+      findOrRestoreWorker,
       provision: (payload) =>
         admission.withPermit(
           Effect.uninterruptible(acceptProvision(payload)),
@@ -265,82 +286,6 @@ export function makeSessionSupervisor(
               : new ProvisionRejected({ sessionId: payload.sessionId, message: result.message })
           ),
         ),
-      prompt: (payload) => {
-        const entry = Option.getOrUndefined(MutableHashMap.get(workers, payload.sessionId));
-        if (!entry) {
-          return admission.withPermit(Effect.gen(function* () {
-            const current = Option.getOrUndefined(MutableHashMap.get(workers, payload.sessionId));
-            if (current) return current.worker;
-            let activeWorkers = 0;
-            for (const [, candidate] of workers) if (candidate.worker.active) activeWorkers++;
-            if (activeWorkers >= options.maxConcurrentSessions) return undefined;
-            const metadata = yield* store.readMetadata(payload.sessionId).pipe(Effect.option);
-            if (
-              Option.isNone(metadata) || metadata.value.state !== "ready" ||
-              metadata.value.model !== payload.modelRuntime.model
-            ) return undefined;
-            const worker = yield* workerFactory.spawn({
-              metadata: metadata.value,
-              modelRuntime: payload.modelRuntime,
-              correlationId: crypto.randomUUID(),
-              restore: true,
-            });
-            MutableHashMap.set(workers, payload.sessionId, { worker });
-            return worker;
-          })).pipe(
-            Effect.flatMap((worker) =>
-              worker ? worker.prompt(payload) : Effect.succeed(
-                { ok: false, message: "The session is not ready and idle." } as const,
-              )
-            ),
-            Effect.flatMap((result) =>
-              result.ok
-                ? Effect.succeed(
-                  new PromptSessionAccepted({
-                    clientRequestId: payload.clientRequestId,
-                    runId: result.runId,
-                    mode: result.mode,
-                  }),
-                )
-                : new PromptRejected({ sessionId: payload.sessionId, message: result.message })
-            ),
-          );
-        }
-        return entry.worker.prompt(payload).pipe(
-          Effect.flatMap((result) =>
-            result.ok
-              ? Effect.succeed(
-                new PromptSessionAccepted({
-                  clientRequestId: payload.clientRequestId,
-                  runId: result.runId,
-                  mode: result.mode,
-                }),
-              )
-              : new PromptRejected({ sessionId: payload.sessionId, message: result.message })
-          ),
-        );
-      },
-      abort: (payload) => {
-        const entry = Option.getOrUndefined(MutableHashMap.get(workers, payload.sessionId));
-        if (!entry) {
-          return new AbortRejected({
-            sessionId: payload.sessionId,
-            runId: payload.runId,
-            message: "That Pi run is no longer active.",
-          });
-        }
-        return entry.worker.abort(payload).pipe(
-          Effect.flatMap((result) =>
-            result.ok
-              ? Effect.succeed(new AbortSessionAccepted({ runId: payload.runId }))
-              : new AbortRejected({
-                sessionId: payload.sessionId,
-                runId: payload.runId,
-                message: result.message,
-              })
-          ),
-        );
-      },
     });
   });
 }

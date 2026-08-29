@@ -54,7 +54,13 @@ const disconnectedRunnerRegistry: RunnerRegistryService = {
   getRunnerLiveState: () => Effect.succeed(null),
   getSessionRunner: () => Effect.succeed(null),
   getSessionSnapshot: () => Effect.succeed(null),
+  getSessionGitSnapshot: () =>
+    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
+  updateSessionGitFile: () =>
+    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   provisionSession: () =>
+    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
+  wakeSession: () =>
     Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   promptSession: () =>
     Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),

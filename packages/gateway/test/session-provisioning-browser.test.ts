@@ -1,9 +1,12 @@
 import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
 
 import {
+  GitFileUpdateAccepted,
   initialPromptPreview,
   RunnerSessionSnapshot,
+  SessionGitSnapshot,
   SessionModelRuntime,
+  WakeSessionAccepted,
   type WatchSessionEvent,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema, Stream } from "effect";
@@ -14,6 +17,8 @@ import type {
   ProvisionSessionInput,
   RunnerLiveState,
   RunnerRegistryService,
+  UpdateSessionGitFileInput,
+  WakeSessionInput,
 } from "@/app/runner-registry.ts";
 import { createAppServices } from "@/app/middleware/services.ts";
 import { createAppRouter } from "@/app/router.ts";
@@ -39,8 +44,10 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   sessionId: string | null = null;
   snapshot: RunnerSessionSnapshot | null = null;
   provisions: ProvisionSessionInput[] = [];
+  wakes: WakeSessionInput[] = [];
   prompts: PromptSessionInput[] = [];
   aborts: AbortSessionInput[] = [];
+  gitFileUpdates: UpdateSessionGitFileInput[] = [];
   events: (typeof WatchSessionEvent.Type)[] = [];
   afterCursors: number[] = [];
   subscriptionUnsubscribes = 0;
@@ -76,6 +83,42 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     return Effect.succeed(
       userId === this.userId && sessionId === this.sessionId ? this.snapshot : null,
     );
+  }
+
+  getSessionGitSnapshot(userId: string, sessionId: string) {
+    if (userId !== this.userId || sessionId !== this.sessionId) {
+      return Effect.succeed({
+        status: "unavailable" as const,
+        message: "The pinned runner is offline.",
+      });
+    }
+    return Effect.succeed({
+      status: "accepted" as const,
+      acknowledgement: new SessionGitSnapshot({
+        generatedAt: "2026-08-23T12:00:00Z",
+        completeness: "complete",
+        stale: false,
+        truncated: false,
+        sections: {
+          staged: { files: [], patch: "", truncated: false },
+          unstaged: { files: [], patch: "", truncated: false },
+        },
+      }),
+    });
+  }
+
+  updateSessionGitFile(input: UpdateSessionGitFileInput) {
+    if (input.userId !== this.userId || input.sessionId !== this.sessionId) {
+      return Effect.succeed({
+        status: "unavailable" as const,
+        message: "The pinned runner is offline.",
+      });
+    }
+    this.gitFileUpdates.push(input);
+    return Effect.succeed({
+      status: "accepted" as const,
+      acknowledgement: new GitFileUpdateAccepted({}),
+    });
   }
 
   provisionSession(input: ProvisionSessionInput): Effect.Effect<OperationResult<unknown>> {
@@ -117,6 +160,16 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
           branchName: input.payload.branchName,
           checkoutState: "pending",
         },
+      };
+    });
+  }
+
+  wakeSession(input: WakeSessionInput) {
+    return Effect.sync(() => {
+      this.wakes.push(input);
+      return {
+        status: "accepted" as const,
+        acknowledgement: new WakeSessionAccepted({}),
       };
     });
   }
@@ -358,7 +411,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(detailHtml, /Session <code>/);
     assertNotMatch(detailHtml, /<span>Repository<\/span>/);
     assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/events`));
+    assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/git-snapshot`));
+    assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/wake`));
+    assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/changes`));
     assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-event-view\.tsx/);
+    assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-changes-panel\.tsx/);
+    assertMatch(detailHtml, /aria-label="Session changes"/);
+    assertMatch(detailHtml, />Changes<\/strong>/);
     assertMatch(
       detailHtml,
       new RegExp(`action="/app/sessions/${provision.sessionId}/messages"`),
@@ -390,6 +449,122 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         currentSidebarLink < olderSidebarLink,
     );
     assert(projectsLink > olderSidebarLink);
+
+    const gitSnapshotHref = routes.api.sessions.gitSnapshot.href({
+      sessionId: provision.sessionId,
+    });
+    const gitSnapshotResponse = await fetch(new URL(gitSnapshotHref, server.baseUrl), {
+      headers: { Accept: "application/json", Cookie: client.cookie },
+    });
+    assertEquals(gitSnapshotResponse.status, 200);
+    assertEquals(gitSnapshotResponse.headers.get("cache-control"), "no-store");
+    const gitSnapshot = await gitSnapshotResponse.json();
+    assertEquals(gitSnapshot.sections.staged.files, []);
+    assertEquals(gitSnapshot.sections.unstaged.files, []);
+    assertEquals("summary" in gitSnapshot, false);
+
+    const wakeHref = routes.api.sessions.wake.href({ sessionId: provision.sessionId });
+    const anonymousWake = await fetch(new URL(wakeHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+    });
+    assertEquals(anonymousWake.status, 401);
+    const missingWakeCsrf = await fetch(new URL(wakeHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+    });
+    assertEquals(missingWakeCsrf.status, 403);
+    const woken = await fetch(new URL(wakeHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(detailHtml) }),
+    });
+    assertEquals(woken.status, 202);
+    assertEquals(await woken.json(), { status: "accepted" });
+    assertEquals(connections.wakes, [{
+      userId: client.userId,
+      sessionId: provision.sessionId,
+      payload: {
+        modelRuntime: new SessionModelRuntime({
+          model: MODEL,
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
+        }),
+      },
+    }]);
+
+    const changesHref = routes.api.sessions.changes.href({ sessionId: provision.sessionId });
+    const anonymousChange = await fetch(new URL(changesHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      body: new URLSearchParams({ action: "stage", path: "README.md" }),
+    });
+    assertEquals(anonymousChange.status, 401);
+    const missingChangeCsrf = await fetch(new URL(changesHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ action: "stage", path: "README.md" }),
+    });
+    assertEquals(missingChangeCsrf.status, 403);
+    const missingSessionChange = await fetch(
+      new URL(routes.api.sessions.changes.href({ sessionId: crypto.randomUUID() }), server.baseUrl),
+      {
+        method: "POST",
+        redirect: "manual",
+        headers: { Accept: "application/json", Cookie: client.cookie },
+        body: new URLSearchParams({
+          _csrf: csrfFrom(detailHtml),
+          action: "stage",
+          path: "README.md",
+        }),
+      },
+    );
+    assertEquals(missingSessionChange.status, 404);
+    assertEquals(connections.gitFileUpdates, []);
+
+    const exactPath = "README*\n.md";
+    const exactPreviousPath = "README?\nold.md";
+    const stagedChange = await fetch(new URL(changesHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(detailHtml),
+        action: "stage",
+        path: exactPath,
+        previousPath: exactPreviousPath,
+      }),
+    });
+    assertEquals(stagedChange.status, 204);
+    assertEquals(stagedChange.headers.get("cache-control"), "no-store");
+    assertEquals(await stagedChange.text(), "");
+    const unstagedChange = await fetch(new URL(changesHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(detailHtml),
+        action: "unstage",
+        path: exactPath,
+      }),
+    });
+    assertEquals(unstagedChange.status, 204);
+    assertEquals(await unstagedChange.text(), "");
+    assertEquals(connections.gitFileUpdates, [
+      {
+        userId: client.userId,
+        sessionId: provision.sessionId,
+        action: "stage",
+        path: exactPath,
+        previousPath: exactPreviousPath,
+      },
+      {
+        userId: client.userId,
+        sessionId: provision.sessionId,
+        action: "unstage",
+        path: exactPath,
+      },
+    ]);
 
     const messageHref = routes.app.sessions.message.href({ sessionId: provision.sessionId });
     const missingMessageCsrf = await fetch(new URL(messageHref, server.baseUrl), {
@@ -517,6 +692,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(offlineAbort.status, 503);
     assertMatch(await offlineAbort.text(), /pinned runner is offline/);
     assertEquals(connections.aborts.length, 1);
+    const offlineGitSnapshot = await fetch(new URL(gitSnapshotHref, server.baseUrl), {
+      headers: { Accept: "application/json", Cookie: client.cookie },
+    });
+    assertEquals(offlineGitSnapshot.status, 503);
+    assertEquals(offlineGitSnapshot.headers.get("cache-control"), "no-store");
     connections.sessionId = provision.sessionId;
 
     connections.beforeAcceptance = undefined;
@@ -822,7 +1002,6 @@ async function enrollRunner(
     enrollmentPsk: enrollment.token,
     name: "Browser runner",
     architecture: "x64",
-    capabilities: ["session-rpc", "session-events"],
   });
   assert(runner);
   return runner;

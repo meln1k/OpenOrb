@@ -33,7 +33,10 @@ export {
   IdentifyRunner,
   PromptSession,
   ProvisionSession,
+  ReadSessionGitSnapshot,
   RunnerApi,
+  UpdateSessionGitFile,
+  WakeSession,
   WatchRunner,
   WatchSession,
 } from "@/src/runner-api.ts";

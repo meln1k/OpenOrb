@@ -40,6 +40,7 @@ export type SessionEventViewProps = {
   messageHref: string;
   retryHref: string;
   sessionId: string;
+  wakeHref: string;
 };
 const bashToolArgumentsSchema = object(
   { command: string() },
@@ -134,6 +135,19 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
 
   handle.queueTask(() => {
     if (handle.props.initialState === "offline") return;
+    if (
+      handle.props.initialState === "ready" || handle.props.initialState === "running"
+    ) {
+      const body = new FormData();
+      body.set("_csrf", handle.props.csrfToken);
+      void fetch(handle.props.wakeHref, {
+        method: "POST",
+        body,
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        signal: handle.signal,
+      }).catch(() => undefined);
+    }
     let updateFrame: number | undefined;
     const stream = new EventSource(handle.props.eventsHref);
     // Reconcile at most once per paint while retaining every event in transcriptState.
@@ -156,6 +170,13 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
       const event = parseSessionEvent(encoded.value);
       if (!event) return;
       if (event.type === "session.state" && event.stage !== "running") abortPending = false;
+      if (event.type === "git.snapshot.updated") {
+        globalThis.dispatchEvent(
+          new CustomEvent("openorb:session-git-snapshot-changed", {
+            detail: { sessionId: handle.props.sessionId },
+          }),
+        );
+      }
       const next = reduceSessionTranscriptState(transcriptState, event);
       if (next === transcriptState) return;
       transcriptState = next;

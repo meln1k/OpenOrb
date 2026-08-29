@@ -149,7 +149,6 @@ export const runners = table({
     enrollment_token_id: c.uuid().notNull(),
     name: c.text().notNull(),
     architecture: c.text().notNull(),
-    capabilities: c.text().notNull(),
     token_hash: c.text().notNull(),
     created_at: c.text().notNull(),
     revoked_at: c.text().nullable(),

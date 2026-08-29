@@ -9,7 +9,7 @@ The runner owns durable session data in the agreed file formats and sends a sess
 
 ## Scope
 
-- Create per-session storage with atomic `metadata.json`, Pi-owned `pi/session.jsonl`, `logs/`, `reports/`, and `workspace/`.
+- Create per-session storage with atomic `metadata.json`, Pi-owned `pi/session.jsonl`, `logs/`, `snapshots/`, and `workspace/`.
 - Define only metadata fields required by current tickets and `MVP.md`; Pi JSONL is the sole durable conversation transcript.
 - Derive replay positions from the active Pi session branch instead of maintaining an OpenOrb event file.
 - Sync a complete runner-owned session manifest on connect/reconnect. Each entry includes the four catalog data fields plus the live routing/state data required by current tickets; it does not choose tenant ownership.

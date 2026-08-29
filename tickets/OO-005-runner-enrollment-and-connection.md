@@ -12,7 +12,7 @@ The administrator copies or regenerates the enrollment PSK in the browser, and t
 - Add automatic user-owned reusable enrollment-PSK provisioning and regeneration through authenticated Remix controllers/actions. Validate browser input with `remix/data-schema` and use OO-002's session/CSRF middleware. A PSK remains valid for multiple enrollments by its owning user until regenerated.
 - Permit at most one active enrollment PSK per user. Enforce the invariant in PostgreSQL and atomically revoke the previous PSK when generating its replacement.
 - Store each enrollment PSK unencrypted in PostgreSQL. Show the current PSK inside one always-present, visible, copyable runner-enrollment command under **Settings → Runners**, with a regenerate action and no revoke or delete action.
-- Implement runner enrollment using gateway URL, PSK, runner name, architecture, and capabilities.
+- Implement runner enrollment using gateway URL, PSK, runner name, and architecture.
 - Derive immutable runner `user_id` from the enrollment PSK record, never runner input. Return and persist a random revocable runner bearer token with file mode `0600`; subsequent connections inherit the same owner from the authenticated runner record.
 - Establish the one outbound authenticated JSON WebSocket defined by `MVP.md`.
 - Add the minimum versioned runtime schemas and connection lifecycle needed by enrollment, authentication, and heartbeat; do not design future command families.

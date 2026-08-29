@@ -67,7 +67,7 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 - Gondolin-backed `read`, `write`, `edit`, and `bash` tools
 - Guest-side GitHub clone, status, diff, commit, fetch, and push using Git/`gh`
 - GitHub `GH_TOKEN` mediation; the real token remains outside the guest
-- Pi JSONL as the sole conversation transcript, plus metadata, reports, and workspace persistence
+- Pi JSONL as the sole conversation transcript, plus metadata, Git Snapshots, and workspace persistence
 - Idle VM destruction and cold recreation
 
 ### Conversation
@@ -131,7 +131,7 @@ Gateway
           │
 Runner behind NAT
   ├── Effect RPC server for identity, state watching, and typed session procedures
-  ├── Complete session metadata, transcripts, events, reports, workspaces, and Pi JSONL
+  ├── Complete session metadata, transcripts, events, Git Snapshots, workspaces, and Pi JSONL
   ├── Host-side Pi SDK
   └── Gondolin manager
           │
@@ -233,7 +233,7 @@ Use a simple bearer-token design:
 
 1. The gateway always provides the administrator's reusable enrollment PSK under **Settings → Runners**. It remains valid for additional enrollments until the administrator regenerates it. Regeneration atomically revokes the previous PSK and creates its replacement, and PostgreSQL enforces at most one active PSK per user. The current PSK is embedded in a visible, copyable runner-enrollment command with a regenerate action and no revoke or delete action.
    The gateway stores each PSK unencrypted in PostgreSQL. PostgreSQL read access therefore grants access to active enrollment PSKs.
-2. Runner submits the PSK, name, architecture, and capabilities.
+2. Runner submits the PSK, name, and architecture.
 3. Gateway derives immutable runner ownership from the enrollment PSK's authenticated user, stores `user_id` on both enrollment and runner rows, and returns a random revocable runner token. Runner input cannot choose a tenant.
 4. Runner stores the token with filesystem mode `0600`.
 5. Runner authenticates its outbound WebSocket with that token.
@@ -326,9 +326,8 @@ Suggested runner layout:
       workspace/
       pi/
         session.jsonl
-      reports/
-        git-status.json
-        diff.patch
+      snapshots/
+        git-snapshot.json
       logs/
 ```
 
@@ -339,7 +338,7 @@ Persist only on the runner:
 - Complete session metadata, including the selected orb size, and pinned-runner identity
 - Ordinary operation logs. Fine-grained provisioning stages and output remain ephemeral and are
   delivered best-effort while connected.
-- Last bounded Git status/diff report
+- Last bounded Git Snapshot
 
 The gateway stores only this minimal session catalog record:
 
@@ -393,18 +392,20 @@ Do not persist:
 
 ### While active
 
-- Keep the VM running during agent, provisioning, setup, and report work.
+- Keep the VM running during agent, provisioning, setup, and Git Snapshot work.
 - Record the latest accepted user-message time for idle shutdown.
 - A normal prompt is allowed only when Pi is idle.
-- Refresh the guest-generated Git report after Pi settles.
-- Manual Stop is accepted only when Pi is idle and no provisioning, setup, or report operation is active; otherwise the user must wait or Abort the active run first.
+- Refresh the guest-generated Git Snapshot at completed tool and turn boundaries, every 15 seconds
+  during the Agent Run, and in a final awaited run-end flush. Debounce boundary bursts by two seconds,
+  prevent overlapping inspections, and coalesce pending work.
+- Manual Stop is accepted only when Pi is idle and no provisioning, setup, or Git Snapshot operation is active; otherwise the user must wait or Abort the active run first.
 
 ### Idle stop
 
-The VM may stop when at least 15 minutes have passed since the latest accepted user message and no agent, provisioning, setup, or report work is active:
+The VM may stop when at least 15 minutes have passed since the latest accepted user message and no agent, provisioning, setup, or Git Snapshot work is active:
 
 1. Run a final Git status/diff inside Gondolin.
-2. Store the bounded report outside the guest-writable workspace.
+2. Store the bounded Git Snapshot outside the guest-writable workspace.
 3. Destroy the VM.
 4. Keep the workspace and Pi JSONL.
 
@@ -425,7 +426,7 @@ No checkpoint creation, compatibility management, `.agents/resume`, service rest
 
 Deletion requires explicit confirmation. In one PostgreSQL transaction, the gateway writes a durable deleted-session marker containing only user ID, session ID, and deletion time and removes the five-column catalog row. It then removes the user-scoped live route before requesting runner cleanup. The marker is committed first so a gateway crash cannot resurrect a session after runner-side deletion.
 
-- If the runner is online and idle, it removes the workspace, Pi JSONL, metadata, events, reports, and logs.
+- If the runner is online and idle, it removes the workspace, Pi JSONL, metadata, events, snapshots, and logs.
 - If the runner is online but active, deletion is rejected; the user must wait for the work to settle. An offline deletion cannot determine live state, so if the runner later reconnects with active work, cleanup waits until that work settles rather than interrupting it.
 - If the runner is offline or its host has been lost, the catalog card is still removed and the marker remains.
 - If any runner later reports the deleted session ID in a complete `WatchRunner` snapshot, the gateway does not recreate the catalog row and repeatedly requests idempotent cleanup until the runner confirms removal.
@@ -554,15 +555,15 @@ Remote branch protection remains authoritative.
 
 ### Change review
 
-After each settled run and before VM destruction:
+During each Agent Run and before VM destruction:
 
 1. Execute controlled `git status` and `git diff` inside Gondolin.
 2. Disable external diff/textconv and configured filesystem monitors.
 3. Bound output size.
-4. Store a normalized report in the runner’s host-owned session directory outside the workspace.
+4. Store a normalized Git Snapshot in the runner’s host-owned session directory outside the workspace.
 5. Serve it through the gateway only while that runner is connected.
 
-When the VM is stopped but the runner is online, display the runner’s cached report. Do not run host Git.
+When the VM is stopped but the runner is online, display the runner’s cached Git Snapshot. Do not run host Git.
 
 ## 15. Browser UI
 
@@ -634,7 +635,7 @@ POST   /api/sessions/:sessionId/stop
 DELETE /api/sessions/:sessionId
 
 GET    /api/sessions/:sessionId/events?after=<cursor>
-GET    /api/sessions/:sessionId/diff
+GET    /api/sessions/:sessionId/git-snapshot
 ```
 
 `DELETE /api/sessions/:sessionId` remains available while the runner is offline. After explicit confirmation, it commits the minimal deletion marker and removes the catalog row without waiting for runner cleanup.
@@ -694,7 +695,7 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 
 It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only user ownership, session identity, and deletion time. Session routing is a user-scoped in-memory index rebuilt from complete, reconciled `WatchRunner` snapshots. Do not add Redis, another database/KV service, or application-owned durable gateway files.
 
-Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as the sole durable conversation transcript, atomic JSON for session metadata, ordinary log files, and JSON/patch Git reports. Derive bounded replay/wire events from Pi JSONL instead of adding an OpenOrb event file. Do not add a runner-local database for the MVP.
+Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as the sole durable conversation transcript, atomic JSON for session metadata, ordinary log files, and JSON Git Snapshots containing bounded patches. Derive bounded replay/wire events from Pi JSONL instead of adding an OpenOrb event file. Do not add a runner-local database for the MVP.
 
 Do not add gateway tables for:
 
@@ -730,7 +731,7 @@ Do not add gateway tables for:
 
 ### VM failure
 
-- Preserve workspace, Pi JSONL, reports, and logs.
+- Preserve workspace, Pi JSONL, snapshots, and logs.
 - Destroy the failed VM.
 - Permit an explicit cold-start retry.
 
@@ -849,7 +850,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 
 ### Milestone 4 — Changes, push, and cold lifecycle
 
-- Guest-side status/diff reports
+- Guest-side Git Snapshots
 - Changes UI
 - Agent Git commit/push to GitHub through mediated `GH_TOKEN`
 - 15-minute idle VM destruction

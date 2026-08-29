@@ -7,6 +7,9 @@ import {
   AbortSessionAccepted,
   AbortSessionPayload,
   CapacityExceeded,
+  GitFileUpdateAccepted,
+  GitFileUpdateRejected,
+  GitSnapshotReadError,
   HistoryReadError,
   PromptRejected,
   PromptSessionAccepted,
@@ -14,13 +17,19 @@ import {
   ProvisionRejected,
   ProvisionSessionPayload,
   ProvisionSessionSuccess,
+  ReadSessionGitSnapshotPayload,
   RunnerIdentity,
   RunnerIdentityError,
   RunnerStateEvent,
   RunnerWatchError,
   SessionConflict,
   SessionCorrupt,
+  SessionGitSnapshot,
   SessionNotFound,
+  UpdateSessionGitFilePayload,
+  WakeRejected,
+  WakeSessionAccepted,
+  WakeSessionPayload,
   WatchSessionEvent,
   WatchSessionPayload,
 } from "./runner-api-schemas.ts";
@@ -51,6 +60,12 @@ export class PromptSession extends Rpc.make("session.prompt", {
   error: Schema.Union([SessionNotFound, PromptRejected]),
 }) {}
 
+export class WakeSession extends Rpc.make("session.wake", {
+  payload: WakeSessionPayload,
+  success: WakeSessionAccepted,
+  error: Schema.Union([SessionNotFound, WakeRejected]),
+}) {}
+
 export class AbortSession extends Rpc.make("session.abort", {
   payload: AbortSessionPayload,
   success: AbortSessionAccepted,
@@ -64,11 +79,26 @@ export class WatchSession extends Rpc.make("session.watch", {
   stream: true,
 }) {}
 
+export class ReadSessionGitSnapshot extends Rpc.make("session.git-snapshot.read", {
+  payload: ReadSessionGitSnapshotPayload,
+  success: SessionGitSnapshot,
+  error: Schema.Union([SessionNotFound, GitSnapshotReadError]),
+}) {}
+
+export class UpdateSessionGitFile extends Rpc.make("session.git-file.update", {
+  payload: UpdateSessionGitFilePayload,
+  success: GitFileUpdateAccepted,
+  error: Schema.Union([SessionNotFound, GitFileUpdateRejected]),
+}) {}
+
 export const RunnerApi = RpcGroup.make(
   IdentifyRunner,
   WatchRunner,
   ProvisionSession,
   PromptSession,
+  WakeSession,
   AbortSession,
   WatchSession,
+  ReadSessionGitSnapshot,
+  UpdateSessionGitFile,
 );

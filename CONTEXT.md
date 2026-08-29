@@ -33,6 +33,10 @@ guarantee. _Avoid_: Durable event, conversation event
 **Project Workspace**: The host-backed project filesystem mounted into an Agent Environment. It
 persists independently of the Agent Environment and its snapshots. _Avoid_: VM workspace
 
+**Git Snapshot**: A bounded point-in-time summary of a Project Workspace's Git state, including file
+status and staged and unstaged patches, cached by the runner independently of an Environment
+Snapshot. _Avoid_: Git report, Diff Snapshot
+
 **Agent Environment**: The live isolated compute capabilities and mounted Project Workspace
 available to an Agent Harness during an Agent Run, independent of how the underlying compute was
 created or restored. _Avoid_: Workspace Runtime, VM

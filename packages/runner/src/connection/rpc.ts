@@ -1,10 +1,20 @@
 import * as DenoSocket from "@effect/platform-deno/DenoSocket";
 import { Deferred, Effect, Layer } from "effect";
 import {
+  AbortRejected,
+  AbortSessionAccepted,
+  GitFileUpdateAccepted,
+  GitFileUpdateRejected,
+  GitSnapshotReadError,
+  PromptRejected,
+  PromptSessionAccepted,
   RunnerApi,
   type RunnerCapacity,
   type RunnerId,
   RunnerIdentity,
+  SessionNotFound,
+  WakeRejected,
+  WakeSessionAccepted,
 } from "@openorb/protocol/runner-api";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
@@ -45,13 +55,122 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           runnerId: options.runnerId,
           runnerVersion: options.runnerVersion,
           protocolVersion: options.protocolVersion,
-          capabilities: ["session-rpc", "session-events"],
         }),
       ),
     "runner.watch": () => watchRunner(options),
     "session.provision": (payload) => options.supervisor.provision(payload),
-    "session.prompt": (payload) => options.supervisor.prompt(payload),
-    "session.abort": (payload) => options.supervisor.abort(payload),
+    "session.wake": (payload) =>
+      options.store.readMetadata(payload.sessionId).pipe(
+        Effect.mapError(() =>
+          new SessionNotFound({
+            sessionId: payload.sessionId,
+            message: "The session does not exist on this runner.",
+          })
+        ),
+        Effect.flatMap((metadata) =>
+          metadata.model !== payload.modelRuntime.model
+            ? new WakeRejected({
+              sessionId: payload.sessionId,
+              message: "The session model cannot change during restoration.",
+            })
+            : options.supervisor.findOrRestoreWorker(payload.sessionId, payload.modelRuntime).pipe(
+              Effect.flatMap((worker) =>
+                worker ? Effect.succeed(new WakeSessionAccepted({})) : new WakeRejected({
+                  sessionId: payload.sessionId,
+                  message: "The session environment could not be restored.",
+                })
+              ),
+            )
+        ),
+      ),
+    "session.prompt": (payload) =>
+      options.supervisor.findOrRestoreWorker(payload.sessionId, payload.modelRuntime).pipe(
+        Effect.flatMap((worker) =>
+          worker ? worker.prompt(payload) : Effect.succeed(
+            {
+              ok: false,
+              message: "The session is not ready and idle.",
+            } as const,
+          )
+        ),
+        Effect.flatMap((result) =>
+          result.ok
+            ? Effect.succeed(
+              new PromptSessionAccepted({
+                clientRequestId: payload.clientRequestId,
+                runId: result.runId,
+                mode: result.mode,
+              }),
+            )
+            : new PromptRejected({ sessionId: payload.sessionId, message: result.message })
+        ),
+      ),
+    "session.abort": (payload) => {
+      const worker = options.supervisor.findWorker(payload.sessionId);
+      if (!worker) {
+        return new AbortRejected({
+          sessionId: payload.sessionId,
+          runId: payload.runId,
+          message: "That Pi run is no longer active.",
+        });
+      }
+      return worker.abort(payload).pipe(
+        Effect.flatMap((result) =>
+          result.ok
+            ? Effect.succeed(new AbortSessionAccepted({ runId: payload.runId }))
+            : new AbortRejected({
+              sessionId: payload.sessionId,
+              runId: payload.runId,
+              message: result.message,
+            })
+        ),
+      );
+    },
+    "session.git-snapshot.read": ({ sessionId }) =>
+      options.store.readMetadata(sessionId).pipe(
+        Effect.mapError(() =>
+          new SessionNotFound({ sessionId, message: "The session does not exist on this runner." })
+        ),
+        Effect.andThen(
+          options.store.readGitSnapshot(sessionId).pipe(
+            Effect.mapError(() =>
+              new GitSnapshotReadError({
+                sessionId,
+                message: "The cached Git Snapshot is unavailable.",
+              })
+            ),
+          ),
+        ),
+      ),
+    "session.git-file.update": (payload) =>
+      options.store.readMetadata(payload.sessionId).pipe(
+        Effect.mapError(() =>
+          new SessionNotFound({
+            sessionId: payload.sessionId,
+            message: "The session does not exist on this runner.",
+          })
+        ),
+        Effect.andThen(
+          options.supervisor.findOrRestoreWorker(payload.sessionId).pipe(
+            Effect.flatMap((worker) =>
+              worker ? worker.updateGitFile(payload) : Effect.succeed(
+                {
+                  ok: false,
+                  message: "The session environment is unavailable.",
+                } as const,
+              )
+            ),
+            Effect.flatMap((result) =>
+              result.ok
+                ? Effect.succeed(new GitFileUpdateAccepted({}))
+                : new GitFileUpdateRejected({
+                  sessionId: payload.sessionId,
+                  message: result.message,
+                })
+            ),
+          ),
+        ),
+      ),
     "session.watch": ({ sessionId, afterCursor }) => options.events.watch(sessionId, afterCursor),
   }));
   const socketUrl = new URL("/api/runners/connect", options.gatewayUrl);

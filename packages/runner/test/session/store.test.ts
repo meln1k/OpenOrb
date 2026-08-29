@@ -1,7 +1,12 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
-import { ProjectId, RunnerSessionSnapshot, SessionId } from "@openorb/protocol/runner-api";
+import {
+  ProjectId,
+  RunnerSessionSnapshot,
+  SessionGitSnapshot,
+  SessionId,
+} from "@openorb/protocol/runner-api";
 import { Effect, Schema } from "effect";
 import { join } from "node:path";
 
@@ -42,7 +47,7 @@ Deno.test("creates private runner session files and atomically reloads metadata"
     assertEquals(metadata.orbSize, "small");
 
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
-    for (const directory of ["workspace", "pi", "logs", "reports"]) {
+    for (const directory of ["workspace", "pi", "logs", "snapshots"]) {
       const info = await Deno.lstat(join(sessionPath, directory));
       assert(info.isDirectory);
       assertEquals(info.isSymlink, false);
@@ -161,6 +166,71 @@ Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () 
     assertEquals(manifest.sessions[0]?.state, "created");
     assertEquals(manifest.sessions[0]?.lastEventCursor, 4);
     assertEquals(manifest.errors, []);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("atomically stores private validated Git Snapshots outside the workspace", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(workingDirectory);
+    await Effect.runPromise(store.createSession({
+      id: SESSION_ID,
+      projectId: PROJECT_ID,
+      repositoryUrl: REPOSITORY_URL,
+      ref: REF,
+      branchName: BRANCH_NAME,
+      initialPrompt: "Inspect the repository",
+      model: MODEL,
+      orbSize: "small",
+      createdAt: CREATED_AT,
+    }));
+    const snapshot = new SessionGitSnapshot({
+      generatedAt: CREATED_AT,
+      completeness: "complete",
+      stale: false,
+      truncated: false,
+      sections: {
+        staged: { files: [], patch: "", truncated: false },
+        unstaged: {
+          files: [{
+            kind: "tracked",
+            path: "src/main.ts",
+            displayPath: "src/main.ts",
+            status: "modified",
+            diffState: "available",
+          }],
+          patch: "diff --git a/src/main.ts b/src/main.ts\n",
+          truncated: false,
+        },
+      },
+    });
+
+    const state = { snapshot, notificationPending: true };
+    await Effect.runPromise(store.writeGitSnapshotState(SESSION_ID, state));
+    assertEquals(await Effect.runPromise(store.readGitSnapshot(SESSION_ID)), snapshot);
+    assertEquals(await Effect.runPromise(store.readGitSnapshotState(SESSION_ID)), state);
+    const snapshotPath = join(
+      workingDirectory,
+      "sessions",
+      SESSION_ID,
+      "snapshots",
+      "git-snapshot.json",
+    );
+    const info = await Deno.lstat(snapshotPath);
+    assert(info.isFile);
+    assertEquals(info.isSymlink, false);
+    assertPrivateMode(info.mode, 0o600);
+
+    await Deno.writeTextFile(
+      snapshotPath,
+      `${JSON.stringify({ ...state, unexpected: true })}\n`,
+    );
+    const invalid = await Effect.runPromise(Effect.flip(store.readGitSnapshot(SESSION_ID)));
+    assertEquals(invalid._tag, "RunnerSessionStoreFailure");
+    if (invalid._tag !== "RunnerSessionStoreFailure") throw invalid;
+    assertEquals(invalid.operation, "read-git-snapshot");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }

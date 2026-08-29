@@ -2,6 +2,8 @@ import {
   AbortRejected,
   CapacityExceeded,
   ClientRequestId,
+  type GitFileUpdateAccepted,
+  GitFileUpdateRejected,
   initialPromptPreview,
   PromptRejected,
   ProvisionRejected,
@@ -14,8 +16,12 @@ import {
   type RunnerSessionSnapshot,
   type RunnerStateEvent,
   SessionConflict,
+  type SessionGitSnapshot,
   SessionId,
   SessionNotFound,
+  UpdateSessionGitFilePayload,
+  WakeRejected,
+  type WakeSessionAccepted,
   type WatchSessionEvent,
 } from "@openorb/protocol/runner-api";
 import { orbSizeResources } from "@openorb/protocol";
@@ -44,6 +50,7 @@ import type { SessionCatalogRepository } from "@/app/data/session-catalog-reposi
 
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
 const OPERATION_TIMEOUT_MS = 15_000;
+const GIT_UPDATE_TIMEOUT_MS = 60_000;
 export const RUNNER_WATCH_INACTIVITY_TIMEOUT_MS = 60_000;
 export const PERMANENT_REJECTION_CLOSE_CODE = 4401;
 export const BOOTSTRAP_TIMEOUT_CLOSE_CODE = 4408;
@@ -74,9 +81,21 @@ export interface PromptSessionInput {
   sessionId: string;
   payload: Omit<Parameters<Client["session.prompt"]>[0], "sessionId" | "clientRequestId">;
 }
+export interface WakeSessionInput {
+  userId: string;
+  sessionId: string;
+  payload: Omit<Parameters<Client["session.wake"]>[0], "sessionId">;
+}
 export interface AbortSessionInput {
   userId: string;
   sessionId: string;
+}
+export interface UpdateSessionGitFileInput {
+  userId: string;
+  sessionId: string;
+  action: "stage" | "unstage";
+  path: string;
+  previousPath?: string;
 }
 
 export interface RunnerRegistryService {
@@ -89,9 +108,19 @@ export interface RunnerRegistryService {
     userId: string,
     sessionId: string,
   ) => Effect.Effect<RunnerSessionSnapshot | null>;
+  readonly getSessionGitSnapshot: (
+    userId: string,
+    sessionId: string,
+  ) => Effect.Effect<OperationResult<SessionGitSnapshot>>;
+  readonly updateSessionGitFile: (
+    input: UpdateSessionGitFileInput,
+  ) => Effect.Effect<OperationResult<GitFileUpdateAccepted>>;
   readonly provisionSession: (
     input: ProvisionSessionInput,
   ) => Effect.Effect<OperationResult<unknown>>;
+  readonly wakeSession: (
+    input: WakeSessionInput,
+  ) => Effect.Effect<OperationResult<WakeSessionAccepted>>;
   readonly promptSession: (input: PromptSessionInput) => Effect.Effect<OperationResult<unknown>>;
   readonly abortSession: (input: AbortSessionInput) => Effect.Effect<OperationResult<unknown>>;
   readonly watchSession: (
@@ -146,8 +175,10 @@ const OperationRejection = Schema.Union([
   SessionConflict,
   ProvisionRejected,
   SessionNotFound,
+  WakeRejected,
   PromptRejected,
   AbortRejected,
+  GitFileUpdateRejected,
 ]);
 
 interface RegistryRuntime {
@@ -175,7 +206,11 @@ export function makeRunnerRegistry(
       getRunnerLiveState: (userId, runnerId) => getRunnerLiveState(runtime, userId, runnerId),
       getSessionRunner: (userId, sessionId) => getSessionRunner(runtime, userId, sessionId),
       getSessionSnapshot: (userId, sessionId) => getSessionSnapshot(runtime, userId, sessionId),
+      getSessionGitSnapshot: (userId, sessionId) =>
+        getSessionGitSnapshot(runtime, userId, sessionId),
+      updateSessionGitFile: (input) => updateSessionGitFile(runtime, input),
       provisionSession: (input) => provisionSession(runtime, input),
+      wakeSession: (input) => wakeSession(runtime, input),
       promptSession: (input) => promptSession(runtime, input),
       abortSession: (input) => abortSession(runtime, input),
       watchSession: (userId, sessionId, afterCursor) =>
@@ -429,6 +464,53 @@ function getSessionSnapshot(registry: RegistryRuntime, userId: string, sessionId
   );
 }
 
+const getSessionGitSnapshot = Effect.fn("RunnerRegistry.getSessionGitSnapshot")(
+  function* (registry: RegistryRuntime, userId: string, sessionId: string) {
+    const routed = yield* routeSession(registry, userId, sessionId, () => undefined);
+    if (routed.status === "unavailable") return unavailable(routed.message);
+    if (routed.status === "rejected") {
+      return { status: "rejected" as const, message: routed.message };
+    }
+    const decoded = Schema.decodeUnknownOption(SessionId)(sessionId);
+    if (Option.isNone(decoded)) return unavailable("The session identifier is invalid.");
+    return yield* routed.connection.runtime.client["session.git-snapshot.read"]({
+      sessionId: decoded.value,
+    }).pipe(
+      Effect.timeout(OPERATION_TIMEOUT_MS),
+      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
+      Effect.catchCause(() =>
+        Effect.succeed(unavailable("The cached Git Snapshot is unavailable."))
+      ),
+    );
+  },
+);
+
+const updateSessionGitFile = Effect.fn("RunnerRegistry.updateSessionGitFile")(
+  function* (registry: RegistryRuntime, input: UpdateSessionGitFileInput) {
+    const routed = yield* routeSession(
+      registry,
+      input.userId,
+      input.sessionId,
+      () => undefined,
+    );
+    if (routed.status === "unavailable") return unavailable(routed.message);
+    if (routed.status === "rejected") {
+      return { status: "rejected" as const, message: routed.message };
+    }
+    const request = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
+      sessionId: input.sessionId,
+      action: input.action,
+      path: input.path,
+      ...(input.previousPath === undefined ? {} : { previousPath: input.previousPath }),
+    });
+    return yield* routed.connection.runtime.client["session.git-file.update"](request).pipe(
+      Effect.timeout(GIT_UPDATE_TIMEOUT_MS),
+      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
+      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
+    );
+  },
+);
+
 const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
   function* (registry: RegistryRuntime, input: ProvisionSessionInput) {
     const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
@@ -529,6 +611,36 @@ const promptSession = Effect.fn("RunnerRegistry.promptSession")(
       ...input.payload,
       sessionId,
       clientRequestId,
+    }).pipe(
+      Effect.timeout(OPERATION_TIMEOUT_MS),
+      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
+      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
+    );
+  },
+);
+const wakeSession = Effect.fn("RunnerRegistry.wakeSession")(
+  function* (registry: RegistryRuntime, input: WakeSessionInput) {
+    const routed = yield* routeSession(
+      registry,
+      input.userId,
+      input.sessionId,
+      (snapshot) => {
+        if (snapshot.state !== "ready" && snapshot.state !== "running") {
+          return "The session cannot be restored right now.";
+        }
+        return snapshot.model === input.payload.modelRuntime.model
+          ? undefined
+          : "The session model cannot change during restoration.";
+      },
+    );
+    if (routed.status === "unavailable") return unavailable(routed.message);
+    if (routed.status === "rejected") {
+      return { status: "rejected" as const, message: routed.message };
+    }
+    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
+    return yield* routed.connection.runtime.client["session.wake"]({
+      ...input.payload,
+      sessionId,
     }).pipe(
       Effect.timeout(OPERATION_TIMEOUT_MS),
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),

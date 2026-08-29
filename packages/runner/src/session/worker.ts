@@ -3,11 +3,13 @@ import {
   Data,
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Layer,
   MutableRef,
   Queue,
   Scope,
+  Semaphore,
   Stream,
 } from "effect";
 import { orbSizeResources } from "@openorb/protocol";
@@ -18,6 +20,7 @@ import type {
   SessionId,
   SessionModelRuntime,
   SessionProvisioningStage,
+  UpdateSessionGitFilePayload,
 } from "@openorb/protocol/runner-api";
 import { MAX_RPC_SESSION_EVENT_TEXT_BYTES } from "@openorb/protocol/runner-api";
 import { join } from "node:path";
@@ -30,6 +33,12 @@ import {
   type AgentHarnessSession,
 } from "../harness/agent-harness.ts";
 import { SessionEvents } from "./events.ts";
+import {
+  type GitSnapshotCoordinator,
+  makeGitSnapshotCoordinator,
+} from "./git-snapshot-coordinator.ts";
+import { makeGitSnapshotSynchronizer } from "./git-snapshot-synchronizer.ts";
+import { generateSessionGitSnapshot, updateSessionGitFile } from "./git-snapshot.ts";
 import { type RunnerSessionMetadata, RunnerSessionStore } from "./store.ts";
 
 const MAX_CAPTURED_COMMAND_BYTES = 4 * 1024;
@@ -44,13 +53,24 @@ export type AbortAcceptance =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string };
 
-export interface SessionWorkerInput {
+export type GitFileUpdateAcceptance =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string };
+
+const rejectGitFileUpdate = (message: string): GitFileUpdateAcceptance => ({
+  ok: false,
+  message,
+});
+
+interface SessionWorkerInputBase {
   metadata: RunnerSessionMetadata;
   githubToken?: string | undefined;
-  modelRuntime: SessionModelRuntime;
   correlationId: string;
-  readonly restore?: boolean;
 }
+
+export type SessionWorkerInput =
+  | (SessionWorkerInputBase & { readonly restore: true; modelRuntime?: SessionModelRuntime })
+  | (SessionWorkerInputBase & { readonly restore?: false; modelRuntime: SessionModelRuntime });
 
 export interface SessionWorker {
   readonly sessionId: SessionId;
@@ -58,6 +78,9 @@ export interface SessionWorker {
   readonly active: boolean;
   readonly prompt: (payload: PromptSessionPayload) => Effect.Effect<PromptAcceptance>;
   readonly abort: (payload: AbortSessionPayload) => Effect.Effect<AbortAcceptance>;
+  readonly updateGitFile: (
+    payload: UpdateSessionGitFilePayload,
+  ) => Effect.Effect<GitFileUpdateAcceptance>;
   readonly shutdown: Effect.Effect<void>;
 }
 
@@ -75,7 +98,7 @@ type WorkerState =
   | {
     readonly _tag: "Ready";
     readonly environment: AgentEnvironment;
-    readonly agentSession: AgentHarnessSession;
+    readonly agentSession?: AgentHarnessSession;
   }
   | {
     readonly _tag: "Running";
@@ -161,22 +184,48 @@ function makeSessionWorker(
     const sessionId = input.metadata.id;
     const commands = yield* Queue.unbounded<WorkerCommand>();
     const state = MutableRef.make<WorkerState>({ _tag: "Provisioning" });
+    const environmentReady = yield* Deferred.make<AgentEnvironment, SessionWorkerError>();
+    const gitOperations = yield* Semaphore.make(1);
+    const gitSnapshots = makeGitSnapshotSynchronizer({
+      sessionId,
+      store,
+      generate: generateSessionGitSnapshot,
+      publishUpdated: (correlationId) =>
+        events.publishLive(sessionId, correlationId, { type: "git.snapshot.updated" }),
+    });
+    const snapshotCoordinatorReady = yield* Deferred.make<GitSnapshotCoordinator<unknown>>();
 
     const transition = (next: WorkerState): Effect.Effect<void> =>
       Effect.sync(() => MutableRef.set(state, next));
+    const refreshGitSnapshot = Effect.suspend(() => {
+      const current = MutableRef.get(state);
+      if (
+        current._tag !== "Ready" && current._tag !== "Running" && current._tag !== "Aborting"
+      ) return Effect.void;
+      const correlationId = current._tag === "Ready" ? crypto.randomUUID() : current.runId;
+      return gitOperations.withPermit(
+        store.readMetadata(sessionId).pipe(
+          Effect.flatMap((metadata) =>
+            gitSnapshots.refresh(current.environment, metadata, correlationId)
+          ),
+          Effect.asVoid,
+        ),
+      );
+    });
 
     function runActor(options: SessionWorkerInput): Effect.Effect<never, never, Scope.Scope> {
-      const provisionFiber = (options.restore ? restore(options) : provision(
-        options.metadata,
-        options.githubToken,
-        options.modelRuntime,
-        options.correlationId,
-      )).pipe(
-        Effect.catch(() => Effect.void),
-        Effect.forkChild,
-      );
       return Effect.gen(function* () {
-        const fiber = yield* provisionFiber;
+        const snapshotCoordinator = yield* makeGitSnapshotCoordinator(refreshGitSnapshot);
+        yield* Deferred.succeed(snapshotCoordinatorReady, snapshotCoordinator);
+        const fiber = yield* (options.restore ? restore(options) : provision(
+          options.metadata,
+          options.githubToken,
+          options.modelRuntime,
+          options.correlationId,
+        )).pipe(
+          Effect.catch(() => Effect.void),
+          Effect.forkChild,
+        );
         if (options.restore) yield* Fiber.join(fiber);
         return yield* Queue.take(commands).pipe(
           Effect.flatMap(handle),
@@ -201,6 +250,7 @@ function makeSessionWorker(
           cpuCount: resources.cpuCount,
           memoryMiB: resources.memoryMiB,
         }).pipe(Effect.mapError(workerError));
+        yield* Deferred.succeed(environmentReady, environment);
         if (metadata.checkoutState === "available") {
           yield* environment.runShell(
             "if [ -x .agents/setup ]; then exec ./.agents/setup; fi",
@@ -211,20 +261,26 @@ function makeSessionWorker(
               Effect.asVoid,
             );
         }
-        const agentSession = yield* openAgentSession(environment, options.modelRuntime);
-        yield* transition({ _tag: "Ready", environment, agentSession });
+        const agentSession = options.modelRuntime === undefined
+          ? undefined
+          : yield* openAgentSession(environment, options.modelRuntime);
+        yield* transition({
+          _tag: "Ready",
+          environment,
+          ...(agentSession === undefined ? {} : { agentSession }),
+        });
       }).pipe(
         Effect.catch((error) =>
           failProvision(options.metadata, options.correlationId, {
             remainingBytes: MAX_PROVISIONING_LOG_BYTES,
             truncated: false,
-            secrets: [options.modelRuntime.credential.value],
+            secrets: options.modelRuntime ? [options.modelRuntime.credential.value] : [],
           }, error)
         ),
       );
     }
 
-    function handle(command: WorkerCommand): Effect.Effect<void> {
+    function handle(command: WorkerCommand): Effect.Effect<void, never, Scope.Scope> {
       switch (command._tag) {
         case "Prompt":
           return handlePrompt(command.payload, command.reply);
@@ -236,7 +292,7 @@ function makeSessionWorker(
     function handlePrompt(
       payload: PromptSessionPayload,
       reply: Deferred.Deferred<PromptAcceptance>,
-    ): Effect.Effect<void> {
+    ): Effect.Effect<void, never, Scope.Scope> {
       const current = MutableRef.get(state);
       if (current._tag === "Running") {
         return current.run.followUp(payload.prompt).pipe(
@@ -271,7 +327,12 @@ function makeSessionWorker(
       // SAFETY: Run identifiers are generated UUIDs.
       const runId = crypto.randomUUID() as RunId;
       return continuePrompt(payload, runId, current.environment, current.agentSession, reply).pipe(
-        Effect.catch(() => Effect.void),
+        Effect.catch(() =>
+          Deferred.succeed(reply, {
+            ok: false,
+            message: "The agent prompt could not be started. Try again.",
+          }).pipe(Effect.asVoid)
+        ),
         Effect.forkChild,
         Effect.andThen(Deferred.await(reply)),
         Effect.asVoid,
@@ -304,6 +365,47 @@ function makeSessionWorker(
         Effect.asVoid,
       );
     }
+
+    const updateGitFile = Effect.fn("SessionWorker.updateGitFile")(function* (
+      payload: UpdateSessionGitFilePayload,
+    ) {
+      const environment = yield* Deferred.await(environmentReady).pipe(
+        Effect.catch(() => Effect.void),
+      );
+      if (environment === undefined) {
+        return rejectGitFileUpdate(
+          "Files cannot be staged or unstaged until the session environment is available.",
+        );
+      }
+
+      return yield* gitOperations.withPermit(
+        store.readMetadata(sessionId).pipe(
+          Effect.flatMap((metadata) =>
+            updateSessionGitFile(environment, metadata, payload).pipe(
+              Effect.map((result) => ({ metadata, result })),
+            )
+          ),
+          Effect.flatMap(
+            ({ metadata, result }): Effect.Effect<GitFileUpdateAcceptance, unknown> => {
+              const correlationId = crypto.randomUUID();
+              return gitSnapshots.refresh(environment, metadata, correlationId).pipe(
+                Effect.as<GitFileUpdateAcceptance>(
+                  result.ok ? { ok: true } : rejectGitFileUpdate(result.message),
+                ),
+                Effect.catch(() =>
+                  Effect.succeed(rejectGitFileUpdate(
+                    "The Git index may have changed, but its refreshed Git Snapshot could not be saved.",
+                  ))
+                ),
+              );
+            },
+          ),
+          Effect.catch(() =>
+            Effect.succeed(rejectGitFileUpdate("The Git index could not be updated."))
+          ),
+        ),
+      );
+    });
 
     function provision(
       initialMetadata: RunnerSessionMetadata,
@@ -342,6 +444,7 @@ function makeSessionWorker(
           memoryMiB: resources.memoryMiB,
         }).pipe(Effect.mapError(workerError));
         yield* transition({ _tag: "Provisioning", environment });
+        yield* Deferred.succeed(environmentReady, environment);
 
         if (metadata.checkoutState === "pending") {
           yield* Effect.tryPromise({
@@ -459,12 +562,13 @@ function makeSessionWorker(
       error: SessionWorkerError,
     ): Effect.Effect<never, SessionWorkerError> {
       const current = MutableRef.get(state);
-      return transition({
-        _tag: "Failed",
-        ...(current._tag === "Provisioning" && current.environment
-          ? { environment: current.environment }
-          : {}),
-      }).pipe(
+      return Deferred.fail(environmentReady, error).pipe(
+        Effect.andThen(transition({
+          _tag: "Failed",
+          ...(current._tag === "Provisioning" && current.environment
+            ? { environment: current.environment }
+            : {}),
+        })),
         Effect.andThen(store.readMetadata(sessionId)),
         Effect.orElseSucceed(() => metadata),
         Effect.flatMap((current) =>
@@ -492,9 +596,9 @@ function makeSessionWorker(
       payload: PromptSessionPayload,
       runId: RunId,
       environment: AgentEnvironment,
-      agentSession: AgentHarnessSession,
+      agentSession: AgentHarnessSession | undefined,
       reply: Deferred.Deferred<PromptAcceptance>,
-    ): Effect.Effect<void, SessionWorkerError> {
+    ): Effect.Effect<void, SessionWorkerError, Scope.Scope> {
       return Effect.gen(function* () {
         const metadata = yield* store.readMetadata(sessionId).pipe(
           Effect.mapError(workerError),
@@ -506,11 +610,16 @@ function makeSessionWorker(
           });
           return;
         }
+        const activeAgentSession = agentSession ??
+          (yield* openAgentSession(environment, payload.modelRuntime));
+        if (agentSession === undefined) {
+          yield* transition({ _tag: "Ready", environment, agentSession: activeAgentSession });
+        }
         const accepted = yield* Deferred.make<boolean>();
         const promptFiber = yield* runAgentPrompt(
           metadata,
           environment,
-          agentSession,
+          activeAgentSession,
           runId,
           payload.prompt,
           accepted,
@@ -521,7 +630,12 @@ function makeSessionWorker(
         );
         if (!acceptedByHarness) {
           yield* Fiber.await(promptFiber);
-          const restored = yield* restoreReady(metadata, environment, agentSession, runId).pipe(
+          const restored = yield* restoreReady(
+            metadata,
+            environment,
+            activeAgentSession,
+            runId,
+          ).pipe(
             Effect.as(true),
             Effect.orElseSucceed(() => false),
           );
@@ -537,10 +651,10 @@ function makeSessionWorker(
         yield* Fiber.join(promptFiber).pipe(
           Effect.matchEffect({
             onFailure: (promptError) =>
-              restoreReady(metadata, environment, agentSession, runId).pipe(
+              restoreReady(metadata, environment, activeAgentSession, runId).pipe(
                 Effect.andThen(Effect.fail(promptError)),
               ),
-            onSuccess: () => restoreReady(metadata, environment, agentSession, runId),
+            onSuccess: () => restoreReady(metadata, environment, activeAgentSession, runId),
           }),
         );
       });
@@ -554,31 +668,53 @@ function makeSessionWorker(
       prompt: string,
       acceptance?: Deferred.Deferred<boolean>,
     ): Effect.Effect<void, SessionWorkerError> {
-      return Effect.gen(function* () {
-        const run = yield* agentSession.start(prompt).pipe(Effect.mapError(workerError));
-        yield* store.updateProvisioning(sessionId, {
-          state: "running",
-          checkoutState: metadata.checkoutState,
-          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const run = yield* agentSession.start(prompt).pipe(Effect.mapError(workerError));
+          yield* store.updateProvisioning(sessionId, {
+            state: "running",
+            checkoutState: metadata.checkoutState,
+            ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+          }).pipe(
+            Effect.mapError(workerError),
+            Effect.flatMap((running) => emitState(running, "running", runId)),
+            Effect.catch((error) =>
+              run.abort.pipe(
+                Effect.ignore,
+                Effect.andThen(Effect.fail(error)),
+              )
+            ),
+          );
+          yield* transition({ _tag: "Running", environment, agentSession, runId, run });
+          if (acceptance) yield* Deferred.succeed(acceptance, true);
+          const snapshotCoordinator = yield* Deferred.await(snapshotCoordinatorReady);
+          yield* run.events.pipe(
+            Stream.runForEach((event) => {
+              const publication = publish(events.publishLive(sessionId, runId, event));
+              const snapshotBoundary = event.type === "turn.completed" ||
+                (event.type === "message.completed" && event.role === "toolResult");
+              return snapshotBoundary
+                ? publication.pipe(Effect.andThen(snapshotCoordinator.trigger))
+                : publication;
+            }),
+            Effect.mapError(workerError),
+            Effect.ensuring(
+              snapshotCoordinator.flush.pipe(
+                Effect.tap((outcome) =>
+                  Exit.isFailure(outcome)
+                    ? Effect.logWarning(
+                      "The run-end Git Snapshot refresh failed; the session will retain its last saved snapshot.",
+                    )
+                    : Effect.void
+                ),
+                Effect.asVoid,
+              ),
+            ),
+          );
         }).pipe(
-          Effect.mapError(workerError),
-          Effect.flatMap((running) => emitState(running, "running", runId)),
-          Effect.catch((error) =>
-            run.abort.pipe(
-              Effect.ignore,
-              Effect.andThen(Effect.fail(error)),
-            )
+          Effect.ensuring(
+            acceptance ? Deferred.succeed(acceptance, false) : Effect.void,
           ),
-        );
-        yield* transition({ _tag: "Running", environment, agentSession, runId, run });
-        if (acceptance) yield* Deferred.succeed(acceptance, true);
-        yield* run.events.pipe(
-          Stream.runForEach((event) => publish(events.publishLive(sessionId, runId, event))),
-          Effect.mapError(workerError),
-        );
-      }).pipe(
-        Effect.ensuring(
-          acceptance ? Deferred.succeed(acceptance, false) : Effect.void,
         ),
       );
     }
@@ -740,6 +876,7 @@ function makeSessionWorker(
       },
       prompt,
       abort,
+      updateGitFile,
       shutdown: Fiber.interrupt(actor).pipe(Effect.asVoid),
     } satisfies SessionWorker;
   });

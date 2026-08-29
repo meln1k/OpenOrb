@@ -48,6 +48,7 @@ export interface AppShellProps {
   csrfToken: string;
   eyebrow?: string;
   heading?: string;
+  rightSidebar?: RemixNode;
   sessions: SessionCatalogEntry[];
   title: string;
   topBarTitle?: string;
@@ -76,7 +77,10 @@ export function AppShell(handle: Handle<AppShellProps>) {
             sessions={handle.props.sessions}
           />
         </SidebarMobile>
-        <SidebarInset aria-label="Authenticated gateway">
+        <SidebarInset
+          aria-label="Authenticated gateway"
+          data-has-right-sidebar={handle.props.rightSidebar ? "true" : undefined}
+        >
           <header mix={topBarStyle}>
             <div mix={topBarContentStyle}>
               <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
@@ -123,6 +127,9 @@ export function AppShell(handle: Handle<AppShellProps>) {
             {handle.props.children}
           </div>
         </SidebarInset>
+        {handle.props.rightSidebar
+          ? <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
+          : null}
         <SessionComposer
           {...handle.props.composer}
           csrfToken={handle.props.csrfToken}
@@ -346,6 +353,9 @@ const topBarContentStyle = css({
   minWidth: 0,
   padding: "0 16px",
   [media.md]: { paddingLeft: "56px" },
+  [media.xl]: {
+    "[data-has-right-sidebar='true'] &": { paddingRight: "56px" },
+  },
 });
 const topBarSeparatorStyle = css({ height: "16px", marginRight: "8px" });
 const topBarTitleStyle = css({

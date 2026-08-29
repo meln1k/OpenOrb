@@ -13,7 +13,6 @@ export interface EnrollRunnerOptions {
   enrollmentPsk: string;
   name: string;
   architecture: RunnerArchitecture;
-  capabilities: string[];
   fetch?: typeof fetch;
 }
 
@@ -32,7 +31,6 @@ export async function enrollRunner(
             enrollmentPsk: options.enrollmentPsk,
             name: options.name,
             architecture: options.architecture,
-            capabilities: options.capabilities,
           }),
           signal: AbortSignal.timeout(ENROLLMENT_TIMEOUT_MS),
         },

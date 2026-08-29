@@ -48,7 +48,8 @@ generation so a stale timer cannot close resources reused by a newer prompt.
 
 ## Activity rules
 
-- No idle timer runs during provisioning, setup, reporting, an Agent Run, or Abort processing.
+- No idle timer runs during provisioning, setup, Git Snapshot generation, an Agent Run, or Abort
+  processing.
 - The timer starts only after the Agent Run's finite stream has settled. This avoids shutting down a
   long-running model or tool operation merely because the last user input is old.
 - A new prompt before expiration cancels the timer and reuses the warm harness conversation and

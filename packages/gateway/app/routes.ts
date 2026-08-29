@@ -27,7 +27,10 @@ export const routes = route({
       connect: get("connect"),
     }),
     sessions: route("sessions", {
+      wake: post(":sessionId/wake"),
+      changes: post(":sessionId/changes"),
       events: get(":sessionId/events"),
+      gitSnapshot: get(":sessionId/git-snapshot"),
     }),
   }),
 });

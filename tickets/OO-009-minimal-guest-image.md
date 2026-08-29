@@ -10,7 +10,7 @@ OpenOrb can boot a pinned, reproducible Gondolin image with a practical developm
 ## Scope
 
 - Add Gondolin image build configuration compatible with the current Linux orb harness and the supported Linux x86-64 and ARM64 runners.
-- Include Bash/coreutils, Git/GitHub CLI, compiler and build tooling, Python and Node/Bun package tooling, editors, archive tools, network diagnostics, and media utilities used in a fresh Amp development orb.
+- Include Bash/coreutils, Git/GitHub CLI, compiler and build tooling, Python and Node/Bun package tooling, editors, archive tools, network diagnostics, media utilities used in a fresh Amp development orb, and utilities used by setup and controlled Git Snapshot generation.
 - Include the native agent-browser CLI and browser runtime libraries, but provision Chrome or Chromium on first browser use instead of embedding it in the immutable image.
 - Pin the Gondolin package and one exact image build ID with architecture-specific asset URLs, sizes, and SHA-256 hashes in runner release metadata. Never use `latest` in production.
 - Distribute QEMU-consumed assets separately from the standalone runner executable. Download atomically into `images/<build-id>/`, verify every asset before use, and pass only verified real filesystem paths to Gondolin.

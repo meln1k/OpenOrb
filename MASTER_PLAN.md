@@ -143,7 +143,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Gateway UI | Remix 3, end-to-end TypeScript |
 | Gateway persistence | PostgreSQL only, for user-owned gateway configuration, a five-column live-session catalog (`user_id` plus four catalog fields), and three-column deletion markers (`user_id`, session ID, deletion time); no Redis, secondary database/KV store, or durable local gateway files |
 | Tenant ownership | Personal user tenancy only; every repository method receives authenticated `userId`, tenant uniqueness is composite with `user_id`, and foreign keys prevent cross-user references |
-| Runner persistence | Ordinary files/directories only for metadata, JSONL, logs, workspaces, reports, checkpoints, and journals; no runner database |
+| Runner persistence | Ordinary files/directories only for metadata, JSONL, logs, workspaces, Git Snapshots, checkpoints, and journals; no runner database |
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | One outbound Effect RPC WebSocket for MVP; a separately scoped binary data plane is future work |
 | Pi workspace resources | No project resource discovery in MVP; use an explicit empty/allowlist-only `ResourceLoader` and in-memory settings |
@@ -337,10 +337,10 @@ The runner package must include a `doctor` command that checks:
 
 ### 9.2 Enrollment
 
-1. Runner calls the enrollment endpoint with the PSK, metadata, and capabilities.
+1. Runner calls the enrollment endpoint with the PSK and metadata.
 2. Gateway derives the immutable owner from the authenticated user's enrollment token, stores `user_id` with the runner identity, and returns a stable runner ID plus bearer token. Runner payloads cannot choose or change tenant ownership.
 3. The runner stores the bearer token in its data directory with mode `0600`.
-4. On each outbound RPC connection, the gateway invokes `IdentifyRunner`; the runner returns the bearer token, claimed runner ID, runner version, application protocol version, and capabilities.
+4. On each outbound RPC connection, the gateway invokes `IdentifyRunner`; the runner returns the bearer token, claimed runner ID, runner version, and application protocol version.
 5. The gateway admits the connection only after the token, claimed identity, revocation state, and protocol version pass authentication.
 6. The shared enrollment PSK is not used as the runner’s ongoing identity.
 7. The gateway can revoke one runner without regenerating the enrollment PSK.
@@ -396,8 +396,8 @@ Recommended layout:
       runtime/
         services/
         logs/
-      git/
-        state.json
+      snapshots/
+        git-snapshot.json
 ```
 
 The runner is authoritative for all complete live-session data; the gateway duplicates only the immutable user owner and four catalog fields described below and retains minimal user-owned deleted-session ID/time markers:
@@ -407,7 +407,7 @@ The runner is authoritative for all complete live-session data; the gateway dupl
 - Runner-local pending message handoff records
 - Working tree and Git objects, treated as untrusted bytes by the host
 - Full file contents
-- Host-owned cached Git reports produced by guest-side Git
+- Host-owned cached Git Snapshots produced by guest-side Git
 - Preview definitions, access policy, and capability hashes
 - VM checkpoint
 - Guest service logs
@@ -498,7 +498,6 @@ interface Runner {
   }
   labels: Record<string, string>
   resources: RunnerResources
-  capabilities: RunnerCapabilities
   lastObservedAt?: string
 }
 ```
@@ -680,7 +679,7 @@ Provisioning logs stream to the browser as session events.
 7. Runner calls `session.prompt()` if Pi is idle or `session.followUp()` if Pi is currently streaming. For idle prompts, use Pi’s documented preflight acceptance callback rather than waiting for the complete run.
 8. When Pi reports preflight acceptance or `followUp()` returns successfully, `PromptSession` returns the explicit `runId` and whether the prompt started a run or became a follow-up.
 9. If it was a follow-up, subsequent queue state is Pi-owned and process-local until Pi emits the user message.
-10. Stream normalized Pi events. When Pi settles, refresh Git status/diff inside Gondolin and start the idle timer if no lease remains.
+10. Stream normalized Pi events, refresh the Git Snapshot on the active-run cadence, perform the final awaited flush when Pi settles, and start the idle timer if no lease remains.
 
 ### 13.3 Message while running
 
@@ -738,7 +737,7 @@ At timeout:
 2. Mark live-only previews expired.
 3. Stop managed services cleanly with a short deadline.
 4. Close terminal sessions.
-5. Run a final controlled status/diff operation inside Gondolin and atomically store the report outside the workspace.
+5. Run a final controlled status/diff operation inside Gondolin and atomically store the Git Snapshot outside the workspace.
 6. Flush guest filesystems.
 7. Create a disk checkpoint; this consumes/stops the current Gondolin VM.
 8. Persist checkpoint metadata and set VM state to `sleeping`.
@@ -759,7 +758,7 @@ Delete:
 - Require explicit confirmation.
 - If the owning runner is online and any agent, provisioning, setup/resume, maintenance, terminal, or preview work is active, reject deletion until that work settles; do not interrupt it implicitly.
 - In one PostgreSQL transaction, write a durable deleted-session marker containing only user ID, session ID, and deletion time, remove the five-column catalog row, and remove any persisted gateway configuration that is scoped only to that session. Remove the ephemeral user-scoped route immediately afterward.
-- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, checkpoint, logs, and reports.
+- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, checkpoint, logs, and snapshots.
 - If the runner is offline or permanently lost, deletion still succeeds at the control plane. The marker prevents a stale runner disk or backup from recreating the catalog entry.
 - If a runner later reports a tombstoned session, do not route or reinsert it. Repeatedly request runner cleanup; if the runner reports active work, wait for it to settle rather than interrupting it.
 - Retain the deleted-session marker after runner cleanup so a later stale snapshot cannot resurrect the ID.
@@ -924,7 +923,7 @@ Gondolin currently implements an Alpine boot-image pipeline, but it accepts an O
 
 The image does not embed Chromium. An OpenOrb wrapper serializes on-demand installation before the first browser command: it fetches current Stable Chrome for Testing with the guest's Gondolin-compatible `curl` on x86-64, while ARM64 installs snapshot-pinned Debian Chromium because Google does not publish a Linux ARM64 Chrome for Testing build. The browser lands in the writable copy-on-write rootfs. The image does not include Amp/E2B internals, Deno, Go, Rust, Java, host container/VM/database tooling, a package cache, service supervisor, SSH daemon, terminal service, or preview service.
 
-Image builds must be versioned and reproducible. Runner identity capabilities report supported image build IDs. Checkpoint resume requires the matching image.
+Image builds must be versioned and reproducible. Checkpoint resume requires the matching image.
 
 ### 15.5 Shared caches
 
@@ -981,7 +980,7 @@ The complete session checkout, including `.git`, becomes untrusted as soon as it
 
 Consequently, **the runner must never run native host Git against a session workspace**. This applies to clone, status, log, diff, fetch, commit, push, cleanup, and any future Git operation. It also applies when the VM is sleeping. Otherwise a later host-side Git command could execute guest-controlled code with runner privileges.
 
-All Git operations against session data execute inside Gondolin. The host may handle the workspace only as untrusted file bytes and may consume bounded serialized reports returned by the guest.
+All Git operations against session data execute inside Gondolin. The host may handle the workspace only as untrusted file bytes and may consume bounded serialized Git Snapshots returned by the guest.
 
 ### 17.2 Clone and branch creation
 
@@ -989,9 +988,9 @@ All Git operations against session data execute inside Gondolin. The host may ha
 2. Git inside Gondolin clones the configured repository into `/workspace` through mediated credentials.
 3. Automatic recursive submodule initialization is disabled.
 4. The clone command permits only the configured network protocol and canonical repository URL.
-5. Guest Git reports the exact base commit to the runner.
+5. Guest Git returns the exact base commit to the runner.
 6. Git inside Gondolin creates the session working branch.
-7. Runner stores base commit, branch, and remote metadata in a host-owned file outside the workspace; these values are reports, not trusted instructions.
+7. Runner stores base commit, branch, and remote metadata in a host-owned file outside the workspace; these values are untrusted data, not trusted instructions.
 
 Default branch pattern:
 
@@ -1042,13 +1041,17 @@ The real HTTPS credential is not placed in guest environment variables, files, p
 - Deny interactive SSH, SFTP, agent forwarding, port forwarding, and unrelated repositories.
 - Agent-modified `core.sshCommand` may execute only inside the guest and cannot obtain the host-held key.
 
-### 17.6 Diff/status snapshots and sleeping sessions
+### 17.6 Git Snapshots and sleeping sessions
 
-After agent settlement, terminal closure, and immediately before sleep, the runner executes controlled status/diff commands inside Gondolin. It parses and stores a bounded normalized report and optional patch in a host-owned runtime path that is not mounted guest-writable. The gateway proxies this report without persisting it.
+During an Agent Run, the runner executes controlled status/diff commands inside Gondolin at tool and
+turn boundaries, every 15 seconds, and in a final awaited run-end flush. It debounces boundary
+bursts, prevents overlapping inspections, and stores a bounded normalized Git Snapshot in a
+host-owned runtime path that is not mounted guest-writable. The gateway proxies this snapshot
+without persisting it.
 
 While the VM sleeps:
 
-- Show the last complete cached report.
+- Show the last cached Git Snapshot.
 - Mark it stale if terminal or VM failure prevented a final refresh.
 - Wake the VM for an authoritative refresh when requested.
 - Never run host Git against the sleeping workspace.
@@ -1314,7 +1317,7 @@ interface SendMessageInput {
 ### 20.7 Workspace and Git
 
 ```http
-GET  /api/sessions/:sessionId/diff
+GET  /api/sessions/:sessionId/git-snapshot
 GET  /api/sessions/:sessionId/files?path=<relative-path>
 GET  /api/sessions/:sessionId/file?path=<relative-path>
 GET  /api/sessions/:sessionId/git/status
@@ -1383,8 +1386,8 @@ The runner physically opens the WebSocket and serves `RunnerApi`; the gateway ac
 acts as the RPC client. `IdentifyRunner` is the only call permitted before admission:
 
 1. The gateway starts a bounded authentication deadline and invokes `IdentifyRunner`.
-2. The runner returns its bearer token, claimed runner ID, runner version, application protocol
-   version, and capabilities.
+2. The runner returns its bearer token, claimed runner ID, runner version, and application protocol
+   version.
 3. The gateway authenticates the token, requires the authenticated and claimed IDs to match, checks
    revocation and protocol compatibility, and then starts `WatchRunner`.
 4. Only a complete, reconciled initial runner snapshot is admitted to `RunnerRegistry`.
@@ -1397,7 +1400,7 @@ Credentials never appear in the URL or WebSocket subprotocol and must be redacte
 
 | RPC name | Shape | Purpose |
 | --- | --- | --- |
-| `runner.identify` | Unary | Return identity, protocol version, and capabilities for admission |
+| `runner.identify` | Unary | Return identity and protocol version for admission |
 | `runner.watch` | Stream | Deliver initial session snapshot, capacity/liveness observations, and later session changes |
 | `session.provision` | Unary | Accept new or explicit-retry provisioning into runner-owned durable state |
 | `session.prompt` | Unary | Accept one prompt or Pi-native follow-up |
@@ -1529,7 +1532,7 @@ interface GitService {
   diff(vm: RunningVm): Promise<WorkspaceDiff>
   commit(vm: RunningVm, input: CommitInput): Promise<CommitResult>
   push(vm: RunningVm, input: PushInput): Promise<PushResult>
-  getCachedReport(): Promise<CachedGitReport | undefined>
+  getCachedSnapshot(): Promise<CachedGitSnapshot | undefined>
 }
 ```
 
@@ -1575,7 +1578,7 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 - `deleted_sessions`, restricted to `user_id`, `session_id`, and `deleted_at`
 - Control-plane audit events that contain no session content beyond the catalog identity
 
-It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews/capabilities, Git session state, checkpoints, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
+It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, checkpoints, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
 
 Each runner owns a file-backed local session metadata/event store in addition to the filesystem layout in section 10. It persists:
 
@@ -1583,7 +1586,7 @@ Each runner owns a file-backed local session metadata/event store in addition to
 - Conversation/tool/usage records and event cursors
 - Pending handoff state
 - Preview definitions/capability hashes
-- Git reports and session lifecycle state
+- Git Snapshots and session lifecycle state
 
 The gateway keeps a user-scoped in-memory session routing index populated by complete, reconciled `WatchRunner` snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot entry also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the user-owned control-plane marker without waiting for the runner.
 
@@ -1672,7 +1675,7 @@ Untrusted or constrained:
 - Git credentials remain gateway/runner-side; guest sees placeholders or an SSH proxy.
 - The session checkout and `.git` metadata are untrusted; native host Git never consumes them.
 - Every Git operation against a session checkout executes inside Gondolin, including status/diff while the VM is awake and clone/fetch/commit/push.
-- Sleeping-session review uses a host-owned cached report generated inside Gondolin, not host Git.
+- Sleeping-session review uses a host-owned cached Git Snapshot generated inside Gondolin, not host Git.
 - Project secrets use Gondolin placeholder substitution scoped to allowed destinations.
 - Pi uses an explicit allowlist-only `ResourceLoader`; `DefaultResourceLoader` is forbidden for untrusted workspaces.
 - Pi uses `SettingsManager.inMemory(...)` and never loads workspace or global Pi settings/packages.
@@ -1692,7 +1695,7 @@ Treat `.git` as executable configuration, not passive data. The agent can rewrit
 
 This prohibition applies even to apparently read-only commands such as `git status`, `git diff`, `git log`, and `git rev-parse`; Git configuration and attributes can cause subprocess execution. It also applies after the VM stops, when the workspace remains on the host filesystem.
 
-Only code inside Gondolin may interpret Git metadata. Host-owned Git reports must live outside guest-writable mounts, be treated as untrusted display data, and never be evaluated as commands or configuration.
+Only code inside Gondolin may interpret Git metadata. Host-owned Git Snapshots must live outside guest-writable mounts, be treated as untrusted display data, and never be evaluated as commands or configuration.
 
 ### 27.4 Pi resource-discovery boundary
 
@@ -1849,7 +1852,7 @@ Session-scoped audit records remain on the owning runner:
 - Secret encryption/redaction
 - Git URL/repository policy
 - Controlled guest Git argument/environment construction
-- Cached Git report parsing and terminal-control sanitization
+- Cached Git Snapshot parsing and terminal-control sanitization
 - Pi event normalization
 - Allowlist-only `ResourceLoader` always returns empty project resource collections
 - In-memory Pi settings ignore hostile workspace/global settings files
@@ -1878,7 +1881,7 @@ Scenarios:
 - Clone/push private HTTPS repository with guest-visible placeholder only
 - Clone/push private SSH repository through Gondolin proxy
 - Every clone/status/diff/fetch/commit/push process runs inside the guest, never on the runner host
-- Sleeping diff uses a final guest-generated cached report and wakes for refresh
+- Sleeping diff uses a final guest-generated cached Git Snapshot and wakes for refresh
 - Provision setup hook
 - Prompt → tools → settled → sleep → wake → continue
 - Pi-native follow-up and steering with no post-handoff mutation controls

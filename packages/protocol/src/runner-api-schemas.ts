@@ -5,9 +5,20 @@ import {
   EphemeralSessionEvent,
   RunnerCheckoutState,
 } from "./runner-api-session-events.ts";
+import {
+  MAX_SESSION_GIT_PATH_CHARACTERS,
+  MAX_SESSION_GIT_SNAPSHOT_FILES,
+  MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
+  MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES,
+  MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
+  MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES,
+  MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
+} from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 3;
+export const RUNNER_PROTOCOL_VERSION = 9;
+
+export * from "./runner-api-limits.ts";
 
 const Uuid = Schema.String.check(Schema.isUUID());
 
@@ -44,20 +55,12 @@ const RunnerToken = Schema.String.check(
 );
 const RunnerVersion = boundedString(1, 64, "Runner versions");
 const ProtocolVersion = NonNegativeInt;
-const Capability = boundedString(1, 64, "Runner capabilities");
-const Capabilities = Schema.Array(Capability).check(
-  Schema.isMaxLength(32, { message: "A runner may advertise at most 32 capabilities." }),
-  Schema.makeFilter((values) =>
-    new Set(values).size === values.length ? undefined : "Runner capabilities must be unique."
-  ),
-);
 
 export class RunnerIdentity extends Schema.Class<RunnerIdentity>("RunnerIdentity")({
   token: RunnerToken,
   runnerId: RunnerId,
   runnerVersion: RunnerVersion,
   protocolVersion: ProtocolVersion,
-  capabilities: Capabilities,
 }) {}
 
 export class RunnerCapacity extends Schema.Class<RunnerCapacity>("RunnerCapacity")({
@@ -271,6 +274,14 @@ export class PromptSessionAccepted extends Schema.Class<PromptSessionAccepted>(
   mode: Schema.Literals(["started", "follow-up"]),
 }) {}
 
+export class WakeSessionPayload extends Schema.Class<WakeSessionPayload>("WakeSessionPayload")({
+  sessionId: SessionId,
+  modelRuntime: SessionModelRuntime,
+}) {}
+
+export class WakeSessionAccepted
+  extends Schema.Class<WakeSessionAccepted>("WakeSessionAccepted")({}) {}
+
 export class AbortSessionPayload extends Schema.Class<AbortSessionPayload>("AbortSessionPayload")({
   sessionId: SessionId,
   runId: RunId,
@@ -286,6 +297,124 @@ export class WatchSessionPayload extends Schema.Class<WatchSessionPayload>("Watc
   sessionId: SessionId,
   afterCursor: SessionCursor,
 }) {}
+
+export class ReadSessionGitSnapshotPayload
+  extends Schema.Class<ReadSessionGitSnapshotPayload>("ReadSessionGitSnapshotPayload")({
+    sessionId: SessionId,
+  }) {}
+
+export const SessionGitFileAction = Schema.Literals(["stage", "unstage"]);
+export type SessionGitFileAction = typeof SessionGitFileAction.Type;
+
+export const SessionGitFileStatus = Schema.Literals(["added", "modified", "deleted", "renamed"]);
+export type SessionGitFileStatus = typeof SessionGitFileStatus.Type;
+
+export const SessionGitDiffState = Schema.Literals(["available", "binary", "truncated"]);
+export type SessionGitDiffState = typeof SessionGitDiffState.Type;
+
+const StrictObject = { parseOptions: { onExcessProperty: "error" as const } };
+const SessionGitPath = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.makeFilter((value) =>
+    Array.from(value).length <= MAX_SESSION_GIT_PATH_CHARACTERS
+      ? undefined
+      : `Git paths must contain at most ${MAX_SESSION_GIT_PATH_CHARACTERS} characters.`
+  ),
+);
+const SessionGitFileBase = {
+  path: SessionGitPath,
+  displayPath: SessionGitPath,
+  diffState: SessionGitDiffState,
+} as const;
+const SessionGitTrackedFile = Schema.Union([
+  Schema.Struct({
+    ...SessionGitFileBase,
+    kind: Schema.Literal("tracked"),
+    status: Schema.Literals(["added", "modified", "deleted"]),
+  }).annotate(StrictObject),
+  Schema.Struct({
+    ...SessionGitFileBase,
+    kind: Schema.Literal("tracked"),
+    status: Schema.Literal("renamed"),
+    previousPath: SessionGitPath,
+    previousDisplayPath: SessionGitPath,
+  }).annotate(StrictObject),
+]);
+const SessionGitUntrackedFile = Schema.Struct({
+  ...SessionGitFileBase,
+  kind: Schema.Literal("untracked"),
+  status: Schema.Literal("added"),
+}).annotate(StrictObject);
+export const SessionGitFile = Schema.Union([SessionGitTrackedFile, SessionGitUntrackedFile]);
+export type SessionGitFile = typeof SessionGitFile.Type;
+
+const SessionGitPatch = Schema.String.check(
+  Schema.makeFilter((value) =>
+    utf8Length(value) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES
+      ? undefined
+      : `Git Snapshot patch sections must be at most ${MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES} UTF-8 bytes.`
+  ),
+  Schema.makeFilter((value) =>
+    utf8Length(JSON.stringify(value)) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES
+      ? undefined
+      : `Git Snapshot patch sections must fit within ${MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES} JSON bytes.`
+  ),
+);
+const SessionGitStagedSection = Schema.Struct({
+  files: Schema.Array(SessionGitTrackedFile),
+  patch: SessionGitPatch,
+  truncated: Schema.Boolean,
+}).annotate(StrictObject);
+const SessionGitUnstagedSection = Schema.Struct({
+  files: Schema.Array(SessionGitFile),
+  patch: SessionGitPatch,
+  truncated: Schema.Boolean,
+}).annotate(StrictObject);
+const SessionGitSections = Schema.Struct({
+  staged: SessionGitStagedSection,
+  unstaged: SessionGitUnstagedSection,
+}).annotate(StrictObject).check(
+  Schema.makeFilter((value) => {
+    const files = [...value.staged.files, ...value.unstaged.files];
+    return files.length <= MAX_SESSION_GIT_SNAPSHOT_FILES &&
+        utf8Length(JSON.stringify(files)) <= MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES
+      ? undefined
+      : `Git Snapshot file metadata must fit within ${MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES} JSON bytes and ${MAX_SESSION_GIT_SNAPSHOT_FILES} rows.`;
+  }),
+  Schema.makeFilter((value) =>
+    utf8Length(value.staged.patch) + utf8Length(value.unstaged.patch) <=
+        MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES &&
+      utf8Length(JSON.stringify({
+          staged: value.staged.patch,
+          unstaged: value.unstaged.patch,
+        })) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES
+      ? undefined
+      : `Git Snapshot patches must fit within ${MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES} JSON bytes.`
+  ),
+);
+
+export class SessionGitSnapshot extends Schema.Class<SessionGitSnapshot>("SessionGitSnapshot")(
+  Schema.Struct({
+    generatedAt: RunnerSessionCreatedAt,
+    completeness: Schema.Literals(["complete", "incomplete"]),
+    stale: Schema.Boolean,
+    truncated: Schema.Boolean,
+    message: Schema.optionalKey(SafeMessage),
+    sections: SessionGitSections,
+  }).annotate(StrictObject),
+) {}
+
+export class UpdateSessionGitFilePayload
+  extends Schema.Class<UpdateSessionGitFilePayload>("UpdateSessionGitFilePayload")({
+    sessionId: SessionId,
+    action: SessionGitFileAction,
+    path: SessionGitPath,
+    previousPath: Schema.optionalKey(SessionGitPath),
+  }) {}
+
+export class GitFileUpdateAccepted extends Schema.Class<GitFileUpdateAccepted>(
+  "GitFileUpdateAccepted",
+)({}) {}
 
 const DurableSessionEventDelivery = Schema.Struct({
   runId: Schema.NullOr(RunId),
@@ -338,6 +467,11 @@ export class PromptRejected extends Schema.TaggedError<PromptRejected>()(
   { sessionId: SessionId, message: SafeMessage },
 ) {}
 
+export class WakeRejected extends Schema.TaggedError<WakeRejected>()(
+  "WakeRejected",
+  { sessionId: SessionId, message: SafeMessage },
+) {}
+
 export class AbortRejected extends Schema.TaggedError<AbortRejected>()(
   "AbortRejected",
   { sessionId: SessionId, runId: RunId, message: SafeMessage },
@@ -350,6 +484,16 @@ export class SessionCorrupt extends Schema.TaggedError<SessionCorrupt>()(
 
 export class HistoryReadError extends Schema.TaggedError<HistoryReadError>()(
   "HistoryReadError",
+  { sessionId: SessionId, message: SafeMessage },
+) {}
+
+export class GitSnapshotReadError extends Schema.TaggedError<GitSnapshotReadError>()(
+  "GitSnapshotReadError",
+  { sessionId: SessionId, message: SafeMessage },
+) {}
+
+export class GitFileUpdateRejected extends Schema.TaggedError<GitFileUpdateRejected>()(
+  "GitFileUpdateRejected",
   { sessionId: SessionId, message: SafeMessage },
 ) {}
 

@@ -1,10 +1,10 @@
 import { Deferred, Duration, Effect, Predicate, Schedule, Schema } from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
 import type * as SocketServer from "effect/unstable/socket/SocketServer";
+import { MAX_RUNNER_RPC_FRAME_BYTES } from "@openorb/protocol/runner-api-limits";
 
 export const PERMANENT_REJECTION_CLOSE_CODE = 4401;
 const ABNORMAL_CLOSE_CODE = 1006;
-const FRAME_LIMIT = 1024 * 1024;
 
 export class RunnerRpcStartupError
   extends Schema.TaggedError<RunnerRpcStartupError>()("RunnerRpcStartupError", {
@@ -33,7 +33,10 @@ export function makeOutboundSocketServer(
     run: (handler: (socket: Socket.Socket) => Effect.Effect<unknown, unknown, unknown>) =>
       Effect.gen(function* () {
         const closeCode = yield* Deferred.make<number>();
-        const decorated = observeCloseCode(limitSocket(socket, FRAME_LIMIT), closeCode);
+        const decorated = observeCloseCode(
+          limitSocket(socket, MAX_RUNNER_RPC_FRAME_BYTES),
+          closeCode,
+        );
         yield* handler(decorated).pipe(
           Effect.ensuring(Deferred.succeed(closeCode, ABNORMAL_CLOSE_CODE)),
           Effect.exit,

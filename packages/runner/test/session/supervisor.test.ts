@@ -7,6 +7,7 @@ import {
   PromptSessionPayload,
   ProvisionSessionPayload,
   SessionId,
+  UpdateSessionGitFilePayload,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema } from "effect";
 import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -30,7 +31,12 @@ import {
   type RunnerSessionStore as RunnerSessionStoreService,
   RunnerSessionStoreFailure,
 } from "../../src/session/store.ts";
-import { makeSessionWorkerFactory, SessionWorkerFactory } from "../../src/session/worker.ts";
+import {
+  makeSessionWorkerFactory,
+  type SessionWorker,
+  SessionWorkerFactory,
+  type SessionWorkerInput,
+} from "../../src/session/worker.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
@@ -52,7 +58,7 @@ class FakeEnvironment implements AgentEnvironment {
   run: AgentEnvironment["run"] = (command, options = {}) => {
     this.commands.push([...command]);
     return Effect.gen(function* () {
-      if (command[1] === "rev-parse") {
+      if (command.includes("rev-parse")) {
         if (options.onOutput) {
           yield* options.onOutput({
             stream: "stdout",
@@ -123,6 +129,9 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
           ["/usr/bin/git", "rev-parse"],
           ["/usr/bin/git", "switch"],
           ["/bin/sh", "-lc"],
+          ["/usr/bin/timeout", "--signal=KILL"],
+          ["/usr/bin/timeout", "--signal=KILL"],
+          ["/usr/bin/timeout", "--signal=KILL"],
         ]);
 
         const prompt = Schema.decodeUnknownSync(PromptSessionPayload)({
@@ -131,7 +140,8 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
           prompt: "Continue",
           modelRuntime: MODEL_RUNTIME,
         });
-        const promptAccepted = await Effect.runPromise(supervisor.prompt(prompt));
+        const promptAccepted = await Effect.runPromise(requireWorker(supervisor).prompt(prompt));
+        assert(promptAccepted.ok);
         assertEquals(promptAccepted.mode, "started");
         assert(String(promptAccepted.runId) !== String(prompt.clientRequestId));
         await waitForState(store, "ready");
@@ -140,6 +150,52 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
     );
     assert(runtime.closed);
     assertEquals(piDisposals, 1);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("SessionWorker awaits a failed run-end Git Snapshot refresh without failing the run", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(directory);
+    const writeStarted = Promise.withResolvers<void>();
+    const releaseWrite = Promise.withResolvers<void>();
+    const failingSnapshotStore = RunnerSessionStore.of({
+      ...store,
+      writeGitSnapshotState: () =>
+        Effect.sync(() => writeStarted.resolve()).pipe(
+          Effect.andThen(Effect.promise(() => releaseWrite.promise)),
+          Effect.andThen(Effect.fail(
+            new RunnerSessionStoreFailure({
+              operation: "write-git-snapshot",
+              message: "Git Snapshot storage is unavailable.",
+              cause: undefined,
+            }),
+          )),
+        ),
+    });
+    const runtime = new FakeEnvironment();
+    const payload = createProvisionPayload("openorb/final-snapshot-failure-test");
+
+    await withSupervisor(
+      {
+        cpuCount: 4,
+        memoryMiB: 8192,
+        maxConcurrentSessions: 2,
+        createPiSession: createSettlingPiSession,
+      },
+      failingSnapshotStore,
+      fakeEnvironmentProvider(runtime),
+      async (supervisor) => {
+        await Effect.runPromise(supervisor.provision(payload));
+        await writeStarted.promise;
+        assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "running");
+
+        releaseWrite.resolve();
+        await waitForState(store, "ready");
+      },
+    );
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
@@ -220,23 +276,33 @@ Deno.test("SessionSupervisor aborts only the exact active run after clearing fol
           prompt: "Continue while active",
           modelRuntime: MODEL_RUNTIME,
         });
-        const followUpAccepted = await Effect.runPromise(supervisor.prompt(followUp));
+        const worker = requireWorker(supervisor);
+        const followUpAccepted = await Effect.runPromise(worker.prompt(followUp));
+        assert(followUpAccepted.ok);
         assertEquals(followUpAccepted.mode, "follow-up");
         assertEquals(followUpAccepted.runId, activeRunId);
         assertEquals(followUpCalls, 1);
+
+        const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
+          sessionId: SESSION_ID,
+          action: "stage",
+          path: "src/main.ts",
+        });
+        assertEquals(await Effect.runPromise(worker.updateGitFile(update)), { ok: true });
+        assert(runtime.commands.some((command) => command.includes("add")));
 
         const stale = Schema.decodeUnknownSync(AbortSessionPayload)({
           sessionId: SESSION_ID,
           runId: crypto.randomUUID(),
         });
-        assertEquals((await Effect.runPromiseExit(supervisor.abort(stale)))._tag, "Failure");
+        assertEquals((await Effect.runPromise(worker.abort(stale))).ok, false);
         assertEquals([clearCalls, abortCalls], [0, 0]);
 
         const exact = Schema.decodeUnknownSync(AbortSessionPayload)({
           sessionId: SESSION_ID,
           runId: activeRunId,
         });
-        await Effect.runPromise(supervisor.abort(exact));
+        assertEquals(await Effect.runPromise(worker.abort(exact)), { ok: true });
         assertEquals([clearCalls, abortCalls], [1, 1]);
         await waitForState(store, "ready");
       },
@@ -284,8 +350,217 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
           prompt: "Continue after restart",
           modelRuntime: MODEL_RUNTIME,
         });
-        const accepted = await Effect.runPromise(restarted.prompt(prompt));
+        const worker = await Effect.runPromise(
+          restarted.findOrRestoreWorker(SESSION_ID, MODEL_RUNTIME),
+        );
+        assert(worker);
+        const accepted = await Effect.runPromise(worker.prompt(prompt));
+        assert(accepted.ok);
         assertEquals(accepted.mode, "started");
+      },
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("SessionSupervisor lazily restores a ready worker for Git file updates", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(directory);
+    const payload = createProvisionPayload("openorb/restart-git-update-test");
+    await Effect.runPromise(store.createSession({
+      id: payload.sessionId,
+      projectId: payload.projectId,
+      repositoryUrl: payload.repositoryUrl,
+      ref: payload.ref,
+      branchName: payload.branchName,
+      initialPrompt: payload.initialPrompt,
+      model: payload.modelRuntime.model,
+      orbSize: payload.orbSize,
+    }));
+    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
+      state: "ready",
+      checkoutState: "available",
+      baseCommit: "0123456789abcdef0123456789abcdef01234567",
+    }));
+    const spawns: SessionWorkerInput[] = [];
+    const updates: UpdateSessionGitFilePayload[] = [];
+    const worker: SessionWorker = {
+      sessionId: SESSION_ID,
+      activeRunId: undefined,
+      active: true,
+      prompt: () => Effect.die("unexpected prompt"),
+      abort: () => Effect.die("unexpected abort"),
+      updateGitFile: (update) =>
+        Effect.sync(() => {
+          updates.push(update);
+          return { ok: true as const };
+        }),
+      shutdown: Effect.void,
+    };
+    const workerFactory = SessionWorkerFactory.of({
+      spawn: (input) =>
+        Effect.sync(() => {
+          spawns.push(input);
+          return worker;
+        }),
+    });
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* makeSessionSupervisor({
+        cpuCount: 4,
+        memoryMiB: 8192,
+        maxConcurrentSessions: 2,
+      }).pipe(
+        Effect.provideService(RunnerSessionStore, store),
+        Effect.provideService(SessionWorkerFactory, workerFactory),
+      );
+      const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
+        sessionId: SESSION_ID,
+        action: "stage",
+        path: "src/main.ts",
+      });
+      const restored = yield* supervisor.findOrRestoreWorker(SESSION_ID);
+      assert(restored);
+      assertEquals(yield* restored.updateGitFile(update), { ok: true });
+      assertEquals(updates, [update]);
+      assertEquals(spawns.length, 1);
+      assertEquals(spawns[0]?.restore, true);
+      assertEquals(spawns[0] && "modelRuntime" in spawns[0], false);
+    })));
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("a Git-only restore opens one persistent Pi session on the next prompt", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(directory);
+    const payload = createProvisionPayload("openorb/git-then-prompt-test");
+    await Effect.runPromise(store.createSession({
+      id: payload.sessionId,
+      projectId: payload.projectId,
+      repositoryUrl: payload.repositoryUrl,
+      ref: payload.ref,
+      branchName: payload.branchName,
+      initialPrompt: payload.initialPrompt,
+      model: payload.modelRuntime.model,
+      orbSize: payload.orbSize,
+    }));
+    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
+      state: "ready",
+      checkoutState: "available",
+      baseCommit: "0123456789abcdef0123456789abcdef01234567",
+    }));
+    let piCreations = 0;
+    const createPiSession: CreateRawPiSession = (options) => {
+      piCreations++;
+      return createSettlingPiSession(options);
+    };
+
+    await withSupervisor(
+      { cpuCount: 4, memoryMiB: 8192, maxConcurrentSessions: 2, createPiSession },
+      store,
+      fakeEnvironmentProvider(new FakeEnvironment()),
+      async (supervisor) => {
+        const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
+          sessionId: SESSION_ID,
+          action: "stage",
+          path: "src/main.ts",
+        });
+        const worker = await Effect.runPromise(supervisor.findOrRestoreWorker(SESSION_ID));
+        assert(worker);
+        assertEquals(await Effect.runPromise(worker.updateGitFile(update)), { ok: true });
+        assertEquals(piCreations, 0);
+
+        const prompt = (text: string) =>
+          Schema.decodeUnknownSync(PromptSessionPayload)({
+            sessionId: SESSION_ID,
+            clientRequestId: crypto.randomUUID(),
+            prompt: text,
+            modelRuntime: MODEL_RUNTIME,
+          });
+        const first = await Effect.runPromise(worker.prompt(prompt("Continue after staging")));
+        assert(first.ok);
+        assertEquals(first.mode, "started");
+        await waitForState(store, "ready");
+        const second = await Effect.runPromise(worker.prompt(prompt("Continue again")));
+        assert(second.ok);
+        assertEquals(second.mode, "started");
+        await waitForState(store, "ready");
+        assertEquals(piCreations, 1);
+      },
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore retryable", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(directory);
+    const payload = createProvisionPayload("openorb/lazy-open-retry-test");
+    await Effect.runPromise(store.createSession({
+      id: payload.sessionId,
+      projectId: payload.projectId,
+      repositoryUrl: payload.repositoryUrl,
+      ref: payload.ref,
+      branchName: payload.branchName,
+      initialPrompt: payload.initialPrompt,
+      model: payload.modelRuntime.model,
+      orbSize: payload.orbSize,
+    }));
+    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
+      state: "ready",
+      checkoutState: "available",
+      baseCommit: "0123456789abcdef0123456789abcdef01234567",
+    }));
+    let piOpenAttempts = 0;
+    const createPiSession: CreateRawPiSession = (options) => {
+      piOpenAttempts++;
+      return piOpenAttempts === 1
+        ? Effect.fail(new AgentHarnessError("Injected lazy Pi open failure.", undefined))
+        : createSettlingPiSession(options);
+    };
+
+    await withSupervisor(
+      { cpuCount: 4, memoryMiB: 8192, maxConcurrentSessions: 2, createPiSession },
+      store,
+      fakeEnvironmentProvider(new FakeEnvironment()),
+      async (supervisor) => {
+        const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
+          sessionId: SESSION_ID,
+          action: "stage",
+          path: "src/main.ts",
+        });
+        const worker = await Effect.runPromise(supervisor.findOrRestoreWorker(SESSION_ID));
+        assert(worker);
+        assertEquals(await Effect.runPromise(worker.updateGitFile(update)), { ok: true });
+
+        const prompt = (text: string) =>
+          Schema.decodeUnknownSync(PromptSessionPayload)({
+            sessionId: SESSION_ID,
+            clientRequestId: crypto.randomUUID(),
+            prompt: text,
+            modelRuntime: MODEL_RUNTIME,
+          });
+        const first = await Effect.runPromise(
+          worker.prompt(prompt("First attempt")).pipe(Effect.timeout("1 second")),
+        );
+        assertEquals(first.ok, false);
+        assertEquals(piOpenAttempts, 1);
+
+        assertEquals(await Effect.runPromise(worker.updateGitFile(update)), { ok: true });
+        const retry = await Effect.runPromise(
+          worker.prompt(prompt("Retry")).pipe(Effect.timeout("1 second")),
+        );
+        assert(retry.ok);
+        assertEquals(retry.mode, "started");
+        await waitForState(store, "ready");
+        assertEquals(piOpenAttempts, 2);
       },
     );
   } finally {
@@ -539,13 +814,16 @@ Deno.test("SessionSupervisor serializes two closely queued idle prompts into one
             prompt: text,
             modelRuntime: MODEL_RUNTIME,
           });
-        const first = Effect.runPromise(supervisor.prompt(prompt("First continuation")));
+        const worker = requireWorker(supervisor);
+        const first = Effect.runPromise(worker.prompt(prompt("First continuation")));
         await firstContinuationStarted.promise;
-        const second = Effect.runPromise(supervisor.prompt(prompt("Second continuation")));
+        const second = Effect.runPromise(worker.prompt(prompt("Second continuation")));
         await followUpAccepted.promise;
         releaseContinuations.resolve();
         const [firstAccepted, secondAccepted] = await Promise.all([first, second]);
 
+        assert(firstAccepted.ok);
+        assert(secondAccepted.ok);
         assertEquals(firstAccepted.mode, "started");
         assertEquals(secondAccepted.mode, "follow-up");
         assertEquals(secondAccepted.runId, firstAccepted.runId);
@@ -621,6 +899,12 @@ function makeStore(workingDirectory: string) {
       Effect.provide(DenoFileSystem.layer),
     ),
   );
+}
+
+function requireWorker(supervisor: SessionSupervisor): SessionWorker {
+  const worker = supervisor.findWorker(SESSION_ID);
+  assert(worker, "Session supervisor did not contain the expected worker.");
+  return worker;
 }
 
 async function waitForActiveRun(supervisor: SessionSupervisor, timeoutMs = 1_000) {

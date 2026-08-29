@@ -13,13 +13,11 @@ Deno.test("validates runner enrollment request and response payloads", () => {
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "arm64",
-      capabilities: ["session-rpc", "session-events"],
     }),
     {
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "arm64",
-      capabilities: ["session-rpc", "session-events"],
     },
   );
   assertEquals(
@@ -32,15 +30,6 @@ Deno.test("validates runner enrollment request and response payloads", () => {
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "riscv64",
-      capabilities: ["session-rpc"],
-    })
-  );
-  assertThrows(() =>
-    parse(runnerEnrollmentRequestSchema, {
-      enrollmentPsk: ENROLLMENT_PSK,
-      name: "Home runner",
-      architecture: "x64",
-      capabilities: ["session-rpc", "session-rpc"],
     })
   );
 });

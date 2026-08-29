@@ -1,4 +1,4 @@
-import { array, literal, object, string, union } from "@remix-run/data-schema";
+import { literal, object, string, union } from "@remix-run/data-schema";
 import type { InferOutput } from "@remix-run/data-schema";
 import { validate as validateUuid } from "@std/uuid";
 
@@ -36,22 +36,11 @@ const runnerArchitectureSchema = union([
   literal("arm64" as const),
 ]);
 
-const runnerCapabilitiesSchema = array(
-  string().refine(
-    (value) => value.length > 0 && value.length <= 64,
-    "Runner capabilities must contain between 1 and 64 characters.",
-  ),
-).refine(
-  (capabilities) => capabilities.length <= 32 && new Set(capabilities).size === capabilities.length,
-  "A runner may advertise at most 32 unique capabilities.",
-);
-
 export const runnerEnrollmentRequestSchema = object(
   {
     enrollmentPsk: enrollmentPskSchema,
     name: runnerNameSchema,
     architecture: runnerArchitectureSchema,
-    capabilities: runnerCapabilitiesSchema,
   },
   { unknownKeys: "error" },
 );

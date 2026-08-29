@@ -2,11 +2,18 @@
 import { assert, assertEquals } from "@std/assert";
 import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
 import {
+  AbortSessionAccepted,
+  GitFileUpdateAccepted,
+  PromptSessionAccepted,
   RUNNER_PROTOCOL_VERSION,
   RunnerCapacity,
   RunnerId,
   RunnerSessionSnapshot,
+  SessionGitSnapshot,
   SessionId,
+  SessionModelRuntime,
+  UpdateSessionGitFilePayload,
+  WakeSessionAccepted,
 } from "@openorb/protocol/runner-api";
 import { Context, Deferred, Effect, Exit, Fiber, Layer, PubSub, Schema, Stream } from "effect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
@@ -42,7 +49,7 @@ const capacity = decode(RunnerCapacity)({
   diskFreeMiB: 50_000,
 });
 
-function snapshot(state: "ready" | "running") {
+function snapshot(state: "ready" | "running", activeRunId?: string) {
   return decode(RunnerSessionSnapshot)({
     id: SESSION_ID,
     projectId: PROJECT_ID,
@@ -52,6 +59,7 @@ function snapshot(state: "ready" | "running") {
     orbSize: "small",
     state,
     lastEventCursor: state === "ready" ? 1 : 2,
+    ...(activeRunId === undefined ? {} : { activeRunId }),
   });
 }
 
@@ -123,6 +131,219 @@ Deno.test("WatchRunner observes a state change during manifest-to-live handoff",
     yield* Fiber.interrupt(launched);
   }))));
 
+Deno.test("cached Git Snapshots are served without restoring a session VM", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const gitSnapshot = new SessionGitSnapshot({
+      generatedAt: "2026-08-25T12:00:00Z",
+      completeness: "complete",
+      stale: false,
+      truncated: false,
+      sections: {
+        staged: { files: [], patch: "", truncated: false },
+        unstaged: {
+          files: [{
+            kind: "tracked",
+            path: "src/main.ts",
+            displayPath: "src/main.ts",
+            status: "modified",
+            diffState: "available",
+          }],
+          patch: "diff --git a/src/main.ts b/src/main.ts\n",
+          truncated: false,
+        },
+      },
+    });
+    const store = {
+      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
+      readMetadata: () => Effect.succeed({}),
+      readGitSnapshot: () => Effect.succeed(gitSnapshot),
+    } as unknown as RunnerSessionStore;
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: () => Stream.empty,
+    } as unknown as SessionEvents;
+    const harness = yield* makeGatewayHarness(TOKEN);
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url, store, events)).pipe(
+      Effect.exit,
+      Effect.forkScoped,
+    );
+
+    yield* pollUntil(
+      harness.gateway.getSessionGitSnapshot(USER_ID, SESSION_ID).pipe(
+        Effect.map((result) =>
+          result.status === "accepted" &&
+          result.acknowledgement.sections.unstaged.patch ===
+            gitSnapshot.sections.unstaged.patch
+        ),
+      ),
+      "the connected runner did not serve its cached Git Snapshot",
+    );
+    yield* Fiber.interrupt(launched);
+  }))));
+
+Deno.test("Git file update RPC resolves and calls the session worker", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const store = {
+      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
+      readMetadata: () => Effect.succeed({}),
+    } as unknown as RunnerSessionStore;
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: () => Stream.empty,
+    } as unknown as SessionEvents;
+    const updates: unknown[] = [];
+    const worker = {
+      updateGitFile: (payload: unknown) =>
+        Effect.sync(() => {
+          updates.push(payload);
+          return { ok: true as const };
+        }),
+    };
+    const supervisor = {
+      getActiveRunId: () => undefined,
+      findOrRestoreWorker: () => Effect.succeed(worker),
+    } as unknown as SessionSupervisor;
+    const harness = yield* makeGatewayHarness(TOKEN);
+    const launched = yield* runRunnerRpc({
+      ...runnerOptions(harness.url, store, events),
+      supervisor,
+    }).pipe(Effect.exit, Effect.forkScoped);
+
+    yield* pollUntil(
+      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      "the connected runner did not publish its ready session",
+    );
+    const result = yield* harness.gateway.updateSessionGitFile({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+      action: "stage",
+      path: "src/main.ts",
+    });
+    assertEquals(result.status, "accepted");
+    assert(
+      result.status === "accepted" && result.acknowledgement instanceof GitFileUpdateAccepted,
+    );
+    assertEquals(updates.length, 1);
+    assertEquals(
+      updates[0],
+      decode(UpdateSessionGitFilePayload)({
+        sessionId: SESSION_ID,
+        action: "stage",
+        path: "src/main.ts",
+      }),
+    );
+    yield* Fiber.interrupt(launched);
+  }))));
+
+Deno.test("Wake RPC restores a session worker with model credentials", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const store = {
+      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
+      readMetadata: () => Effect.succeed({ model: "opencode-go/deepseek-v4-flash" }),
+    } as unknown as RunnerSessionStore;
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: () => Stream.empty,
+    } as unknown as SessionEvents;
+    const restorations: unknown[] = [];
+    const supervisor = {
+      getActiveRunId: () => undefined,
+      findOrRestoreWorker: (_sessionId: unknown, modelRuntime: unknown) =>
+        Effect.sync(() => {
+          restorations.push(modelRuntime);
+          return {};
+        }),
+    } as unknown as SessionSupervisor;
+    const harness = yield* makeGatewayHarness(TOKEN);
+    const launched = yield* runRunnerRpc({
+      ...runnerOptions(harness.url, store, events),
+      supervisor,
+    }).pipe(Effect.exit, Effect.forkScoped);
+
+    yield* pollUntil(
+      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      "the connected runner did not publish its ready session",
+    );
+    const modelRuntime = {
+      model: "opencode-go/deepseek-v4-flash",
+      thinkingLevel: "high" as const,
+      credential: { type: "api_key" as const, value: "model-secret" },
+    };
+    const result = yield* harness.gateway.wakeSession({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+      payload: { modelRuntime },
+    });
+    assertEquals(result.status, "accepted");
+    assert(result.status === "accepted" && result.acknowledgement instanceof WakeSessionAccepted);
+    assertEquals(restorations, [new SessionModelRuntime(modelRuntime)]);
+    yield* Fiber.interrupt(launched);
+  }))));
+
+Deno.test("Prompt and Abort RPCs resolve and call the session worker", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const activeRunId = "01989d78-65ee-7f6a-a97e-0f16ad134c30";
+    const store = {
+      loadSessionManifest: () =>
+        Effect.succeed({ sessions: [snapshot("running", activeRunId)], errors: [] }),
+    } as unknown as RunnerSessionStore;
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: () => Stream.empty,
+    } as unknown as SessionEvents;
+    const calls: string[] = [];
+    const worker = {
+      prompt: () =>
+        Effect.sync(() => {
+          calls.push("prompt");
+          return { ok: true as const, runId: activeRunId, mode: "follow-up" as const };
+        }),
+      abort: () =>
+        Effect.sync(() => {
+          calls.push("abort");
+          return { ok: true as const };
+        }),
+    };
+    const supervisor = {
+      getActiveRunId: () => activeRunId,
+      findWorker: () => worker,
+      findOrRestoreWorker: () => Effect.succeed(worker),
+    } as unknown as SessionSupervisor;
+    const harness = yield* makeGatewayHarness(TOKEN);
+    const launched = yield* runRunnerRpc({
+      ...runnerOptions(harness.url, store, events),
+      supervisor,
+    }).pipe(Effect.exit, Effect.forkScoped);
+
+    yield* pollUntil(
+      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      "the connected runner did not publish its running session",
+    );
+    const prompted = yield* harness.gateway.promptSession({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+      payload: {
+        prompt: "Continue",
+        modelRuntime: {
+          model: "opencode-go/deepseek-v4-flash",
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: "model-secret" },
+        },
+      },
+    });
+    assert(prompted.status === "accepted");
+    assert(prompted.acknowledgement instanceof PromptSessionAccepted);
+
+    const aborted = yield* harness.gateway.abortSession({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+    });
+    assert(aborted.status === "accepted");
+    assert(aborted.acknowledgement instanceof AbortSessionAccepted);
+    assertEquals(calls, ["prompt", "abort"]);
+    yield* Fiber.interrupt(launched);
+  }))));
+
 Deno.test("launched runner RPC layer terminates after the adapter receives permanent close 4401", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const harness = yield* makeGatewayHarness(TOKEN);
@@ -158,9 +379,9 @@ function runnerOptions(
     store,
     supervisor: {
       getActiveRunId: () => undefined,
+      findWorker: () => undefined,
+      findOrRestoreWorker: () => Effect.die("unexpected worker restore"),
       provision: () => Effect.die("unexpected provision"),
-      prompt: () => Effect.die("unexpected prompt"),
-      abort: () => Effect.die("unexpected abort"),
     } as unknown as SessionSupervisor,
     events,
   };

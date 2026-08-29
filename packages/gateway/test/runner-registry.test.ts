@@ -4,15 +4,21 @@ import * as DenoSocket from "@effect/platform-deno/DenoSocket";
 import {
   AbortSessionAccepted,
   AbortSessionPayload,
+  GitFileUpdateAccepted,
   ProjectId,
   PromptSessionAccepted,
   ProvisionSessionSuccess,
+  ReadSessionGitSnapshotPayload,
   RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   RunnerCapacity,
   RunnerIdentity,
   RunnerSessionSnapshot,
   RunnerStateEvent,
+  SessionGitSnapshot,
+  UpdateSessionGitFilePayload,
+  WakeSessionAccepted,
+  WakeSessionPayload,
   WatchSessionEvent,
   WatchSessionPayload,
 } from "@openorb/protocol/runner-api";
@@ -67,7 +73,10 @@ interface Probe {
   watchCalls: number;
   provisionRequests: unknown[];
   promptRequests: unknown[];
+  wakeRequests: unknown[];
   abortRequests: unknown[];
+  gitSnapshotRequests: unknown[];
+  gitFileUpdateRequests: unknown[];
   sessionWatches: SessionWatchProbe[];
   provisionBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
   promptBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
@@ -88,14 +97,16 @@ const makeProbe = Effect.fn(function* (token = TOKEN) {
       runnerId: RUNNER_ID,
       runnerVersion: "test-1",
       protocolVersion: RUNNER_PROTOCOL_VERSION,
-      capabilities: ["sessions"],
     }),
     runnerEvents: yield* Queue.unbounded<typeof RunnerStateEvent.Type>(),
     identifyCalls: 0,
     watchCalls: 0,
     provisionRequests: [],
     promptRequests: [],
+    wakeRequests: [],
     abortRequests: [],
+    gitSnapshotRequests: [],
+    gitFileUpdateRequests: [],
     sessionWatches: [],
     provisionBlock: null,
     promptBlock: null,
@@ -193,10 +204,34 @@ function handlers(probe: Probe) {
           mode: "started",
         });
       }),
+    "session.wake": (request) =>
+      Effect.sync(() => {
+        probe.wakeRequests.push(request);
+        return new WakeSessionAccepted({});
+      }),
     "session.abort": (request) =>
       Effect.sync(() => {
         probe.abortRequests.push(request);
         return decode(AbortSessionAccepted)({ runId: request.runId });
+      }),
+    "session.git-snapshot.read": (request) =>
+      Effect.sync(() => {
+        probe.gitSnapshotRequests.push(request);
+        return new SessionGitSnapshot({
+          generatedAt: "2026-08-23T12:00:00Z",
+          completeness: "complete",
+          stale: false,
+          truncated: false,
+          sections: {
+            staged: { files: [], patch: "", truncated: false },
+            unstaged: { files: [], patch: "", truncated: false },
+          },
+        });
+      }),
+    "session.git-file.update": (request) =>
+      Effect.sync(() => {
+        probe.gitFileUpdateRequests.push(request);
+        return new GitFileUpdateAccepted({});
       }),
     "session.watch": (request) =>
       Stream.unwrap(Effect.gen(function* () {
@@ -436,6 +471,35 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
     yield* Fiber.interrupt(third);
   }))));
 
+Deno.test("Wake routes model credentials to the session's runner", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    const modelRuntime = {
+      model: "opencode-go/deepseek-v4-flash",
+      thinkingLevel: "high" as const,
+      credential: { type: "api_key" as const, value: "secret" },
+    };
+    const result = yield* gateway.wakeSession({
+      userId: USER_ID,
+      sessionId: SESSION_1,
+      payload: { modelRuntime },
+    });
+
+    assertEquals(result.status, "accepted");
+    assertEquals(
+      probe.wakeRequests,
+      [decode(WakeSessionPayload)({ sessionId: SESSION_1, modelRuntime })],
+    );
+  }))));
+
 Deno.test("concurrent Prompt and Abort both reach the runner for serialized handling", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const { gateway, url } = yield* makeHarness();
@@ -516,7 +580,37 @@ Deno.test("disconnect after provisioning dispatch reports uncertain delivery", (
     assertEquals(probe.provisionRequests.length, 1);
   }))));
 
-Deno.test("typed commands reach handlers and disconnect removes routes and finalizes connection", () =>
+Deno.test("ready sessions route typed Git file updates to the pinned runner", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    const result = yield* gateway.updateSessionGitFile({
+      userId: USER_ID,
+      sessionId: SESSION_1,
+      action: "stage",
+      path: "src/main.ts",
+    });
+    assertEquals(result.status, "accepted");
+    assert(
+      result.status === "accepted" && result.acknowledgement instanceof GitFileUpdateAccepted,
+    );
+    assertEquals(probe.gitFileUpdateRequests, [
+      Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
+        sessionId: SESSION_1,
+        action: "stage",
+        path: "src/main.ts",
+      }),
+    ]);
+  }))));
+
+Deno.test("typed commands reach handlers during a run and disconnect finalizes the connection", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const { gateway, url } = yield* makeHarness();
     const probe = yield* makeProbe();
@@ -526,6 +620,20 @@ Deno.test("typed commands reach handlers and disconnect removes routes and final
       () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
+    const gitUpdate = yield* gateway.updateSessionGitFile({
+      userId: USER_ID,
+      sessionId: SESSION_1,
+      action: "unstage",
+      path: "src/main.ts",
+    });
+    assertEquals(gitUpdate.status, "accepted");
+    assertEquals(probe.gitFileUpdateRequests, [
+      Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
+        sessionId: SESSION_1,
+        action: "unstage",
+        path: "src/main.ts",
+      }),
+    ]);
 
     const modelRuntime = {
       model: "opencode-go/deepseek-v4-flash",
@@ -562,11 +670,19 @@ Deno.test("typed commands reach handlers and disconnect removes routes and final
       (yield* gateway.abortSession({ userId: USER_ID, sessionId: SESSION_1 })).status,
       "accepted",
     );
+    const gitSnapshot = yield* gateway.getSessionGitSnapshot(USER_ID, SESSION_1);
+    assertEquals(gitSnapshot.status, "accepted");
     assertEquals(probe.provisionRequests.length, 1);
     assertEquals(probe.promptRequests.length, 1);
     assertEquals(probe.abortRequests, [
       decode(AbortSessionPayload)({ sessionId: SESSION_1, runId: "run-active" }),
     ]);
+    assertEquals(
+      probe.gitSnapshotRequests.map((request) =>
+        Schema.decodeUnknownSync(ReadSessionGitSnapshotPayload)(request).sessionId
+      ),
+      [SESSION_1],
+    );
     assert(yield* gateway.disconnectRunner(USER_ID, RUNNER_ID));
     yield* Deferred.await(probe.connectionFinalized);
     assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);

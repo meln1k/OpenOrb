@@ -143,6 +143,7 @@ const AgentEndedEvent = Schema.Struct({
 
 const AgentSettledEvent = Schema.Struct({ type: Schema.Literal("agent.settled") });
 const TurnStartedEvent = Schema.Struct({ type: Schema.Literal("turn.started") });
+const GitSnapshotUpdatedEvent = Schema.Struct({ type: Schema.Literal("git.snapshot.updated") });
 
 const TurnCompletedEvent = Schema.Struct({
   type: Schema.Literal("turn.completed"),
@@ -337,6 +338,7 @@ export const EphemeralSessionEvent = Schema.Union([
   AgentEndedEvent,
   AgentSettledEvent,
   TurnStartedEvent,
+  GitSnapshotUpdatedEvent,
   TurnCompletedEvent,
   MessageStartedEvent,
   MessageCompletedEvent,

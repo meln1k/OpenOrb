@@ -78,7 +78,7 @@ Unless a ticket explicitly says otherwise:
 
 | Ticket | Outcome |
 |---|---|
-| [OO-016](OO-016-guest-git-report-and-changes-ui.md) | Guest-generated status/diff is reviewable in the browser |
+| [OO-016](OO-016-guest-git-snapshot-and-changes-ui.md) | Guest-generated status/diff is reviewable in the browser |
 | [OO-017](OO-017-agent-github-commit-and-push.md) | The agent commits and pushes a session branch to GitHub |
 
 **Slice exit:** The user reviews changes and explicitly asks the agent to commit and push without exposing the real token.

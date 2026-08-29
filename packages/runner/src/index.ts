@@ -152,7 +152,6 @@ export async function main(
           enrollmentPsk: command.options.enrollmentToken,
           name: command.options.name,
           architecture: normalizeArchitecture(Deno.build.arch),
-          capabilities: ["session-rpc", "session-events"],
         });
         if (enrollmentError !== undefined) {
           return err(new RunnerRuntimeError("Runner enrollment failed.", enrollmentError));

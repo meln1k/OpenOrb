@@ -57,7 +57,6 @@ Deno.test("enrolls with the PSK and validates the runner-token response", async 
       enrollmentPsk: ENROLLMENT_PSK,
       name: "Home runner",
       architecture: "arm64",
-      capabilities: ["session-rpc", "session-events"],
       fetch(_input, init) {
         received = JSON.parse(String(init?.body));
         return Promise.resolve(
@@ -70,7 +69,6 @@ Deno.test("enrolls with the PSK and validates the runner-token response", async 
     enrollmentPsk: ENROLLMENT_PSK,
     name: "Home runner",
     architecture: "arm64",
-    capabilities: ["session-rpc", "session-events"],
   });
   assertEquals(enrolled, { runnerId: RUNNER_ID, runnerToken: RUNNER_TOKEN });
 
@@ -79,7 +77,6 @@ Deno.test("enrolls with the PSK and validates the runner-token response", async 
     enrollmentPsk: ENROLLMENT_PSK,
     name: "Home runner",
     architecture: "arm64",
-    capabilities: ["session-rpc", "session-events"],
     fetch: () => Promise.resolve(Response.json({ runnerId: RUNNER_ID, runnerToken: "bad" })),
   });
   if (enrollmentError === undefined) throw new Error("Expected invalid enrollment response.");

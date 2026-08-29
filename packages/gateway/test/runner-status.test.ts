@@ -100,7 +100,6 @@ function runnerRecord(id: string): RunnerRecord {
     id,
     name: id,
     architecture: "x64",
-    capabilities: ["session-rpc", "session-events"],
     createdAt: Temporal.Instant.from("2026-01-01T00:00:00Z"),
     revokedAt: null,
   };
