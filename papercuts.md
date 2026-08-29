@@ -527,3 +527,16 @@
   adding that module to the asset server's explicit client-file allowlist.
 - 2026-08-29: The rename-state test spread a schema-union file value, so TypeScript correctly kept
   an impossible untracked-renamed branch until the fixture constructed the tracked rename directly.
+- 2026-08-29: Live CodeView dogfooding showed that Remix's queued component task inserted Pierre's
+  container before child reconciliation completed, so the childless host reconciliation detached the
+  viewer DOM while leaving its CodeView instance alive.
+- 2026-08-29: The first CodeView lifecycle regression harness lost contextual typing when its fake
+  Remix Handle was cast at the object boundary, leaving the queued-task parameter implicitly typed.
+- 2026-08-29: The wrapper-level CodeView regression harness reached through private VNode and mixin
+  representations with fake DOM types, which the strict boundary lints rejected as brittle evidence.
+- 2026-08-29: The simplified CodeView ordering test still typed an empty child array with an
+  assertion instead of giving its host-state fixture an explicit owner type.
+- 2026-08-29: During live CodeView verification, the managed gateway watcher did not exit before
+  systemd's stop timeout, leaving the gateway service failed until it was explicitly restarted.
+- 2026-08-29: Live verification disproved the first CodeView microtask-ordering test: Pierre's
+  container was still detached because the test did not exercise Remix's DOM-ownership contract.

@@ -54,7 +54,7 @@ export function RemixCodeView(handle: Handle<RemixCodeViewProps>) {
 
   const attachHost = (node: HTMLElement, signal: AbortSignal) => {
     host = node;
-    handle.queueTask(ensureViewer);
+    ensureViewer();
     signal.addEventListener("abort", () => {
       if (host !== node) return;
       cleanViewer();
@@ -71,9 +71,10 @@ export function RemixCodeView(handle: Handle<RemixCodeViewProps>) {
   return () => {
     const constructorChanged = mountedCodeView !== handle.props.CodeView;
     if (
-      constructorChanged ||
-      handle.props.CodeView !== undefined &&
-        (appliedItems !== handle.props.items || appliedOptions !== handle.props.options)
+      host !== undefined &&
+      (constructorChanged ||
+        handle.props.CodeView !== undefined &&
+          (appliedItems !== handle.props.items || appliedOptions !== handle.props.options))
     ) {
       handle.queueTask(ensureViewer);
     }
@@ -88,6 +89,7 @@ export function RemixCodeView(handle: Handle<RemixCodeViewProps>) {
     return (
       <nav
         {...props}
+        innerHTML=""
         mix={[
           codeViewRootStyle,
           mix,
