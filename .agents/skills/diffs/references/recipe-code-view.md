@@ -208,6 +208,5 @@ Use `onItemEditChange` for live contents and annotation changes. Use
 mode, assign a fresh `cacheKey`, and increment `version`. Use `getEditor(id)`
 for editor commands such as undo, redo, markers, or programmatic edits.
 
-Read [Edit with React](recipe-edit-react.md) or
-[Edit with vanilla JavaScript](recipe-edit-vanilla.md) for the complete editor
-lifecycle.
+Read [Edit with vanilla JavaScript](recipe-edit-vanilla.md) for the complete
+editor lifecycle.
