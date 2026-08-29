@@ -39,30 +39,10 @@ export const SessionChangesPanel = clientEntry<SessionChangesPanelProps>(
     let mutationInFlight = false;
     let sidebar: HTMLDetailsElement | undefined;
 
-    function setMutationButtons(disabled: boolean, activeButton?: HTMLButtonElement) {
-      const panel = document.getElementById(handle.id);
-      for (
-        const button of panel?.querySelectorAll<HTMLButtonElement>("[data-git-file-action]") ?? []
-      ) {
-        button.disabled = disabled;
-        const active = disabled && button === activeButton;
-        if (active) button.setAttribute("aria-busy", "true");
-        else button.removeAttribute("aria-busy");
-        button.querySelector("[data-slot='git-file-action-idle']")?.toggleAttribute(
-          "hidden",
-          active,
-        );
-        button.querySelector("[data-slot='git-file-action-spinner']")?.toggleAttribute(
-          "hidden",
-          !active,
-        );
-      }
-    }
-
     async function prepareSnapshotChanges(
       nextSnapshot: SessionGitSnapshotData,
     ): Promise<{ readonly changes: PreparedSessionChanges; readonly error?: string }> {
-      if (!nextSnapshot.sections.staged.patch && !nextSnapshot.sections.unstaged.patch) {
+      if (changedFileCount(nextSnapshot) === 0) {
         return { changes: prepareSessionChanges(nextSnapshot) };
       }
       const [diffs, importError] = await tryAsync(import("@pierre/diffs"), () => true);
@@ -82,8 +62,9 @@ export const SessionChangesPanel = clientEntry<SessionChangesPanelProps>(
         () => true,
       );
       if (parseError !== undefined) {
+        const fallback = prepareSessionChanges(nextSnapshot);
         return {
-          changes: prepareSessionChanges(nextSnapshot),
+          changes: { ...fallback, CodeView: diffs.CodeView },
           error: nextSnapshot.truncated
             ? "The truncated patch could not be rendered."
             : "The patch could not be rendered.",
@@ -95,17 +76,14 @@ export const SessionChangesPanel = clientEntry<SessionChangesPanelProps>(
     async function updateFile(
       action: "stage" | "unstage",
       path: string,
-      button: HTMLButtonElement,
       previousPath?: string,
     ) {
       if (mutationInFlight) return;
       mutationInFlight = true;
       operationError = undefined;
-      setMutationButtons(true, button);
       await using cleanup = new AsyncDisposableStack();
       cleanup.defer(async () => {
         mutationInFlight = false;
-        setMutationButtons(false);
         if (handle.signal.aborted) return;
         await handle.update();
         await requestRefresh();
@@ -289,8 +267,7 @@ export const SessionChangesPanel = clientEntry<SessionChangesPanelProps>(
                   : (
                     <SessionChangeFiles
                       {...loaded.changes}
-                      onUpdate={(action, path, button, previousPath) =>
-                        void updateFile(action, path, button, previousPath)}
+                      onUpdate={updateFile}
                     />
                   )}
               </>
@@ -346,7 +323,13 @@ const changedCountStyle = css({
   fontSize: "12px",
   textAlign: "center",
 });
-const panelContentStyle = css({ flex: 1, minHeight: 0, overflow: "auto" });
+const panelContentStyle = css({
+  display: "flex",
+  flex: 1,
+  flexDirection: "column",
+  minHeight: 0,
+  overflow: "hidden",
+});
 const snapshotWarningsStyle = css({
   display: "flex",
   gap: "10px",

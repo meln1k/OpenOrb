@@ -96,6 +96,28 @@ export function Icon(handle: Handle<{ name: IconName; size?: number }>) {
   };
 }
 
+export function createIconElement(name: IconName, size = 16): SVGSVGElement {
+  const namespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(namespace, "svg");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  for (const [tag, attributes] of getIconNodes(name)) {
+    const child = document.createElementNS(namespace, tag);
+    for (const [attribute, value] of Object.entries(attributes)) {
+      if (value !== undefined) child.setAttribute(attribute, String(value));
+    }
+    svg.append(child);
+  }
+  return svg;
+}
+
 function LucideNode(handle: Handle<{ node: IconNode[number] }>) {
   return () => {
     const [tag, attributes] = handle.props.node;

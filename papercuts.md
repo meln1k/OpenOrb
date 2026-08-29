@@ -515,3 +515,15 @@
   about 2.3 GiB; they had to be terminated before stopping the runner and gateway services.
 - 2026-08-29: Newly appended papercut lines exceeded Deno's Markdown wrapping and required
   formatting.
+- 2026-08-29: The first CodeView mutation-state cleanup used `try`/`finally` instead of the
+  repository's required disposable-stack cleanup pattern.
+- 2026-08-29: Converting that cleanup mechanically to `AsyncDisposableStack` left an async cleanup
+  callback with no awaited work, which Deno's standard lint rejected.
+- 2026-08-29: The first extracted Remix CodeView wrapper omitted Pierre's required annotation type
+  argument and left two imports outside the formatter's canonical compact form.
+- 2026-08-29: The first session-change reconciler returned an anonymously widened object and used an
+  `unknown`-returning JSON replacer, violating the repository's boundary type lints.
+- 2026-08-29: Extracting browser-side session change reconciliation into its own module required
+  adding that module to the asset server's explicit client-file allowlist.
+- 2026-08-29: The rename-state test spread a schema-union file value, so TypeScript correctly kept
+  an impossible untracked-renamed branch until the fixture constructed the tracked rename directly.

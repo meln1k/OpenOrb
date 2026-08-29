@@ -2,42 +2,39 @@ import type {
   SessionGitFileData,
   SessionGitSnapshotData,
 } from "../../../../protocol/src/browser-session-git-snapshot.ts";
-import type { FileDiff, FileDiffMetadata } from "@pierre/diffs";
-import { css, type Handle, on, ref } from "remix/ui";
+import type { CodeViewItem, CodeViewOptions, FileDiffMetadata } from "@pierre/diffs";
+import { css, type Handle } from "remix/ui";
 
-import { Icon } from "../components/icons.tsx";
+import { createIconElement } from "../components/icons.tsx";
+import { RemixCodeView, type RemixCodeViewProps } from "../components/remix-code-view.tsx";
+import {
+  filePreviousDisplayPath,
+  filePreviousPath,
+  isRenderableSessionChange,
+  type PreparedSessionChangeRow,
+  reconcileSessionChangeItems,
+  type SessionChangeDiffStats,
+  type SessionChangeFileState,
+  type SessionChangeItemRecord,
+  sessionChangeRowKey,
+} from "./session-change-items.ts";
 
 type DiffsModule = typeof import("@pierre/diffs");
-type FileState = "staged" | "unstaged";
-type DiffStats = { readonly additions: number; readonly deletions: number };
-type DiffViewer = Pick<FileDiff, "cleanUp">;
-
-export type PreparedSessionChangeRow = {
-  readonly key: string;
-  readonly file: SessionGitFileData;
-  readonly fileDiff?: FileDiffMetadata;
-  readonly fallback: string;
-  readonly stats?: DiffStats;
-};
-
-export type PreparedSessionChangeSection = {
-  readonly label: string;
-  readonly state: FileState;
-  readonly rows: readonly PreparedSessionChangeRow[];
+type ChangeHeaderContext = {
+  readonly item: Pick<CodeViewItem, "collapsed" | "id">;
 };
 
 export type PreparedSessionChanges = {
-  readonly sections: readonly PreparedSessionChangeSection[];
-  readonly Viewer?: DiffsModule["FileDiff"];
+  readonly rows: readonly PreparedSessionChangeRow[];
+  readonly CodeView?: DiffsModule["CodeView"];
 };
 
 export type SessionChangeFilesProps = PreparedSessionChanges & {
   readonly onUpdate: (
     action: "stage" | "unstage",
     path: string,
-    button: HTMLButtonElement,
     previousPath?: string,
-  ) => void;
+  ) => Promise<void>;
 };
 
 export function prepareSessionChanges(
@@ -51,213 +48,268 @@ export function prepareSessionChanges(
       unstaged: parsePatchSection(diffs, snapshot, "unstaged", cacheKey),
     }
     : { staged: new Map(), unstaged: new Map() };
-  const sections = fileSections(snapshot).map((section) => ({
-    label: section.label,
-    state: section.state,
-    rows: section.files.map((file) => {
+  const rows = fileSections(snapshot).flatMap((section) =>
+    section.files.map((file, index) => {
       const fileDiff = findFileDiff(parsed[section.state], file);
       return {
-        key: rowKey(section.state, file),
+        key: sessionChangeRowKey(section.state, file),
+        label: section.label,
+        state: section.state,
+        startsSection: index === 0,
         file,
         ...(fileDiff === undefined ? {} : { fileDiff }),
         fallback: diffFallbackMessage(file, section.truncated, fileDiff),
         ...(fileDiff === undefined ? {} : { stats: summarizeDiff(fileDiff) }),
       };
-    }),
-  }));
+    })
+  );
   return {
-    sections,
-    ...(diffs === undefined ? {} : { Viewer: diffs.FileDiff }),
+    rows,
+    ...(diffs === undefined ? {} : { CodeView: diffs.CodeView }),
   };
 }
 
 export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
-  return () => (
-    <nav aria-label="Changed files" mix={fileSectionsStyle}>
-      {handle.props.sections.map((section) => (
-        <section key={section.state} aria-label={section.label}>
-          <h3 mix={fileGroupHeadingStyle}>{section.label}</h3>
-          {section.rows.map((row) => (
-            <SessionChangeFileRow
-              key={row.key}
-              label={section.label}
-              state={section.state}
-              row={row}
-              {...(handle.props.Viewer === undefined ? {} : { Viewer: handle.props.Viewer })}
-              onUpdate={handle.props.onUpdate}
-            />
-          ))}
-        </section>
-      ))}
-    </nav>
-  );
-}
+  let preparedRows: readonly PreparedSessionChangeRow[] | undefined;
+  let items: readonly CodeViewItem[] = [];
+  let rowsById = new Map<string, PreparedSessionChangeRow>();
+  let itemRecords: ReadonlyMap<string, SessionChangeItemRecord> = new Map();
+  let mutationKey: string | undefined;
 
-type SessionChangeFileRowProps = {
-  readonly label: string;
-  readonly state: FileState;
-  readonly row: PreparedSessionChangeRow;
-  readonly Viewer?: DiffsModule["FileDiff"];
-  readonly onUpdate: SessionChangeFilesProps["onUpdate"];
-};
-
-function SessionChangeFileRow(handle: Handle<SessionChangeFileRowProps>) {
-  let expanded = false;
-  let host: HTMLElement | undefined;
-  let mountedDiff: FileDiffMetadata | undefined;
-  let viewer: DiffViewer | undefined;
-
-  const cleanViewer = () => {
-    viewer?.cleanUp();
-    viewer = undefined;
-    mountedDiff = undefined;
-    host?.replaceChildren();
+  const renderCustomHeader = (
+    _input: unknown,
+    context: ChangeHeaderContext,
+  ) => {
+    const row = rowsById.get(context.item.id);
+    return row === undefined
+      ? undefined
+      : createSessionChangeHeader(row, context.item.collapsed ?? false, mutationKey);
   };
-  const attachHost = (node: HTMLElement, signal: AbortSignal) => {
-    host = node;
-    signal.addEventListener("abort", () => {
-      if (host !== node) return;
-      cleanViewer();
-      host = undefined;
-    }, { once: true });
+
+  const codeViewOptions: CodeViewOptions<undefined> = {
+    theme: { light: "pierre-light", dark: "pierre-dark" },
+    diffStyle: "unified",
+    hunkSeparators: "line-info",
+    expansionLineCount: 100,
+    overflow: "wrap",
+    stickyHeaders: false,
+    layout: { paddingTop: 0, paddingBottom: 12, gap: 0 },
+    renderCustomHeader,
   };
-  const mountViewer = () => {
-    const { file, fileDiff } = handle.props.row;
-    const Viewer = handle.props.Viewer;
-    if (
-      !expanded || host === undefined || Viewer === undefined || fileDiff === undefined ||
-      file.diffState !== "available" || fileDiff.hunks.length === 0
-    ) return;
-    if (viewer !== undefined && mountedDiff === fileDiff) return;
-    cleanViewer();
-    const fileContainer = document.createElement("diffs-container");
-    host.replaceChildren(fileContainer);
-    const nextViewer = new Viewer({
-      theme: { light: "pierre-light", dark: "pierre-dark" },
-      diffStyle: "unified",
-      disableFileHeader: true,
-      hunkSeparators: "line-info",
-      expansionLineCount: 100,
-      overflow: "wrap",
+
+  const setMutationButtons = (host: HTMLElement) => {
+    for (
+      const button of host.querySelectorAll<HTMLButtonElement>("[data-git-file-action]")
+    ) {
+      button.disabled = mutationKey !== undefined;
+      const active = button.dataset.changeFileId === mutationKey;
+      if (active) button.setAttribute("aria-busy", "true");
+      else button.removeAttribute("aria-busy");
+      button.querySelector("[data-slot='git-file-action-idle']")?.toggleAttribute(
+        "hidden",
+        active,
+      );
+      button.querySelector("[data-slot='git-file-action-spinner']")?.toggleAttribute(
+        "hidden",
+        !active,
+      );
+    }
+  };
+
+  const prepareItems = () => {
+    const rows = handle.props.rows;
+    if (rows === preparedRows) return;
+    rowsById = new Map(rows.map((row) => [row.key, row]));
+    const reconciled = reconcileSessionChangeItems(rows, itemRecords);
+    items = reconciled.items;
+    itemRecords = reconciled.records;
+    preparedRows = rows;
+  };
+
+  const updateFile = async (
+    action: "stage" | "unstage",
+    row: PreparedSessionChangeRow,
+    host: HTMLElement,
+  ) => {
+    if (mutationKey !== undefined) return;
+    mutationKey = row.key;
+    setMutationButtons(host);
+    using cleanup = new DisposableStack();
+    cleanup.defer(() => {
+      mutationKey = undefined;
+      setMutationButtons(host);
     });
-    nextViewer.render({ fileContainer, fileDiff });
-    viewer = nextViewer;
-    mountedDiff = fileDiff;
+    await handle.props.onUpdate(action, row.file.path, filePreviousPath(row.file));
   };
 
-  handle.signal.addEventListener("abort", cleanViewer, { once: true });
+  const handleViewerClick: NonNullable<RemixCodeViewProps["onViewerClick"]> = (event, viewer) => {
+    const target = event.target;
+    const host = event.currentTarget;
+    if (!(target instanceof Element) || !(host instanceof HTMLElement)) return;
+    const button = target.closest<HTMLButtonElement>("button[data-change-file-command]");
+    if (button === null || !host.contains(button)) return;
+
+    const row = rowsById.get(button.dataset.changeFileId ?? "");
+    if (row === undefined) return;
+    const command = button.dataset.changeFileCommand;
+    if (command === "toggle") {
+      const item = viewer.getItem(row.key);
+      if (item === undefined) return;
+      const updatedItem: CodeViewItem = {
+        ...item,
+        collapsed: !item.collapsed,
+        version: (item.version ?? 0) + 1,
+      };
+      if (!viewer.updateItem(updatedItem)) return;
+      const record = itemRecords.get(row.key);
+      if (record !== undefined) {
+        itemRecords = new Map(itemRecords).set(row.key, { ...record, item: updatedItem });
+      }
+      return;
+    }
+    if (command !== "stage" && command !== "unstage") return;
+    void updateFile(command, row, host);
+  };
 
   return () => {
-    const { label, onUpdate, row, state, Viewer } = handle.props;
-    const { file, fileDiff, stats } = row;
-    const renderable = Viewer !== undefined && file.diffState === "available" &&
-      fileDiff !== undefined && fileDiff.hunks.length > 0;
-    if (!expanded || !renderable || mountedDiff !== fileDiff) cleanViewer();
-    if (expanded && renderable) handle.queueTask(mountViewer);
-
-    const action = state === "staged" ? "unstage" as const : "stage" as const;
-    const actionLabel = action === "stage" ? "Stage" : "Unstage";
-    const path = splitFilePath(file.displayPath);
-    const previousDisplayPath = filePreviousDisplayPath(file);
-    const bodyId = `${handle.id}-body`;
+    prepareItems();
     return (
-      <article id={handle.id} mix={fileItemStyle}>
-        <header mix={fileRowStyle}>
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls={bodyId}
-            aria-label={`${expanded ? "Collapse" : "Expand"} ${file.displayPath}`}
-            title={previousDisplayPath
-              ? `${previousDisplayPath} → ${file.displayPath}`
-              : file.displayPath}
-            mix={[
-              fileToggleStyle,
-              on<HTMLButtonElement, "click">("click", async () => {
-                expanded = !expanded;
-                if (!expanded) cleanViewer();
-                await handle.update();
-              }),
-            ]}
-          >
-            <span data-file-chevron>
-              <Icon name="chevron-right" size={14} />
-            </span>
-            <span data-file-label>
-              <strong dir="ltr">{path.name}</strong>
-              {path.directory
-                ? (
-                  <small title={path.directory}>
-                    <span dir="ltr">{path.directory}</span>
-                  </small>
-                )
-                : null}
-            </span>
-            {stats
-              ? (
-                <span
-                  aria-label={`${stats.additions} additions, ${stats.deletions} deletions`}
-                  mix={fileStatsStyle}
-                >
-                  {stats.additions > 0 ? <span data-additions>+{stats.additions}</span> : null}
-                  {stats.deletions > 0 ? <span data-deletions>-{stats.deletions}</span> : null}
-                </span>
-              )
-              : null}
-            <span
-              data-status={file.status}
-              title={statusTitle(file.status)}
-              mix={statusBadgeStyle}
-            >
-              {statusLabel(file.status)}
-            </span>
-          </button>
-          <button
-            type="button"
-            data-git-file-action={action}
-            aria-label={`${actionLabel} ${file.displayPath}`}
-            title={`${actionLabel} ${file.displayPath}`}
-            mix={[
-              fileActionStyle,
-              on<HTMLButtonElement, "click">("click", (event) =>
-                onUpdate(
-                  action,
-                  file.path,
-                  event.currentTarget,
-                  filePreviousPath(file),
-                )),
-            ]}
-          >
-            <span data-slot="git-file-action-idle" mix={fileActionIdleStyle}>
-              <Icon name={action === "stage" ? "circle-plus" : "circle-minus"} size={17} />
-            </span>
-            <span
-              aria-hidden="true"
-              data-slot="git-file-action-spinner"
-              hidden
-              mix={fileActionSpinnerStyle}
-            />
-          </button>
-        </header>
-        <div
-          id={bodyId}
-          hidden={!expanded}
-          aria-label={`${label}: ${file.displayPath}`}
-          mix={diffBodyStyle}
-        >
-          {renderable
-            ? <div mix={[diffHostStyle, ref(attachHost)]} />
-            : <p mix={diffFallbackStyle}>{row.fallback}</p>}
-        </div>
-      </article>
+      <RemixCodeView
+        aria-label="Changed files"
+        CodeView={handle.props.CodeView}
+        items={items}
+        options={codeViewOptions}
+        onViewerClick={handleViewerClick}
+        mix={codeViewStyle}
+      />
     );
   };
+}
+
+function createSessionChangeHeader(
+  row: PreparedSessionChangeRow,
+  collapsed: boolean,
+  mutationKey?: string,
+): HTMLElement {
+  const { file, stats } = row;
+  const action = row.state === "staged" ? "unstage" as const : "stage" as const;
+  const actionLabel = action === "stage" ? "Stage" : "Unstage";
+  const path = splitFilePath(file.displayPath);
+  const previousDisplayPath = filePreviousDisplayPath(file);
+  const root = document.createElement("div");
+  root.dataset.changeFile = "";
+
+  if (row.startsSection) {
+    const heading = document.createElement("h3");
+    heading.textContent = row.label;
+    heading.dataset.changeGroupHeading = "";
+    root.append(heading);
+  }
+
+  const header = document.createElement("header");
+  header.dataset.changeFileHeader = "";
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.dataset.changeFileCommand = "toggle";
+  toggle.dataset.changeFileId = row.key;
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  toggle.setAttribute(
+    "aria-label",
+    `${collapsed ? "Expand" : "Collapse"} ${file.displayPath}`,
+  );
+  toggle.title = previousDisplayPath
+    ? `${previousDisplayPath} → ${file.displayPath}`
+    : file.displayPath;
+
+  const chevron = document.createElement("span");
+  chevron.dataset.fileChevron = "";
+  chevron.append(createIconElement("chevron-right", 14));
+  toggle.append(chevron);
+
+  const fileLabel = document.createElement("span");
+  fileLabel.dataset.fileLabel = "";
+  const fileName = document.createElement("strong");
+  fileName.dir = "ltr";
+  fileName.textContent = path.name;
+  fileLabel.append(fileName);
+  if (path.directory) {
+    const directory = document.createElement("small");
+    directory.title = path.directory;
+    const directoryText = document.createElement("span");
+    directoryText.dir = "ltr";
+    directoryText.textContent = path.directory;
+    directory.append(directoryText);
+    fileLabel.append(directory);
+  }
+  toggle.append(fileLabel);
+
+  if (stats !== undefined) {
+    const statsElement = document.createElement("span");
+    statsElement.dataset.fileStats = "";
+    statsElement.setAttribute(
+      "aria-label",
+      `${stats.additions} additions, ${stats.deletions} deletions`,
+    );
+    if (stats.additions > 0) {
+      const additions = document.createElement("span");
+      additions.dataset.additions = "";
+      additions.textContent = `+${stats.additions}`;
+      statsElement.append(additions);
+    }
+    if (stats.deletions > 0) {
+      const deletions = document.createElement("span");
+      deletions.dataset.deletions = "";
+      deletions.textContent = `-${stats.deletions}`;
+      statsElement.append(deletions);
+    }
+    toggle.append(statsElement);
+  }
+
+  const status = document.createElement("span");
+  status.dataset.status = file.status;
+  status.title = statusTitle(file.status);
+  status.textContent = statusLabel(file.status);
+  toggle.append(status);
+  header.append(toggle);
+
+  const actionButton = document.createElement("button");
+  actionButton.type = "button";
+  actionButton.dataset.changeFileCommand = action;
+  actionButton.dataset.changeFileId = row.key;
+  actionButton.dataset.gitFileAction = action;
+  actionButton.setAttribute("aria-label", `${actionLabel} ${file.displayPath}`);
+  actionButton.title = `${actionLabel} ${file.displayPath}`;
+  actionButton.disabled = mutationKey !== undefined;
+  if (mutationKey === row.key) actionButton.setAttribute("aria-busy", "true");
+
+  const idle = document.createElement("span");
+  idle.dataset.slot = "git-file-action-idle";
+  idle.hidden = mutationKey === row.key;
+  idle.append(createIconElement(action === "stage" ? "circle-plus" : "circle-minus", 17));
+  actionButton.append(idle);
+
+  const spinner = document.createElement("span");
+  spinner.dataset.slot = "git-file-action-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  spinner.hidden = mutationKey !== row.key;
+  actionButton.append(spinner);
+  header.append(actionButton);
+  root.append(header);
+
+  if (!isRenderableSessionChange(row) && !collapsed) {
+    const fallback = document.createElement("p");
+    fallback.dataset.changeFallbackMessage = "";
+    fallback.textContent = row.fallback;
+    root.append(fallback);
+  }
+  return root;
 }
 
 function parsePatchSection(
   diffs: DiffsModule,
   snapshot: SessionGitSnapshotData,
-  state: FileState,
+  state: SessionChangeFileState,
   cacheKey: string,
 ): Map<string, FileDiffMetadata> {
   const patch = snapshot.sections[state].patch;
@@ -325,7 +377,7 @@ function diffFallbackMessage(
   return "No renderable patch is available for this file.";
 }
 
-function summarizeDiff(fileDiff: FileDiffMetadata): DiffStats {
+function summarizeDiff(fileDiff: FileDiffMetadata): SessionChangeDiffStats {
   let additions = 0;
   let deletions = 0;
   for (const hunk of fileDiff.hunks) {
@@ -340,18 +392,6 @@ function splitFilePath(path: string): { readonly directory: string; readonly nam
   return separator < 0
     ? { directory: "", name: path }
     : { directory: path.slice(0, separator), name: path.slice(separator + 1) };
-}
-
-function rowKey(state: FileState, file: SessionGitFileData): string {
-  return `${state}\0${filePreviousPath(file) ?? ""}\0${file.path}`;
-}
-
-function filePreviousPath(file: SessionGitFileData): string | undefined {
-  return "previousPath" in file ? file.previousPath : undefined;
-}
-
-function filePreviousDisplayPath(file: SessionGitFileData): string | undefined {
-  return "previousDisplayPath" in file ? file.previousDisplayPath : undefined;
 }
 
 function statusLabel(status: SessionGitFileData["status"]): string {
@@ -371,58 +411,65 @@ function statusTitle(status: SessionGitFileData["status"]): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-const fileSectionsStyle = css({
-  display: "flex",
-  flexDirection: "column",
-  paddingBottom: "12px",
-  "& > section + section": { marginTop: "12px" },
-});
-const fileGroupHeadingStyle = css({
-  margin: 0,
-  padding: "15px 14px 7px",
-  color: "var(--muted-foreground)",
-  fontSize: "11px",
-  fontWeight: 650,
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
-});
-const fileItemStyle = css({
-  borderTop: "1px solid transparent",
-  borderBottom: "1px solid var(--sidebar-border)",
-  "&:first-of-type": { borderTopColor: "var(--sidebar-border)" },
-});
-const fileRowStyle = css({
-  display: "flex",
-  alignItems: "center",
-  minWidth: 0,
-  minHeight: "46px",
+const codeViewStyle = css({
+  "--diffs-font-family": "var(--font-mono)",
+  "--diffs-font-size": "12px",
   background: "var(--sidebar)",
-  "&:hover": { background: "var(--sidebar-accent)" },
-  "&:has([aria-expanded='true'])": { background: "var(--sidebar-accent)" },
-});
-const fileToggleStyle = css({
-  display: "flex",
-  alignItems: "center",
-  gap: "8px",
-  flex: 1,
-  minWidth: 0,
-  alignSelf: "stretch",
-  padding: "9px 4px 9px 12px",
-  color: "var(--foreground)",
-  background: "transparent",
-  border: 0,
-  cursor: "pointer",
-  font: "inherit",
-  fontSize: "12px",
-  textAlign: "left",
-  "&:focus-visible": { outline: "2px solid var(--ring)", outlineOffset: "-2px" },
+  "& diffs-container": {
+    display: "block",
+    minWidth: 0,
+    background: "var(--sidebar)",
+    borderBottom: "1px solid var(--sidebar-border)",
+  },
+  "& [data-change-file]": { display: "block", minWidth: 0 },
+  "& [data-change-group-heading]": {
+    margin: 0,
+    padding: "15px 14px 7px",
+    color: "var(--muted-foreground)",
+    fontSize: "11px",
+    fontWeight: 650,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+  },
+  "& [data-change-file-header]": {
+    display: "flex",
+    alignItems: "center",
+    minWidth: 0,
+    minHeight: "46px",
+    background: "var(--sidebar)",
+    borderTop: "1px solid var(--sidebar-border)",
+  },
+  "& [data-change-file-header]:hover": { background: "var(--sidebar-accent)" },
+  "& [data-change-file-header]:has([aria-expanded='true'])": {
+    background: "var(--sidebar-accent)",
+  },
+  "& [data-change-file-command='toggle']": {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flex: 1,
+    minWidth: 0,
+    alignSelf: "stretch",
+    padding: "9px 4px 9px 12px",
+    color: "var(--foreground)",
+    background: "transparent",
+    border: 0,
+    cursor: "pointer",
+    font: "inherit",
+    fontSize: "12px",
+    textAlign: "left",
+  },
+  "& [data-change-file-command='toggle']:focus-visible": {
+    outline: "2px solid var(--ring)",
+    outlineOffset: "-2px",
+  },
   "& [data-file-chevron]": {
     display: "flex",
     flexShrink: 0,
     color: "var(--muted-foreground)",
     transition: "transform 120ms ease",
   },
-  "&[aria-expanded='true'] [data-file-chevron]": { transform: "rotate(90deg)" },
+  "& [aria-expanded='true'] [data-file-chevron]": { transform: "rotate(90deg)" },
   "& [data-file-label]": {
     display: "flex",
     flex: 1,
@@ -457,96 +504,90 @@ const fileToggleStyle = css({
     whiteSpace: "nowrap",
   },
   "& [data-file-label] small span": { flexShrink: 0 },
-});
-const fileStatsStyle = css({
-  display: "flex",
-  alignItems: "center",
-  gap: "3px",
-  flexShrink: 0,
-  fontFamily: "var(--font-mono)",
-  fontSize: "11px",
-  fontWeight: 600,
+  "& [data-file-stats]": {
+    display: "flex",
+    alignItems: "center",
+    gap: "3px",
+    flexShrink: 0,
+    fontFamily: "var(--font-mono)",
+    fontSize: "11px",
+    fontWeight: 600,
+  },
   "& [data-additions]": { color: "#16834b" },
   "& [data-deletions]": { color: "var(--destructive)" },
-});
-const statusBadgeStyle = css({
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  flexShrink: 0,
-  width: "24px",
-  height: "22px",
-  color: "var(--muted-foreground)",
-  border: "1px solid var(--sidebar-border)",
-  borderRadius: "6px",
-  fontSize: "11px",
-  fontWeight: 700,
-  "&[data-status='added']": {
+  "& [data-status]": {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    width: "24px",
+    height: "22px",
+    color: "var(--muted-foreground)",
+    border: "1px solid var(--sidebar-border)",
+    borderRadius: "6px",
+    fontSize: "11px",
+    fontWeight: 700,
+  },
+  "& [data-status='added']": {
     color: "#16834b",
     borderColor: "color-mix(in oklab, #16834b 42%, var(--sidebar-border))",
     background: "color-mix(in oklab, #16834b 7%, transparent)",
   },
-  "&[data-status='deleted']": {
+  "& [data-status='deleted']": {
     color: "var(--destructive)",
     borderColor: "color-mix(in oklab, var(--destructive) 42%, var(--sidebar-border))",
     background: "color-mix(in oklab, var(--destructive) 7%, transparent)",
   },
-  "&[data-status='modified'], &[data-status='renamed']": {
+  "& [data-status='modified'], & [data-status='renamed']": {
     color: "#9a6700",
     borderColor: "color-mix(in oklab, #9a6700 42%, var(--sidebar-border))",
     background: "color-mix(in oklab, #9a6700 7%, transparent)",
   },
-});
-const fileActionStyle = css({
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  flexShrink: 0,
-  width: "26px",
-  height: "26px",
-  marginRight: "10px",
-  padding: 0,
-  color: "var(--muted-foreground)",
-  background: "transparent",
-  border: 0,
-  borderRadius: "50%",
-  cursor: "pointer",
-  "&:hover, &:focus-visible": {
+  "& [data-git-file-action]": {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    width: "26px",
+    height: "26px",
+    marginRight: "10px",
+    padding: 0,
+    color: "var(--muted-foreground)",
+    background: "transparent",
+    border: 0,
+    borderRadius: "50%",
+    cursor: "pointer",
+  },
+  "& [data-git-file-action]:hover, & [data-git-file-action]:focus-visible": {
     color: "var(--foreground)",
     background: "var(--background)",
     outline: "none",
   },
-  "&:disabled": { opacity: 0.5, cursor: "pointer" },
-  "&[aria-busy='true']": { opacity: 1 },
-});
-const fileActionIdleStyle = css({
-  display: "inline-flex",
-  "&[hidden]": { display: "none" },
-});
-const fileActionSpinnerStyle = css({
-  display: "block",
-  width: "17px",
-  height: "17px",
-  border: "2px solid color-mix(in oklab, currentColor 35%, transparent)",
-  borderTopColor: "currentColor",
-  borderRadius: "999px",
-  animation: "openorb-git-file-action-spin 800ms linear infinite",
-  "&[hidden]": { display: "none" },
+  "& [data-git-file-action]:disabled": { opacity: 0.5, cursor: "pointer" },
+  "& [data-git-file-action][aria-busy='true']": { opacity: 1 },
+  "& [data-slot='git-file-action-idle']": { display: "inline-flex" },
+  "& [data-slot='git-file-action-idle'][hidden]": { display: "none" },
+  "& [data-slot='git-file-action-spinner']": {
+    display: "block",
+    width: "17px",
+    height: "17px",
+    border: "2px solid color-mix(in oklab, currentColor 35%, transparent)",
+    borderTopColor: "currentColor",
+    borderRadius: "999px",
+    animation: "openorb-git-file-action-spin 800ms linear infinite",
+  },
+  "& [data-slot='git-file-action-spinner'][hidden]": { display: "none" },
+  "& [data-change-fallback-message]": {
+    margin: 0,
+    padding: "14px",
+    color: "var(--muted-foreground)",
+    background: "var(--sidebar)",
+    borderTop: "1px solid var(--sidebar-border)",
+    fontSize: "12px",
+    textAlign: "center",
+  },
   "@keyframes openorb-git-file-action-spin": { to: { transform: "rotate(360deg)" } },
-  "@media (prefers-reduced-motion: reduce)": { animation: "none" },
-});
-const diffBodyStyle = css({
-  "--diffs-font-family": "var(--font-mono)",
-  "--diffs-font-size": "12px",
-  background: "var(--sidebar)",
-  borderTop: "1px solid var(--sidebar-border)",
-  "&[hidden]": { display: "none" },
-});
-const diffHostStyle = css({ display: "block", minWidth: 0 });
-const diffFallbackStyle = css({
-  margin: 0,
-  padding: "14px",
-  color: "var(--muted-foreground)",
-  fontSize: "12px",
-  textAlign: "center",
+  "@media (prefers-reduced-motion: reduce)": {
+    "& [data-slot='git-file-action-spinner']": { animation: "none" },
+  },
 });
