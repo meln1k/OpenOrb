@@ -30,8 +30,9 @@
   },
   "fmt": {
     "exclude": [
+      ".amp/in",
       ".amp/portals",
-      ".agents/skills/deno",
+      ".agents/skills",
       "packages/gateway/.agents",
       "packages/gateway/public",
       "packages/gateway/AGENTS.md",

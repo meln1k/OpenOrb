@@ -117,6 +117,26 @@ deno task typecheck:effect # Effect-specific diagnostics
 deno task test
 ```
 
+Pass test paths through the task for focused verification so the repository's test environment and
+Deno permissions are retained:
+
+```sh
+deno task test packages/protocol/test/runner-api.test.ts
+```
+
+Use `deno task test:gondolin` for the separate QEMU-backed integration suite. Do not invoke
+`deno test` directly; the tasks own required settings such as `NODE_ENV=test`, native FFI access, and
+system permissions.
+
+For a disposable package API probe, run the package-owned `probe` task so its import map and working
+directory apply:
+
+```sh
+deno task --filter @openorb/gateway probe 'import { marked } from "marked"; console.log(marked("ok"))'
+```
+
+Use a checked-in script and an explicit task instead for repeatable logic or maintenance writes.
+
 Run `deno fmt` directly to format files.
 
 Tests use `postgres://localhost/openorb-test`, do not start a VM, and do not require QEMU.
