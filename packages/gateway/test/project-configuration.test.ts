@@ -123,19 +123,23 @@ async function readCredentialStorage(
 
 Deno.test("configures GitHub, Git author, and project CRUD through protected browser forms", async () => {
   const client = await createAuthenticatedClient();
-  const settingsPath = routes.app.settings.index.href();
+  const gitAuthorSettingsPath = routes.app.settings.gitAuthor.index.href();
+  const githubSettingsPath = routes.app.settings.github.index.href();
   const projectsPath = routes.app.projects.index.href();
   try {
     const anonymous = await fetch(new URL(projectsPath, client.server.baseUrl));
     assertEquals(anonymous.status, 401);
 
-    const emptySettings = await getPage(client, settingsPath);
-    assertMatch(emptySettings, /GitHub credential/);
-    assertMatch(emptySettings, /Git author/);
-    assertMatch(emptySettings, /Not configured/);
-    assertMatch(emptySettings, /<link data-rmx rel="modulepreload" href="\/assets\//);
+    const emptyAuthorSettings = await getPage(client, gitAuthorSettingsPath);
+    assertMatch(emptyAuthorSettings, /Git author/);
+    assertMatch(emptyAuthorSettings, /Not configured/);
+    assertNotMatch(emptyAuthorSettings, /GitHub credential/);
+    const emptyGitHubSettings = await getPage(client, githubSettingsPath);
+    assertMatch(emptyGitHubSettings, /GitHub credential/);
+    assertMatch(emptyGitHubSettings, /Not configured/);
+    assertNotMatch(emptyGitHubSettings, /id="git-author-heading"/);
 
-    const authorResponse = await submitForm(client, settingsPath, {
+    const authorResponse = await submitForm(client, gitAuthorSettingsPath, {
       intent: "save-git-author",
       authorName: "  OpenOrb Developer  ",
       authorEmail: "  developer@example.com  ",
@@ -143,7 +147,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals(authorResponse.status, 303);
     assertEquals(
       authorResponse.headers.get("location"),
-      "/app/settings?tab=git-author#git-author",
+      gitAuthorSettingsPath,
     );
     const author = await client.store.getGitAuthorConfiguration(client.userId);
     assert(author);
@@ -155,7 +159,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       client.userId,
     );
 
-    const invalidAuthor = await submitForm(client, settingsPath, {
+    const invalidAuthor = await submitForm(client, gitAuthorSettingsPath, {
       intent: "save-git-author",
       authorName: "OpenOrb Developer",
       authorEmail: "not-an-email",
@@ -163,12 +167,12 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals(invalidAuthor.status, 400);
     assertMatch(await invalidAuthor.text(), /Expected valid email/);
 
-    const saveToken = await submitForm(client, settingsPath, {
+    const saveToken = await submitForm(client, githubSettingsPath, {
       intent: "save-github-credential",
       token: FIRST_TOKEN,
     });
     assertEquals(saveToken.status, 303);
-    assertEquals(saveToken.headers.get("location"), "/app/settings?tab=github#github");
+    assertEquals(saveToken.headers.get("location"), githubSettingsPath);
     const firstStorage = await readCredentialStorage(client);
     assertMatch(firstStorage.secret_key, /^OPENORB_GITHUB_TOKEN_[0-9A-F]{32}$/);
     assertEquals(firstStorage.secret_purpose, "git-credential");
@@ -176,13 +180,13 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals(await client.store.listSecrets(client.userId), []);
     assertEquals(await client.store.listModelProviderCredentials(client.userId), []);
 
-    const configuredSettings = await getPage(client, settingsPath);
+    const configuredSettings = await getPage(client, githubSettingsPath);
     assertMatch(configuredSettings, /Configured · updated/);
     assertMatch(configuredSettings, /Replace token/);
     assertNotMatch(configuredSettings, new RegExp(FIRST_TOKEN));
     assertNotMatch(configuredSettings, /OPENORB_GITHUB_TOKEN_/);
 
-    const replaceToken = await submitForm(client, settingsPath, {
+    const replaceToken = await submitForm(client, githubSettingsPath, {
       intent: "save-github-credential",
       token: SECOND_TOKEN,
     });
@@ -192,9 +196,9 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals(secondStorage.secret_row_id, firstStorage.secret_row_id);
     assertNotEquals(secondStorage.ciphertext, firstStorage.ciphertext);
     assert(!secondStorage.ciphertext.includes(SECOND_TOKEN));
-    assertNotMatch(await getPage(client, settingsPath), new RegExp(SECOND_TOKEN));
+    assertNotMatch(await getPage(client, githubSettingsPath), new RegExp(SECOND_TOKEN));
     assertEquals(
-      (await submitForm(client, settingsPath, { intent: "delete-github-credential" })).status,
+      (await submitForm(client, githubSettingsPath, { intent: "delete-github-credential" })).status,
       303,
     );
     assertEquals(await client.store.getGitHubCredential(client.userId), null);
@@ -235,7 +239,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals((await client.store.listProjects(client.userId)).length, 1);
 
     assertEquals(
-      (await submitForm(client, settingsPath, {
+      (await submitForm(client, githubSettingsPath, {
         intent: "save-github-credential",
         token: SECOND_TOKEN,
       })).status,
@@ -263,7 +267,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertNotMatch(projectsHtml, new RegExp(SECOND_TOKEN));
 
     assertEquals(
-      (await submitForm(client, settingsPath, { intent: "delete-github-credential" })).status,
+      (await submitForm(client, githubSettingsPath, { intent: "delete-github-credential" })).status,
       303,
     );
     assertEquals(await client.store.getGitHubCredential(client.userId), null);

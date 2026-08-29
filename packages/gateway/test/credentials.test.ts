@@ -11,6 +11,7 @@ import { array, number, object, parse, string } from "remix/data-schema";
 import { ModelProviderCredentialReadError } from "@/app/data/model-provider-repository.ts";
 import { createAppServices } from "@/app/middleware/services.ts";
 import { createAppRouter } from "@/app/router.ts";
+import { routes } from "@/app/routes.ts";
 import { importMasterKey } from "@/app/utils/master-key.ts";
 import { decryptSecret } from "@/app/utils/secret-cipher.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
@@ -26,6 +27,9 @@ const OPENAI_PROVIDER = "openai";
 const OPENAI_VALUE = "sk-openai-secret-91e4b0";
 const GENERIC_SECRET_KEY = "SERVICE_TOKEN";
 const GENERIC_SECRET_VALUE = "generic-service-secret-42";
+const PROVIDERS_SETTINGS_PATH = routes.app.settings.providers.index.href();
+const RUNNERS_SETTINGS_PATH = routes.app.settings.runners.index.href();
+const SECRETS_SETTINGS_PATH = routes.app.settings.secrets.index.href();
 
 const storedProviderRowSchema = object({
   id: string(),
@@ -107,8 +111,11 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
   }
 }
 
-async function credentialsPage(client: AuthenticatedClient): Promise<string> {
-  const response = await fetch(new URL("/app/settings", client.server.baseUrl), {
+async function credentialsPage(
+  client: AuthenticatedClient,
+  path = PROVIDERS_SETTINGS_PATH,
+): Promise<string> {
+  const response = await fetch(new URL(path, client.server.baseUrl), {
     headers: { Cookie: client.cookie },
   });
   assertEquals(response.status, 200);
@@ -117,10 +124,11 @@ async function credentialsPage(client: AuthenticatedClient): Promise<string> {
 
 async function submitCredentialsForm(
   client: AuthenticatedClient,
+  path: string,
   form: Record<string, string>,
 ): Promise<Response> {
-  const page = await credentialsPage(client);
-  return fetch(new URL("/app/settings", client.server.baseUrl), {
+  const page = await credentialsPage(client, path);
+  return fetch(new URL(path, client.server.baseUrl), {
     method: "POST",
     redirect: "manual",
     headers: { Cookie: client.cookie },
@@ -131,6 +139,13 @@ async function submitCredentialsForm(
 Deno.test("configures Pi providers without exposing or keying records by API key", async () => {
   const client = await createAuthenticatedClient();
   try {
+    const settingsIndex = await fetch(
+      new URL(routes.app.settings.index.href(), client.server.baseUrl),
+      { redirect: "manual", headers: { Cookie: client.cookie } },
+    );
+    assertEquals(settingsIndex.status, 302);
+    assertEquals(settingsIndex.headers.get("location"), PROVIDERS_SETTINGS_PATH);
+
     const empty = await credentialsPage(client);
     assertMatch(empty, /<title>Settings<\/title>/);
     assertMatch(empty, /Model providers/);
@@ -138,10 +153,26 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     assertMatch(empty, /name="providerId"/);
     assertMatch(empty, /value="opencode-go"/);
     assertMatch(empty, /name="apiKey"/);
-    assertMatch(empty, /Generic secrets/);
-    assertMatch(empty, /name="key"/);
+    assertNotMatch(empty, /Generic secrets/);
+    assertMatch(empty, /<nav aria-label="Settings sections"/);
+    assertMatch(empty, /href="\/app\/settings\/providers" aria-current="page"/);
+    assertNotMatch(empty, /rmx-document/);
+    assertMatch(empty, /href="\/app" aria-label="Close settings"/);
+    assertNotMatch(empty, /data-slot="tabs"/);
+    assertNotMatch(empty, /\/assets\/app\/ui\/settings\//);
     assertNotMatch(empty, /OPENCODE_API_KEY/);
     assertNotMatch(empty, new RegExp(OPENCODE_VALUE));
+
+    const secrets = await credentialsPage(client, SECRETS_SETTINGS_PATH);
+    assertMatch(secrets, /Generic secrets/);
+    assertMatch(secrets, /name="key"/);
+    assertNotMatch(secrets, /Model providers/);
+
+    const runners = await credentialsPage(client, RUNNERS_SETTINGS_PATH);
+    assertMatch(runners, /Runner enrollment/);
+    assertMatch(runners, /No runners enrolled/);
+    assertNotMatch(runners, /Model providers/);
+    assertNotMatch(runners, /Copy command/);
 
     for (
       const [providerId, apiKey] of [
@@ -149,13 +180,13 @@ Deno.test("configures Pi providers without exposing or keying records by API key
         [OPENAI_PROVIDER, OPENAI_VALUE],
       ] as const
     ) {
-      const response = await submitCredentialsForm(client, {
-        intent: "save-provider",
-        providerId,
-        apiKey,
-      });
+      const response = await submitCredentialsForm(
+        client,
+        PROVIDERS_SETTINGS_PATH,
+        { intent: "save-provider", providerId, apiKey },
+      );
       assertEquals(response.status, 303);
-      assertEquals(response.headers.get("location"), "/app/settings?tab=providers#providers");
+      assertEquals(response.headers.get("location"), PROVIDERS_SETTINGS_PATH);
     }
 
     const saved = await credentialsPage(client);
@@ -205,11 +236,15 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     }
 
     const replacement = "oc-go-replacement-secret-5c7e12";
-    const replaceResponse = await submitCredentialsForm(client, {
-      intent: "save-provider",
-      providerId: OPENCODE_PROVIDER,
-      apiKey: replacement,
-    });
+    const replaceResponse = await submitCredentialsForm(
+      client,
+      PROVIDERS_SETTINGS_PATH,
+      {
+        intent: "save-provider",
+        providerId: OPENCODE_PROVIDER,
+        apiKey: replacement,
+      },
+    );
     assertEquals(replaceResponse.status, 303);
     const replaced = parse(
       storedProviderRowSchema,
@@ -231,10 +266,14 @@ Deno.test("configures Pi providers without exposing or keying records by API key
       undefined,
     ]);
 
-    const deleteResponse = await submitCredentialsForm(client, {
-      intent: "delete-provider",
-      providerId: OPENAI_PROVIDER,
-    });
+    const deleteResponse = await submitCredentialsForm(
+      client,
+      PROVIDERS_SETTINGS_PATH,
+      {
+        intent: "delete-provider",
+        providerId: OPENAI_PROVIDER,
+      },
+    );
     assertEquals(deleteResponse.status, 303);
     assertEquals(
       await client.store.getModelProviderCredential(client.userId, OPENAI_PROVIDER),
@@ -259,13 +298,17 @@ Deno.test("generic secrets remain independent from model provider credentials", 
       OPENCODE_PROVIDER,
       OPENCODE_VALUE,
     );
-    const saveResponse = await submitCredentialsForm(client, {
-      intent: "save-secret",
-      key: GENERIC_SECRET_KEY,
-      value: GENERIC_SECRET_VALUE,
-    });
+    const saveResponse = await submitCredentialsForm(
+      client,
+      SECRETS_SETTINGS_PATH,
+      {
+        intent: "save-secret",
+        key: GENERIC_SECRET_KEY,
+        value: GENERIC_SECRET_VALUE,
+      },
+    );
     assertEquals(saveResponse.status, 303);
-    assertEquals(saveResponse.headers.get("location"), "/app/settings?tab=secrets#secrets");
+    assertEquals(saveResponse.headers.get("location"), SECRETS_SETTINGS_PATH);
 
     assertEquals((await client.store.listSecrets(client.userId)).map((secret) => secret.key), [
       GENERIC_SECRET_KEY,
@@ -289,7 +332,7 @@ Deno.test("generic secrets remain independent from model provider credentials", 
       GENERIC_SECRET_KEY,
     );
 
-    const page = await credentialsPage(client);
+    const page = await credentialsPage(client, SECRETS_SETTINGS_PATH);
     assertMatch(page, new RegExp(GENERIC_SECRET_KEY));
     assertNotMatch(page, new RegExp(GENERIC_SECRET_VALUE));
     assertNotMatch(page, new RegExp(OPENCODE_VALUE));
@@ -302,10 +345,14 @@ Deno.test("generic secrets remain independent from model provider credentials", 
     );
     assert(await client.store.getSecret(client.userId, GENERIC_SECRET_KEY));
 
-    const deleteResponse = await submitCredentialsForm(client, {
-      intent: "delete-secret",
-      key: GENERIC_SECRET_KEY,
-    });
+    const deleteResponse = await submitCredentialsForm(
+      client,
+      SECRETS_SETTINGS_PATH,
+      {
+        intent: "delete-secret",
+        key: GENERIC_SECRET_KEY,
+      },
+    );
     assertEquals(deleteResponse.status, 303);
     assertEquals(await client.store.listSecrets(client.userId), []);
   } finally {
@@ -418,20 +465,24 @@ Deno.test("provider plaintext and master key never enter gateway rows", async ()
 Deno.test("rejects unknown providers, unauthenticated access, and missing CSRF", async () => {
   const client = await createAuthenticatedClient();
   try {
-    const invalidProvider = await submitCredentialsForm(client, {
-      intent: "save-provider",
-      providerId: "not-a-pi-provider",
-      apiKey: OPENCODE_VALUE,
-    });
+    const invalidProvider = await submitCredentialsForm(
+      client,
+      PROVIDERS_SETTINGS_PATH,
+      {
+        intent: "save-provider",
+        providerId: "not-a-pi-provider",
+        apiKey: OPENCODE_VALUE,
+      },
+    );
     assertEquals(invalidProvider.status, 400);
     assertEquals(await client.store.listModelProviderCredentials(client.userId), []);
 
-    const anonymous = await fetch(new URL("/app/settings", client.server.baseUrl), {
+    const anonymous = await fetch(new URL(PROVIDERS_SETTINGS_PATH, client.server.baseUrl), {
       redirect: "manual",
     });
     assertEquals(anonymous.status, 401);
 
-    const missingCsrf = await fetch(new URL("/app/settings", client.server.baseUrl), {
+    const missingCsrf = await fetch(new URL(PROVIDERS_SETTINGS_PATH, client.server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: client.cookie },

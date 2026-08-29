@@ -25,7 +25,6 @@ export const assetServer = createAssetServer({
     "packages/gateway/app/ui/session/session-event-view.tsx",
     "packages/gateway/app/ui/session/session-markdown.tsx",
     "packages/gateway/app/ui/session/session-transcript-state.ts",
-    "packages/gateway/app/ui/settings/**",
     "packages/protocol/src/browser-session-git-snapshot.ts",
     "packages/protocol/src/browser-session-events.ts",
     "packages/protocol/src/runner-api-limits.ts",

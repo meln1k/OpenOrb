@@ -161,7 +161,6 @@ function AppNavigation(
           </span>
           <span mix={sidebarBrandTextStyle}>
             <strong>OpenOrb</strong>
-            <span>Gateway</span>
           </span>
         </a>
         <SidebarMenu>
@@ -216,7 +215,6 @@ function AppNavigation(
             </Avatar>
             <span mix={sidebarAccountTextStyle}>
               <strong>Administrator</strong>
-              <span>Single-user workspace</span>
             </span>
             <Icon name="chevrons-up-down" />
           </DropdownMenuTrigger>
@@ -228,12 +226,11 @@ function AppNavigation(
                 </Avatar>
                 <span mix={accountMenuTextStyle}>
                   <strong>Administrator</strong>
-                  <span>Single-user workspace</span>
                 </span>
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuLink href={routes.app.settings.index.href()}>
+            <DropdownMenuLink href={routes.app.settings.providers.index.href()}>
               <Icon name="settings" />
               Settings
             </DropdownMenuLink>
@@ -282,7 +279,6 @@ const sidebarBrandMarkStyle = css({
   width: "32px",
   height: "32px",
   padding: "6px",
-  background: "var(--sidebar-primary)",
   borderRadius: "var(--radius-lg)",
   "& img": { display: "block", width: "100%", height: "100%" },
 });
@@ -294,9 +290,12 @@ const sidebarBrandTextStyle = css({
   fontSize: "14px",
   lineHeight: 1.25,
   textAlign: "left",
-  "& strong, & span": { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  "& strong": { fontWeight: 600 },
-  "& span": { fontSize: "12px" },
+  "& strong": {
+    overflow: "hidden",
+    fontWeight: 600,
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
 });
 const emptySessionsStyle = css({
   margin: "4px 8px",

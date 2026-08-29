@@ -1,5 +1,4 @@
-import { css, type Handle, on } from "remix/ui";
-import { tryAsync } from "../../../../result/src/index.ts";
+import { css, type Handle } from "remix/ui";
 
 import {
   AlertDialog,
@@ -18,13 +17,7 @@ import {
   CardHeader,
 } from "@/app/ui/components/card.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
-import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemFooter,
-  ItemTitle,
-} from "@/app/ui/components/item.tsx";
+import { Item, ItemActions, ItemContent, ItemTitle } from "@/app/ui/components/item.tsx";
 import { Progress } from "@/app/ui/components/progress.tsx";
 import { media } from "@/app/ui/responsive.ts";
 import {
@@ -38,7 +31,7 @@ import type {
   SettingsEnrollmentCommand,
   SettingsRunner,
   SettingsRunnerCapacity,
-} from "@/app/ui/settings/settings-tabs.tsx";
+} from "@/app/ui/settings/settings-navigation.tsx";
 
 export function RunnersSection(
   handle: Handle<
@@ -246,7 +239,7 @@ function RevokeRunnerDialog(
           The runner will disconnect immediately and must be enrolled again before it can reconnect.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
+      <form method="post" action={actionHref} mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="revoke-runner" />
         <input type="hidden" name="runnerId" value={runner.id} />
@@ -286,7 +279,7 @@ function DeleteRunnerDialog(
           This permanently removes the revoked runner record. This action cannot be undone.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
+      <form method="post" action={actionHref} mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="delete-runner" />
         <input type="hidden" name="runnerId" value={runner.id} />
@@ -338,8 +331,6 @@ function formatMiB(value: number): string {
 function EnrollmentCommand(
   handle: Handle<{ actionHref: string; csrfToken: string; enrollmentCommand: string }>,
 ) {
-  let copyStatus: "copied" | "failed" | undefined;
-
   return () => (
     <Item
       variant="outline"
@@ -356,27 +347,7 @@ function EnrollmentCommand(
         </ItemTitle>
       </ItemContent>
       <ItemActions mix={enrollmentCommandActionsStyle}>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          mix={on("click", async (_event, signal) => {
-            const [, copyError] = await tryAsync(
-              globalThis.navigator.clipboard.writeText(handle.props.enrollmentCommand),
-              () => true,
-            );
-            if (copyError !== undefined) {
-              copyStatus = "failed";
-              if (!signal.aborted) await handle.update();
-              return;
-            }
-            copyStatus = "copied";
-            if (!signal.aborted) await handle.update();
-          })}
-        >
-          Copy command
-        </Button>
-        <form method="post" action={handle.props.actionHref} rmx-document>
+        <form method="post" action={handle.props.actionHref}>
           <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
           <input type="hidden" name="intent" value="regenerate-enrollment-token" />
           <Button type="submit" size="sm" variant="outline">
@@ -384,17 +355,6 @@ function EnrollmentCommand(
           </Button>
         </form>
       </ItemActions>
-      {copyStatus
-        ? (
-          <ItemFooter>
-            <p role="status" aria-live="polite" mix={copyStatusStyle}>
-              {copyStatus === "copied"
-                ? "Enrollment command copied."
-                : "Could not copy automatically. Select and copy the command manually."}
-            </p>
-          </ItemFooter>
-        )
-        : null}
     </Item>
   );
 }
@@ -509,11 +469,6 @@ const commandPromptStyle = css({
   marginRight: "0.5ch",
   color: "var(--muted-foreground)",
   userSelect: "none",
-});
-const copyStatusStyle = css({
-  margin: 0,
-  color: "var(--muted-foreground)",
-  fontSize: "12px",
 });
 
 const dialogFormStyle = css({ display: "grid", gap: "20px" });

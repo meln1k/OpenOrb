@@ -11,7 +11,7 @@ import {
   sectionHeadingStyle,
   settingsSectionStyle,
 } from "@/app/ui/settings/settings-shared.ts";
-import type { SettingsGitAuthor } from "@/app/ui/settings/settings-tabs.tsx";
+import type { SettingsGitAuthor } from "@/app/ui/settings/settings-navigation.tsx";
 export function GitAuthorSection(
   handle: Handle<
     {
@@ -34,7 +34,7 @@ export function GitAuthorSection(
           OpenOrb session commits.
         </p>
       </header>
-      <form id={formId} method="post" action={actionHref} rmx-document mix={authorFormStyle}>
+      <form id={formId} method="post" action={actionHref} mix={authorFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="save-git-author" />
         <div mix={authorFieldsStyle}>
@@ -84,7 +84,6 @@ const authorFormStyle = css({
 const authorFieldsStyle = css({
   display: "grid",
   gap: "18px",
-  [media.sm]: { gridTemplateColumns: "1fr 1fr" },
 });
 const authorFooterStyle = css({
   display: "flex",

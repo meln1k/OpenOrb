@@ -20,7 +20,7 @@ import {
   sectionHeadingStyle,
   settingsSectionStyle,
 } from "@/app/ui/settings/settings-shared.ts";
-import type { SettingsGitHubCredential } from "@/app/ui/settings/settings-tabs.tsx";
+import type { SettingsGitHubCredential } from "@/app/ui/settings/settings-navigation.tsx";
 
 export function GitHubCredentialSection(
   handle: Handle<
@@ -121,7 +121,7 @@ function GitHubCredentialDialog(
           The token is encrypted immediately and cannot be viewed again.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
+      <form method="post" action={actionHref} mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="save-github-credential" />
         <Field>
@@ -163,7 +163,7 @@ function DeleteGitHubCredentialDialog(
           Private repository operations will stop working until another token is configured.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document>
+      <form method="post" action={actionHref}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="delete-github-credential" />
         <AlertDialogFooter>

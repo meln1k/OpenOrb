@@ -956,10 +956,10 @@ const promptFormStyle = css({
   minHeight: "104px",
   marginBlock: "0 8px",
   padding: "12px",
-  background: "color-mix(in oklab, var(--muted) 50%, var(--background))",
+  background: "var(--background)",
   border: "1px solid var(--border)",
   borderRadius: "12px",
-  boxShadow: "0 1px 3px rgb(0 0 0 / 0.08)",
+  boxShadow: "0 1px 4px rgb(0 0 0 / 0.1)",
   transition: "border-color 150ms ease",
   "&:focus-within": {
     borderColor: "color-mix(in oklab, var(--border) 88%, black)",

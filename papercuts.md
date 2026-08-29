@@ -540,3 +540,38 @@
   systemd's stop timeout, leaving the gateway service failed until it was explicitly restarted.
 - 2026-08-29: Live verification disproved the first CodeView microtask-ordering test: Pierre's
   container was still detached because the test did not exercise Remix's DOM-ownership contract.
+- 2026-08-27: The first SSR-settings test treated every Remix module preload as settings navigation
+  hydration, but native `AlertDialog` behavior legitimately preloads its own small client entry.
+- 2026-08-28: The first live settings dogfood session bootstrap used Deno Postgres's `queryObject`
+  API, but this gateway's `pg.Pool` exposes the Node-compatible `query` API instead.
+- 2026-08-28: Live settings dogfooding showed that plain same-origin anchors are still intercepted
+  by Remix's Navigation API runtime unless they explicitly carry `rmx-document`.
+- 2026-08-28: Agent-browser element references became stale after a redirect followed by media and
+  viewport changes; interactive references must be refreshed from a new snapshot before reuse.
+- 2026-08-28: The first nested-settings route patch assumed the provider section component retained
+  its earlier `ModelProvidersSection` name; the current component is named `ModelProviders`.
+- 2026-08-28: Replacing the settings controller through separate delete and add patches exposed a
+  transient missing-module state to the live Deno watcher before the new controller was created.
+- 2026-08-28: The desktop settings layout's inline conditional exceeded Deno's formatting width and
+  needed the formatter's multiline JSX shape.
+- 2026-08-28: Starting the development runner with its enrollment PSK as a CLI argument caused Deno
+  task and systemd status output to echo that credential before enrollment completed.
+- 2026-08-28: Stopping the managed development runner left the nested Deno watch process alive until
+  systemd's 90-second stop timeout expired and killed the service cgroup.
+
+- 2026-08-29: Applying a whole-file transfer from a checkout seven commits behind `origin/main`
+  removed the newer session wake, changes, and git-snapshot route contracts plus the right-side
+  Changes panel contract. `deno check` reported 26 compatibility errors across the API sessions
+  controller, session pages, and browser provisioning tests. Preserve those fresh-base APIs and UI
+  contracts when reconstructing the transferred settings SSR/navigation and composer styling
+  changes.
+- 2026-08-29: A temporary runner enrollment entrypoint under `/tmp` did not inherit the runner
+  package's Deno import map, so its `@openorb/result` dependency failed to resolve before
+  enrollment.
+- 2026-08-29: The real dogfood runner on an 8 GB host reported only about 3.3 GiB allocatable guest
+  memory, so the composer-default medium 8 GB orb submission was rejected with HTTP 409.
+- 2026-08-29: The tiny Gondolin guest's project setup exhausted its filesystem while globally
+  installing `effect-solutions`; provisioning surfaced the failure and continued to Pi's repair
+  path.
+- 2026-08-29: Targeted formatting found that two newly recorded dogfood papercuts exceeded Deno's
+  Markdown line width.

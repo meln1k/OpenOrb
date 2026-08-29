@@ -38,7 +38,7 @@ import {
 import type {
   SettingsModelProvider,
   SettingsModelProviderOption,
-} from "@/app/ui/settings/settings-tabs.tsx";
+} from "@/app/ui/settings/settings-navigation.tsx";
 
 export function ModelProviders(
   handle: Handle<
@@ -135,7 +135,7 @@ function AddProviderDialog(
           Choose a provider supported by Pi and save its API key.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
+      <form method="post" action={actionHref} mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="save-provider" />
         <Field>
@@ -255,7 +255,7 @@ function EditProviderDialog(
           again.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
+      <form method="post" action={actionHref} mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="save-provider" />
         <input type="hidden" name="providerId" value={provider.providerId} />
@@ -306,7 +306,7 @@ function DeleteProviderDialog(
           <strong>{provider.name}</strong>. This action cannot be undone.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document>
+      <form method="post" action={actionHref}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="delete-provider" />
         <input type="hidden" name="providerId" value={provider.providerId} />

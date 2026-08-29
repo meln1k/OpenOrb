@@ -35,7 +35,7 @@ import {
   sectionHeadingStyle,
   settingsSectionStyle,
 } from "@/app/ui/settings/settings-shared.ts";
-import type { SettingsSecret } from "@/app/ui/settings/settings-tabs.tsx";
+import type { SettingsSecret } from "@/app/ui/settings/settings-navigation.tsx";
 
 export function GenericSecrets(
   handle: Handle<
@@ -116,7 +116,7 @@ function AddSecretDialog(
           Store a named secret independently from model and Git credentials.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
+      <form method="post" action={actionHref} mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="save-secret" />
         <Field>
@@ -227,7 +227,7 @@ function EditSecretDialog(
           <strong>{secret.key}</strong>. The new value will be encrypted and cannot be shown again.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document mix={dialogFormStyle}>
+      <form method="post" action={actionHref} mix={dialogFormStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="save-secret" />
         <input type="hidden" name="key" value={secret.key} />
@@ -272,7 +272,7 @@ function DeleteSecretDialog(
           This will permanently delete <strong>{secret.key}</strong>. This action cannot be undone.
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <form method="post" action={actionHref} rmx-document>
+      <form method="post" action={actionHref}>
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="intent" value="delete-secret" />
         <input type="hidden" name="key" value={secret.key} />

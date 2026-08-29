@@ -19,7 +19,14 @@ export const routes = route({
       abort: post(":sessionId/abort"),
       retry: post(":sessionId/retry"),
     }),
-    settings: form("settings"),
+    settings: route("settings", {
+      index: get("/"),
+      providers: form("providers"),
+      secrets: form("secrets"),
+      github: form("github"),
+      gitAuthor: form("git-author"),
+      runners: form("runners"),
+    }),
   }),
   api: route("api", {
     runners: route("runners", {

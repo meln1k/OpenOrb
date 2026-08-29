@@ -6,6 +6,7 @@ export * from "@/app/ui/components/button.tsx";
 export * from "@/app/ui/components/card.tsx";
 export * from "@/app/ui/components/collapsible.tsx";
 export * from "@/app/ui/components/dropdown-menu.tsx";
+export * from "@/app/ui/components/empty.tsx";
 export * from "@/app/ui/components/field.tsx";
 export * from "@/app/ui/components/icons.tsx";
 export * from "@/app/ui/components/input.tsx";

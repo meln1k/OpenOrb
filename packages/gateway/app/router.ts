@@ -14,6 +14,11 @@ import controller from "@/app/actions/controller.tsx";
 import projectsController from "@/app/actions/projects/controller.tsx";
 import sessionsController from "@/app/actions/sessions/controller.tsx";
 import settingsController from "@/app/actions/settings/controller.tsx";
+import settingsGitAuthorController from "@/app/actions/settings/git-author/controller.tsx";
+import settingsGitHubController from "@/app/actions/settings/github/controller.tsx";
+import settingsProvidersController from "@/app/actions/settings/providers/controller.tsx";
+import settingsRunnersController from "@/app/actions/settings/runners/controller.tsx";
+import settingsSecretsController from "@/app/actions/settings/secrets/controller.tsx";
 import apiRunnersController from "@/app/actions/api/runners/controller.ts";
 import apiSessionsController from "@/app/actions/api/sessions/controller.ts";
 import type { Administrator } from "@/app/data/administrator-repository.ts";
@@ -89,6 +94,11 @@ export function createAppRouter(
   appRouter.map(routes.app.projects, projectsController);
   appRouter.map(routes.app.sessions, sessionsController);
   appRouter.map(routes.app.settings, settingsController);
+  appRouter.map(routes.app.settings.providers, settingsProvidersController);
+  appRouter.map(routes.app.settings.secrets, settingsSecretsController);
+  appRouter.map(routes.app.settings.github, settingsGitHubController);
+  appRouter.map(routes.app.settings.gitAuthor, settingsGitAuthorController);
+  appRouter.map(routes.app.settings.runners, settingsRunnersController);
   appRouter.map(routes.api.runners, apiRunnersController);
   appRouter.map(routes.api.sessions, apiSessionsController);
 

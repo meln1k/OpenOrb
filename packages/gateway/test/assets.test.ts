@@ -7,7 +7,6 @@ const clientEntries = [
   "packages/gateway/app/ui/session/session-changes-panel.tsx",
   "packages/gateway/app/ui/session/session-composer-behavior.tsx",
   "packages/gateway/app/ui/session/session-event-view.tsx",
-  "packages/gateway/app/ui/settings/settings-tabs.tsx",
   "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/button.js",
 ];
 
@@ -25,7 +24,7 @@ Deno.test("serves browser UI dependencies without exposing server modules", asyn
     const href of [
       "/assets/app/actions/settings/controller.tsx",
       "/assets/app/actions/settings/page.tsx",
-      "/assets/app/actions/settings/ui/settings-tabs.tsx",
+      "/assets/app/ui/settings/settings-navigation.tsx",
       "/assets/app/actions/sessions/controller.tsx",
       "/assets/app/actions/sessions/page.tsx",
       "/assets/npm/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/server.js",
