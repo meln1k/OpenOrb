@@ -87,16 +87,16 @@ Unless a ticket explicitly says otherwise:
 
 | Ticket | Outcome |
 |---|---|
-| [OO-018](OO-018-stop-idle-and-cold-continuation.md) | VM destruction and continuation preserve workspace and Pi JSONL |
+| [OO-018](OO-018-stop-idle-and-cold-continuation.md) | Disk checkpointing and continuation preserve guest root, workspace, and Pi JSONL |
 | [OO-019](OO-019-session-deletion.md) | Online/offline deletion removes the catalog card and prevents stale runner resurrection |
 
-**Slice exit — first runnable iteration:** The complete real workflow in `MVP.md` works locally from browser configuration through private GitHub push, VM destruction, cold continuation, and deletion.
+**Slice exit — first runnable iteration:** The complete real workflow works locally from browser configuration through private GitHub push, disk checkpointing, continuation, and deletion, with OO-018's explicit lifecycle change from `MVP.md`.
 
 ## Slice 7 — Failure and UX hardening
 
 | Ticket | Outcome |
 |---|---|
-| [OO-020](OO-020-offline-and-reconnect.md) | **Stale. Do not implement until restart behavior is specified again.** |
+| [OO-020](OO-020-offline-and-reconnect.md) | Runner/gateway reconnect and restart recovery without session migration or mirroring |
 | [OO-021](OO-021-visible-failure-recovery.md) | Required failures are visible and manually recoverable |
 | [OO-022](OO-022-responsive-session-ui.md) | Required workflow works at desktop and mobile widths |
 
