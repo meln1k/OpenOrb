@@ -5,6 +5,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionId } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Schema, Scope } from "effect";
 
@@ -12,7 +13,7 @@ import {
   createGondolinAgentEnvironment,
   OPENORB_GUEST_MARKER,
 } from "@/src/environment/gondolin/layer.ts";
-import { resolveAgentWorkspacePath } from "@/src/environment/agent-environment.ts";
+import { resolveAgentPath } from "@/src/environment/agent-environment.ts";
 import { createOpenOrbPiSession } from "@/src/harness/pi/session.ts";
 import { createPiTools } from "@/src/harness/pi/tools.ts";
 import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
@@ -23,40 +24,42 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const CONVERSATION_PROJECTION = {
   activate: () => Effect.succeed({ update() {}, dispose() {} }),
 };
+// SAFETY: The custom edit executor does not inspect Pi's extension context.
+const TOOL_CONTEXT = {} as ExtensionContext;
 
-Deno.test("workspace path mapping rejects lexical escapes", () => {
-  assertEquals(resolveAgentWorkspacePath("file.txt"), "/workspace/file.txt");
-  assertEquals(resolveAgentWorkspacePath("nested/../file.txt"), "/workspace/file.txt");
-  assertEquals(resolveAgentWorkspacePath("/workspace/file.txt"), "/workspace/file.txt");
-  assertEquals(resolveAgentWorkspacePath("/workspace"), "/workspace");
-  assertEquals(resolveAgentWorkspacePath("@nested/file.txt"), "/workspace/nested/file.txt");
+Deno.test("agent path mapping anchors relative paths and preserves guest absolute paths", () => {
+  assertEquals(resolveAgentPath(""), "/workspace");
+  assertEquals(resolveAgentPath("file.txt"), "/workspace/file.txt");
+  assertEquals(resolveAgentPath("nested/../file.txt"), "/workspace/file.txt");
+  assertEquals(resolveAgentPath("/workspace/file.txt"), "/workspace/file.txt");
+  assertEquals(resolveAgentPath("/workspace"), "/workspace");
+  assertEquals(resolveAgentPath("@nested/file.txt"), "/workspace/nested/file.txt");
   assertEquals(
-    resolveAgentWorkspacePath("file:///workspace/nested/file.txt"),
+    resolveAgentPath("file:///workspace/nested/file.txt"),
     "/workspace/nested/file.txt",
   );
 
-  for (
-    const escaped of [
-      "../outside",
-      "../../outside",
-      "/outside",
-      "/workspace/../../outside",
-      "/workspace-adjacent/file",
-      "file:///outside",
-      "@file:///outside",
-      "~/outside",
-    ]
-  ) {
-    assertThrows(
-      () => resolveAgentWorkspacePath(escaped),
-      Error,
-      "Path must remain within /workspace.",
-    );
+  const guestPathCases = [
+    ["../outside", "/outside"],
+    ["../../outside", "/outside"],
+    ["/outside", "/outside"],
+    ["/workspace/../../outside", "/outside"],
+    ["/workspace-adjacent/file", "/workspace-adjacent/file"],
+    ["file:///outside", "/outside"],
+    ["@file:///outside", "/outside"],
+  ] as const;
+  for (const [input, expected] of guestPathCases) {
+    assertEquals(resolveAgentPath(input), expected);
   }
   assertThrows(
-    () => resolveAgentWorkspacePath("inside\0outside"),
+    () => resolveAgentPath("~/outside"),
     Error,
-    "Workspace paths must not contain NUL bytes.",
+    "Agent paths must use an absolute guest path instead of ~.",
+  );
+  assertThrows(
+    () => resolveAgentPath("inside\0outside"),
+    Error,
+    "Agent paths must not contain NUL bytes.",
   );
 });
 
@@ -146,6 +149,20 @@ Deno.test({
         ].join("\n"),
       ]));
       assertEquals(prepared.exitCode, 0);
+      const editBeforeCheckpoint = createPiTools(opened.runtime).find((tool) =>
+        tool.name === "edit"
+      );
+      assert(editBeforeCheckpoint);
+      await editBeforeCheckpoint.execute(
+        "edit-before-checkpoint",
+        {
+          path: "/opt/openorb-checkpoint-root",
+          edits: [{ oldText: "root-one", newText: "root-before-resume" }],
+        },
+        undefined,
+        undefined,
+        TOOL_CONTEXT,
+      );
       const firstCheckpoint = await Effect.runPromise(
         opened.runtime.checkpoint(firstCheckpointPath),
       );
@@ -174,7 +191,7 @@ Deno.test({
         "-lc",
         [
           "set -eu",
-          'test "$(cat /opt/openorb-checkpoint-root)" = root-one',
+          'test "$(cat /opt/openorb-checkpoint-root)" = root-before-resume',
           'test "$(cat /workspace/openorb-checkpoint-workspace)" = workspace-one',
           "test ! -e /tmp/openorb-checkpoint-tmp",
           "test ! -e /root/openorb-checkpoint-root-tmpfs",
@@ -184,6 +201,26 @@ Deno.test({
         ].join("\n"),
       ]));
       assertEquals(resumed.exitCode, 0);
+      const editAfterCheckpoint = createPiTools(opened.runtime).find((tool) =>
+        tool.name === "edit"
+      );
+      assert(editAfterCheckpoint);
+      await editAfterCheckpoint.execute(
+        "edit-after-checkpoint",
+        {
+          path: "/opt/openorb-checkpoint-root",
+          edits: [{ oldText: "root-before-resume", newText: "root-after-resume" }],
+        },
+        undefined,
+        undefined,
+        TOOL_CONTEXT,
+      );
+      assertEquals(
+        new TextDecoder().decode(
+          await Effect.runPromise(opened.runtime.readFile("/opt/openorb-checkpoint-root")),
+        ),
+        "root-after-resume",
+      );
 
       const updated = await Effect.runPromise(opened.runtime.run([
         "/bin/bash",
@@ -272,9 +309,9 @@ Deno.test({
       const edit = tools.get("edit");
       const bash = tools.get("bash");
       assert(read && write && edit && bash);
-      assertEquals(
+      assert(
         createPiTools(runtime).find((tool) => tool.name === "edit")?.renderCall,
-        undefined,
+        "edit must override Pi's host-reading fallback renderer",
       );
 
       const imageProbe = await bash.execute("guest-image", {
@@ -365,33 +402,37 @@ Deno.test({
       });
       assertEquals(fileUrlReadResult.content, [{ type: "text", text: "before\n" }]);
 
+      await write.execute("write-index", { path: "index.html", content: "before\n" });
       await edit.execute("edit", {
-        path: "/workspace/nested/message.txt",
+        path: "index.html",
         edits: [{ oldText: "before", newText: "after" }],
       });
-      assertEquals(await Deno.readTextFile(`${workspacePath}/nested/message.txt`), "after\n");
+      assertEquals(await Deno.readTextFile(`${workspacePath}/index.html`), "after\n");
 
-      for (const escaped of ["../../host-secret", hostSecretPath]) {
-        await assertRejects(
-          () => read.execute("read-escape", { path: escaped }),
-          Error,
-          "Path must remain within /workspace.",
-        );
-        await assertRejects(
-          () => write.execute("write-escape", { path: escaped, content: "changed" }),
-          Error,
-          "Path must remain within /workspace.",
-        );
-        await assertRejects(
-          () =>
-            edit.execute("edit-escape", {
-              path: escaped,
-              edits: [{ oldText: "runner", newText: "guest" }],
-            }),
-          Error,
-          "Path must remain within /workspace.",
-        );
-      }
+      // Host-shaped absolute paths remain in the guest namespace. The existing runner-host
+      // file must neither satisfy the initial read nor receive the subsequent guest mutations.
+      await assertRejects(() => read.execute("read-host-shaped-guest", { path: hostSecretPath }));
+      await write.execute("write-host-shaped-guest", {
+        path: hostSecretPath,
+        content: "guest before\n",
+      });
+      await edit.execute("edit-host-shaped-guest", {
+        path: hostSecretPath,
+        edits: [{ oldText: "before", newText: "after" }],
+      });
+      const guestAbsoluteRead = await read.execute("read-host-shaped-guest", {
+        path: hostSecretPath,
+      });
+      assertEquals(guestAbsoluteRead.content, [{ type: "text", text: "guest after\n" }]);
+
+      await write.execute("write-traversal-guest", {
+        path: "../../openorb-guest-root.txt",
+        content: "guest root\n",
+      });
+      const traversalRead = await read.execute("read-traversal-guest", {
+        path: "/openorb-guest-root.txt",
+      });
+      assertEquals(traversalRead.content, [{ type: "text", text: "guest root\n" }]);
 
       for (const symlink of ["absolute-escape", "relative-escape"]) {
         await assertRejects(() => read.execute("read-link", { path: symlink }));

@@ -109,33 +109,25 @@ export class AgentEnvironmentCheckpointError extends Data.TaggedError(
   }
 }
 
-export function resolveAgentWorkspacePath(inputPath: string): string {
+export function resolveAgentPath(inputPath: string): string {
   if (inputPath.includes("\0")) {
-    throw new AgentEnvironmentError("Workspace paths must not contain NUL bytes.", undefined);
+    throw new AgentEnvironmentError("Agent paths must not contain NUL bytes.", undefined);
   }
 
   let normalized = inputPath.replace(UNICODE_SPACES, " ");
   if (normalized.startsWith("@")) normalized = normalized.slice(1);
   if (normalized === "~" || normalized.startsWith("~/")) {
-    throw outsideWorkspace();
+    throw new AgentEnvironmentError(
+      "Agent paths must use an absolute guest path instead of ~.",
+      undefined,
+    );
   }
   if (/^file:\/\//.test(normalized)) normalized = fileURLToPath(normalized);
   if (normalized.includes("\0")) {
-    throw new AgentEnvironmentError("Workspace paths must not contain NUL bytes.", undefined);
+    throw new AgentEnvironmentError("Agent paths must not contain NUL bytes.", undefined);
   }
 
-  const resolved = posix.isAbsolute(normalized)
+  return posix.isAbsolute(normalized)
     ? posix.resolve(normalized)
     : posix.resolve(AGENT_WORKSPACE, normalized);
-  if (resolved !== AGENT_WORKSPACE && !resolved.startsWith(`${AGENT_WORKSPACE}/`)) {
-    throw outsideWorkspace();
-  }
-  return resolved;
-}
-
-function outsideWorkspace(): AgentEnvironmentError {
-  return new AgentEnvironmentError(
-    `Path must remain within ${AGENT_WORKSPACE}.`,
-    undefined,
-  );
 }

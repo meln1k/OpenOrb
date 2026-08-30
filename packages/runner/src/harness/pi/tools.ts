@@ -15,19 +15,23 @@ import {
   type ToolDefinition,
   truncateHead,
   type WriteOperations,
+  type WriteToolInput,
 } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
+import { posix } from "node:path";
 
 import {
   AGENT_WORKSPACE,
   type AgentEnvironment,
   AgentEnvironmentError,
-  resolveAgentWorkspacePath,
+  resolveAgentPath,
 } from "../../environment/agent-environment.ts";
+import { executePiEdit } from "./edit.ts";
 
 export function createPiTools(environment: AgentEnvironment): readonly ToolDefinition[] {
   const readOperations = createReadOperations(environment);
   const writeOperations = createWriteOperations(environment);
+  const withFileMutation = createFileMutationQueue();
   const editOperations: EditOperations = {
     readFile: readOperations.readFile,
     writeFile: writeOperations.writeFile,
@@ -35,8 +39,7 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
   };
   const read = createReadToolDefinition(AGENT_WORKSPACE, { operations: readOperations });
   const write = createWriteToolDefinition(AGENT_WORKSPACE, { operations: writeOperations });
-  // Pi's default edit preview reads directly from the runner host, so it must stay disabled.
-  const { renderCall: _renderCall, ...edit } = createEditToolDefinition(AGENT_WORKSPACE, {
+  const edit = createEditToolDefinition(AGENT_WORKSPACE, {
     operations: editOperations,
   });
   const bash = createBashToolDefinition(AGENT_WORKSPACE, {
@@ -50,7 +53,7 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
       execute(_id, params, signal, _onUpdate, context) {
         return executePiRead(
           readOperations,
-          { ...params, path: resolveAgentWorkspacePath(params.path) },
+          { ...params, path: resolveAgentPath(params.path) },
           signal,
           context.model?.input.includes("image") ?? true,
         );
@@ -58,30 +61,50 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
     }),
     defineTool({
       ...write,
-      execute(id, params, signal, onUpdate, context) {
-        return write.execute(
-          id,
-          { ...params, path: resolveAgentWorkspacePath(params.path) },
-          signal,
-          onUpdate,
-          context,
+      execute(_id, params, signal) {
+        const resolvedParams = { ...params, path: resolveAgentPath(params.path) };
+        return withFileMutation(
+          resolvedParams.path,
+          () => executePiWrite(writeOperations, resolvedParams, signal),
         );
       },
     }),
     defineTool({
       ...edit,
-      execute(id, params, signal, onUpdate, context) {
-        return edit.execute(
-          id,
-          { ...params, path: resolveAgentWorkspacePath(params.path) },
-          signal,
-          onUpdate,
-          context,
+      execute(_id, params, signal) {
+        const resolvedParams = { ...params, path: resolveAgentPath(params.path) };
+        return withFileMutation(
+          resolvedParams.path,
+          () => executePiEdit(editOperations, resolvedParams, signal),
         );
+      },
+      // Pi falls back to its built-in edit renderer by tool name. Keep that renderer for
+      // display, but never mark arguments complete because its preview reads the host filesystem.
+      renderCall(args, theme, context) {
+        return edit.renderCall!(args, theme, { ...context, argsComplete: false });
       },
     }),
     defineTool(bash),
   ];
+}
+
+type FileMutationQueue = <A>(path: string, mutation: () => Promise<A>) => Promise<A>;
+
+function createFileMutationQueue(): FileMutationQueue {
+  const queues = new Map<string, Promise<void>>();
+  return async <A>(path: string, mutation: () => Promise<A>): Promise<A> => {
+    const current = queues.get(path) ?? Promise.resolve();
+    const next = Promise.withResolvers<void>();
+    const chained = current.then(() => next.promise);
+    queues.set(path, chained);
+    await current;
+    using cleanup = new DisposableStack();
+    cleanup.defer(() => {
+      next.resolve();
+      if (queues.get(path) === chained) queues.delete(path);
+    });
+    return await mutation();
+  };
 }
 
 // Pi's built-in read executor probes candidate paths with node:fs before calling custom
@@ -160,23 +183,45 @@ async function executePiRead(
   return { content: [{ type: "text", text: outputText }], details };
 }
 
+async function executePiWrite(
+  operations: WriteOperations,
+  { path, content }: WriteToolInput,
+  signal: AbortSignal | undefined,
+): Promise<AgentToolResult<undefined>> {
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      throw new AgentEnvironmentError("Operation aborted.", signal.reason);
+    }
+  };
+
+  throwIfAborted();
+  await operations.mkdir(posix.dirname(path));
+  throwIfAborted();
+  await operations.writeFile(path, content);
+  throwIfAborted();
+  return {
+    content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to ${path}` }],
+    details: undefined,
+  };
+}
+
 function createReadOperations(environment: AgentEnvironment): ReadOperations {
   return {
     readFile: (path) =>
-      Effect.runPromise(environment.readFile(resolveAgentWorkspacePath(path))).then((bytes) =>
+      Effect.runPromise(environment.readFile(resolveAgentPath(path))).then((bytes) =>
         Buffer.from(bytes)
       ),
-    access: (path) => Effect.runPromise(environment.access(resolveAgentWorkspacePath(path))),
+    access: (path) => Effect.runPromise(environment.access(resolveAgentPath(path))),
     detectImageMimeType: (path) =>
-      Effect.runPromise(environment.detectImageMimeType(resolveAgentWorkspacePath(path))),
+      Effect.runPromise(environment.detectImageMimeType(resolveAgentPath(path))),
   };
 }
 
 function createWriteOperations(environment: AgentEnvironment): WriteOperations {
   return {
     writeFile: (path, content) =>
-      Effect.runPromise(environment.writeFile(resolveAgentWorkspacePath(path), content)),
-    mkdir: (path) => Effect.runPromise(environment.makeDirectory(resolveAgentWorkspacePath(path))),
+      Effect.runPromise(environment.writeFile(resolveAgentPath(path), content)),
+    mkdir: (path) => Effect.runPromise(environment.makeDirectory(resolveAgentPath(path))),
   };
 }
 
@@ -184,7 +229,7 @@ function createBashOperations(environment: AgentEnvironment): BashOperations {
   return {
     exec: (command, cwd, { onData, signal, timeout }) =>
       Effect.runPromise(environment.runShell(command, {
-        cwd: resolveAgentWorkspacePath(cwd),
+        cwd: resolveAgentPath(cwd),
         ...(signal === undefined ? {} : { signal }),
         ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
         onOutput: (data) => Effect.sync(() => onData(Buffer.from(data))),

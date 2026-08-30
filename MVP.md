@@ -447,6 +447,9 @@ Provide Gondolin-backed implementations for:
 
 Additional file-search tools may be added only if they use the same Gondolin/path boundary.
 
+Relative tool paths resolve from `/workspace`; absolute paths address the guest filesystem. Only
+`/workspace` persists across cold continuation and appears in Git review.
+
 ### Resource loading
 
 This security rule remains mandatory even in the lean MVP:

@@ -5,32 +5,34 @@
 
 ## Outcome
 
-Pi's `read`, `write`, `edit`, and `bash` operations execute in a real Gondolin VM against `/workspace`, never against unrestricted host facilities.
+Pi's `read`, `write`, `edit`, and `bash` operations execute in a real Gondolin VM, never against unrestricted host facilities. Relative paths start at `/workspace`; absolute paths address the guest filesystem.
 
 ## Scope
 
 - Mount a host-owned session workspace into Gondolin with `RealFSProvider` at `/workspace`.
 - Implement the four Pi tool operation adapters using current Pi and Gondolin APIs.
-- Map paths to `/workspace`, reject path escape, preserve abort/timeouts, and stream bash output.
+- Resolve relative paths from `/workspace`, preserve guest-absolute paths, preserve abort/timeouts, and stream bash output.
 - Ensure tool subprocesses run in the guest and VM lifecycle cleanup is reliable.
 - Add process/file markers that distinguish guest execution from host execution.
 
 ## Acceptance criteria
 
 - A real Pi tool invocation can read, write, edit, and run a command in the mounted workspace.
-- Relative/absolute traversal and escaping symlinks cannot access runner-host files outside the mounted workspace.
+- Relative traversal, guest-absolute paths, and escaping symlinks cannot access runner-host files outside the mounted workspace.
 - Bash commands cannot execute on the runner host.
 - Abort and timeout stop guest work and leave the runner usable.
+- Edit works before and after checkpoint resume.
 - No default Pi filesystem or shell tool remains enabled alongside the replacements.
 
 ## Tests
 
 - Real Gondolin/QEMU smoke test on the current Mac.
 - Read/write/edit behavior and errors.
-- Traversal/symlink escape fixtures.
+- Guest-absolute/traversal fixtures and symlink escape fixtures.
+- Checkpoint-resume edit continuity.
 - Guest-vs-host process marker assertion.
 - Streaming output, abort, and timeout.
 
 ## Not included
 
-Git credentials, cloning, model calls, checkpoints, terminal, or previews.
+Git credentials, cloning, model calls, checkpoint implementation, terminal, or previews.

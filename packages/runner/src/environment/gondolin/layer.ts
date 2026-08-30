@@ -19,7 +19,7 @@ import {
   AgentEnvironmentError,
   type AgentEnvironmentOptions,
   AgentEnvironmentProvider,
-  resolveAgentWorkspacePath,
+  resolveAgentPath,
 } from "../agent-environment.ts";
 
 export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
@@ -209,9 +209,7 @@ function makeGondolinEnvironment(
         try: async () => {
           let observerError: AgentEnvironmentError | undefined;
           const process = activeVm.vm.exec([...command], {
-            cwd: options.cwd === undefined
-              ? AGENT_WORKSPACE
-              : resolveAgentWorkspacePath(options.cwd),
+            cwd: options.cwd === undefined ? AGENT_WORKSPACE : resolveAgentPath(options.cwd),
             env: { [OPENORB_GUEST_MARKER]: "1" },
             ...(options.signal === undefined ? {} : { signal: options.signal }),
             stdout: "pipe",
@@ -261,7 +259,7 @@ function makeGondolinEnvironment(
               options.signal?.removeEventListener("abort", abort);
             });
             const process = activeVm.vm.exec([activeVm.shellPath, "-lc", command], {
-              cwd: resolveAgentWorkspacePath(options.cwd),
+              cwd: resolveAgentPath(options.cwd),
               env: { [OPENORB_GUEST_MARKER]: "1" },
               signal: controller.signal,
               stdout: "pipe",
@@ -295,7 +293,7 @@ function makeGondolinEnvironment(
       function* (path) {
         const activeVm = yield* getVm;
         return yield* Effect.tryPromise({
-          try: () => activeVm.vm.fs.readFile(resolveAgentWorkspacePath(path)),
+          try: () => activeVm.vm.fs.readFile(resolveAgentPath(path)),
           catch: (cause) => new AgentEnvironmentError("Guest file could not be read.", cause),
         });
       },
@@ -304,7 +302,7 @@ function makeGondolinEnvironment(
       function* (path) {
         const activeVm = yield* getVm;
         yield* Effect.tryPromise({
-          try: () => activeVm.vm.fs.access(resolveAgentWorkspacePath(path)),
+          try: () => activeVm.vm.fs.access(resolveAgentPath(path)),
           catch: (cause) => new AgentEnvironmentError("Guest file could not be accessed.", cause),
         });
       },
@@ -314,7 +312,7 @@ function makeGondolinEnvironment(
         const activeVm = yield* getVm;
         yield* Effect.tryPromise({
           try: () =>
-            activeVm.vm.fs.writeFile(resolveAgentWorkspacePath(path), content, {
+            activeVm.vm.fs.writeFile(resolveAgentPath(path), content, {
               encoding: "utf8",
             }),
           catch: (cause) => new AgentEnvironmentError("Guest file could not be written.", cause),
@@ -326,7 +324,7 @@ function makeGondolinEnvironment(
     )(function* (path) {
       const activeVm = yield* getVm;
       yield* Effect.tryPromise({
-        try: () => activeVm.vm.fs.mkdir(resolveAgentWorkspacePath(path), { recursive: true }),
+        try: () => activeVm.vm.fs.mkdir(resolveAgentPath(path), { recursive: true }),
         catch: (cause) => new AgentEnvironmentError("Guest directory could not be created.", cause),
       });
     });

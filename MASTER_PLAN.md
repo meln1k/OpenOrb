@@ -791,7 +791,8 @@ Replace Pi’s built-in tools with Gondolin-backed operations, following Gondoli
 - Any enabled grep/find/list helpers
 - User shell commands
 
-All paths map from the host session workspace to `/workspace` and reject escapes.
+Relative paths resolve from `/workspace`. Absolute paths address the guest filesystem and must never
+be interpreted as runner-host paths. Only `/workspace` is persistent and included in review.
 
 ### 14.3 Allowlist-only resource and settings boundary
 
