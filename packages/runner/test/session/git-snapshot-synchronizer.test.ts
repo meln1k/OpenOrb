@@ -22,7 +22,7 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
 const METADATA: RunnerSessionMetadata = {
-  version: 2,
+  version: 3,
   id: SESSION_ID,
   definition: new RunnerSessionDefinition({
     userId: Schema.decodeUnknownSync(UserId)(
@@ -84,6 +84,7 @@ const ENVIRONMENT: AgentEnvironment = {
   writeFile: () => Effect.die("unexpected write"),
   makeDirectory: () => Effect.die("unexpected directory"),
   detectImageMimeType: () => Effect.die("unexpected image detection"),
+  checkpoint: () => Effect.die("unexpected checkpoint"),
 };
 
 Deno.test("Git Snapshot publication remains pending and retries unchanged content", async () => {

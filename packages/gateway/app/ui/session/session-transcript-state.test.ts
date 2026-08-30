@@ -7,6 +7,8 @@ import {
   failOptimisticUserMessage,
   reduceSessionTranscriptState,
   removeOptimisticUserMessage,
+  runnerSessionStateForProvisioningStage,
+  type SessionState,
   type ToolEntry,
   totalSessionUsage,
   type TranscriptEntry,
@@ -81,12 +83,13 @@ Deno.test("compaction invalidates context usage until a valid assistant completi
     compactionId: "compaction-1",
     summary: "Condensed prior work",
     tokensBefore: 110,
-  });
+  }, "running");
   assertEquals(compacted.contextUsage, undefined);
 
   const recovered = reduceSessionTranscriptState(
     compacted,
     completedAssistant("assistant-2", usage(20, 5)),
+    "running",
   );
   assertEquals(recovered.contextUsage, usage(20, 5));
 });
@@ -149,7 +152,7 @@ Deno.test("duplicate durable events are idempotent", () => {
 });
 
 Deno.test("optimistic user messages reconcile with durable events or retain failures", () => {
-  const initial = createSessionTranscriptState("ready", false);
+  const initial = createSessionTranscriptState("ready");
   const pending = appendOptimisticUserMessage(
     initial,
     "optimistic-1",
@@ -179,7 +182,7 @@ Deno.test("optimistic user messages reconcile with durable events or retain fail
     type: "user.message",
     messageId: "pi-user-1",
     text: "Continue the implementation",
-  });
+  }, "ready");
   assertEquals(reconciled.entries, [{
     role: "user",
     messageId: "pi-user-1",
@@ -189,7 +192,7 @@ Deno.test("optimistic user messages reconcile with durable events or retain fail
 
 Deno.test("optimistic user messages reconcile after form line-ending normalization", () => {
   const pending = appendOptimisticUserMessage(
-    createSessionTranscriptState("ready", false),
+    createSessionTranscriptState("ready"),
     "optimistic-1",
     "rate the reliability\n",
   );
@@ -198,7 +201,7 @@ Deno.test("optimistic user messages reconcile after form line-ending normalizati
     type: "user.message",
     messageId: "pi-user-1",
     text: "rate the reliability\r\n",
-  });
+  }, "ready");
 
   assertEquals(reconciled.entries, [{
     role: "user",
@@ -208,7 +211,7 @@ Deno.test("optimistic user messages reconcile after form line-ending normalizati
 });
 
 Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's live queue", () => {
-  const initial = createSessionTranscriptState("running", false);
+  const initial = createSessionTranscriptState("running");
   const pending = appendOptimisticUserMessage(initial, "optimistic-1", "First follow-up");
   const accepted = removeOptimisticUserMessage(pending, "optimistic-1");
   assertEquals(accepted.entries, []);
@@ -217,22 +220,45 @@ Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's li
     type: "queue.updated",
     steering: [],
     followUp: ["First follow-up", "Second follow-up"],
-  });
+  }, "running");
   assertEquals(queued.followUpQueue, ["First follow-up", "Second follow-up"]);
 
   const delivered = reduceSessionTranscriptState(queued, {
     type: "queue.updated",
     steering: [],
     followUp: ["Second follow-up"],
-  });
+  }, "running");
   assertEquals(delivered.followUpQueue, ["Second follow-up"]);
 
   const ready = reduceSessionTranscriptState(delivered, {
     type: "session.state",
     stage: "ready",
     checkoutState: "available",
-  });
+  }, "ready");
   assertEquals(ready.followUpQueue, []);
+});
+
+Deno.test("checkpoint lifecycle stages expose transcript-specific status", () => {
+  const checkpointing = reduceSessionTranscriptState(
+    createSessionTranscriptState("ready"),
+    { type: "session.state", stage: "checkpointing", checkoutState: "available" },
+    "provisioning",
+  );
+  assertEquals(checkpointing.status, "Creating checkpoint");
+
+  const stopped = reduceSessionTranscriptState(checkpointing, {
+    type: "session.state",
+    stage: "stopped",
+    checkoutState: "available",
+  }, "stopped");
+  assertEquals(stopped.status, "Stopped");
+
+  const resuming = reduceSessionTranscriptState(stopped, {
+    type: "session.state",
+    stage: "resuming",
+    checkoutState: "available",
+  }, "provisioning");
+  assertEquals(resuming.status, "Resuming checkpoint");
 });
 
 Deno.test("agent and turn boundaries do not add transcript activity", () => {
@@ -249,10 +275,15 @@ Deno.test("agent and turn boundaries do not add transcript activity", () => {
 });
 
 function reduce(events: SessionEvent[]) {
-  return events.reduce(
-    reduceSessionTranscriptState,
-    createSessionTranscriptState("running", false),
-  );
+  let sessionState: SessionState = "running";
+  let transcriptState = createSessionTranscriptState(sessionState);
+  for (const event of events) {
+    if (event.type === "session.state") {
+      sessionState = runnerSessionStateForProvisioningStage(event.stage);
+    }
+    transcriptState = reduceSessionTranscriptState(transcriptState, event, sessionState);
+  }
+  return transcriptState;
 }
 
 function usage(inputTokens: number, outputTokens: number): SessionUsage {

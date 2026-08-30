@@ -13,31 +13,33 @@ import type { ProvisionSessionPayload, SessionId } from "@openorb/protocol/runne
 import { ProvisionRejected, ProvisionSessionSuccess } from "@openorb/protocol/runner-api";
 
 import { RunnerSessionDefinition } from "./definition.ts";
+import { type SessionActor, SessionActorFactory } from "./actor.ts";
 import {
   RunnerSessionDefinitionConflict,
   type RunnerSessionMetadata,
   RunnerSessionStore,
   type RunnerSessionStoreError,
 } from "./store.ts";
-import { type SessionWorker, SessionWorkerFactory } from "./worker.ts";
 
 export interface SessionSupervisorOptions {
   readonly cpuCount: number;
   readonly memoryMiB: number;
-  readonly maxConcurrentSessions: number;
+  readonly idleTimeoutMs?: number;
 }
 
-interface WorkerRegistryEntry {
-  readonly worker: SessionWorker;
+export const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 15 * 60 * 1_000;
+
+interface ActorRegistryEntry {
+  readonly actor: SessionActor;
 }
 
 export interface SessionSupervisor {
   readonly activeSessionCount: () => number;
   readonly getActiveRunId: (sessionId: SessionId) => string | undefined;
-  readonly findWorker: (sessionId: SessionId) => SessionWorker | undefined;
-  readonly findOrRestoreWorker: (
+  readonly findActor: (sessionId: SessionId) => SessionActor | undefined;
+  readonly findOrRestoreActor: (
     sessionId: SessionId,
-  ) => Effect.Effect<SessionWorker | undefined>;
+  ) => Effect.Effect<SessionActor | undefined>;
   readonly provision: (
     payload: typeof ProvisionSessionPayload.Type,
   ) => Effect.Effect<ProvisionSessionSuccess, ProvisionRejected>;
@@ -53,6 +55,13 @@ export class SessionSupervisorInitializationError extends Data.TaggedError(
   readonly cause: RunnerSessionStoreError;
 }> {}
 
+export class SessionSupervisorConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionSupervisorConfigurationError";
+  }
+}
+
 type ProvisionAcceptance =
   | { readonly ok: true; readonly value: ProvisionSessionSuccess }
   | { readonly ok: false; readonly message: string };
@@ -63,13 +72,21 @@ export function makeSessionSupervisor(
 ): Effect.Effect<
   SessionSupervisor,
   SessionSupervisorInitializationError,
-  Scope.Scope | RunnerSessionStore | SessionWorkerFactory
+  Scope.Scope | RunnerSessionStore | SessionActorFactory
 > {
   return Effect.gen(function* () {
     const store = yield* RunnerSessionStore;
-    const workerFactory = yield* SessionWorkerFactory;
-    const workers = MutableHashMap.empty<string, WorkerRegistryEntry>();
+    const actorFactory = yield* SessionActorFactory;
+    const actors = MutableHashMap.empty<string, ActorRegistryEntry>();
     const admission = yield* Semaphore.make(1);
+    const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
+    if (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs <= 0) {
+      return yield* Effect.die(
+        new SessionSupervisorConfigurationError(
+          "The session idle timeout must be a positive integer of milliseconds.",
+        ),
+      );
+    }
     yield* reconcilePersistedSessions(store);
 
     const supportsOrbSize = (orbSize: OrbSize): boolean => {
@@ -99,7 +116,7 @@ export function makeSessionSupervisor(
       );
       const metadata = ensured.metadata;
       if (ensured.disposition === "created") return metadata;
-      if (MutableHashMap.has(workers, metadata.id)) return metadata;
+      if (MutableHashMap.has(actors, metadata.id)) return metadata;
       if (metadata.state === "provisioning" || metadata.state === "running") {
         yield* store.updateProvisioning(payload.sessionId, {
           state: "error",
@@ -170,70 +187,63 @@ export function makeSessionSupervisor(
           return { ok: true, value: provisionSuccess(metadata, snapshot.value) } as const;
         }
         if (payload.mode === "retry") {
-          const existing = Option.getOrUndefined(MutableHashMap.get(workers, metadata.id));
-          if (existing) yield* existing.worker.shutdown;
-          MutableHashMap.remove(workers, metadata.id);
+          const existing = Option.getOrUndefined(MutableHashMap.get(actors, metadata.id));
+          if (existing) yield* existing.actor.shutdown;
+          MutableHashMap.remove(actors, metadata.id);
         }
-        const existing = Option.getOrUndefined(MutableHashMap.get(workers, metadata.id));
+        const existing = Option.getOrUndefined(MutableHashMap.get(actors, metadata.id));
         if (existing) {
           return { ok: true, value: provisionSuccess(metadata, snapshot.value) } as const;
         }
-        let activeWorkers = 0;
-        for (const [, entry] of workers) if (entry.worker.active) activeWorkers++;
-        if (activeWorkers >= options.maxConcurrentSessions) {
-          return {
-            ok: false,
-            message: "The runner has reached its concurrent session limit.",
-          } as const;
-        }
-        const worker = yield* workerFactory.spawn({
+        const actor = yield* actorFactory.spawn({
           metadata,
           ...(payload.mode === "create" && payload.githubToken !== undefined
             ? { githubToken: payload.githubToken }
             : {}),
           modelRuntime: payload.modelRuntime,
           correlationId: crypto.randomUUID(),
-          restore: metadata.state === "ready",
+          idleTimeoutMs,
+          restore: metadata.state === "ready" || metadata.state === "stopped",
         });
-        MutableHashMap.set(workers, metadata.id, { worker });
+        MutableHashMap.set(actors, metadata.id, { actor });
         return { ok: true, value: provisionSuccess(metadata, snapshot.value) } as const;
       });
-    const findOrRestoreWorker = (
+    const findOrRestoreActor = (
       sessionId: SessionId,
-    ): Effect.Effect<SessionWorker | undefined> => {
-      const existing = Option.getOrUndefined(MutableHashMap.get(workers, sessionId));
-      if (existing) return Effect.succeed(existing.worker);
+    ): Effect.Effect<SessionActor | undefined> => {
+      const existing = Option.getOrUndefined(MutableHashMap.get(actors, sessionId));
+      if (existing) return Effect.succeed(existing.actor);
       return admission.withPermit(Effect.gen(function* () {
-        const current = Option.getOrUndefined(MutableHashMap.get(workers, sessionId));
-        if (current) return current.worker;
-        let activeWorkers = 0;
-        for (const [, candidate] of workers) if (candidate.worker.active) activeWorkers++;
-        if (activeWorkers >= options.maxConcurrentSessions) return undefined;
+        const current = Option.getOrUndefined(MutableHashMap.get(actors, sessionId));
+        if (current) return current.actor;
         const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
-        if (Option.isNone(metadata) || metadata.value.state !== "ready") return undefined;
-        const worker = yield* workerFactory.spawn({
+        if (
+          Option.isNone(metadata) ||
+          (metadata.value.state !== "ready" && metadata.value.state !== "stopped")
+        ) return undefined;
+        const actor = yield* actorFactory.spawn({
           metadata: metadata.value,
           correlationId: crypto.randomUUID(),
+          idleTimeoutMs,
           restore: true,
         });
-        MutableHashMap.set(workers, sessionId, { worker });
-        return worker;
+        MutableHashMap.set(actors, sessionId, { actor });
+        return actor;
       }));
     };
 
     return SessionSupervisor.of({
       activeSessionCount: () => {
         let count = 0;
-        for (const [, { worker }] of workers) {
-          if (worker.active) count++;
+        for (const [, { actor }] of actors) {
+          if (actor.active) count++;
         }
         return count;
       },
       getActiveRunId: (sessionId) =>
-        Option.getOrUndefined(MutableHashMap.get(workers, sessionId))?.worker.activeRunId,
-      findWorker: (sessionId) =>
-        Option.getOrUndefined(MutableHashMap.get(workers, sessionId))?.worker,
-      findOrRestoreWorker,
+        Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor.activeRunId,
+      findActor: (sessionId) => Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor,
+      findOrRestoreActor,
       provision: (payload) =>
         admission.withPermit(
           Effect.uninterruptible(acceptProvision(payload)),
@@ -253,7 +263,7 @@ export function sessionSupervisorLayer(
 ): Layer.Layer<
   SessionSupervisor,
   SessionSupervisorInitializationError,
-  RunnerSessionStore | SessionWorkerFactory
+  RunnerSessionStore | SessionActorFactory
 > {
   return Layer.effect(SessionSupervisor, makeSessionSupervisor(options));
 }
@@ -296,7 +306,7 @@ function reconcilePersistedSessions(
       (snapshot) => {
         if (corruptDirectories.has(snapshot.id)) return Effect.void;
         return Effect.gen(function* () {
-          const metadata = yield* store.readMetadata(snapshot.id);
+          const metadata = yield* store.reconcileCheckpoints(snapshot.id);
           const state = metadata.state === "running"
             ? "ready" as const
             : metadata.state === "created" || metadata.state === "provisioning"

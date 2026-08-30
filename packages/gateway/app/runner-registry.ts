@@ -19,6 +19,8 @@ import {
   type SessionGitSnapshot,
   SessionId,
   SessionNotFound,
+  StopRejected,
+  type StopSessionAccepted,
   UpdateSessionGitFilePayload,
   UserId,
   WakeRejected,
@@ -51,6 +53,7 @@ import type { SessionCatalogRepository } from "@/app/data/session-catalog-reposi
 
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
 const OPERATION_TIMEOUT_MS = 15_000;
+const COLD_CONTINUATION_TIMEOUT_MS = 5 * 60_000;
 const GIT_UPDATE_TIMEOUT_MS = 60_000;
 export const RUNNER_WATCH_INACTIVITY_TIMEOUT_MS = 60_000;
 export const PERMANENT_REJECTION_CLOSE_CODE = 4401;
@@ -91,6 +94,10 @@ export interface AbortSessionInput {
   userId: string;
   sessionId: string;
 }
+export interface StopSessionInput {
+  userId: string;
+  sessionId: string;
+}
 export interface UpdateSessionGitFileInput {
   userId: string;
   sessionId: string;
@@ -124,6 +131,9 @@ export interface RunnerRegistryService {
   ) => Effect.Effect<OperationResult<WakeSessionAccepted>>;
   readonly promptSession: (input: PromptSessionInput) => Effect.Effect<OperationResult<unknown>>;
   readonly abortSession: (input: AbortSessionInput) => Effect.Effect<OperationResult<unknown>>;
+  readonly stopSession: (
+    input: StopSessionInput,
+  ) => Effect.Effect<OperationResult<StopSessionAccepted>>;
   readonly watchSession: (
     userId: string,
     sessionId: string,
@@ -179,6 +189,7 @@ const OperationRejection = Schema.Union([
   WakeRejected,
   PromptRejected,
   AbortRejected,
+  StopRejected,
   GitFileUpdateRejected,
 ]);
 
@@ -214,6 +225,7 @@ export function makeRunnerRegistry(
       wakeSession: (input) => wakeSession(runtime, input),
       promptSession: (input) => promptSession(runtime, input),
       abortSession: (input) => abortSession(runtime, input),
+      stopSession: (input) => stopSession(runtime, input),
       watchSession: (userId, sessionId, afterCursor) =>
         watchSession(runtime, userId, sessionId, afterCursor),
       disconnectRunner: (userId, runnerId) => disconnectRunner(runtime, userId, runnerId),
@@ -525,13 +537,7 @@ const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
         } else if (connection.reservations.has(input.sessionId)) {
           rejection = "This session already has a provisioning request in flight.";
         } else if (input.payload.mode === "create") {
-          const limit = connection.capacity.maxConcurrentSessions;
-          if (
-            limit !== undefined &&
-            connection.capacity.activeSessions + connection.createReservations.size >= limit
-          ) {
-            rejection = "Runner has reached its concurrent session limit.";
-          } else if (!runnerSupportsOrbSize(connection.capacity, input.payload.orbSize)) {
+          if (!runnerSupportsOrbSize(connection.capacity, input.payload.orbSize)) {
             rejection = `Runner cannot provision the ${input.payload.orbSize} orb size.`;
           } else {
             const existing = state.routes.get(routeKey(input.userId, input.sessionId));
@@ -597,7 +603,10 @@ const promptSession = Effect.fn("RunnerRegistry.promptSession")(
       input.userId,
       input.sessionId,
       (snapshot) => {
-        if (snapshot.state !== "ready" && snapshot.state !== "running") {
+        if (
+          snapshot.state !== "ready" && snapshot.state !== "running" &&
+          snapshot.state !== "stopped"
+        ) {
           return "The session cannot accept a prompt right now.";
         }
         return snapshot.model === input.payload.modelRuntime.model
@@ -616,7 +625,9 @@ const promptSession = Effect.fn("RunnerRegistry.promptSession")(
       sessionId,
       clientRequestId,
     }).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
+      Effect.timeout(
+        routed.snapshot.state === "stopped" ? COLD_CONTINUATION_TIMEOUT_MS : OPERATION_TIMEOUT_MS,
+      ),
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
       Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
     );
@@ -629,7 +640,10 @@ const wakeSession = Effect.fn("RunnerRegistry.wakeSession")(
       input.userId,
       input.sessionId,
       (snapshot) => {
-        if (snapshot.state !== "ready" && snapshot.state !== "running") {
+        if (
+          snapshot.state !== "ready" && snapshot.state !== "running" &&
+          snapshot.state !== "stopped"
+        ) {
           return "The session cannot be restored right now.";
         }
         return snapshot.model === input.payload.modelRuntime.model
@@ -646,7 +660,9 @@ const wakeSession = Effect.fn("RunnerRegistry.wakeSession")(
       ...input.payload,
       sessionId,
     }).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
+      Effect.timeout(
+        routed.snapshot.state === "stopped" ? COLD_CONTINUATION_TIMEOUT_MS : OPERATION_TIMEOUT_MS,
+      ),
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
       Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
     );
@@ -671,6 +687,26 @@ const abortSession = Effect.fn("RunnerRegistry.abortSession")(
       runId,
     }).pipe(
       Effect.timeout(OPERATION_TIMEOUT_MS),
+      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
+      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
+    );
+  },
+);
+const stopSession = Effect.fn("RunnerRegistry.stopSession")(
+  function* (registry: RegistryRuntime, input: StopSessionInput) {
+    const routed = yield* routeSession(
+      registry,
+      input.userId,
+      input.sessionId,
+      (snapshot) => snapshot.state === "ready" ? undefined : "The session is not ready and idle.",
+    );
+    if (routed.status === "unavailable") return unavailable(routed.message);
+    if (routed.status === "rejected") {
+      return { status: "rejected" as const, message: routed.message };
+    }
+    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
+    return yield* routed.connection.runtime.client["session.stop"]({ sessionId }).pipe(
+      Effect.timeout(COLD_CONTINUATION_TIMEOUT_MS),
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
       Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
     );

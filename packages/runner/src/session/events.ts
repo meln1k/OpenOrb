@@ -241,7 +241,9 @@ function historyReadFailure(sessionId: SessionId) {
   });
 }
 
-function lifecycleStage(state: "created" | "provisioning" | "running" | "ready" | "error") {
+function lifecycleStage(
+  state: "created" | "provisioning" | "running" | "ready" | "stopped" | "error",
+) {
   switch (state) {
     case "created":
       return "created" as const;
@@ -251,6 +253,8 @@ function lifecycleStage(state: "created" | "provisioning" | "running" | "ready" 
       return "running" as const;
     case "ready":
       return "ready" as const;
+    case "stopped":
+      return "stopped" as const;
     case "error":
       return "failed" as const;
   }

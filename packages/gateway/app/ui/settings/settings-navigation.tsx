@@ -19,7 +19,6 @@ export type SettingsRunner = {
   capacity: SettingsRunnerCapacity | null;
 };
 export type SettingsRunnerCapacity = {
-  maxConcurrentSessions?: number | undefined;
   activeSessions: number;
   vmCpuCount: number;
   vmMemoryMiB: number;

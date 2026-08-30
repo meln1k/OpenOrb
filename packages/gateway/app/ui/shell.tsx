@@ -51,6 +51,7 @@ export interface AppShellProps {
   rightSidebar?: RemixNode;
   sessions: SessionCatalogEntry[];
   title: string;
+  topBarAccessory?: RemixNode;
   topBarTitle?: string;
 }
 
@@ -60,83 +61,90 @@ const NEW_SESSION_DIALOG_ID = "openorb-new-session";
 export function AppShell(handle: Handle<AppShellProps>) {
   return () => (
     <Document title={handle.props.title}>
-      <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
-        <SidebarDesktop>
-          <AppNavigation
-            csrfToken={handle.props.csrfToken}
-            activeSection={handle.props.activeSection}
-            activeSessionId={handle.props.activeSessionId}
-            sessions={handle.props.sessions}
-          />
-        </SidebarDesktop>
-        <SidebarMobile id={MOBILE_SIDEBAR_ID}>
-          <AppNavigation
-            csrfToken={handle.props.csrfToken}
-            activeSection={handle.props.activeSection}
-            activeSessionId={handle.props.activeSessionId}
-            sessions={handle.props.sessions}
-          />
-        </SidebarMobile>
-        <SidebarInset
-          aria-label="Authenticated gateway"
-          data-has-right-sidebar={handle.props.rightSidebar ? "true" : undefined}
-        >
-          <header mix={topBarStyle}>
-            <div mix={topBarContentStyle}>
-              <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
-              {handle.props.topBarTitle
-                ? (
-                  <>
-                    <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-                    <h1 data-top-bar-title mix={topBarTitleStyle}>
-                      {handle.props.topBarTitle}
-                    </h1>
-                  </>
-                )
-                : handle.props.eyebrow
-                ? (
-                  <>
-                    <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-                    <Breadcrumb>
-                      <BreadcrumbList>
-                        <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
-                          <BreadcrumbLink href={routes.app.index.href()}>
-                            Gateway
-                          </BreadcrumbLink>
-                        </BreadcrumbItem>
-                        <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
-                        <BreadcrumbItem>
-                          <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
-                        </BreadcrumbItem>
-                      </BreadcrumbList>
-                    </Breadcrumb>
-                  </>
-                )
-                : null}
-            </div>
-          </header>
-          <div mix={contentStyle}>
-            {handle.props.heading
+      <AppShellLayout {...handle.props} />
+    </Document>
+  );
+}
+
+export function AppShellLayout(handle: Handle<AppShellProps>) {
+  return () => (
+    <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
+      <SidebarDesktop>
+        <AppNavigation
+          csrfToken={handle.props.csrfToken}
+          activeSection={handle.props.activeSection}
+          activeSessionId={handle.props.activeSessionId}
+          sessions={handle.props.sessions}
+        />
+      </SidebarDesktop>
+      <SidebarMobile id={MOBILE_SIDEBAR_ID}>
+        <AppNavigation
+          csrfToken={handle.props.csrfToken}
+          activeSection={handle.props.activeSection}
+          activeSessionId={handle.props.activeSessionId}
+          sessions={handle.props.sessions}
+        />
+      </SidebarMobile>
+      <SidebarInset
+        aria-label="Authenticated gateway"
+        data-has-right-sidebar={handle.props.rightSidebar ? "true" : undefined}
+      >
+        <header mix={topBarStyle}>
+          <div mix={topBarContentStyle}>
+            <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
+            {handle.props.topBarTitle
               ? (
-                <header mix={pageHeaderStyle}>
-                  <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
-                  {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
-                </header>
+                <>
+                  <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                  <h1 data-top-bar-title mix={topBarTitleStyle}>
+                    {handle.props.topBarTitle}
+                  </h1>
+                </>
+              )
+              : handle.props.eyebrow
+              ? (
+                <>
+                  <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                  <Breadcrumb>
+                    <BreadcrumbList>
+                      <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
+                        <BreadcrumbLink href={routes.app.index.href()}>
+                          Gateway
+                        </BreadcrumbLink>
+                      </BreadcrumbItem>
+                      <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
+                      <BreadcrumbItem>
+                        <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
+                      </BreadcrumbItem>
+                    </BreadcrumbList>
+                  </Breadcrumb>
+                </>
               )
               : null}
-            {handle.props.children}
+            {handle.props.topBarAccessory}
           </div>
-        </SidebarInset>
-        {handle.props.rightSidebar
-          ? <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
-          : null}
-        <SessionComposer
-          {...handle.props.composer}
-          csrfToken={handle.props.csrfToken}
-          dialogId={NEW_SESSION_DIALOG_ID}
-        />
-      </SidebarLayout>
-    </Document>
+        </header>
+        <div mix={contentStyle}>
+          {handle.props.heading
+            ? (
+              <header mix={pageHeaderStyle}>
+                <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
+                {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
+              </header>
+            )
+            : null}
+          {handle.props.children}
+        </div>
+      </SidebarInset>
+      {handle.props.rightSidebar
+        ? <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
+        : null}
+      <SessionComposer
+        {...handle.props.composer}
+        csrfToken={handle.props.csrfToken}
+        dialogId={NEW_SESSION_DIALOG_ID}
+      />
+    </SidebarLayout>
   );
 }
 
@@ -349,6 +357,7 @@ const topBarContentStyle = css({
   display: "flex",
   alignItems: "center",
   gap: "8px",
+  width: "100%",
   minWidth: 0,
   padding: "0 16px",
   [media.md]: { paddingLeft: "56px" },

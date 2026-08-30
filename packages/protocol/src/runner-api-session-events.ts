@@ -56,8 +56,11 @@ export const SessionProvisioningStage = Schema.Literals([
   "cloning",
   "creating-branch",
   "setup",
+  "resuming",
+  "checkpointing",
   "running",
   "ready",
+  "stopped",
   "failed",
 ]);
 export type SessionProvisioningStage = typeof SessionProvisioningStage.Type;

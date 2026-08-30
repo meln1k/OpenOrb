@@ -8,14 +8,19 @@ import {
   PromptSessionPayload,
   ProvisionSessionPayload,
   SessionId,
+  StopSessionPayload,
   UpdateSessionGitFilePayload,
   UserId,
+  WakeSessionPayload,
 } from "@openorb/protocol/runner-api";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, Stream } from "effect";
 import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
 
 import {
   type AgentEnvironment,
+  AgentEnvironmentCheckpointError,
+  AgentEnvironmentError,
   type AgentEnvironmentOptions,
   AgentEnvironmentProvider,
 } from "../../src/environment/agent-environment.ts";
@@ -36,11 +41,11 @@ import {
   RunnerSessionStoreFailure,
 } from "../../src/session/store.ts";
 import {
-  makeSessionWorkerFactory,
-  type SessionWorker,
-  SessionWorkerFactory,
-  type SessionWorkerInput,
-} from "../../src/session/worker.ts";
+  makeSessionActorFactory,
+  type SessionActor,
+  SessionActorFactory,
+  type SessionActorInput,
+} from "../../src/session/actor.ts";
 
 const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
@@ -75,11 +80,23 @@ function sessionDefinition(branchName: string): RunnerSessionDefinition {
 
 class FakeEnvironment implements AgentEnvironment {
   readonly commands: string[][] = [];
+  checkpointCalls = 0;
+  checkpointFailureConsumed: boolean | undefined;
+  gitSnapshotBlock:
+    | { started: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> }
+    | undefined;
+  resumeHookExitCode = 0;
   closed = false;
 
   run: AgentEnvironment["run"] = (command, options = {}) => {
     this.commands.push([...command]);
+    const resumeHookExitCode = this.resumeHookExitCode;
+    const gitSnapshotBlock = this.gitSnapshotBlock;
     return Effect.gen(function* () {
+      if (gitSnapshotBlock !== undefined && command.includes("--porcelain=v2")) {
+        gitSnapshotBlock.started.resolve();
+        yield* Effect.promise(() => gitSnapshotBlock.release.promise);
+      }
       if (command.includes("rev-parse")) {
         if (options.onOutput) {
           yield* options.onOutput({
@@ -88,7 +105,11 @@ class FakeEnvironment implements AgentEnvironment {
           }).pipe(Effect.orDie);
         }
       }
-      return { exitCode: 0 };
+      return {
+        exitCode: command.some((argument) => argument.includes(".agents/resume"))
+          ? resumeHookExitCode
+          : 0,
+      };
     });
   };
   runShell: AgentEnvironment["runShell"] = () => Effect.succeed({ exitCode: 0 });
@@ -97,6 +118,28 @@ class FakeEnvironment implements AgentEnvironment {
   writeFile: AgentEnvironment["writeFile"] = () => Effect.void;
   makeDirectory: AgentEnvironment["makeDirectory"] = () => Effect.void;
   detectImageMimeType: AgentEnvironment["detectImageMimeType"] = () => Effect.succeed(null);
+  checkpoint: AgentEnvironment["checkpoint"] = (path) => {
+    this.checkpointCalls++;
+    return Effect.promise(() => Deno.writeTextFile(path, `fake checkpoint ${this.checkpointCalls}`))
+      .pipe(
+        Effect.flatMap(() =>
+          this.checkpointFailureConsumed === undefined
+            ? Effect.succeed({
+              path,
+              guestAssetBuildId: "02e784cb-e063-5138-b1c4-334e8a3307a9",
+              createdWithVmm: "qemu" as const,
+              compatibleVmm: ["qemu" as const],
+            })
+            : Effect.fail(
+              new AgentEnvironmentCheckpointError(
+                "Injected checkpoint failure.",
+                undefined,
+                this.checkpointFailureConsumed,
+              ),
+            )
+        ),
+      );
+  };
 }
 
 Deno.test("SessionSupervisor accepts typed provisioning and owns the background Pi job", async () => {
@@ -138,7 +181,6 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
       {
         cpuCount: 4,
         memoryMiB: 8192,
-        maxConcurrentSessions: 2,
         createPiSession,
       },
       store,
@@ -164,7 +206,7 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
           prompt: "Continue",
           modelRuntime: MODEL_RUNTIME,
         });
-        const promptAccepted = await Effect.runPromise(requireWorker(supervisor).prompt(prompt));
+        const promptAccepted = await Effect.runPromise(requireActor(supervisor).prompt(prompt));
         assert(promptAccepted.ok);
         assertEquals(promptAccepted.mode, "started");
         assert(String(promptAccepted.runId) !== String(prompt.clientRequestId));
@@ -174,6 +216,390 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
     );
     assert(runtime.closed);
     assertEquals(piDisposals, 1);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session generation", async () => {
+  const directory = await Deno.makeTempDir();
+  const environments: FakeEnvironment[] = [];
+  const environmentOptions: AgentEnvironmentOptions[] = [];
+  const piSessionFiles: string[] = [];
+  const prompts: string[] = [];
+  let piDisposals = 0;
+  const environmentProvider = AgentEnvironmentProvider.of({
+    make: (options) => {
+      environmentOptions.push(options);
+      const environment = new FakeEnvironment();
+      if (options.resumeCheckpoint !== undefined && environments.length === 2) {
+        environment.resumeHookExitCode = 23;
+      }
+      environments.push(environment);
+      return Effect.acquireRelease(
+        Effect.succeed(environment),
+        () => Effect.sync(() => environment.closed = true),
+      );
+    },
+  });
+  const createPiSession: CreateRawPiSession = (options) => {
+    piSessionFiles.push(options.runnerSessionFile);
+    let active = false;
+    return Effect.succeed({
+      session: {
+        get isIdle() {
+          return !active;
+        },
+        sessionManager: EMPTY_PI_SESSION_MANAGER,
+        subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
+        prompt: async (input, promptOptions) => {
+          active = true;
+          prompts.push(input);
+          promptOptions?.preflightResult?.(true);
+          await delay(0);
+          active = false;
+        },
+        followUp: () => Promise.resolve(),
+        clearQueue: () => ({ steering: [], followUp: [] }),
+        abort: () => Promise.resolve(),
+        dispose() {
+          piDisposals++;
+        },
+      },
+    });
+  };
+
+  try {
+    const store = await makeStore(directory);
+    await withSupervisor(
+      {
+        cpuCount: 4,
+        memoryMiB: 8192,
+        createPiSession,
+      },
+      store,
+      environmentProvider,
+      async (supervisor, events) => {
+        await Effect.runPromise(
+          supervisor.provision(createProvisionPayload("openorb/checkpoint-cycle-test")),
+        );
+        await waitForState(store, "ready");
+        const actor = requireActor(supervisor);
+
+        assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
+        const first = await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID));
+        assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "stopped");
+        assertEquals(supervisor.activeSessionCount(), 0);
+        assertEquals(piDisposals, 1);
+
+        const woken = await Effect.runPromise(actor.wake(wakePayload(
+          "continuation-github-token",
+        )));
+        assertEquals(woken, { ok: true });
+        await waitForState(store, "ready");
+        assertEquals(environmentOptions[1]?.resumeCheckpoint, first);
+        assertEquals(environmentOptions[1]?.github?.token, "continuation-github-token");
+        assert(
+          environments[1]?.commands.some((command) =>
+            command.some((argument) => argument.includes(".agents/resume"))
+          ),
+        );
+        assertEquals(prompts, ["Inspect the repository"]);
+
+        const firstContinuation = await Effect.runPromise(actor.prompt(promptPayload(
+          "Continue after first checkpoint",
+          "continuation-github-token",
+        )));
+        assert(firstContinuation.ok);
+        await waitForState(store, "ready");
+
+        assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
+        const second = await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID));
+        assert(second.path !== first.path);
+        await assertPathMissing(first.path);
+        assertEquals(piDisposals, 2);
+
+        const resumeFailureLog = Effect.runPromise(
+          events.watch(SESSION_ID, 0).pipe(
+            Stream.filter((item) =>
+              item.event.type === "provisioning.log" &&
+              item.event.text.includes(".agents/resume exited with status 23")
+            ),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.timeout("1 second"),
+          ),
+        );
+        await delay(0);
+        const secondContinuation = await Effect.runPromise(
+          actor.prompt(promptPayload("Continue despite resume hook failure")),
+        );
+        assert(secondContinuation.ok);
+        await waitForState(store, "ready");
+        assertEquals(Array.from(await resumeFailureLog).length, 1);
+        assertEquals(environmentOptions[2]?.resumeCheckpoint, second);
+        assertEquals(environments[2]?.resumeHookExitCode, 23);
+        assertEquals(
+          environments.flatMap((environment) => environment.commands).filter((command) =>
+            command.some((argument) => argument.includes(".agents/setup"))
+          ).length,
+          1,
+        );
+        assertEquals(piSessionFiles.length, 3);
+        assertEquals(new Set(piSessionFiles).size, 1);
+        assertEquals(prompts, [
+          "Inspect the repository",
+          "Continue after first checkpoint",
+          "Continue despite resume hook failure",
+        ]);
+      },
+    );
+    assert(environments.every((environment) => environment.closed));
+    assertEquals(piDisposals, 3);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("Stop rejects active Pi work and the shortened idle timeout stops after it settles", async () => {
+  const directory = await Deno.makeTempDir();
+  const continuationStarted = Promise.withResolvers<void>();
+  const releaseContinuation = Promise.withResolvers<void>();
+  let promptCalls = 0;
+  const createPiSession: CreateRawPiSession = () =>
+    Effect.succeed({
+      session: {
+        isIdle: true,
+        sessionManager: EMPTY_PI_SESSION_MANAGER,
+        subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
+        prompt: async (_input, options) => {
+          const call = promptCalls++;
+          options?.preflightResult?.(true);
+          if (call > 0) {
+            continuationStarted.resolve();
+            await releaseContinuation.promise;
+          }
+        },
+        followUp: () => Promise.resolve(),
+        clearQueue: () => ({ steering: [], followUp: [] }),
+        abort: () => {
+          releaseContinuation.resolve();
+          return Promise.resolve();
+        },
+        dispose() {},
+      },
+    });
+
+  try {
+    const store = await makeStore(directory);
+    const environment = new FakeEnvironment();
+    await withSupervisor(
+      {
+        cpuCount: 4,
+        memoryMiB: 8192,
+        idleTimeoutMs: 100,
+        createPiSession,
+      },
+      store,
+      fakeEnvironmentProvider(environment),
+      async (supervisor) => {
+        await Effect.runPromise(
+          supervisor.provision(createProvisionPayload("openorb/idle-stop-test")),
+        );
+        await waitForState(store, "ready");
+        const actor = requireActor(supervisor);
+        const continued = await Effect.runPromise(
+          actor.prompt(promptPayload("Keep working past the idle threshold")),
+        );
+        assert(continued.ok);
+        await continuationStarted.promise;
+        await delay(150);
+        assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "running");
+        assertEquals(environment.checkpointCalls, 0);
+        const rejected = await Effect.runPromise(actor.stop(stopPayload()));
+        assertEquals(rejected.ok, false);
+
+        releaseContinuation.resolve();
+        await waitForState(store, "stopped");
+        assertEquals(environment.checkpointCalls, 1);
+        await waitForActorInactive(actor);
+        assertEquals(supervisor.activeSessionCount(), 0);
+      },
+    );
+  } finally {
+    releaseContinuation.resolve();
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("Stop rejects an active Git Snapshot and succeeds after it finishes", async () => {
+  const directory = await Deno.makeTempDir();
+  const snapshotStarted = Promise.withResolvers<void>();
+  const releaseSnapshot = Promise.withResolvers<void>();
+  try {
+    const store = await makeStore(directory);
+    const environment = new FakeEnvironment();
+    await withSupervisor(
+      {
+        cpuCount: 4,
+        memoryMiB: 8192,
+        createPiSession: createSettlingPiSession,
+      },
+      store,
+      fakeEnvironmentProvider(environment),
+      async (supervisor) => {
+        await Effect.runPromise(
+          supervisor.provision(createProvisionPayload("openorb/stop-git-snapshot-test")),
+        );
+        await waitForState(store, "ready");
+        environment.gitSnapshotBlock = {
+          started: snapshotStarted,
+          release: releaseSnapshot,
+        };
+        const actor = requireActor(supervisor);
+        const update = Effect.runPromise(actor.updateGitFile(
+          Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
+            sessionId: SESSION_ID,
+            action: "stage",
+            path: "src/main.ts",
+          }),
+        ));
+        await snapshotStarted.promise;
+        const rejected = await Effect.runPromise(actor.stop(stopPayload()));
+        assertEquals(rejected.ok, false);
+
+        environment.gitSnapshotBlock = undefined;
+        releaseSnapshot.resolve();
+        assertEquals(await update, { ok: true });
+        assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
+        assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "stopped");
+      },
+    );
+  } finally {
+    releaseSnapshot.resolve();
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("checkpoint failures distinguish reusable and consumed VMs", async () => {
+  for (const consumed of [false, true]) {
+    const directory = await Deno.makeTempDir();
+    try {
+      const store = await makeStore(directory);
+      const environment = new FakeEnvironment();
+      environment.checkpointFailureConsumed = consumed;
+      let piCreations = 0;
+      const createPiSession: CreateRawPiSession = (options) => {
+        piCreations++;
+        return createSettlingPiSession(options);
+      };
+      await withSupervisor(
+        {
+          cpuCount: 4,
+          memoryMiB: 8192,
+          createPiSession,
+        },
+        store,
+        fakeEnvironmentProvider(environment),
+        async (supervisor) => {
+          await Effect.runPromise(supervisor.provision(
+            createProvisionPayload(`openorb/checkpoint-failure-${consumed}`),
+          ));
+          await waitForState(store, "ready");
+          const actor = requireActor(supervisor);
+          const stopped = await Effect.runPromise(actor.stop(stopPayload()));
+          assertEquals(stopped.ok, false);
+          const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
+          assertEquals(metadata.state, consumed ? "error" : "ready");
+          assertEquals(metadata.checkpoint, undefined);
+          assertEquals(metadata.checkpointCandidate, undefined);
+          assertEquals(
+            (await Array.fromAsync(
+              Deno.readDir(join(directory, "sessions", SESSION_ID, "checkpoints")),
+            )).length,
+            0,
+          );
+          assertEquals(actor.active, !consumed);
+
+          const prompted = await Effect.runPromise(
+            actor.prompt(promptPayload("Try after failed checkpoint")),
+          );
+          assertEquals(prompted.ok, !consumed);
+          if (!consumed) await waitForState(store, "ready");
+          assertEquals(piCreations, consumed ? 1 : 2);
+        },
+      );
+    } finally {
+      await Deno.remove(directory, { recursive: true });
+    }
+  }
+});
+
+Deno.test("checkpoint resume failure leaves the stopped prompt undispatched", async () => {
+  const directory = await Deno.makeTempDir();
+  let environmentCreations = 0;
+  let piPromptCalls = 0;
+  const environment = new FakeEnvironment();
+  const environmentProvider = AgentEnvironmentProvider.of({
+    make: (options) => {
+      environmentCreations++;
+      return options.resumeCheckpoint === undefined
+        ? Effect.acquireRelease(
+          Effect.succeed(environment),
+          () => Effect.sync(() => environment.closed = true),
+        )
+        : Effect.fail(
+          new AgentEnvironmentError(
+            "Injected incompatible checkpoint backend.",
+            undefined,
+          ),
+        );
+    },
+  });
+  const createPiSession: CreateRawPiSession = (options) =>
+    createSettlingPiSession(options).pipe(
+      Effect.map((created) => ({
+        session: {
+          ...created.session,
+          prompt: async (
+            input: string,
+            promptOptions?: { preflightResult?: (success: boolean) => void },
+          ) => {
+            piPromptCalls++;
+            return await created.session.prompt(input, promptOptions);
+          },
+        },
+      })),
+    );
+
+  try {
+    const store = await makeStore(directory);
+    await withSupervisor(
+      {
+        cpuCount: 4,
+        memoryMiB: 8192,
+        createPiSession,
+      },
+      store,
+      environmentProvider,
+      async (supervisor) => {
+        await Effect.runPromise(
+          supervisor.provision(createProvisionPayload("openorb/resume-failure-test")),
+        );
+        await waitForState(store, "ready");
+        const actor = requireActor(supervisor);
+        assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
+        const promptCallsBeforeResume = piPromptCalls;
+        const resumed = await Effect.runPromise(
+          actor.prompt(promptPayload("This must remain undispatched")),
+        );
+        assertEquals(resumed.ok, false);
+        assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "stopped");
+        assertEquals(piPromptCalls, promptCallsBeforeResume);
+        assertEquals(environmentCreations, 2);
+        assertEquals(actor.active, false);
+      },
+    );
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
@@ -221,7 +647,6 @@ Deno.test("session owners retain separate immutable Git identities in guest envi
         {
           cpuCount: 4,
           memoryMiB: 8192,
-          maxConcurrentSessions: 1,
           createPiSession: createSettlingPiSession,
         },
         store,
@@ -245,7 +670,7 @@ Deno.test("session owners retain separate immutable Git identities in guest envi
   }
 });
 
-Deno.test("SessionWorker awaits a failed run-end Git Snapshot refresh without failing the run", async () => {
+Deno.test("SessionActor awaits a failed run-end Git Snapshot refresh without failing the run", async () => {
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
@@ -272,7 +697,6 @@ Deno.test("SessionWorker awaits a failed run-end Git Snapshot refresh without fa
       {
         cpuCount: 4,
         memoryMiB: 8192,
-        maxConcurrentSessions: 2,
         createPiSession: createSettlingPiSession,
       },
       failingSnapshotStore,
@@ -305,7 +729,6 @@ Deno.test("SessionSupervisor aborts only the exact active run after clearing fol
     const supervisorOptions = {
       cpuCount: 4,
       memoryMiB: 8192,
-      maxConcurrentSessions: 2,
       createPiSession: (_options: OpenOrbPiSessionOptions) =>
         Effect.succeed({
           session: {
@@ -368,8 +791,8 @@ Deno.test("SessionSupervisor aborts only the exact active run after clearing fol
           prompt: "Continue while active",
           modelRuntime: MODEL_RUNTIME,
         });
-        const worker = requireWorker(supervisor);
-        const followUpAccepted = await Effect.runPromise(worker.prompt(followUp));
+        const actor = requireActor(supervisor);
+        const followUpAccepted = await Effect.runPromise(actor.prompt(followUp));
         assert(followUpAccepted.ok);
         assertEquals(followUpAccepted.mode, "follow-up");
         assertEquals(followUpAccepted.runId, activeRunId);
@@ -380,21 +803,21 @@ Deno.test("SessionSupervisor aborts only the exact active run after clearing fol
           action: "stage",
           path: "src/main.ts",
         });
-        assertEquals(await Effect.runPromise(worker.updateGitFile(update)), { ok: true });
+        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), { ok: true });
         assert(runtime.commands.some((command) => command.includes("add")));
 
         const stale = Schema.decodeUnknownSync(AbortSessionPayload)({
           sessionId: SESSION_ID,
           runId: crypto.randomUUID(),
         });
-        assertEquals((await Effect.runPromise(worker.abort(stale))).ok, false);
+        assertEquals((await Effect.runPromise(actor.abort(stale))).ok, false);
         assertEquals([clearCalls, abortCalls], [0, 0]);
 
         const exact = Schema.decodeUnknownSync(AbortSessionPayload)({
           sessionId: SESSION_ID,
           runId: activeRunId,
         });
-        assertEquals(await Effect.runPromise(worker.abort(exact)), { ok: true });
+        assertEquals(await Effect.runPromise(actor.abort(exact)), { ok: true });
         assertEquals([clearCalls, abortCalls], [1, 1]);
         await waitForState(store, "ready");
       },
@@ -414,7 +837,6 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
       {
         cpuCount: 4,
         memoryMiB: 8192,
-        maxConcurrentSessions: 2,
         createPiSession: createSettlingPiSession,
       },
       store,
@@ -430,7 +852,6 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
       {
         cpuCount: 4,
         memoryMiB: 8192,
-        maxConcurrentSessions: 2,
         createPiSession: createSettlingPiSession,
       },
       restartedStore,
@@ -442,11 +863,11 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
           prompt: "Continue after restart",
           modelRuntime: MODEL_RUNTIME,
         });
-        const worker = await Effect.runPromise(
-          restarted.findOrRestoreWorker(SESSION_ID),
+        const actor = await Effect.runPromise(
+          restarted.findOrRestoreActor(SESSION_ID),
         );
-        assert(worker);
-        const accepted = await Effect.runPromise(worker.prompt(prompt));
+        assert(actor);
+        const accepted = await Effect.runPromise(actor.prompt(prompt));
         assert(accepted.ok);
         assertEquals(accepted.mode, "started");
       },
@@ -456,7 +877,7 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
   }
 });
 
-Deno.test("SessionSupervisor lazily restores a ready worker for Git file updates", async () => {
+Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates", async () => {
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
@@ -469,15 +890,16 @@ Deno.test("SessionSupervisor lazily restores a ready worker for Git file updates
       checkoutState: "available",
       baseCommit: "0123456789abcdef0123456789abcdef01234567",
     }));
-    const spawns: SessionWorkerInput[] = [];
+    const spawns: SessionActorInput[] = [];
     const updates: UpdateSessionGitFilePayload[] = [];
-    const worker: SessionWorker = {
+    const actor: SessionActor = {
       sessionId: SESSION_ID,
       activeRunId: undefined,
       active: true,
       wake: () => Effect.die("unexpected wake"),
       prompt: () => Effect.die("unexpected prompt"),
       abort: () => Effect.die("unexpected abort"),
+      stop: () => Effect.die("unexpected stop"),
       updateGitFile: (update) =>
         Effect.sync(() => {
           updates.push(update);
@@ -485,11 +907,11 @@ Deno.test("SessionSupervisor lazily restores a ready worker for Git file updates
         }),
       shutdown: Effect.void,
     };
-    const workerFactory = SessionWorkerFactory.of({
+    const actorFactory = SessionActorFactory.of({
       spawn: (input) =>
         Effect.sync(() => {
           spawns.push(input);
-          return worker;
+          return actor;
         }),
     });
 
@@ -497,17 +919,16 @@ Deno.test("SessionSupervisor lazily restores a ready worker for Git file updates
       const supervisor = yield* makeSessionSupervisor({
         cpuCount: 4,
         memoryMiB: 8192,
-        maxConcurrentSessions: 2,
       }).pipe(
         Effect.provideService(RunnerSessionStore, store),
-        Effect.provideService(SessionWorkerFactory, workerFactory),
+        Effect.provideService(SessionActorFactory, actorFactory),
       );
       const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
         sessionId: SESSION_ID,
         action: "stage",
         path: "src/main.ts",
       });
-      const restored = yield* supervisor.findOrRestoreWorker(SESSION_ID);
+      const restored = yield* supervisor.findOrRestoreActor(SESSION_ID);
       assert(restored);
       assertEquals(yield* restored.updateGitFile(update), { ok: true });
       assertEquals(updates, [update]);
@@ -540,7 +961,7 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
     };
 
     await withSupervisor(
-      { cpuCount: 4, memoryMiB: 8192, maxConcurrentSessions: 2, createPiSession },
+      { cpuCount: 4, memoryMiB: 8192, createPiSession },
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
       async (supervisor) => {
@@ -550,14 +971,14 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
           path: "src/main.ts",
         });
         const [updated, woken] = await Effect.runPromise(Effect.all([
-          supervisor.findOrRestoreWorker(SESSION_ID).pipe(
-            Effect.flatMap((worker) =>
-              worker ? worker.updateGitFile(update) : Effect.die("Git worker unavailable")
+          supervisor.findOrRestoreActor(SESSION_ID).pipe(
+            Effect.flatMap((actor) =>
+              actor ? actor.updateGitFile(update) : Effect.die("Git actor unavailable")
             ),
           ),
-          supervisor.findOrRestoreWorker(SESSION_ID).pipe(
-            Effect.flatMap((worker) =>
-              worker ? worker.wake(MODEL_RUNTIME) : Effect.die("Wake worker unavailable")
+          supervisor.findOrRestoreActor(SESSION_ID).pipe(
+            Effect.flatMap((actor) =>
+              actor ? actor.wake(wakePayload()) : Effect.die("Wake actor unavailable")
             ),
           ),
         ], { concurrency: "unbounded" }));
@@ -565,8 +986,8 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
         assertEquals(woken, { ok: true });
         assertEquals(piCreations, 1);
 
-        const worker = await Effect.runPromise(supervisor.findOrRestoreWorker(SESSION_ID));
-        assert(worker);
+        const actor = await Effect.runPromise(supervisor.findOrRestoreActor(SESSION_ID));
+        assert(actor);
 
         const prompt = (text: string) =>
           Schema.decodeUnknownSync(PromptSessionPayload)({
@@ -575,11 +996,11 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
             prompt: text,
             modelRuntime: MODEL_RUNTIME,
           });
-        const first = await Effect.runPromise(worker.prompt(prompt("Continue after staging")));
+        const first = await Effect.runPromise(actor.prompt(prompt("Continue after staging")));
         assert(first.ok);
         assertEquals(first.mode, "started");
         await waitForState(store, "ready");
-        const second = await Effect.runPromise(worker.prompt(prompt("Continue again")));
+        const second = await Effect.runPromise(actor.prompt(prompt("Continue again")));
         assert(second.ok);
         assertEquals(second.mode, "started");
         await waitForState(store, "ready");
@@ -613,7 +1034,7 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
     };
 
     await withSupervisor(
-      { cpuCount: 4, memoryMiB: 8192, maxConcurrentSessions: 2, createPiSession },
+      { cpuCount: 4, memoryMiB: 8192, createPiSession },
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
       async (supervisor) => {
@@ -622,9 +1043,9 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
           action: "stage",
           path: "src/main.ts",
         });
-        const worker = await Effect.runPromise(supervisor.findOrRestoreWorker(SESSION_ID));
-        assert(worker);
-        assertEquals(await Effect.runPromise(worker.updateGitFile(update)), { ok: true });
+        const actor = await Effect.runPromise(supervisor.findOrRestoreActor(SESSION_ID));
+        assert(actor);
+        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), { ok: true });
 
         const prompt = (text: string) =>
           Schema.decodeUnknownSync(PromptSessionPayload)({
@@ -634,14 +1055,14 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
             modelRuntime: MODEL_RUNTIME,
           });
         const first = await Effect.runPromise(
-          worker.prompt(prompt("First attempt")).pipe(Effect.timeout("1 second")),
+          actor.prompt(prompt("First attempt")).pipe(Effect.timeout("1 second")),
         );
         assertEquals(first.ok, false);
         assertEquals(piOpenAttempts, 1);
 
-        assertEquals(await Effect.runPromise(worker.updateGitFile(update)), { ok: true });
+        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), { ok: true });
         const retry = await Effect.runPromise(
-          worker.prompt(prompt("Retry")).pipe(Effect.timeout("1 second")),
+          actor.prompt(prompt("Retry")).pipe(Effect.timeout("1 second")),
         );
         assert(retry.ok);
         assertEquals(retry.mode, "started");
@@ -667,7 +1088,6 @@ Deno.test("SessionSupervisor marks durable created metadata for explicit retry",
       {
         cpuCount: 4,
         memoryMiB: 8192,
-        maxConcurrentSessions: 2,
         createPiSession: createSettlingPiSession,
       },
       store,
@@ -728,7 +1148,6 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
       {
         cpuCount: 4,
         memoryMiB: 8192,
-        maxConcurrentSessions: 2,
         createPiSession: createSettlingPiSession,
       },
       store,
@@ -763,8 +1182,8 @@ Deno.test("SessionSupervisor fails construction when startup reconciliation cann
       ...store,
       loadSessionManifest: () => Effect.fail(cause),
     };
-    const workerFactory = SessionWorkerFactory.of({
-      spawn: () => Effect.die("A worker must not be spawned during reconciliation."),
+    const actorFactory = SessionActorFactory.of({
+      spawn: () => Effect.die("An actor must not be spawned during reconciliation."),
     });
     const error = await Effect.runPromise(
       Effect.scoped(
@@ -772,10 +1191,9 @@ Deno.test("SessionSupervisor fails construction when startup reconciliation cann
           makeSessionSupervisor({
             cpuCount: 4,
             memoryMiB: 8192,
-            maxConcurrentSessions: 2,
           }).pipe(
             Effect.provideService(RunnerSessionStore, failingStore),
-            Effect.provideService(SessionWorkerFactory, workerFactory),
+            Effect.provideService(SessionActorFactory, actorFactory),
           ),
         ),
       ),
@@ -787,7 +1205,7 @@ Deno.test("SessionSupervisor fails construction when startup reconciliation cann
   }
 });
 
-Deno.test("SessionSupervisor enforces the configured concurrent session maximum", async () => {
+Deno.test("SessionSupervisor does not impose a concurrent session-count limit", async () => {
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
@@ -818,7 +1236,6 @@ Deno.test("SessionSupervisor enforces the configured concurrent session maximum"
     const configuredOptions: SessionSupervisorOptions = {
       cpuCount: 4,
       memoryMiB: 8192,
-      maxConcurrentSessions: 1,
     };
 
     await withSupervisor(
@@ -828,9 +1245,8 @@ Deno.test("SessionSupervisor enforces the configured concurrent session maximum"
       async (supervisor) => {
         await Effect.runPromise(supervisor.provision(first));
         assertEquals(supervisor.activeSessionCount(), 1);
-        const secondExit = await Effect.runPromiseExit(supervisor.provision(second));
-        assertEquals(secondExit._tag, "Failure");
-        assertEquals(supervisor.activeSessionCount(), 1);
+        await Effect.runPromise(supervisor.provision(second));
+        assertEquals(supervisor.activeSessionCount(), 2);
       },
     );
   } finally {
@@ -871,7 +1287,7 @@ Deno.test("SessionSupervisor serializes two closely queued idle prompts into one
       });
 
     await withSupervisor(
-      { cpuCount: 4, memoryMiB: 8192, maxConcurrentSessions: 2, createPiSession },
+      { cpuCount: 4, memoryMiB: 8192, createPiSession },
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
       async (supervisor) => {
@@ -886,10 +1302,10 @@ Deno.test("SessionSupervisor serializes two closely queued idle prompts into one
             prompt: text,
             modelRuntime: MODEL_RUNTIME,
           });
-        const worker = requireWorker(supervisor);
-        const first = Effect.runPromise(worker.prompt(prompt("First continuation")));
+        const actor = requireActor(supervisor);
+        const first = Effect.runPromise(actor.prompt(prompt("First continuation")));
         await firstContinuationStarted.promise;
-        const second = Effect.runPromise(worker.prompt(prompt("Second continuation")));
+        const second = Effect.runPromise(actor.prompt(prompt("Second continuation")));
         await followUpAccepted.promise;
         releaseContinuations.resolve();
         const [firstAccepted, secondAccepted] = await Promise.all([first, second]);
@@ -954,17 +1370,50 @@ function createSettlingPiSession(_options: OpenOrbPiSessionOptions) {
 
 async function waitForState(
   store: RunnerSessionStoreService,
-  state: "ready",
+  state: "ready" | "running" | "stopped" | "error",
   timeoutMs = 1_000,
 ) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
     if (metadata.state === state) return;
-    if (metadata.state === "error") throw new Error("Session provisioning failed.");
+    if (metadata.state === "error" && state !== "error") {
+      throw new Error("Session provisioning failed.");
+    }
     await delay(10);
   }
   throw new Error(`Session did not reach ${state}.`);
+}
+
+function promptPayload(prompt: string, githubToken?: string) {
+  return Schema.decodeUnknownSync(PromptSessionPayload)({
+    sessionId: SESSION_ID,
+    clientRequestId: crypto.randomUUID(),
+    prompt,
+    modelRuntime: MODEL_RUNTIME,
+    ...(githubToken === undefined ? {} : { githubToken }),
+  });
+}
+
+function wakePayload(githubToken?: string) {
+  return Schema.decodeUnknownSync(WakeSessionPayload)({
+    sessionId: SESSION_ID,
+    modelRuntime: MODEL_RUNTIME,
+    ...(githubToken === undefined ? {} : { githubToken }),
+  });
+}
+
+function stopPayload() {
+  return Schema.decodeUnknownSync(StopSessionPayload)({ sessionId: SESSION_ID });
+}
+
+async function assertPathMissing(path: string): Promise<void> {
+  try {
+    await Deno.lstat(path);
+    throw new Error(`Expected ${path} not to exist.`);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
 }
 
 function makeStore(workingDirectory: string) {
@@ -975,10 +1424,10 @@ function makeStore(workingDirectory: string) {
   );
 }
 
-function requireWorker(supervisor: SessionSupervisor): SessionWorker {
-  const worker = supervisor.findWorker(SESSION_ID);
-  assert(worker, "Session supervisor did not contain the expected worker.");
-  return worker;
+function requireActor(supervisor: SessionSupervisor): SessionActor {
+  const actor = supervisor.findActor(SESSION_ID);
+  assert(actor, "Session supervisor did not contain the expected actor.");
+  return actor;
 }
 
 async function waitForActiveRun(supervisor: SessionSupervisor, timeoutMs = 1_000) {
@@ -989,6 +1438,15 @@ async function waitForActiveRun(supervisor: SessionSupervisor, timeoutMs = 1_000
     await delay(10);
   }
   throw new Error("Session did not expose its active run.");
+}
+
+async function waitForActorInactive(actor: SessionActor, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!actor.active) return;
+    await delay(10);
+  }
+  throw new Error("Session actor did not become inactive.");
 }
 
 const EMPTY_PI_SESSION_MANAGER: Pick<SessionManager, "getLeafEntry"> = {
@@ -1009,7 +1467,7 @@ async function withSupervisor(
   options: SessionSupervisorOptions & { readonly createPiSession?: CreateRawPiSession },
   store: RunnerSessionStoreService,
   environmentProvider: AgentEnvironmentProvider,
-  use: (supervisor: SessionSupervisor) => Promise<void>,
+  use: (supervisor: SessionSupervisor, events: SessionEvents) => Promise<void>,
 ): Promise<void> {
   await Effect.runPromise(
     Effect.scoped(
@@ -1028,7 +1486,7 @@ async function withSupervisor(
           },
           ...(options.createPiSession === undefined ? {} : { create: options.createPiSession }),
         });
-        const workerFactory = yield* makeSessionWorkerFactory().pipe(
+        const actorFactory = yield* makeSessionActorFactory().pipe(
           Effect.provideService(RunnerSessionStore, store),
           Effect.provideService(SessionEvents, events),
           Effect.provideService(AgentEnvironmentProvider, environmentProvider),
@@ -1037,12 +1495,12 @@ async function withSupervisor(
         const supervisor = yield* makeSessionSupervisor({
           cpuCount: options.cpuCount,
           memoryMiB: options.memoryMiB,
-          maxConcurrentSessions: options.maxConcurrentSessions,
+          ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
         }).pipe(
           Effect.provideService(RunnerSessionStore, store),
-          Effect.provideService(SessionWorkerFactory, workerFactory),
+          Effect.provideService(SessionActorFactory, actorFactory),
         );
-        yield* Effect.promise(() => use(supervisor));
+        yield* Effect.promise(() => use(supervisor, events));
       }),
     ),
   );

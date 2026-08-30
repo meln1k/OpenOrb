@@ -212,7 +212,10 @@ export default createController(routes.app.sessions, {
       if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
       }
-      if (snapshot.state !== "ready" && snapshot.state !== "running") {
+      if (
+        snapshot.state !== "ready" && snapshot.state !== "running" &&
+        snapshot.state !== "stopped"
+      ) {
         return await sessionCommandError(
           context,
           "The session cannot accept a prompt right now.",
@@ -220,15 +223,25 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      const [modelApiKey, modelCredentialError] = await context.services.store
-        .getModelProviderApiKey(
-          userId,
-          parseModelReference(snapshot.model).providerId,
-        );
+      const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] = await Promise
+        .all([
+          context.services.store.getModelProviderApiKey(
+            userId,
+            parseModelReference(snapshot.model).providerId,
+          ),
+          context.services.store.getGitHubToken(userId),
+        ]);
       if (modelCredentialError !== undefined) {
         return await sessionCommandError(
           context,
           "The saved model provider credential could not be read.",
+          500,
+        );
+      }
+      if (gitCredentialError !== undefined) {
+        return await sessionCommandError(
+          context,
+          "The saved GitHub credential could not be read.",
           500,
         );
       }
@@ -247,6 +260,7 @@ export default createController(routes.app.sessions, {
           payload: {
             prompt: parsed.value.prompt,
             modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
+            ...(githubToken === null ? {} : { githubToken }),
           },
         }),
         { signal: context.request.signal },
@@ -287,6 +301,43 @@ export default createController(routes.app.sessions, {
           context,
           aborted.message,
           aborted.status === "rejected" ? 409 : 503,
+        );
+      }
+      return sessionCommandAccepted(context, sessionId);
+    },
+
+    async stop(context) {
+      const userId = context.auth.identity.id;
+      const sessionId = parseSessionId(context.params.sessionId);
+      if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
+      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      if (!session) return await sessionCommandError(context, "Session not found.", 404);
+      const [snapshot, runnerId] = await Promise.all([
+        Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
+        Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
+      ]);
+      if (!snapshot || !runnerId) {
+        return await sessionCommandError(context, "The pinned runner is offline.", 503);
+      }
+      if (snapshot.state !== "ready") {
+        return await sessionCommandError(
+          context,
+          snapshot.state === "running"
+            ? "Abort the active Pi run before stopping the session."
+            : "The session is not ready and idle.",
+          409,
+        );
+      }
+
+      const stopped = await Effect.runPromise(
+        context.services.runnerConnections.stopSession({ userId, sessionId }),
+        { signal: context.request.signal },
+      );
+      if (stopped.status !== "accepted") {
+        return await sessionCommandError(
+          context,
+          stopped.message,
+          stopped.status === "rejected" ? 409 : 503,
         );
       }
       return sessionCommandAccepted(context, sessionId);
@@ -445,6 +496,7 @@ async function renderDetailPage(
       changesHref={routes.api.sessions.changes.href({ sessionId })}
       messageHref={routes.app.sessions.message.href({ sessionId })}
       retryHref={routes.app.sessions.retry.href({ sessionId })}
+      stopHref={routes.app.sessions.stop.href({ sessionId })}
       wakeHref={routes.api.sessions.wake.href({ sessionId })}
       sidebarSessions={sidebarSessions}
       error={error}

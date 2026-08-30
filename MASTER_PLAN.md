@@ -613,7 +613,6 @@ Orb sizes resolve to fixed resources: `tiny` is 1 CPU/2 GB, `small` is 2 CPUs/4 
 
 ```ts
 interface RunnerCapacity {
-  maxConcurrentSessions?: number
   activeSessions: number
   vmCpuCount: number
   vmMemoryMiB: number

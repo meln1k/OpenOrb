@@ -13,6 +13,8 @@ import {
   type RunnerId,
   RunnerIdentity,
   SessionNotFound,
+  StopRejected,
+  StopSessionAccepted,
   WakeRejected,
   WakeSessionAccepted,
 } from "@openorb/protocol/runner-api";
@@ -73,9 +75,9 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
               sessionId: payload.sessionId,
               message: "The session model cannot change during restoration.",
             })
-            : options.supervisor.findOrRestoreWorker(payload.sessionId).pipe(
-              Effect.flatMap((worker) =>
-                worker ? worker.wake(payload.modelRuntime) : Effect.succeed(
+            : options.supervisor.findOrRestoreActor(payload.sessionId).pipe(
+              Effect.flatMap((actor) =>
+                actor ? actor.wake(payload) : Effect.succeed(
                   {
                     ok: false,
                     message: "The session environment could not be restored.",
@@ -92,9 +94,9 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         ),
       ),
     "session.prompt": (payload) =>
-      options.supervisor.findOrRestoreWorker(payload.sessionId).pipe(
-        Effect.flatMap((worker) =>
-          worker ? worker.prompt(payload) : Effect.succeed(
+      options.supervisor.findOrRestoreActor(payload.sessionId).pipe(
+        Effect.flatMap((actor) =>
+          actor ? actor.prompt(payload) : Effect.succeed(
             {
               ok: false,
               message: "The session is not ready and idle.",
@@ -114,15 +116,15 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         ),
       ),
     "session.abort": (payload) => {
-      const worker = options.supervisor.findWorker(payload.sessionId);
-      if (!worker) {
+      const actor = options.supervisor.findActor(payload.sessionId);
+      if (!actor) {
         return new AbortRejected({
           sessionId: payload.sessionId,
           runId: payload.runId,
           message: "That Pi run is no longer active.",
         });
       }
-      return worker.abort(payload).pipe(
+      return actor.abort(payload).pipe(
         Effect.flatMap((result) =>
           result.ok
             ? Effect.succeed(new AbortSessionAccepted({ runId: payload.runId }))
@@ -134,6 +136,23 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         ),
       );
     },
+    "session.stop": (payload) =>
+      options.supervisor.findOrRestoreActor(payload.sessionId).pipe(
+        Effect.flatMap((actor) =>
+          actor ? actor.stop(payload) : Effect.succeed(
+            {
+              ok: false,
+              message: "The session is not ready and idle.",
+            } as const,
+          )
+        ),
+        Effect.flatMap((result) =>
+          result.ok ? Effect.succeed(new StopSessionAccepted({})) : new StopRejected({
+            sessionId: payload.sessionId,
+            message: result.message,
+          })
+        ),
+      ),
     "session.git-snapshot.read": ({ sessionId }) =>
       options.store.readMetadata(sessionId).pipe(
         Effect.mapError(() =>
@@ -159,9 +178,9 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           })
         ),
         Effect.andThen(
-          options.supervisor.findOrRestoreWorker(payload.sessionId).pipe(
-            Effect.flatMap((worker) =>
-              worker ? worker.updateGitFile(payload) : Effect.succeed(
+          options.supervisor.findOrRestoreActor(payload.sessionId).pipe(
+            Effect.flatMap((actor) =>
+              actor ? actor.updateGitFile(payload) : Effect.succeed(
                 {
                   ok: false,
                   message: "The session environment is unavailable.",

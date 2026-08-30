@@ -8,10 +8,10 @@ import { readRunnerIdentity, writeRunnerIdentity } from "./runtime/identity.ts";
 import { parseRunnerCommand } from "./runtime/options.ts";
 import { checkRunnerPrerequisites } from "./runtime/prerequisites.ts";
 import { validateRunnerWorkingDirectory } from "./runtime/working-directory.ts";
+import { sessionActorFactoryLayer } from "./session/actor.ts";
 import { SessionEvents, sessionEventsLayer } from "./session/events.ts";
 import { RunnerSessionStore, runnerSessionStoreLayer } from "./session/store.ts";
 import { SessionSupervisor, sessionSupervisorLayer } from "./session/supervisor.ts";
-import { sessionWorkerFactoryLayer } from "./session/worker.ts";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
 import { Effect, Exit, Layer, Predicate, Runtime, Schema } from "effect";
@@ -30,7 +30,7 @@ export async function main(
   if (commandError !== undefined) {
     console.error(`[openorb-runner] error: ${commandError.message}`);
     console.error(
-      "Usage: openorb-runner [doctor|--version] [--gateway URL --enrollment-token PSK] [--name NAME] [--max-concurrent-sessions COUNT] [--vm-cpu-count COUNT] [--vm-memory-mib MIB]",
+      "Usage: openorb-runner [doctor|--version] [--gateway URL --enrollment-token PSK] [--name NAME] [--vm-cpu-count COUNT] [--vm-memory-mib MIB]",
     );
     return 2;
   }
@@ -189,7 +189,6 @@ export async function main(
       let getActiveSessionCount = () => 0;
       const getCapacity = createRunnerCapacityReporter({
         path: workingDirectory,
-        maxConcurrentSessions: command.options.maxConcurrentSessions ?? 1,
         vmCpuCount: command.options.vmCpuCount,
         vmMemoryMiB: command.options.vmMemoryMiB,
         getActiveSessions: () => getActiveSessionCount(),
@@ -203,7 +202,7 @@ export async function main(
       const sessionEventsLive = sessionEventsLayer.pipe(Layer.provide(sessionStoreLive));
       const environmentLive = gondolinAgentEnvironmentProviderLayer(guestImage);
       const harnessLive = piAgentHarnessLayer().pipe(Layer.provide(sessionEventsLive));
-      const sessionWorkerLive = sessionWorkerFactoryLayer.pipe(
+      const sessionActorLive = sessionActorFactoryLayer.pipe(
         Layer.provide(
           Layer.mergeAll(sessionStoreLive, sessionEventsLive, environmentLive, harnessLive),
         ),
@@ -211,9 +210,8 @@ export async function main(
       const sessionSupervisorLive = sessionSupervisorLayer({
         cpuCount: initialCapacity.vmCpuCount,
         memoryMiB: initialCapacity.vmMemoryMiB,
-        maxConcurrentSessions: initialCapacity.maxConcurrentSessions ?? 1,
       }).pipe(
-        Layer.provide(Layer.merge(sessionStoreLive, sessionWorkerLive)),
+        Layer.provide(Layer.merge(sessionStoreLive, sessionActorLive)),
       );
       const runnerServicesLive = Layer.mergeAll(
         sessionStoreLive,

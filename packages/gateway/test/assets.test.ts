@@ -4,9 +4,8 @@ import { assetServer } from "@/app/assets.ts";
 
 const clientEntries = [
   "packages/gateway/app/assets/client.ts",
-  "packages/gateway/app/ui/session/session-changes-panel.tsx",
   "packages/gateway/app/ui/session/session-composer-behavior.tsx",
-  "packages/gateway/app/ui/session/session-event-view.tsx",
+  "packages/gateway/app/ui/session/session-detail-client.tsx",
   "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/button.js",
 ];
 

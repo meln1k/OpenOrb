@@ -38,17 +38,17 @@ Deno.test("selects deterministically by active sessions and runner id", async ()
   if (result.status === "selected") assertEquals(result.runner.id, "runner-a");
 });
 
-Deno.test("manual selection reports unavailable, full, low-disk, and foreign runners clearly", async () => {
+Deno.test("manual selection allows busy runners and reports unavailable runners clearly", async () => {
   const available = runnerRecord("available");
-  const full = runnerRecord("full");
+  const busy = runnerRecord("busy");
   const lowDisk = runnerRecord("low-disk");
   const revoked = { ...runnerRecord("revoked"), revokedAt: Temporal.Now.instant() };
-  const runners = [available, full, lowDisk, revoked];
+  const runners = [available, busy, lowDisk, revoked];
   const repository = { listRunners: () => Promise.resolve(runners) };
   const connections = liveConnections(
     new Map([
       ["available", AVAILABLE_CAPACITY],
-      ["full", { ...AVAILABLE_CAPACITY, maxConcurrentSessions: 2, activeSessions: 2 }],
+      ["busy", { ...AVAILABLE_CAPACITY, activeSessions: 200 }],
       ["low-disk", { ...AVAILABLE_CAPACITY, diskFreeMiB: MIN_RUNNER_DISK_FREE_MIB - 1 }],
     ]),
   );
@@ -58,11 +58,8 @@ Deno.test("manual selection reports unavailable, full, low-disk, and foreign run
     "selected",
   );
   assertEquals(
-    await selectRunnerForUser(USER_ID, "full", "medium", repository, connections),
-    {
-      status: "rejected",
-      message: "Runner has reached its concurrent session limit.",
-    },
+    (await selectRunnerForUser(USER_ID, "busy", "medium", repository, connections)).status,
+    "selected",
   );
   assertSelectionRejected(
     await selectRunnerForUser(USER_ID, "low-disk", "medium", repository, connections),
@@ -115,7 +112,7 @@ function liveConnections(
       return Effect.succeed(
         capacity
           ? {
-            capacity: { ...capacity, maxConcurrentSessions: capacity.maxConcurrentSessions ?? 4 },
+            capacity,
             lastObservedAt: Date.now(),
           }
           : null,

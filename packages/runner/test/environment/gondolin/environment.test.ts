@@ -112,6 +112,115 @@ Deno.test({
 });
 
 Deno.test({
+  name: "disk checkpoints preserve root and workspace state but not tmpfs or processes",
+  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
+  async fn() {
+    const temporaryDirectory = await Deno.makeTempDir();
+    const workspacePath = `${temporaryDirectory}/workspace`;
+    const firstCheckpointPath = `${temporaryDirectory}/checkpoint-first.qcow2`;
+    const secondCheckpointPath = `${temporaryDirectory}/checkpoint-second.qcow2`;
+    await Deno.mkdir(workspacePath);
+    const guestImage = await installLocalGuestImage(temporaryDirectory);
+    const runtimeOptions = {
+      workspacePath,
+      guestImage,
+      sessionLabel: "openorb checkpoint lifecycle test",
+      cpuCount: 2,
+      memoryMiB: 2 * 1024,
+    };
+    let opened = await openRuntime(runtimeOptions);
+
+    try {
+      const prepared = await Effect.runPromise(opened.runtime.run([
+        "/bin/bash",
+        "-lc",
+        [
+          "set -eu",
+          "printf root-one >/opt/openorb-checkpoint-root",
+          "printf workspace-one >/workspace/openorb-checkpoint-workspace",
+          "printf temporary >/tmp/openorb-checkpoint-tmp",
+          "printf root-tmpfs >/root/openorb-checkpoint-root-tmpfs",
+          "printf log-tmpfs >/var/log/openorb-checkpoint-log",
+          "bash -c 'exec -a openorb-checkpoint-process sleep 300' >/dev/null 2>&1 &",
+          "printf %s $! >/workspace/openorb-checkpoint-pid",
+        ].join("\n"),
+      ]));
+      assertEquals(prepared.exitCode, 0);
+      const firstCheckpoint = await Effect.runPromise(
+        opened.runtime.checkpoint(firstCheckpointPath),
+      );
+      assertEquals(firstCheckpoint.path, firstCheckpointPath);
+      assertEquals(firstCheckpoint.guestAssetBuildId, guestImage.gondolinBuildId);
+      assert(firstCheckpoint.compatibleVmm.length > 0);
+      await Effect.runPromise(Effect.flip(opened.runtime.run(["/bin/true"])));
+      await opened.close();
+
+      await assertRejects(
+        () =>
+          Effect.runPromise(Effect.scoped(createGondolinAgentEnvironment({
+            ...runtimeOptions,
+            resumeCheckpoint: {
+              ...firstCheckpoint,
+              guestAssetBuildId: crypto.randomUUID(),
+            },
+          }))),
+        Error,
+        "checkpoint could not be resumed",
+      );
+
+      opened = await openRuntime({ ...runtimeOptions, resumeCheckpoint: firstCheckpoint });
+      const resumed = await Effect.runPromise(opened.runtime.run([
+        "/bin/bash",
+        "-lc",
+        [
+          "set -eu",
+          'test "$(cat /opt/openorb-checkpoint-root)" = root-one',
+          'test "$(cat /workspace/openorb-checkpoint-workspace)" = workspace-one',
+          "test ! -e /tmp/openorb-checkpoint-tmp",
+          "test ! -e /root/openorb-checkpoint-root-tmpfs",
+          "test ! -e /var/log/openorb-checkpoint-log",
+          "pid=$(cat /workspace/openorb-checkpoint-pid)",
+          "test ! -r /proc/$pid/cmdline || ! tr '\\0' ' ' </proc/$pid/cmdline | grep -q openorb-checkpoint-process",
+        ].join("\n"),
+      ]));
+      assertEquals(resumed.exitCode, 0);
+
+      const updated = await Effect.runPromise(opened.runtime.run([
+        "/bin/bash",
+        "-lc",
+        [
+          "set -eu",
+          "printf root-two >/opt/openorb-checkpoint-root",
+          "printf workspace-two >/workspace/openorb-checkpoint-workspace",
+          "printf temporary-two >/tmp/openorb-checkpoint-tmp",
+        ].join("\n"),
+      ]));
+      assertEquals(updated.exitCode, 0);
+      const secondCheckpoint = await Effect.runPromise(
+        opened.runtime.checkpoint(secondCheckpointPath),
+      );
+      await opened.close();
+
+      opened = await openRuntime({ ...runtimeOptions, resumeCheckpoint: secondCheckpoint });
+      const resumedAgain = await Effect.runPromise(opened.runtime.run([
+        "/bin/bash",
+        "-lc",
+        [
+          "set -eu",
+          'test "$(cat /opt/openorb-checkpoint-root)" = root-two',
+          'test "$(cat /workspace/openorb-checkpoint-workspace)" = workspace-two',
+          "test ! -e /tmp/openorb-checkpoint-tmp",
+        ].join("\n"),
+      ]));
+      assertEquals(resumedAgain.exitCode, 0);
+    } finally {
+      await opened.close();
+      await Deno.remove(temporaryDirectory, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
   name: "real Pi tools execute only in Gondolin and recover after cancellation",
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {

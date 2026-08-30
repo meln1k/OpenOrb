@@ -25,10 +25,12 @@ import MessageSquare from "lucide/dist/esm/icons/message-square.mjs";
 import MemoryStick from "lucide/dist/esm/icons/memory-stick.mjs";
 import PanelLeft from "lucide/dist/esm/icons/panel-left.mjs";
 import PanelRight from "lucide/dist/esm/icons/panel-right.mjs";
+import Play from "lucide/dist/esm/icons/play.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
 import Server from "lucide/dist/esm/icons/server.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import Sparkles from "lucide/dist/esm/icons/sparkles.mjs";
+import Square from "lucide/dist/esm/icons/square.mjs";
 import Terminal from "lucide/dist/esm/icons/terminal.mjs";
 import User from "lucide/dist/esm/icons/user.mjs";
 import Wrench from "lucide/dist/esm/icons/wrench.mjs";
@@ -60,10 +62,12 @@ export type IconName =
   | "more-horizontal"
   | "panel-left"
   | "panel-right"
+  | "play"
   | "plus"
   | "server"
   | "settings"
   | "sparkles"
+  | "square"
   | "terminal"
   | "user"
   | "wrench"
@@ -162,10 +166,12 @@ const iconNodes = {
   "more-horizontal": Ellipsis,
   "panel-left": PanelLeft,
   "panel-right": PanelRight,
+  play: Play,
   plus: Plus,
   server: Server,
   settings: Settings,
   sparkles: Sparkles,
+  square: Square,
   terminal: Terminal,
   user: User,
   wrench: Wrench,

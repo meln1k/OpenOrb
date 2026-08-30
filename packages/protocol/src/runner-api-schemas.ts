@@ -16,7 +16,7 @@ import {
 } from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 10;
+export const RUNNER_PROTOCOL_VERSION = 12;
 
 export * from "./runner-api-limits.ts";
 
@@ -67,7 +67,6 @@ export class RunnerIdentity extends Schema.Class<RunnerIdentity>("RunnerIdentity
 }) {}
 
 export class RunnerCapacity extends Schema.Class<RunnerCapacity>("RunnerCapacity")({
-  maxConcurrentSessions: Schema.optionalKey(PositiveInt),
   activeSessions: NonNegativeInt,
   vmCpuCount: PositiveInt,
   vmMemoryMiB: PositiveInt,
@@ -79,6 +78,7 @@ export const RunnerSessionState = Schema.Literals([
   "provisioning",
   "running",
   "ready",
+  "stopped",
   "error",
 ]);
 export type RunnerSessionState = typeof RunnerSessionState.Type;
@@ -293,6 +293,7 @@ export class PromptSessionPayload extends Schema.Class<PromptSessionPayload>(
   clientRequestId: ClientRequestId,
   prompt: Prompt,
   modelRuntime: SessionModelRuntime,
+  githubToken: Schema.optionalKey(Secret),
 }) {}
 
 export class PromptSessionAccepted extends Schema.Class<PromptSessionAccepted>(
@@ -306,6 +307,7 @@ export class PromptSessionAccepted extends Schema.Class<PromptSessionAccepted>(
 export class WakeSessionPayload extends Schema.Class<WakeSessionPayload>("WakeSessionPayload")({
   sessionId: SessionId,
   modelRuntime: SessionModelRuntime,
+  githubToken: Schema.optionalKey(Secret),
 }) {}
 
 export class WakeSessionAccepted
@@ -321,6 +323,14 @@ export class AbortSessionAccepted extends Schema.Class<AbortSessionAccepted>(
 )({
   runId: RunId,
 }) {}
+
+export class StopSessionPayload extends Schema.Class<StopSessionPayload>("StopSessionPayload")({
+  sessionId: SessionId,
+}) {}
+
+export class StopSessionAccepted extends Schema.Class<StopSessionAccepted>(
+  "StopSessionAccepted",
+)({}) {}
 
 export class WatchSessionPayload extends Schema.Class<WatchSessionPayload>("WatchSessionPayload")({
   sessionId: SessionId,
@@ -506,6 +516,11 @@ export class WakeRejected extends Schema.TaggedError<WakeRejected>()(
 export class AbortRejected extends Schema.TaggedError<AbortRejected>()(
   "AbortRejected",
   { sessionId: SessionId, runId: RunId, message: SafeMessage },
+) {}
+
+export class StopRejected extends Schema.TaggedError<StopRejected>()(
+  "StopRejected",
+  { sessionId: SessionId, message: SafeMessage },
 ) {}
 
 export class SessionCorrupt extends Schema.TaggedError<SessionCorrupt>()(

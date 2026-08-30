@@ -40,6 +40,7 @@ import {
   SessionId,
   SessionModelRuntime,
   type SessionNotFound,
+  StopSessionAccepted,
   UpdateSessionGitFilePayload,
   UserId,
   type WakeRejected,
@@ -141,8 +142,9 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
     Schema.decodeUnknownSync(WakeSessionPayload)({
       sessionId: SESSION_ID,
       modelRuntime: modelRuntime(),
-    }).sessionId,
-    SESSION_ID,
+      githubToken: "github-token",
+    }).githubToken,
+    "github-token",
   );
   assertEquals(
     Schema.decodeUnknownSync(AbortSessionPayload)({
@@ -436,6 +438,7 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
       ),
     "session.wake": () => Effect.succeed(new WakeSessionAccepted({})),
     "session.abort": ({ runId }) => Effect.succeed(new AbortSessionAccepted({ runId })),
+    "session.stop": () => Effect.succeed(new StopSessionAccepted({})),
     "session.git-snapshot.read": () =>
       Effect.succeed(
         new SessionGitSnapshot({
@@ -477,6 +480,7 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
   const wakePayload = new WakeSessionPayload({
     sessionId: SESSION_ID,
     modelRuntime: new SessionModelRuntime(modelRuntime()),
+    githubToken: "github-token",
   });
   const watchPayload = new WatchSessionPayload({ sessionId: SESSION_ID, afterCursor: 0 });
   const snapshotPayload = new ReadSessionGitSnapshotPayload({ sessionId: SESSION_ID });
@@ -542,7 +546,6 @@ function modelRuntime() {
 
 function runnerCapacity(): RunnerCapacity {
   return new RunnerCapacity({
-    maxConcurrentSessions: 2,
     activeSessions: 1,
     vmCpuCount: 4,
     vmMemoryMiB: 8_192,

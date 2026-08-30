@@ -1,46 +1,51 @@
 import {
   initialPromptPreview,
+  type RunId,
   type RunnerCheckoutState,
-  RunnerCheckoutState as RunnerCheckoutStateSchema,
   RunnerId,
-  RunnerSessionCreatedAt,
+  type RunnerSessionCreatedAt,
   RunnerSessionSnapshot,
   type RunnerSessionState,
-  RunnerSessionState as RunnerSessionStateSchema,
-  SessionGitHead,
   SessionGitSnapshot,
   SessionId,
 } from "@openorb/protocol/runner-api";
-import { Context, Data, DateTime, Effect, FileSystem, Layer, Schema } from "effect";
+import { Context, Data, DateTime, Effect, FileSystem, Layer, Schema, Semaphore } from "effect";
 import { dirname, join } from "node:path";
 
+import type { AgentEnvironmentCheckpoint } from "../environment/agent-environment.ts";
 import { readPiSessionEvents } from "../harness/pi/history.ts";
 import { RunnerSessionDefinition, runnerSessionDefinitionsEqual } from "./definition.ts";
+import {
+  applyLifecycleEvent,
+  legacyMetadataSchema,
+  metadataSchema,
+  projectSessionLifecycle,
+  provisioningUpdated,
+  type RunnerSessionMetadata,
+  type SessionLifecycleEvent,
+  type SessionLifecycleEventEnvelope,
+  SessionLifecycleEventEnvelope as SessionLifecycleEventEnvelopeSchema,
+  type SessionLifecycleProjection,
+} from "./lifecycle.ts";
+
+export type { RunnerSessionMetadata } from "./lifecycle.ts";
 
 const SESSIONS_DIRECTORY = "sessions";
-const METADATA_FILE = "metadata.json";
+const LIFECYCLE_FILE = "lifecycle.jsonl";
+const LEGACY_METADATA_FILE = "metadata.json";
 const PI_SESSION_FILE = join("pi", "session.jsonl");
 const GIT_SNAPSHOT_FILE = join("snapshots", "git-snapshot.json");
+const CHECKPOINTS_DIRECTORY = "checkpoints";
 
-const metadataSchema = Schema.Struct({
-  version: Schema.Literal(2),
-  id: SessionId,
-  definition: RunnerSessionDefinition,
-  runnerId: RunnerId,
-  createdAt: RunnerSessionCreatedAt,
-  state: RunnerSessionStateSchema,
-  checkoutState: RunnerCheckoutStateSchema,
-  baseCommit: Schema.optionalKey(SessionGitHead),
-});
 const gitSnapshotStateSchema = Schema.Struct({
   snapshot: SessionGitSnapshot,
   notificationPending: Schema.Boolean,
 });
-const MetadataJson = Schema.fromJsonString(metadataSchema);
+const MetadataJson = Schema.fromJsonString(Schema.Union([legacyMetadataSchema, metadataSchema]));
 const GitSnapshotStateJson = Schema.fromJsonString(gitSnapshotStateSchema);
+const LifecycleEventEnvelopeJson = Schema.fromJsonString(SessionLifecycleEventEnvelopeSchema);
 const strictSchemaOptions = { onExcessProperty: "error" } as const;
 
-export type RunnerSessionMetadata = typeof metadataSchema.Type;
 export type RunnerSessionGitSnapshotState = typeof gitSnapshotStateSchema.Type;
 
 export interface EnsureRunnerSessionResult {
@@ -51,6 +56,22 @@ export interface EnsureRunnerSessionResult {
 export interface RunnerSessionPiPaths {
   agentDirectory: string;
   sessionFile: string;
+}
+
+export interface RunnerSessionCheckpointCandidate {
+  readonly file: string;
+  readonly path: string;
+  readonly startedBy: number;
+}
+
+export interface RunnerSessionRunStarted {
+  readonly metadata: RunnerSessionMetadata;
+  readonly startedBy: number;
+}
+
+export interface RunnerSessionResumeStarted {
+  readonly metadata: RunnerSessionMetadata;
+  readonly startedBy: number;
 }
 
 export interface UpdateRunnerSessionProvisioningInput {
@@ -77,6 +98,17 @@ export type RunnerSessionStoreOperation =
   | "update-provisioning"
   | "get-workspace-path"
   | "get-pi-paths"
+  | "start-run"
+  | "accept-follow-up"
+  | "settle-run"
+  | "begin-resume"
+  | "complete-resume"
+  | "fail-resume"
+  | "begin-checkpoint"
+  | "publish-checkpoint"
+  | "fail-checkpoint"
+  | "read-checkpoint"
+  | "reconcile-checkpoints"
   | "read-git-snapshot"
   | "write-git-snapshot"
   | "get-session-snapshot"
@@ -120,6 +152,51 @@ export interface RunnerSessionStore {
   readonly getSessionPiPaths: (
     sessionId: SessionId,
   ) => Effect.Effect<RunnerSessionPiPaths, RunnerSessionStoreError>;
+  readonly startRun: (
+    sessionId: SessionId,
+    runId: RunId,
+    acceptedAt?: typeof RunnerSessionCreatedAt.Type,
+  ) => Effect.Effect<RunnerSessionRunStarted, RunnerSessionStoreError>;
+  readonly acceptFollowUp: (
+    sessionId: SessionId,
+    runId: RunId,
+    acceptedAt?: typeof RunnerSessionCreatedAt.Type,
+  ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
+  readonly settleRun: (
+    sessionId: SessionId,
+    runId: RunId,
+    startedBy: number,
+  ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
+  readonly beginResume: (
+    sessionId: SessionId,
+  ) => Effect.Effect<RunnerSessionResumeStarted, RunnerSessionStoreError>;
+  readonly completeResume: (
+    sessionId: SessionId,
+    startedBy: number,
+  ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
+  readonly failResume: (
+    sessionId: SessionId,
+    startedBy: number,
+  ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
+  readonly beginCheckpoint: (
+    sessionId: SessionId,
+  ) => Effect.Effect<RunnerSessionCheckpointCandidate, RunnerSessionStoreError>;
+  readonly publishCheckpoint: (
+    sessionId: SessionId,
+    candidate: RunnerSessionCheckpointCandidate,
+    checkpoint: AgentEnvironmentCheckpoint,
+  ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
+  readonly failCheckpoint: (
+    sessionId: SessionId,
+    candidate: RunnerSessionCheckpointCandidate,
+    consumed: boolean,
+  ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
+  readonly readCurrentCheckpoint: (
+    sessionId: SessionId,
+  ) => Effect.Effect<AgentEnvironmentCheckpoint, RunnerSessionStoreError>;
+  readonly reconcileCheckpoints: (
+    sessionId: SessionId,
+  ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
   readonly readGitSnapshot: (
     sessionId: SessionId,
   ) => Effect.Effect<SessionGitSnapshot, RunnerSessionStoreError>;
@@ -154,22 +231,42 @@ export function makeRunnerSessionStore(
     );
     const sessionsPath = join(config.workingDirectory, SESSIONS_DIRECTORY);
     const sessionPath = (sessionId: SessionId) => join(sessionsPath, sessionId);
+    const checkpointsPath = (sessionId: SessionId) =>
+      join(sessionPath(sessionId), CHECKPOINTS_DIRECTORY);
     const fileSystem = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(Effect.mapError(sessionDataError));
+    const lifecycleAccess = yield* Semaphore.make(1);
     yield* ensurePrivateDirectory(fs, sessionsPath).pipe(
       Effect.mapError(storeError("initialize", "Could not initialize runner session storage")),
     );
 
-    const readMetadataValue = (
+    const readLifecycleValueUnlocked = (
       sessionId: SessionId,
-    ): Effect.Effect<RunnerSessionMetadata, RunnerSessionDataError> =>
+    ): Effect.Effect<SessionLifecycleProjection, RunnerSessionDataError> =>
       Effect.gen(function* () {
         const path = sessionPath(sessionId);
         yield* assertRealDirectory(path, "Runner session directory");
-        const metadata = yield* readMetadataFile(fs, join(path, METADATA_FILE));
+        const lifecyclePath = join(path, LIFECYCLE_FILE);
+        let projection: SessionLifecycleProjection;
+        if (yield* pathExists(lifecyclePath)) {
+          projection = yield* readLifecycleFile(fs, lifecyclePath);
+        } else {
+          const metadata = yield* readMetadataFile(fs, join(path, LEGACY_METADATA_FILE));
+          const imported: SessionLifecycleEventEnvelope = {
+            version: 1,
+            sequence: 1,
+            event: { type: "session.imported", metadata },
+          };
+          yield* writeNewLifecycleFile(lifecyclePath, imported);
+          yield* syncDirectory(path);
+          projection = yield* projectSessionLifecycle([imported]).pipe(
+            Effect.mapError(sessionDataError),
+          );
+        }
+        const metadata = projection.metadata;
         if (metadata.id !== sessionId) {
           return yield* new RunnerSessionDataError(
-            `Session directory ${sessionId} contains metadata for ${metadata.id}.`,
+            `Session directory ${sessionId} contains lifecycle events for ${metadata.id}.`,
           );
         }
         if (metadata.runnerId !== runnerId) {
@@ -177,8 +274,36 @@ export function makeRunnerSessionStore(
             `Session ${sessionId} belongs to a different runner.`,
           );
         }
-        return metadata;
+        return projection;
       });
+
+    const readLifecycleValue = (
+      sessionId: SessionId,
+    ): Effect.Effect<SessionLifecycleProjection, RunnerSessionDataError> =>
+      lifecycleAccess.withPermit(readLifecycleValueUnlocked(sessionId));
+
+    const readMetadataValue = (
+      sessionId: SessionId,
+    ): Effect.Effect<RunnerSessionMetadata, RunnerSessionDataError> =>
+      readLifecycleValue(sessionId).pipe(Effect.map((projection) => projection.metadata));
+
+    const appendLifecycleEventValue = (
+      sessionId: SessionId,
+      event: SessionLifecycleEvent,
+    ): Effect.Effect<SessionLifecycleProjection, RunnerSessionDataError> =>
+      lifecycleAccess.withPermit(Effect.gen(function* () {
+        const current = yield* readLifecycleValueUnlocked(sessionId);
+        const envelope: SessionLifecycleEventEnvelope = {
+          version: 1,
+          sequence: current.sequence + 1,
+          event,
+        };
+        const next = yield* applyLifecycleEvent(current, envelope).pipe(
+          Effect.mapError(sessionDataError),
+        );
+        yield* appendLifecycleEnvelope(join(sessionPath(sessionId), LIFECYCLE_FILE), envelope);
+        return next;
+      }));
 
     const inspectEntry = (entry: Deno.DirEntry): Effect.Effect<RunnerSessionManifest, never> => {
       if (!entry.isDirectory || entry.isSymlink) {
@@ -266,23 +391,29 @@ export function makeRunnerSessionStore(
           }
           return yield* Effect.gen(function* () {
             const createdAt = requestedCreatedAt ?? DateTime.formatIso(yield* DateTime.now);
-            const metadata = yield* parseMetadata({
-              version: 2,
-              id: sessionId,
-              definition: parsedDefinition,
-              runnerId,
-              createdAt,
-              state: "created",
-              checkoutState: "pending",
-            });
+            const created: SessionLifecycleEventEnvelope = {
+              version: 1,
+              sequence: 1,
+              event: {
+                type: "session.created",
+                id: sessionId,
+                definition: parsedDefinition,
+                runnerId,
+                createdAt,
+              },
+            };
             yield* Effect.forEach(
-              ["workspace", "pi", "logs", "snapshots"],
+              ["workspace", "pi", "logs", "snapshots", CHECKPOINTS_DIRECTORY],
               (directory) => fileSystem(fs.makeDirectory(join(path, directory), { mode: 0o700 })),
               { discard: true },
             );
             yield* fileSystem(fs.makeDirectory(join(path, "pi", "agent"), { mode: 0o700 }));
             yield* writeNewPrivateFile(join(path, PI_SESSION_FILE), new Uint8Array());
-            yield* writeMetadataFile(join(path, METADATA_FILE), metadata);
+            yield* writeNewLifecycleFile(join(path, LIFECYCLE_FILE), created);
+            const metadata = (yield* projectSessionLifecycle([created]).pipe(
+              Effect.mapError(sessionDataError),
+            )).metadata;
+            yield* syncDirectory(path);
             yield* syncDirectory(dirname(path));
             return { disposition, metadata };
           }).pipe(
@@ -309,10 +440,10 @@ export function makeRunnerSessionStore(
 
       updateSessionState: Effect.fn("RunnerSessionStore.updateSessionState")(
         function* (sessionId: SessionId, state: RunnerSessionState) {
-          const metadata = yield* readMetadataValue(sessionId);
-          const updated = yield* parseMetadata({ ...metadata, state });
-          yield* writeMetadataFile(join(sessionPath(metadata.id), METADATA_FILE), updated);
-          return updated;
+          return (yield* appendLifecycleEventValue(sessionId, {
+            type: "session.state-changed",
+            state,
+          })).metadata;
         },
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(
@@ -322,15 +453,10 @@ export function makeRunnerSessionStore(
 
       updateProvisioning: Effect.fn("RunnerSessionStore.updateProvisioning")(
         function* (sessionId: SessionId, input: UpdateRunnerSessionProvisioningInput) {
-          const metadata = yield* readMetadataValue(sessionId);
-          const updated = yield* parseMetadata({
-            ...metadata,
-            state: input.state,
-            checkoutState: input.checkoutState,
-            ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
-          });
-          yield* writeMetadataFile(join(sessionPath(metadata.id), METADATA_FILE), updated);
-          return updated;
+          return (yield* appendLifecycleEventValue(
+            sessionId,
+            provisioningUpdated(input.state, input.checkoutState, input.baseCommit),
+          )).metadata;
         },
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(
@@ -369,6 +495,294 @@ export function makeRunnerSessionStore(
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(
             storeError("get-pi-paths", `Could not access runner session ${sessionId} Pi storage`),
+          )),
+      ),
+
+      startRun: Effect.fn("RunnerSessionStore.startRun")(
+        function* (
+          sessionId: SessionId,
+          runId: RunId,
+          requestedAcceptedAt?: typeof RunnerSessionCreatedAt.Type,
+        ) {
+          const acceptedAt = requestedAcceptedAt ?? DateTime.formatIso(yield* DateTime.now);
+          const projection = yield* appendLifecycleEventValue(sessionId, {
+            type: "run.started",
+            runId,
+            acceptedAt,
+          });
+          return { metadata: projection.metadata, startedBy: projection.sequence };
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError(
+              "start-run",
+              `Could not start a run for runner session ${sessionId}`,
+            ),
+          )),
+      ),
+
+      acceptFollowUp: Effect.fn("RunnerSessionStore.acceptFollowUp")(
+        function* (
+          sessionId: SessionId,
+          runId: RunId,
+          requestedAcceptedAt?: typeof RunnerSessionCreatedAt.Type,
+        ) {
+          const acceptedAt = requestedAcceptedAt ?? DateTime.formatIso(yield* DateTime.now);
+          return (yield* appendLifecycleEventValue(sessionId, {
+            type: "follow-up.accepted",
+            runId,
+            acceptedAt,
+          })).metadata;
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError(
+              "accept-follow-up",
+              `Could not accept a follow-up for runner session ${sessionId}`,
+            ),
+          )),
+      ),
+
+      settleRun: Effect.fn("RunnerSessionStore.settleRun")(
+        function* (sessionId: SessionId, runId: RunId, startedBy: number) {
+          return (yield* appendLifecycleEventValue(sessionId, {
+            type: "run.settled",
+            runId,
+            startedBy,
+          })).metadata;
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError("settle-run", `Could not settle a run for runner session ${sessionId}`),
+          )),
+      ),
+
+      beginResume: Effect.fn("RunnerSessionStore.beginResume")(
+        function* (sessionId: SessionId) {
+          const projection = yield* appendLifecycleEventValue(sessionId, {
+            type: "resume.started",
+          });
+          return { metadata: projection.metadata, startedBy: projection.sequence };
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError("begin-resume", `Could not begin runner session ${sessionId} resume`),
+          )),
+      ),
+
+      completeResume: Effect.fn("RunnerSessionStore.completeResume")(
+        function* (sessionId: SessionId, startedBy: number) {
+          return (yield* appendLifecycleEventValue(sessionId, {
+            type: "resume.completed",
+            startedBy,
+          })).metadata;
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError("complete-resume", `Could not complete runner session ${sessionId} resume`),
+          )),
+      ),
+
+      failResume: Effect.fn("RunnerSessionStore.failResume")(
+        function* (sessionId: SessionId, startedBy: number) {
+          return (yield* appendLifecycleEventValue(sessionId, {
+            type: "resume.failed",
+            startedBy,
+          })).metadata;
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError("fail-resume", `Could not fail runner session ${sessionId} resume`),
+          )),
+      ),
+
+      beginCheckpoint: Effect.fn("RunnerSessionStore.beginCheckpoint")(
+        function* (sessionId: SessionId) {
+          const metadata = yield* readMetadataValue(sessionId);
+          if (metadata.state !== "ready" || metadata.checkpointCandidate !== undefined) {
+            return yield* new RunnerSessionDataError(
+              `Session ${sessionId} cannot begin a checkpoint in its current state.`,
+            );
+          }
+          const directory = checkpointsPath(sessionId);
+          yield* ensurePrivateDirectory(fs, directory);
+          const file = `checkpoint-${crypto.randomUUID()}.qcow2`;
+          const projection = yield* appendLifecycleEventValue(sessionId, {
+            type: "checkpoint.started",
+            file,
+          });
+          return { file, path: join(directory, file), startedBy: projection.sequence };
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError(
+              "begin-checkpoint",
+              `Could not begin runner session ${sessionId} checkpoint`,
+            ),
+          )),
+      ),
+
+      publishCheckpoint: Effect.fn("RunnerSessionStore.publishCheckpoint")(
+        function* (
+          sessionId: SessionId,
+          candidate: RunnerSessionCheckpointCandidate,
+          checkpoint: AgentEnvironmentCheckpoint,
+        ) {
+          const metadata = yield* readMetadataValue(sessionId);
+          if (
+            metadata.checkpointCandidate?.file !== candidate.file ||
+            candidate.path !== join(checkpointsPath(sessionId), candidate.file) ||
+            checkpoint.path !== candidate.path
+          ) {
+            return yield* new RunnerSessionDataError(
+              `Session ${sessionId} checkpoint candidate does not match runner metadata.`,
+            );
+          }
+          yield* assertRegularFile(candidate.path, "Runner session checkpoint candidate");
+          const updated = (yield* appendLifecycleEventValue(sessionId, {
+            type: "checkpoint.published",
+            startedBy: candidate.startedBy,
+            checkpoint: {
+              file: candidate.file,
+              guestAssetBuildId: checkpoint.guestAssetBuildId,
+              ...(checkpoint.createdWithVmm === undefined
+                ? {}
+                : { createdWithVmm: checkpoint.createdWithVmm }),
+              compatibleVmm: checkpoint.compatibleVmm,
+            },
+          })).metadata;
+          yield* cleanupCheckpointDirectory(checkpointsPath(sessionId), candidate.file).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                `Obsolete checkpoints for session ${sessionId} could not be removed: ${
+                  errorMessage(cause)
+                }`,
+              )
+            ),
+          );
+          return updated;
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError(
+              "publish-checkpoint",
+              `Could not publish runner session ${sessionId} checkpoint`,
+            ),
+          )),
+      ),
+
+      failCheckpoint: Effect.fn("RunnerSessionStore.failCheckpoint")(
+        function* (
+          sessionId: SessionId,
+          candidate: RunnerSessionCheckpointCandidate,
+          consumed: boolean,
+        ) {
+          const metadata = yield* readMetadataValue(sessionId);
+          if (
+            metadata.checkpointCandidate?.file !== candidate.file ||
+            candidate.path !== join(checkpointsPath(sessionId), candidate.file)
+          ) {
+            return yield* new RunnerSessionDataError(
+              `Session ${sessionId} checkpoint failure does not match runner metadata.`,
+            );
+          }
+          yield* asyncBoundary(() => Deno.remove(candidate.path)).pipe(Effect.ignore);
+          return (yield* appendLifecycleEventValue(sessionId, {
+            type: "checkpoint.failed",
+            startedBy: candidate.startedBy,
+            consumed,
+          })).metadata;
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError(
+              "fail-checkpoint",
+              `Could not clean up failed runner session ${sessionId} checkpoint`,
+            ),
+          )),
+      ),
+
+      readCurrentCheckpoint: Effect.fn("RunnerSessionStore.readCurrentCheckpoint")(
+        function* (sessionId: SessionId) {
+          const metadata = yield* readMetadataValue(sessionId);
+          if (!metadata.checkpoint) {
+            return yield* new RunnerSessionDataError(
+              `Session ${sessionId} has no published checkpoint.`,
+            );
+          }
+          const path = join(checkpointsPath(sessionId), metadata.checkpoint.file);
+          yield* assertRegularFile(path, "Runner session current checkpoint");
+          return checkpointFromMetadata(path, metadata.checkpoint);
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError("read-checkpoint", `Could not read runner session ${sessionId} checkpoint`),
+          )),
+      ),
+
+      reconcileCheckpoints: Effect.fn("RunnerSessionStore.reconcileCheckpoints")(
+        function* (sessionId: SessionId) {
+          let projection = yield* readLifecycleValue(sessionId);
+          let metadata = projection.metadata;
+          const directory = checkpointsPath(sessionId);
+          yield* ensurePrivateDirectory(fs, directory);
+          if (projection.activeRun !== undefined) {
+            projection = yield* appendLifecycleEventValue(sessionId, {
+              type: "run.interrupted",
+              runId: projection.activeRun.runId,
+              startedBy: projection.activeRun.startedBy,
+            });
+            metadata = projection.metadata;
+          }
+          if (projection.resumeStartedBy !== undefined) {
+            projection = yield* appendLifecycleEventValue(sessionId, {
+              type: "resume.failed",
+              startedBy: projection.resumeStartedBy,
+            });
+            metadata = projection.metadata;
+          }
+          if (metadata.checkpointCandidate) {
+            yield* asyncBoundary(() =>
+              Deno.remove(join(directory, metadata.checkpointCandidate!.file))
+            ).pipe(Effect.ignore);
+            if (projection.checkpointStartedBy === undefined) {
+              return yield* new RunnerSessionDataError(
+                `Session ${sessionId} has an uncorrelated checkpoint candidate.`,
+              );
+            }
+            projection = yield* appendLifecycleEventValue(sessionId, {
+              type: "checkpoint.interrupted",
+              startedBy: projection.checkpointStartedBy,
+            });
+            metadata = projection.metadata;
+          }
+          if (metadata.checkpoint) {
+            const currentPath = join(directory, metadata.checkpoint.file);
+            const current = yield* Effect.result(assertRegularFile(
+              currentPath,
+              "Runner session current checkpoint",
+            ));
+            if (current._tag === "Failure") {
+              metadata = (yield* appendLifecycleEventValue(sessionId, {
+                type: "checkpoint.invalidated",
+                file: metadata.checkpoint.file,
+              })).metadata;
+            }
+          } else if (metadata.state === "stopped") {
+            metadata = (yield* appendLifecycleEventValue(sessionId, {
+              type: "session.state-changed",
+              state: "error",
+            })).metadata;
+          }
+          yield* cleanupCheckpointDirectory(directory, metadata.checkpoint?.file);
+          return metadata;
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError(
+              "reconcile-checkpoints",
+              `Could not reconcile runner session ${sessionId} checkpoints`,
+            ),
           )),
       ),
 
@@ -519,9 +933,138 @@ function readMetadataFile(
       try: () => new TextDecoder("utf-8", { fatal: true }).decode(contents),
       catch: sessionDataError,
     });
-    return yield* Schema.decodeUnknownEffect(MetadataJson)(text, strictSchemaOptions).pipe(
+    const decoded = yield* Schema.decodeUnknownEffect(MetadataJson)(text, strictSchemaOptions).pipe(
       Effect.mapError(sessionDataError),
     );
+    return decoded.version === 2 ? yield* parseMetadata({ ...decoded, version: 3 }) : decoded;
+  });
+}
+
+function pathExists(path: string): Effect.Effect<boolean, RunnerSessionDataError> {
+  return asyncBoundary(() => Deno.lstat(path)).pipe(
+    Effect.as(true),
+    Effect.catch((error) =>
+      error.cause instanceof Deno.errors.NotFound ? Effect.succeed(false) : Effect.fail(error)
+    ),
+  );
+}
+
+function readLifecycleFile(
+  fs: FileSystem.FileSystem,
+  path: string,
+): Effect.Effect<SessionLifecycleProjection, RunnerSessionDataError> {
+  return Effect.gen(function* () {
+    yield* assertRegularFile(path, "Runner session lifecycle log");
+    let contents = yield* fs.readFile(path).pipe(Effect.mapError(sessionDataError));
+    if (contents.length > 0 && contents.at(-1) !== 0x0a) {
+      const lastNewline = contents.lastIndexOf(0x0a);
+      const completeLength = lastNewline < 0 ? 0 : lastNewline + 1;
+      yield* truncateLifecycleFile(path, completeLength);
+      contents = contents.subarray(0, completeLength);
+    }
+    const text = yield* Effect.try({
+      try: () => new TextDecoder("utf-8", { fatal: true }).decode(contents),
+      catch: sessionDataError,
+    });
+    const lines = text.length === 0 ? [] : text.slice(0, -1).split("\n");
+    const envelopes = yield* Effect.forEach(
+      lines,
+      (line, index) =>
+        Schema.decodeUnknownEffect(LifecycleEventEnvelopeJson)(line, strictSchemaOptions).pipe(
+          Effect.mapError((cause) =>
+            new RunnerSessionDataError(
+              `Runner session lifecycle event ${index + 1} is invalid: ${errorMessage(cause)}`,
+              cause,
+            )
+          ),
+        ),
+    );
+    return yield* projectSessionLifecycle(envelopes).pipe(Effect.mapError(sessionDataError));
+  });
+}
+
+function writeNewLifecycleFile(
+  path: string,
+  envelope: SessionLifecycleEventEnvelope,
+): Effect.Effect<void, RunnerSessionDataError> {
+  return Effect.gen(function* () {
+    const contents = yield* encodeLifecycleEnvelope(envelope);
+    yield* writeNewPrivateFile(path, contents);
+  });
+}
+
+function appendLifecycleEnvelope(
+  path: string,
+  envelope: SessionLifecycleEventEnvelope,
+): Effect.Effect<void, RunnerSessionDataError> {
+  return Effect.gen(function* () {
+    yield* assertRegularFile(path, "Runner session lifecycle log");
+    const contents = yield* encodeLifecycleEnvelope(envelope);
+    yield* Effect.acquireUseRelease(
+      asyncBoundary(() => Deno.open(path, { write: true, append: true })),
+      (file) =>
+        Effect.gen(function* () {
+          yield* writeAll(file, contents);
+          yield* asyncBoundary(() => file.sync());
+        }),
+      (file) => Effect.sync(() => file.close()),
+    );
+  });
+}
+
+function encodeLifecycleEnvelope(
+  envelope: SessionLifecycleEventEnvelope,
+): Effect.Effect<Uint8Array, RunnerSessionDataError> {
+  return Schema.encodeEffect(SessionLifecycleEventEnvelopeSchema)(
+    envelope,
+    strictSchemaOptions,
+  ).pipe(
+    Effect.map((encoded) => new TextEncoder().encode(`${JSON.stringify(encoded)}\n`)),
+    Effect.mapError(sessionDataError),
+  );
+}
+
+function truncateLifecycleFile(
+  path: string,
+  length: number,
+): Effect.Effect<void, RunnerSessionDataError> {
+  return Effect.acquireUseRelease(
+    asyncBoundary(() => Deno.open(path, { write: true })),
+    (file) =>
+      asyncBoundary(async () => {
+        await file.truncate(length);
+        await file.sync();
+      }),
+    (file) => Effect.sync(() => file.close()),
+  );
+}
+
+function checkpointFromMetadata(
+  path: string,
+  checkpoint: NonNullable<RunnerSessionMetadata["checkpoint"]>,
+): AgentEnvironmentCheckpoint {
+  return {
+    path,
+    guestAssetBuildId: checkpoint.guestAssetBuildId,
+    ...(checkpoint.createdWithVmm === undefined
+      ? {}
+      : { createdWithVmm: checkpoint.createdWithVmm }),
+    compatibleVmm: checkpoint.compatibleVmm,
+  };
+}
+
+function cleanupCheckpointDirectory(
+  directory: string,
+  keepFile?: string,
+): Effect.Effect<void, RunnerSessionDataError> {
+  return Effect.gen(function* () {
+    yield* asyncBoundary(async () => {
+      for await (const entry of Deno.readDir(directory)) {
+        if (entry.name === keepFile) continue;
+        await Deno.remove(join(directory, entry.name), { recursive: entry.isDirectory });
+      }
+    });
+    yield* syncDirectory(directory);
   });
 }
 
@@ -539,19 +1082,6 @@ function readGitSnapshotFile(
     return yield* Schema.decodeUnknownEffect(GitSnapshotStateJson)(text, strictSchemaOptions).pipe(
       Effect.mapError(sessionDataError),
     );
-  });
-}
-
-function writeMetadataFile(
-  path: string,
-  metadata: RunnerSessionMetadata,
-): Effect.Effect<void, RunnerSessionDataError> {
-  return Effect.gen(function* () {
-    const encoded = yield* Schema.encodeEffect(metadataSchema)(metadata, strictSchemaOptions).pipe(
-      Effect.mapError(sessionDataError),
-    );
-    const contents = `${JSON.stringify(encoded, null, 2)}\n`;
-    yield* writeAtomicMetadata(path, contents);
   });
 }
 

@@ -57,10 +57,7 @@ async function assessRunner(
   const liveState = await Effect.runPromise(connections.getRunnerLiveState(userId, runner.id));
   if (!liveState) return rejected("Runner is offline.");
 
-  const { activeSessions, diskFreeMiB, maxConcurrentSessions } = liveState.capacity;
-  if (maxConcurrentSessions !== undefined && activeSessions >= maxConcurrentSessions) {
-    return rejected("Runner has reached its concurrent session limit.");
-  }
+  const { diskFreeMiB } = liveState.capacity;
   if (diskFreeMiB < MIN_RUNNER_DISK_FREE_MIB) {
     return rejected(
       `Runner has less than ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,

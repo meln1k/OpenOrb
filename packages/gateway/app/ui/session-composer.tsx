@@ -1,10 +1,10 @@
+import { DEFAULT_SESSION_MODEL } from "../../../protocol/src/model-provider.ts";
 import {
   DEFAULT_ORB_SIZE,
-  DEFAULT_SESSION_MODEL,
   ORB_SIZE_RESOURCES,
   ORB_SIZES,
   type OrbSize,
-} from "@openorb/protocol";
+} from "../../../protocol/src/orb-size.ts";
 import { css, type Handle } from "remix/ui";
 
 import type { SessionComposerData } from "@/app/session-composer-data.ts";

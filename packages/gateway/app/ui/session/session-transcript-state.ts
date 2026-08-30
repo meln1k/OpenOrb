@@ -9,15 +9,20 @@ export type SessionState =
   | "provisioning"
   | "running"
   | "ready"
+  | "stopped"
   | "error"
   | "offline";
 
-function runnerSessionStateForProvisioningStage(stage: SessionProvisioningStage): SessionState {
+export function runnerSessionStateForProvisioningStage(
+  stage: SessionProvisioningStage,
+): SessionState {
   switch (stage) {
     case "created":
       return "created";
     case "ready":
       return "ready";
+    case "stopped":
+      return "stopped";
     case "running":
       return "running";
     case "failed":
@@ -74,9 +79,7 @@ export type TranscriptEntry =
   | ProvisioningEntry;
 
 export interface SessionTranscriptState {
-  readonly sessionState: SessionState;
   readonly status: string;
-  readonly retryVisible: boolean;
   readonly warningVisible: boolean;
   readonly followUpQueue: readonly string[];
   readonly entries: readonly TranscriptEntry[];
@@ -102,12 +105,9 @@ const PROVISIONING_ENTRY_KEY = "provisioning:output";
 
 export function createSessionTranscriptState(
   initialState: SessionState,
-  canRetry: boolean,
 ): SessionTranscriptState {
   return {
-    sessionState: initialState,
     status: statusLabel(initialState),
-    retryVisible: canRetry,
     warningVisible: false,
     followUpQueue: [],
     entries: [],
@@ -162,21 +162,20 @@ export function removeOptimisticUserMessage(
 export function reduceSessionTranscriptState(
   state: SessionTranscriptState,
   event: SessionEvent,
+  sessionState: SessionState,
 ): SessionTranscriptState {
   if (event.type === "provisioning.log") return appendProvisioningOutput(state, event.text);
   if (event.type === "session.state") {
-    const sessionState = runnerSessionStateForProvisioningStage(event.stage);
     const next = {
       ...state,
-      sessionState,
       status: sessionStageLabel(event.stage),
       warningVisible: state.warningVisible || event.checkoutState === "unavailable",
-      retryVisible: sessionState === "error",
-      followUpQueue: sessionState === "ready" || sessionState === "error"
+      followUpQueue: sessionState === "ready" || sessionState === "stopped" ||
+          sessionState === "error"
         ? []
         : state.followUpQueue,
     };
-    return sessionState === "ready" || sessionState === "error"
+    return sessionState === "ready" || sessionState === "stopped" || sessionState === "error"
       ? settleSessionTranscriptState(next)
       : next;
   }
@@ -189,7 +188,7 @@ export function reduceSessionTranscriptState(
   if (activity !== null) next = appendActivity(next, activity);
   return event.type === "agent.settled" ||
       event.type === "assistant.stream.failed" ||
-      !isSessionBusy(next.sessionState)
+      !isSessionBusy(sessionState)
     ? settleSessionTranscriptState(next)
     : next;
 }
@@ -765,6 +764,8 @@ function statusLabel(state: SessionState): string {
       return "Agent running";
     case "ready":
       return "Ready";
+    case "stopped":
+      return "Stopped";
     case "error":
       return "Failed";
     case "offline":
@@ -786,10 +787,16 @@ function sessionStageLabel(
       return "Creating branch";
     case "setup":
       return "Running setup";
+    case "resuming":
+      return "Resuming checkpoint";
+    case "checkpointing":
+      return "Creating checkpoint";
     case "running":
       return "Agent running";
     case "ready":
       return "Ready";
+    case "stopped":
+      return "Stopped";
     case "failed":
       return "Failed";
   }

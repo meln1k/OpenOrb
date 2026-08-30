@@ -1,6 +1,6 @@
-import { basename } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 
-import { RealFSProvider, VM } from "@earendil-works/gondolin";
+import { RealFSProvider, VM, VmCheckpoint, type VMOptions } from "@earendil-works/gondolin";
 import { Effect, Layer, type Scope, Semaphore } from "effect";
 import type { Result } from "@openorb/result";
 
@@ -13,6 +13,9 @@ import { installGondolinTlsCompatibility } from "./tls-compatibility.ts";
 import {
   AGENT_WORKSPACE,
   type AgentEnvironment,
+  type AgentEnvironmentBackend,
+  type AgentEnvironmentCheckpoint,
+  AgentEnvironmentCheckpointError,
   AgentEnvironmentError,
   type AgentEnvironmentOptions,
   AgentEnvironmentProvider,
@@ -82,6 +85,7 @@ export function createGondolinAgentEnvironment(
         options.memoryMiB,
         options.sessionLabel,
         options.github,
+        options.resumeCheckpoint,
       );
       yield* environment.start;
       return environment;
@@ -97,6 +101,7 @@ function makeGondolinEnvironment(
   memoryMiB: number,
   sessionLabel = `openorb ${basename(workspacePath)}`,
   github?: OpenOrbGitHubMediationOptions,
+  resumeCheckpoint?: AgentEnvironmentCheckpoint,
 ): Effect.Effect<GondolinEnvironmentInternals> {
   return Effect.gen(function* () {
     const gate = yield* Semaphore.make(1);
@@ -117,7 +122,7 @@ function makeGondolinEnvironment(
       const vm = yield* Effect.tryPromise({
         try: () => {
           installGondolinTlsCompatibility();
-          return VM.create({
+          const vmOptions: VMOptions = {
             sessionLabel,
             cpus: cpuCount,
             memory: `${memoryMiB}M`,
@@ -129,9 +134,20 @@ function makeGondolinEnvironment(
                 [AGENT_WORKSPACE]: new RealFSProvider(workspacePath),
               },
             },
-          });
+          };
+          if (resumeCheckpoint) {
+            const checkpoint = loadCheckpoint(resumeCheckpoint, guestImage);
+            return checkpoint.resume<VM>(vmOptions);
+          }
+          return VM.create(vmOptions);
         },
-        catch: (cause) => new AgentEnvironmentError("The Gondolin VM could not be created.", cause),
+        catch: (cause) =>
+          new AgentEnvironmentError(
+            resumeCheckpoint
+              ? "The Gondolin checkpoint could not be resumed."
+              : "The Gondolin VM could not be created.",
+            cause,
+          ),
       });
       const probe = yield* Effect.exit(Effect.tryPromise({
         try: async () => {
@@ -332,6 +348,56 @@ function makeGondolinEnvironment(
         }
       });
 
+    const checkpoint: AgentEnvironment["checkpoint"] = (checkpointPath) =>
+      gate.withPermit(Effect.suspend(() => {
+        if (!isAbsolute(checkpointPath)) {
+          return Effect.fail(
+            new AgentEnvironmentCheckpointError(
+              "The checkpoint path must be absolute.",
+              undefined,
+              false,
+            ),
+          );
+        }
+        if (closed || !running) {
+          return Effect.fail(
+            new AgentEnvironmentCheckpointError(
+              "The agent environment is not running.",
+              undefined,
+              false,
+            ),
+          );
+        }
+        const activeVm = running.vm;
+        closed = true;
+        running = undefined;
+        return Effect.tryPromise({
+          try: async () => {
+            await activeVm.checkpoint(checkpointPath);
+            const loaded = VmCheckpoint.load(checkpointPath);
+            if (loaded.path !== resolve(checkpointPath)) {
+              throw new AgentEnvironmentError(
+                "Gondolin returned a checkpoint at an unexpected path.",
+                undefined,
+              );
+            }
+            if (loaded.guestAssetBuildId !== guestImage.gondolinBuildId) {
+              throw new AgentEnvironmentError(
+                "The checkpoint guest build ID does not match the pinned image.",
+                undefined,
+              );
+            }
+            return checkpointDetails(loaded);
+          },
+          catch: (cause) =>
+            new AgentEnvironmentCheckpointError(
+              "The Gondolin VM could not be checkpointed.",
+              cause,
+              true,
+            ),
+        });
+      }));
+
     const close = gate.withPermit(
       Effect.suspend(() => {
         if (closed) return Effect.void;
@@ -356,8 +422,51 @@ function makeGondolinEnvironment(
       writeFile,
       makeDirectory,
       detectImageMimeType,
+      checkpoint,
     };
   });
+}
+
+function loadCheckpoint(
+  expected: AgentEnvironmentCheckpoint,
+  guestImage: GuestImage,
+): VmCheckpoint {
+  const checkpoint = VmCheckpoint.load(expected.path);
+  const actual = checkpointDetails(checkpoint);
+  if (
+    actual.guestAssetBuildId !== guestImage.gondolinBuildId ||
+    actual.guestAssetBuildId !== expected.guestAssetBuildId ||
+    actual.createdWithVmm !== expected.createdWithVmm ||
+    actual.compatibleVmm.length !== expected.compatibleVmm.length ||
+    actual.compatibleVmm.some((backend, index) => backend !== expected.compatibleVmm[index])
+  ) {
+    throw new AgentEnvironmentError(
+      "The checkpoint metadata does not match runner metadata.",
+      undefined,
+    );
+  }
+  return checkpoint;
+}
+
+function checkpointDetails(checkpoint: VmCheckpoint): AgentEnvironmentCheckpoint {
+  const data = checkpoint.toJSON();
+  const createdWithVmm = checkpointBackend(data.createdWithVmm);
+  const compatibleVmm = data.compatibleVmm?.map(checkpointBackend).filter(
+    (backend): backend is AgentEnvironmentBackend => backend !== undefined,
+  ) ?? [];
+  if (data.snapshotKind !== "disk" || compatibleVmm.length === 0) {
+    throw new AgentEnvironmentError("The Gondolin checkpoint metadata is invalid.", undefined);
+  }
+  return {
+    path: checkpoint.path,
+    guestAssetBuildId: checkpoint.guestAssetBuildId,
+    ...(createdWithVmm === undefined ? {} : { createdWithVmm }),
+    compatibleVmm,
+  };
+}
+
+function checkpointBackend(value: unknown): AgentEnvironmentBackend | undefined {
+  return value === "qemu" || value === "krun" ? value : undefined;
 }
 
 function closeVm(vm: VM, message: string): Effect.Effect<void, AgentEnvironmentError> {

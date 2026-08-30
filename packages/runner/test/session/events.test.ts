@@ -259,7 +259,7 @@ Deno.test("disposing an active cache restores JSONL-backed reads", async () => {
   }
 });
 
-Deno.test("failed Pi creation disposes its active cache before the worker scope closes", async () => {
+Deno.test("failed Pi creation disposes its active cache before the actor scope closes", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     let historyReads = 0;

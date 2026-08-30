@@ -12,8 +12,10 @@ import {
   SessionGitSnapshot,
   SessionId,
   SessionModelRuntime,
+  StopSessionAccepted,
   UpdateSessionGitFilePayload,
   WakeSessionAccepted,
+  WakeSessionPayload,
 } from "@openorb/protocol/runner-api";
 import { Context, Deferred, Effect, Exit, Fiber, Layer, PubSub, Schema, Stream } from "effect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
@@ -42,7 +44,6 @@ const decode = Schema.decodeUnknownSync;
 const runnerId = decode(RunnerId)(RUNNER_ID);
 
 const capacity = decode(RunnerCapacity)({
-  maxConcurrentSessions: 4,
   activeSessions: 1,
   vmCpuCount: 8,
   vmMemoryMiB: 16_384,
@@ -181,7 +182,7 @@ Deno.test("cached Git Snapshots are served without restoring a session VM", () =
     yield* Fiber.interrupt(launched);
   }))));
 
-Deno.test("Git file update RPC resolves and calls the session worker", () =>
+Deno.test("Git file update RPC resolves and calls the session actor", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const store = {
       loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
@@ -192,7 +193,7 @@ Deno.test("Git file update RPC resolves and calls the session worker", () =>
       watch: () => Stream.empty,
     } as unknown as SessionEvents;
     const updates: unknown[] = [];
-    const worker = {
+    const actor = {
       updateGitFile: (payload: unknown) =>
         Effect.sync(() => {
           updates.push(payload);
@@ -201,7 +202,7 @@ Deno.test("Git file update RPC resolves and calls the session worker", () =>
     };
     const supervisor = {
       getActiveRunId: () => undefined,
-      findOrRestoreWorker: () => Effect.succeed(worker),
+      findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
     const launched = yield* runRunnerRpc({
@@ -235,7 +236,7 @@ Deno.test("Git file update RPC resolves and calls the session worker", () =>
     yield* Fiber.interrupt(launched);
   }))));
 
-Deno.test("Wake RPC dispatches model credentials to the resolved session worker", () =>
+Deno.test("Wake RPC dispatches model credentials to the resolved session actor", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const store = {
       loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
@@ -247,16 +248,16 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session worker"
       watch: () => Stream.empty,
     } as unknown as SessionEvents;
     const wakes: unknown[] = [];
-    const worker = {
-      wake: (modelRuntime: unknown) =>
+    const actor = {
+      wake: (payload: unknown) =>
         Effect.sync(() => {
-          wakes.push(modelRuntime);
+          wakes.push(payload);
           return { ok: true as const };
         }),
     };
     const supervisor = {
       getActiveRunId: () => undefined,
-      findOrRestoreWorker: () => Effect.succeed(worker),
+      findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
     const launched = yield* runRunnerRpc({
@@ -276,15 +277,21 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session worker"
     const result = yield* harness.gateway.wakeSession({
       userId: USER_ID,
       sessionId: SESSION_ID,
-      payload: { modelRuntime },
+      payload: { modelRuntime, githubToken: "github-token" },
     });
     assertEquals(result.status, "accepted");
     assert(result.status === "accepted" && result.acknowledgement instanceof WakeSessionAccepted);
-    assertEquals(wakes, [new SessionModelRuntime(modelRuntime)]);
+    assertEquals(wakes, [
+      new WakeSessionPayload({
+        sessionId: Schema.decodeUnknownSync(SessionId)(SESSION_ID),
+        modelRuntime: new SessionModelRuntime(modelRuntime),
+        githubToken: "github-token",
+      }),
+    ]);
     yield* Fiber.interrupt(launched);
   }))));
 
-Deno.test("Prompt and Abort RPCs resolve and call the session worker", () =>
+Deno.test("Prompt and Abort RPCs resolve and call the session actor", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const activeRunId = "01989d78-65ee-7f6a-a97e-0f16ad134c30";
     const store = {
@@ -296,7 +303,7 @@ Deno.test("Prompt and Abort RPCs resolve and call the session worker", () =>
       watch: () => Stream.empty,
     } as unknown as SessionEvents;
     const calls: string[] = [];
-    const worker = {
+    const actor = {
       prompt: () =>
         Effect.sync(() => {
           calls.push("prompt");
@@ -310,8 +317,8 @@ Deno.test("Prompt and Abort RPCs resolve and call the session worker", () =>
     };
     const supervisor = {
       getActiveRunId: () => activeRunId,
-      findWorker: () => worker,
-      findOrRestoreWorker: () => Effect.succeed(worker),
+      findActor: () => actor,
+      findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
     const launched = yield* runRunnerRpc({
@@ -345,6 +352,48 @@ Deno.test("Prompt and Abort RPCs resolve and call the session worker", () =>
     assert(aborted.status === "accepted");
     assert(aborted.acknowledgement instanceof AbortSessionAccepted);
     assertEquals(calls, ["prompt", "abort"]);
+    yield* Fiber.interrupt(launched);
+  }))));
+
+Deno.test("Stop RPC lazily restores and calls a cold ready session actor", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const store = {
+      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
+    } as unknown as RunnerSessionStore;
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: () => Stream.empty,
+    } as unknown as SessionEvents;
+    let stopCalls = 0;
+    const actor = {
+      stop: () =>
+        Effect.sync(() => {
+          stopCalls++;
+          return { ok: true as const };
+        }),
+    };
+    const supervisor = {
+      getActiveRunId: () => undefined,
+      findActor: () => undefined,
+      findOrRestoreActor: () => Effect.succeed(actor),
+    } as unknown as SessionSupervisor;
+    const harness = yield* makeGatewayHarness(TOKEN);
+    const launched = yield* runRunnerRpc({
+      ...runnerOptions(harness.url, store, events),
+      supervisor,
+    }).pipe(Effect.exit, Effect.forkScoped);
+
+    yield* pollUntil(
+      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      "the connected runner did not publish its ready session",
+    );
+    const stopped = yield* harness.gateway.stopSession({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+    });
+    assert(stopped.status === "accepted");
+    assert(stopped.acknowledgement instanceof StopSessionAccepted);
+    assertEquals(stopCalls, 1);
     yield* Fiber.interrupt(launched);
   }))));
 
@@ -383,8 +432,8 @@ function runnerOptions(
     store,
     supervisor: {
       getActiveRunId: () => undefined,
-      findWorker: () => undefined,
-      findOrRestoreWorker: () => Effect.die("unexpected worker restore"),
+      findActor: () => undefined,
+      findOrRestoreActor: () => Effect.die("unexpected actor restore"),
       provision: () => Effect.die("unexpected provision"),
     } as unknown as SessionSupervisor,
     events,

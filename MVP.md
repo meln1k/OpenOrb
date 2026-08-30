@@ -275,7 +275,6 @@ Each runner advertises:
 
 ```ts
 interface RunnerCapacity {
-  maxConcurrentSessions?: number
   activeSessions: number
   vmCpuCount: number
   vmMemoryMiB: number
@@ -295,15 +294,14 @@ The user selects one predefined orb size per session. `medium` is the default:
 
 The runner durably owns the selected size in its session metadata. The gateway carries it in validated `ProvisionSession` traffic and live `WatchRunner` session snapshots but does not add resource columns to the `sessions` catalog. A retry uses the original stored size.
 
-`vmCpuCount` and `vmMemoryMiB` advertise the largest single-session request the runner can accept. The gateway rejects a selected size above those limits, and the runner re-checks the same limits authoritatively before creating durable session state. `activeSessions` counts provisioned VMs currently consuming a concurrency slot, including VMs that are provisioning or running. Stopped sessions with no VM do not count.
+`vmCpuCount` and `vmMemoryMiB` advertise the largest single-session request the runner can accept. The gateway rejects a selected size above those limits, and the runner re-checks the same limits authoritatively before creating durable session state. `activeSessions` reports provisioned VMs that are currently active, including VMs that are provisioning or running. Stopped sessions with no VM do not count. The runner does not impose a session-count limit.
 
 Selection algorithm:
 
-1. Consider connected runners with `activeSessions < maxConcurrentSessions`.
-2. Reject runners below a disk safety threshold or unable to host the selected orb size.
-3. Honor a manually selected runner if available.
-4. Otherwise choose the runner with the fewest active sessions.
-5. Pin the session after provisioning begins.
+1. Reject runners below a disk safety threshold or unable to host the selected orb size.
+2. Honor a manually selected runner if available.
+3. Otherwise choose the runner with the fewest active sessions.
+4. Pin the session after provisioning begins.
 
 No reservation handshake, labels, resource ratios, or migration are required.
 

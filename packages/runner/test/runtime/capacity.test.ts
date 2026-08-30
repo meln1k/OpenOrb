@@ -28,10 +28,9 @@ Deno.test("reports detected host capacity and current disk space without a sessi
   assertEquals((await getCapacity()).activeSessions, 3);
 });
 
-Deno.test("explicit runner capacity caps override host detection", async () => {
+Deno.test("explicit runner VM capacity overrides host detection", async () => {
   const getCapacity = createRunnerCapacityReporter({
     path: "/runner",
-    maxConcurrentSessions: 4,
     vmCpuCount: 2,
     vmMemoryMiB: 4096,
     getHardwareConcurrency: () => {
@@ -44,7 +43,6 @@ Deno.test("explicit runner capacity caps override host detection", async () => {
   });
 
   assertEquals(await getCapacity(), {
-    maxConcurrentSessions: 4,
     activeSessions: 0,
     vmCpuCount: 2,
     vmMemoryMiB: 4096,

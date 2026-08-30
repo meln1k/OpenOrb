@@ -46,6 +46,8 @@ class GitSnapshotEnvironment implements AgentEnvironment {
 
   constructor(private readonly scenario: "states" | "bounds" = "states") {}
 
+  checkpoint: AgentEnvironment["checkpoint"] = () => Effect.die("unexpected checkpoint");
+
   run: AgentEnvironment["run"] = (command, options = {}) => {
     this.commands.push([...command]);
     if (command.includes("/bin/sh")) {

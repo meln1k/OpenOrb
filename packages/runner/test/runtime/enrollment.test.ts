@@ -40,7 +40,7 @@ Deno.test("parses first-start enrollment options", () => {
   assertThrows(
     () => parseRunnerCommand(["--max-concurrent-sessions", "0"]),
     Error,
-    "--max-concurrent-sessions must be a positive integer",
+    "Unknown argument.",
   );
   assertThrows(
     () => parseRunnerCommand(["--vm-memory-mib", "4.5"]),

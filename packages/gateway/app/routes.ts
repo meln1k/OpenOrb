@@ -17,6 +17,7 @@ export const routes = route({
       detail: get(":sessionId"),
       message: post(":sessionId/messages"),
       abort: post(":sessionId/abort"),
+      stop: post(":sessionId/stop"),
       retry: post(":sessionId/retry"),
     }),
     settings: route("settings", {

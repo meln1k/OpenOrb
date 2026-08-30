@@ -7,7 +7,6 @@ const MIB_BYTES_BIGINT = BigInt(MIB_BYTES);
 
 export interface RunnerCapacityReporterOptions {
   path: string;
-  maxConcurrentSessions?: number | undefined;
   vmCpuCount?: number | undefined;
   vmMemoryMiB?: number | undefined;
   getActiveSessions?: () => number;
@@ -19,7 +18,6 @@ export interface RunnerCapacityReporterOptions {
 export function createRunnerCapacityReporter(
   options: RunnerCapacityReporterOptions,
 ): () => Promise<RunnerCapacity> {
-  const maxConcurrentSessions = options.maxConcurrentSessions;
   const vmCpuCount = options.vmCpuCount ??
     (options.getHardwareConcurrency ?? (() => navigator.hardwareConcurrency))();
   const vmMemoryMiB = options.vmMemoryMiB ?? Math.floor(
@@ -31,9 +29,6 @@ export function createRunnerCapacityReporter(
 
   assertPositiveInteger(vmCpuCount, "VM CPU count");
   assertPositiveInteger(vmMemoryMiB, "VM memory");
-  if (maxConcurrentSessions !== undefined) {
-    assertPositiveInteger(maxConcurrentSessions, "Maximum concurrent sessions");
-  }
 
   return async () => {
     const activeSessions = getActiveSessions();
@@ -42,7 +37,6 @@ export function createRunnerCapacityReporter(
     const diskFreeMiB = toSafeInteger(fileSystem.bavail * fileSystem.bsize / MIB_BYTES_BIGINT);
 
     return {
-      ...(maxConcurrentSessions === undefined ? {} : { maxConcurrentSessions }),
       activeSessions,
       vmCpuCount,
       vmMemoryMiB,

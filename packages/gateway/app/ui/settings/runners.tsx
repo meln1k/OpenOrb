@@ -306,13 +306,7 @@ function formatRunnerSpecs(runner: SettingsRunner): string {
 }
 
 function formatRunnerSessions(capacity: SettingsRunnerCapacity): string {
-  const activeSessions = `${capacity.activeSessions} active session${
-    capacity.activeSessions === 1 ? "" : "s"
-  }`;
-  const sessionLimit = capacity.maxConcurrentSessions === undefined
-    ? "No session limit"
-    : `${capacity.maxConcurrentSessions} maximum`;
-  return `${activeSessions} · ${sessionLimit}`;
+  return `${capacity.activeSessions} active session${capacity.activeSessions === 1 ? "" : "s"}`;
 }
 
 function placeholderRunnerAllocation(capacity: SettingsRunnerCapacity) {

@@ -16,7 +16,7 @@
     "./session-events": "./src/session/events.ts",
     "./session-supervisor": "./src/session/supervisor.ts",
     "./session-store": "./src/session/store.ts",
-    "./session-worker": "./src/session/worker.ts"
+    "./session-actor": "./src/session/actor.ts"
   },
   "imports": {
     "@/": "./",

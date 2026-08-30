@@ -13,7 +13,7 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 - Implement `doctor` checks for architecture/kernel, glibc (with actionable musl rejection), QEMU/KVM, virtualization access, CPU/memory/disk, gateway reachability, verified pinned checkpoint-compatible image assets with a `manifest.json` build ID, and a writable data directory with space for checkpoint candidates.
 - Add systemd unit/install instructions under a dedicated service user. Set `WorkingDirectory=/var/lib/openorb-runner`, preserve the no-`--data-dir` rule, and secure runner data/token permissions.
 - Apply systemd hardening compatible with KVM/QEMU, including `NoNewPrivileges`, narrowly selected `ProtectSystem`/`ReadWritePaths`, and explicit device access. QEMU children are outside Deno's permission sandbox.
-- Configure runner-wide maximum per-VM CPU/memory and maximum concurrent sessions.
+- Configure runner-wide maximum per-VM CPU/memory without imposing a session-count limit.
 - Ensure service reconnect and session manifest sync behavior matches the tested harness, including OO-018 current-checkpoint metadata and restart-safe candidate/obsolete cleanup.
 - Keep macOS code as an explicitly temporary development harness, not a release artifact.
 
@@ -23,7 +23,7 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 - A passing host enrolls using only gateway URL and PSK and requires no inbound port/VPN.
 - Service restart preserves identity and runner-owned sessions.
 - Service restart preserves resumable stopped sessions and never publishes a partial checkpoint.
-- Fixed VM resources and concurrency are reported accurately.
+- Fixed VM resources and active session counts are reported accurately.
 - Installation does not require Node.js, Deno, container orchestration, or a containerized runner.
 - The service runs the compiled permission profile without `--allow-all` or FFI and can spawn only the architecture-appropriate QEMU suite through OpenOrb-owned Gondolin VM construction.
 

@@ -37,14 +37,26 @@ export default createController(routes.api.sessions, {
         context.services.runnerConnections.getSessionSnapshot(userId, sessionId),
       );
       if (!snapshot) return apiError("The pinned runner is offline.", 503);
-      if (snapshot.state !== "ready" && snapshot.state !== "running") {
+      if (
+        snapshot.state !== "ready" && snapshot.state !== "running" &&
+        snapshot.state !== "stopped"
+      ) {
         return apiError("The session cannot be restored right now.", 409);
       }
 
-      const [modelApiKey, modelCredentialError] = await context.services.store
-        .getModelProviderApiKey(userId, parseModelReference(snapshot.model).providerId);
+      const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] = await Promise
+        .all([
+          context.services.store.getModelProviderApiKey(
+            userId,
+            parseModelReference(snapshot.model).providerId,
+          ),
+          context.services.store.getGitHubToken(userId),
+        ]);
       if (modelCredentialError !== undefined) {
         return apiError("The saved model provider credential could not be read.", 500);
+      }
+      if (gitCredentialError !== undefined) {
+        return apiError("The saved GitHub credential could not be read.", 500);
       }
       if (modelApiKey === null) {
         return apiError("Reconfigure this session's model provider before continuing.", 409);
@@ -54,7 +66,10 @@ export default createController(routes.api.sessions, {
         context.services.runnerConnections.wakeSession({
           userId,
           sessionId,
-          payload: { modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey) },
+          payload: {
+            modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
+            ...(githubToken === null ? {} : { githubToken }),
+          },
         }),
         { signal: context.request.signal },
       );

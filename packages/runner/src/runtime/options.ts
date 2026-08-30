@@ -4,7 +4,6 @@ export interface RunnerStartOptions {
   gateway?: string;
   enrollmentToken?: string;
   name: string;
-  maxConcurrentSessions?: number;
   vmCpuCount?: number;
   vmMemoryMiB?: number;
 }
@@ -32,7 +31,6 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
       "gateway",
       "enrollment-token",
       "name",
-      "max-concurrent-sessions",
       "vm-cpu-count",
       "vm-memory-mib",
     ],
@@ -64,12 +62,6 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
       throw new RunnerOptionError("--name must contain between 1 and 100 characters.");
     }
     options.name = name;
-  }
-  if (parsed["max-concurrent-sessions"] !== undefined) {
-    options.maxConcurrentSessions = parsePositiveInteger(
-      parsed["max-concurrent-sessions"],
-      "--max-concurrent-sessions",
-    );
   }
   if (parsed["vm-cpu-count"] !== undefined) {
     options.vmCpuCount = parsePositiveInteger(parsed["vm-cpu-count"], "--vm-cpu-count");

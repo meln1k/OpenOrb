@@ -28,6 +28,15 @@ export interface AgentEnvironmentCommandResult {
   readonly exitCode: number;
 }
 
+export type AgentEnvironmentBackend = "qemu" | "krun";
+
+export interface AgentEnvironmentCheckpoint {
+  readonly path: string;
+  readonly guestAssetBuildId: string;
+  readonly createdWithVmm?: AgentEnvironmentBackend;
+  readonly compatibleVmm: readonly AgentEnvironmentBackend[];
+}
+
 export interface AgentEnvironment {
   readonly run: (
     command: readonly string[],
@@ -47,6 +56,9 @@ export interface AgentEnvironment {
   readonly detectImageMimeType: (
     path: string,
   ) => Effect.Effect<string | null, AgentEnvironmentError>;
+  readonly checkpoint: (
+    path: string,
+  ) => Effect.Effect<AgentEnvironmentCheckpoint, AgentEnvironmentCheckpointError>;
 }
 
 export interface AgentEnvironmentOptions {
@@ -62,6 +74,7 @@ export interface AgentEnvironmentOptions {
   };
   readonly cpuCount: number;
   readonly memoryMiB: number;
+  readonly resumeCheckpoint?: AgentEnvironmentCheckpoint;
 }
 
 export interface AgentEnvironmentProvider {
@@ -81,6 +94,18 @@ export class AgentEnvironmentError extends Data.TaggedError("AgentEnvironmentErr
 }> {
   constructor(message: string, cause: unknown) {
     super({ message, cause });
+  }
+}
+
+export class AgentEnvironmentCheckpointError extends Data.TaggedError(
+  "AgentEnvironmentCheckpointError",
+)<{
+  readonly message: string;
+  readonly cause: unknown;
+  readonly consumed: boolean;
+}> {
+  constructor(message: string, cause: unknown, consumed: boolean) {
+    super({ message, cause, consumed });
   }
 }
 

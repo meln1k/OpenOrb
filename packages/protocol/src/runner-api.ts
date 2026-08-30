@@ -26,6 +26,9 @@ import {
   SessionCorrupt,
   SessionGitSnapshot,
   SessionNotFound,
+  StopRejected,
+  StopSessionAccepted,
+  StopSessionPayload,
   UpdateSessionGitFilePayload,
   WakeRejected,
   WakeSessionAccepted,
@@ -72,6 +75,12 @@ export class AbortSession extends Rpc.make("session.abort", {
   error: Schema.Union([SessionNotFound, AbortRejected]),
 }) {}
 
+export class StopSession extends Rpc.make("session.stop", {
+  payload: StopSessionPayload,
+  success: StopSessionAccepted,
+  error: Schema.Union([SessionNotFound, StopRejected]),
+}) {}
+
 export class WatchSession extends Rpc.make("session.watch", {
   payload: WatchSessionPayload,
   success: WatchSessionEvent,
@@ -98,6 +107,7 @@ export const RunnerApi = RpcGroup.make(
   PromptSession,
   WakeSession,
   AbortSession,
+  StopSession,
   WatchSession,
   ReadSessionGitSnapshot,
   UpdateSessionGitFile,

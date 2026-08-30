@@ -18,6 +18,8 @@ import {
   RunnerSessionSnapshot,
   RunnerStateEvent,
   SessionGitSnapshot,
+  StopSessionAccepted,
+  StopSessionPayload,
   UpdateSessionGitFilePayload,
   WakeSessionAccepted,
   WakeSessionPayload,
@@ -48,14 +50,17 @@ const decode = Schema.decodeUnknownSync;
 const projectId = decode(ProjectId)(PROJECT_ID);
 
 const capacity = decode(RunnerCapacity)({
-  maxConcurrentSessions: 4,
   activeSessions: 1,
   vmCpuCount: 8,
   vmMemoryMiB: 16_384,
   diskFreeMiB: 50_000,
 });
 
-function snapshot(id: string, activeRunId?: string) {
+function snapshot(
+  id: string,
+  activeRunId?: string,
+  state: "ready" | "running" | "stopped" = activeRunId ? "running" : "ready",
+) {
   return decode(RunnerSessionSnapshot)({
     id,
     projectId: PROJECT_ID,
@@ -63,7 +68,7 @@ function snapshot(id: string, activeRunId?: string) {
     initialPromptPreview: `Session ${id.slice(-2)}`,
     model: "opencode-go/deepseek-v4-flash",
     orbSize: "small",
-    state: activeRunId ? "running" : "ready",
+    state,
     lastEventCursor: 3,
     ...(activeRunId ? { activeRunId } : {}),
   });
@@ -78,6 +83,7 @@ interface Probe {
   promptRequests: unknown[];
   wakeRequests: unknown[];
   abortRequests: unknown[];
+  stopRequests: unknown[];
   gitSnapshotRequests: unknown[];
   gitFileUpdateRequests: unknown[];
   sessionWatches: SessionWatchProbe[];
@@ -108,6 +114,7 @@ const makeProbe = Effect.fn(function* (token = TOKEN) {
     promptRequests: [],
     wakeRequests: [],
     abortRequests: [],
+    stopRequests: [],
     gitSnapshotRequests: [],
     gitFileUpdateRequests: [],
     sessionWatches: [],
@@ -216,6 +223,11 @@ function handlers(probe: Probe) {
       Effect.sync(() => {
         probe.abortRequests.push(request);
         return decode(AbortSessionAccepted)({ runId: request.runId });
+      }),
+    "session.stop": (request) =>
+      Effect.sync(() => {
+        probe.stopRequests.push(request);
+        return new StopSessionAccepted({});
       }),
     "session.git-snapshot.read": (request) =>
       Effect.sync(() => {
@@ -474,12 +486,12 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
     yield* Fiber.interrupt(third);
   }))));
 
-Deno.test("Wake routes model credentials to the session's runner", () =>
+Deno.test("Wake routes model and GitHub credentials to a stopped session's runner", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const { gateway, url } = yield* makeHarness();
     const probe = yield* makeProbe();
     yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1, undefined, "stopped")]);
     yield* waitUntil(
       () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
@@ -493,14 +505,55 @@ Deno.test("Wake routes model credentials to the session's runner", () =>
     const result = yield* gateway.wakeSession({
       userId: USER_ID,
       sessionId: SESSION_1,
-      payload: { modelRuntime },
+      payload: { modelRuntime, githubToken: "github-token" },
     });
 
     assertEquals(result.status, "accepted");
     assertEquals(
       probe.wakeRequests,
-      [decode(WakeSessionPayload)({ sessionId: SESSION_1, modelRuntime })],
+      [
+        decode(WakeSessionPayload)({
+          sessionId: SESSION_1,
+          modelRuntime,
+          githubToken: "github-token",
+        }),
+      ],
     );
+  }))));
+
+Deno.test("Stop routes only ready sessions to the pinned runner", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    const stopped = yield* gateway.stopSession({ userId: USER_ID, sessionId: SESSION_1 });
+    assertEquals(stopped.status, "accepted");
+    assertEquals(probe.stopRequests, [decode(StopSessionPayload)({ sessionId: SESSION_1 })]);
+
+    yield* Queue.offer(
+      probe.runnerEvents,
+      decode(RunnerStateEvent)({
+        type: "session.updated",
+        revision: 2,
+        session: snapshot(SESSION_1, "run-active"),
+      }),
+    );
+    yield* waitUntil(
+      () =>
+        gateway.getSessionSnapshot(USER_ID, SESSION_1).pipe(
+          Effect.map((current) => current?.state === "running"),
+        ),
+      "running snapshot missing",
+    );
+    const busy = yield* gateway.stopSession({ userId: USER_ID, sessionId: SESSION_1 });
+    assertEquals(busy.status, "rejected");
+    assertEquals(probe.stopRequests.length, 1);
   }))));
 
 Deno.test("concurrent Prompt and Abort both reach the runner for serialized handling", () =>

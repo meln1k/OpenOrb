@@ -7,6 +7,7 @@ import {
   RunnerSessionSnapshot,
   SessionGitSnapshot,
   SessionModelRuntime,
+  StopSessionAccepted,
   WakeSessionAccepted,
   type WatchSessionEvent,
 } from "@openorb/protocol/runner-api";
@@ -18,6 +19,7 @@ import type {
   ProvisionSessionInput,
   RunnerLiveState,
   RunnerRegistryService,
+  StopSessionInput,
   UpdateSessionGitFileInput,
   WakeSessionInput,
 } from "@/app/runner-registry.ts";
@@ -52,6 +54,7 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   wakes: WakeSessionInput[] = [];
   prompts: PromptSessionInput[] = [];
   aborts: AbortSessionInput[] = [];
+  stops: StopSessionInput[] = [];
   gitFileUpdates: UpdateSessionGitFileInput[] = [];
   events: (typeof WatchSessionEvent.Type)[] = [];
   afterCursors: number[] = [];
@@ -60,13 +63,16 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
   promptResult: OperationResult<unknown> = { status: "accepted", acknowledgement: {} };
   abortResult: OperationResult<unknown> = { status: "accepted", acknowledgement: {} };
+  stopResult: OperationResult<StopSessionAccepted> = {
+    status: "accepted",
+    acknowledgement: new StopSessionAccepted({}),
+  };
 
   getRunnerLiveState(userId: string, runnerId: string): Effect.Effect<RunnerLiveState | null> {
     if (userId !== this.userId || runnerId !== this.runnerId) return Effect.succeed(null);
     return Effect.succeed({
       lastObservedAt: Date.now(),
       capacity: {
-        maxConcurrentSessions: 2,
         activeSessions: 0,
         vmCpuCount: 4,
         vmMemoryMiB: 8192,
@@ -192,6 +198,13 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     return Effect.sync(() => {
       this.aborts.push(input);
       return this.abortResult;
+    });
+  }
+
+  stopSession(input: StopSessionInput): Effect.Effect<OperationResult<StopSessionAccepted>> {
+    return Effect.sync(() => {
+      this.stops.push(input);
+      return this.stopResult;
     });
   }
 
@@ -429,8 +442,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/git-snapshot`));
     assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/wake`));
     assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/changes`));
-    assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-event-view\.tsx/);
-    assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-changes-panel\.tsx/);
+    assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-detail-client\.tsx/);
+    assertMatch(detailHtml, /"exportName":"SessionDetailClient"/);
+    assertNotMatch(detailHtml, /"exportName":"SessionVmControl"/);
+    assertNotMatch(detailHtml, /"exportName":"SessionChangesPanel"/);
     assertMatch(detailHtml, /aria-label="Session changes"/);
     assertMatch(detailHtml, />Changes<\/strong>/);
     assertMatch(
@@ -439,6 +454,12 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
     assertMatch(detailHtml, /<textarea[^>]*name="prompt"[^>]*aria-label="Continue session"/);
     assertMatch(detailHtml, /aria-label="Send prompt"/);
+    assertMatch(
+      detailHtml,
+      new RegExp(`action="/app/sessions/${provision.sessionId}/stop"`),
+    );
+    assertMatch(detailHtml, /aria-label="Gondolin VM: Active"/);
+    assertMatch(detailHtml, /aria-label="Stop Gondolin VM"/);
     assertNotMatch(detailHtml, /data-session-toolbar/);
     assertNotMatch(detailHtml, />Abort<\/button>/);
     assertNotMatch(detailHtml, /data-session-events/);
@@ -508,6 +529,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
           thinkingLevel: "high",
           credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
         }),
+        githubToken: GITHUB_TOKEN,
       },
     }]);
 
@@ -619,8 +641,84 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
           thinkingLevel: "high",
           credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
         }),
+        githubToken: GITHUB_TOKEN,
       },
     }]);
+
+    const stopHref = routes.app.sessions.stop.href({ sessionId: provision.sessionId });
+    const missingStopCsrf = await fetch(new URL(stopHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+    });
+    assertEquals(missingStopCsrf.status, 403);
+    assertEquals(connections.stops, []);
+    const stopped = await fetch(new URL(stopHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(detailHtml) }),
+    });
+    assertEquals(stopped.status, 202);
+    assertEquals(await stopped.json(), { status: "accepted" });
+    assertEquals(connections.stops, [{
+      userId: client.userId,
+      sessionId: provision.sessionId,
+    }]);
+
+    connections.snapshot = { ...connections.snapshot, state: "stopped" };
+    const stoppedDetail = await fetch(new URL(location, server.baseUrl), {
+      headers: { Cookie: client.cookie },
+    });
+    const stoppedHtml = await stoppedDetail.text();
+    assertMatch(stoppedHtml, /The VM is stopped/);
+    assertMatch(stoppedHtml, /\.agents\/resume/);
+    assertMatch(stoppedHtml, /aria-label="Continue session"/);
+    assertMatch(stoppedHtml, /aria-label="Gondolin VM: Sleeping"/);
+    assertMatch(stoppedHtml, /aria-label="Start Gondolin VM"/);
+    assertNotMatch(stoppedHtml, /aria-label="Stop Gondolin VM"/);
+    const coldWake = await fetch(new URL(wakeHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(stoppedHtml) }),
+    });
+    assertEquals(coldWake.status, 202);
+    assertEquals(await coldWake.json(), { status: "accepted" });
+    assertEquals(connections.wakes[1], {
+      userId: client.userId,
+      sessionId: provision.sessionId,
+      payload: {
+        modelRuntime: new SessionModelRuntime({
+          model: MODEL,
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
+        }),
+        githubToken: GITHUB_TOKEN,
+      },
+    });
+    const coldContinuation = await fetch(new URL(messageHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(stoppedHtml),
+        prompt: "Resume this stopped session",
+      }),
+    });
+    assertEquals(coldContinuation.status, 303);
+    assertEquals(connections.prompts[1], {
+      userId: client.userId,
+      sessionId: provision.sessionId,
+      payload: {
+        prompt: "Resume this stopped session",
+        modelRuntime: new SessionModelRuntime({
+          model: MODEL,
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
+        }),
+        githubToken: GITHUB_TOKEN,
+      },
+    });
 
     connections.snapshot = { ...connections.snapshot, state: "running" };
     const runningDetail = await fetch(new URL(location, server.baseUrl), {
@@ -639,6 +737,15 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(runningHtml, /title="Stop active turn"/);
     assertMatch(runningHtml, /data-slot="stop-icon"/);
     assertNotMatch(runningHtml, />Abort<\/button>/);
+    const busyStop = await fetch(new URL(stopHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(runningHtml) }),
+    });
+    assertEquals(busyStop.status, 409);
+    assertMatch(await busyStop.text(), /Abort the active Pi run before stopping/);
+    assertEquals(connections.stops.length, 1);
     const busyContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -651,8 +758,9 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(busyContinuation.status, 202);
     assertMatch(busyContinuation.headers.get("content-type") ?? "", /^application\/json\b/);
     assertEquals(await busyContinuation.json(), { status: "accepted" });
-    assertEquals(connections.prompts.length, 2);
-    assertEquals(connections.prompts[1]?.payload.prompt, "Queue this follow-up");
+    assertEquals(connections.prompts.length, 3);
+    assertEquals(connections.prompts[2]?.payload.prompt, "Queue this follow-up");
+    assertEquals(connections.prompts[2]?.payload.githubToken, GITHUB_TOKEN);
 
     const abortHref = routes.app.sessions.abort.href({ sessionId: provision.sessionId });
     const missingAbortCsrf = await fetch(new URL(abortHref, server.baseUrl), {
@@ -699,7 +807,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(offlineContinuation.status, 503);
     assertEquals(await offlineContinuation.json(), { error: "The pinned runner is offline." });
-    assertEquals(connections.prompts.length, 2);
+    assertEquals(connections.prompts.length, 3);
     const offlineAbort = await fetch(new URL(abortHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",

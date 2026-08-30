@@ -1,7 +1,7 @@
-import type { SessionEvent, SessionUsage } from "@openorb/protocol/browser-session-events";
+import type { SessionUsage } from "@openorb/protocol/browser-session-events";
 import { tryAsync, trySync } from "../../../../result/src/index.ts";
-import { literal, object, parseSafe, string } from "remix/data-schema";
-import { clientEntry, css, type Dispatched, type Handle, on } from "remix/ui";
+import { object, parseSafe, string } from "remix/data-schema";
+import { css, type Dispatched, type Handle, on } from "remix/ui";
 
 import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
@@ -14,6 +14,10 @@ import {
   MessageScrollerViewport,
 } from "@/app/ui/components/message-scroller.tsx";
 import { media } from "@/app/ui/responsive.ts";
+import {
+  actionResponseAccepted,
+  actionResponseError,
+} from "@/app/ui/session/session-action-response.ts";
 import { AssistantMarkdown } from "@/app/ui/session/session-markdown.tsx";
 import {
   activeActivityId,
@@ -23,24 +27,21 @@ import {
   isSessionBusy,
   reduceSessionTranscriptState,
   removeOptimisticUserMessage,
-  type SessionState,
   type ToolEntry,
   totalSessionUsage,
   type TranscriptEntry,
   usageContextTokens,
 } from "@/app/ui/session/session-transcript-state.ts";
+import { SessionPageScope } from "@/app/ui/session/session-page-controller.tsx";
 
-export type SessionEventViewProps = {
+export type SessionTranscriptProps = {
   abortHref: string;
   canRetry: boolean;
   contextWindow: number;
   csrfToken: string;
-  eventsHref: string;
-  initialState: SessionState;
   messageHref: string;
   retryHref: string;
   sessionId: string;
-  wakeHref: string;
 };
 const bashToolArgumentsSchema = object(
   { command: string() },
@@ -50,45 +51,51 @@ const readToolArgumentsSchema = object(
   { path: string() },
   { unknownKeys: "passthrough" },
 );
-const actionAcceptedResponseSchema = object(
-  { status: literal("accepted" as const) },
-  { unknownKeys: "error" },
-);
-const actionErrorResponseSchema = object(
-  { error: string() },
-  { unknownKeys: "error" },
-);
 
-export const SessionEventView = clientEntry<SessionEventViewProps>(
-  import.meta.url,
-  function SessionEventView(handle: Handle<SessionEventViewProps>) {
-    // Remix applies keys while reconciling child lists, so keep the keyed child in a fragment.
-    return () => (
-      <>
-        <ActiveSessionEventView key={handle.props.sessionId} {...handle.props} />
-      </>
-    );
-  },
-);
-
-function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
-  let transcriptState = createSessionTranscriptState(
-    handle.props.initialState,
-    handle.props.canRetry,
-  );
-  let connectionInterrupted = false;
+export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
+  const page = handle.context.get(SessionPageScope);
+  let transcriptState = createSessionTranscriptState(page.projection.sessionState);
   let promptRequestPending = false;
   let promptDraftPresent = false;
   let abortPending = false;
   let actionError: string | undefined;
+  let updateFrame: number | undefined;
   const abortFormId = `session-${handle.props.sessionId}-abort`;
+
+  const scheduleUpdate = () => {
+    if (updateFrame !== undefined) return;
+    updateFrame = requestAnimationFrame(() => {
+      updateFrame = undefined;
+      if (!handle.signal.aborted) void handle.update();
+    });
+  };
+
+  handle.queueTask(() => {
+    page.addEventListener("connection", scheduleUpdate, { signal: handle.signal });
+    page.addEventListener("session", (message) => {
+      const event = message.detail;
+      if (event.type === "session.state" && event.stage !== "running") abortPending = false;
+      const next = reduceSessionTranscriptState(
+        transcriptState,
+        event,
+        page.projection.sessionState,
+      );
+      if (next === transcriptState) return;
+      transcriptState = next;
+      scheduleUpdate();
+    }, { signal: handle.signal });
+    handle.signal.addEventListener("abort", () => {
+      if (updateFrame !== undefined) cancelAnimationFrame(updateFrame);
+    }, { once: true });
+  });
 
   async function submitAbort(
     event: Dispatched<SubmitEvent, HTMLFormElement>,
   ) {
     event.preventDefault();
     if (
-      transcriptState.sessionState !== "running" || connectionInterrupted || abortPending
+      page.projection.sessionState !== "running" ||
+      page.projection.connectionInterrupted || abortPending
     ) return;
 
     const form = event.currentTarget;
@@ -133,78 +140,14 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
 
   const abortSubmit = on<HTMLFormElement, "submit">("submit", submitAbort);
 
-  handle.queueTask(() => {
-    if (handle.props.initialState === "offline") return;
-    if (
-      handle.props.initialState === "ready" || handle.props.initialState === "running"
-    ) {
-      const body = new FormData();
-      body.set("_csrf", handle.props.csrfToken);
-      void fetch(handle.props.wakeHref, {
-        method: "POST",
-        body,
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-        signal: handle.signal,
-      }).catch(() => undefined);
-    }
-    let updateFrame: number | undefined;
-    const stream = new EventSource(handle.props.eventsHref);
-    // Reconcile at most once per paint while retaining every event in transcriptState.
-    const scheduleUpdate = () => {
-      if (updateFrame !== undefined) return;
-      updateFrame = requestAnimationFrame(() => {
-        updateFrame = undefined;
-        if (!handle.signal.aborted) void handle.update();
-      });
-    };
-    const reconcileGitSnapshot = () => {
-      globalThis.dispatchEvent(
-        new CustomEvent("openorb:session-git-snapshot-changed", {
-          detail: { sessionId: handle.props.sessionId },
-        }),
-      );
-    };
-    stream.addEventListener("open", () => {
-      reconcileGitSnapshot();
-      if (!connectionInterrupted) return;
-      connectionInterrupted = false;
-      scheduleUpdate();
-    });
-    stream.addEventListener("session", (message) => {
-      if (!(message instanceof MessageEvent)) return;
-      const encoded = parseSafe(string(), message.data);
-      if (!encoded.success) return;
-      const event = parseSessionEvent(encoded.value);
-      if (!event) return;
-      if (event.type === "session.state" && event.stage !== "running") abortPending = false;
-      if (event.type === "git.snapshot.updated") {
-        reconcileGitSnapshot();
-      }
-      const next = reduceSessionTranscriptState(transcriptState, event);
-      if (next === transcriptState) return;
-      transcriptState = next;
-      scheduleUpdate();
-    });
-    stream.addEventListener("error", () => {
-      if (!connectionInterrupted) {
-        connectionInterrupted = true;
-        scheduleUpdate();
-      }
-    });
-    handle.signal.addEventListener("abort", () => {
-      stream.close();
-      if (updateFrame !== undefined) cancelAnimationFrame(updateFrame);
-    }, {
-      once: true,
-    });
-  });
-
   return () => {
+    const { connectionInterrupted, sessionState } = page.projection;
     const currentActivityId = activeActivityId(transcriptState);
-    const busy = isSessionBusy(transcriptState.sessionState) && !connectionInterrupted;
-    const hasActiveRun = transcriptState.sessionState === "running";
-    const canComposePrompt = (transcriptState.sessionState === "ready" || hasActiveRun) &&
+    const busy = isSessionBusy(sessionState) && !connectionInterrupted;
+    const hasActiveRun = sessionState === "running";
+    const canComposePrompt = (
+      sessionState === "ready" || sessionState === "stopped" || hasActiveRun
+    ) &&
       !connectionInterrupted && !abortPending;
     const canSubmitPrompt = canComposePrompt && !promptRequestPending;
     const canAbort = hasActiveRun && !connectionInterrupted && !abortPending;
@@ -219,7 +162,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
       <section
         id={handle.id}
         aria-label="Session conversation"
-        data-session-state={transcriptState.sessionState}
+        data-session-state={sessionState}
         mix={sessionFrameStyle}
       >
         <span role="status" data-session-status mix={screenReaderOnlyStyle}>{status}</span>
@@ -235,12 +178,25 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
             </form>
           )
           : null}
-        {transcriptState.retryVisible
+        {handle.props.canRetry && sessionState === "error"
           ? (
             <form method="post" action={handle.props.retryHref} mix={retryStyle}>
               <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
               <Button type="submit" size="sm">Retry provisioning</Button>
             </form>
+          )
+          : null}
+        {sessionState === "stopped"
+          ? (
+            <Marker data-session-stopped mix={[richMarkerStyle, stoppedMarkerStyle]}>
+              <MarkerIcon>
+                <Icon name="activity" />
+              </MarkerIcon>
+              <MarkerContent>
+                The VM is stopped. Your next prompt resumes its checkpoint and runs the project's
+                quick, idempotent <code>.agents/resume</code> hook before Pi continues.
+              </MarkerContent>
+            </Marker>
           )
           : null}
         {actionError ? <p role="alert" mix={actionErrorStyle}>{actionError}</p> : null}
@@ -295,7 +251,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
                 ? (
                   <MessageScrollerItem>
                     <p data-conversation-placeholder mix={emptyConversationStyle}>
-                      {transcriptState.sessionState === "offline"
+                      {sessionState === "offline"
                         ? "Conversation history is unavailable while the pinned runner is offline."
                         : "Waiting for the initial prompt to reach Pi…"}
                     </p>
@@ -319,8 +275,9 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
               if (
                 promptRequestPending || connectionInterrupted ||
                 abortPending ||
-                (transcriptState.sessionState !== "ready" &&
-                  transcriptState.sessionState !== "running")
+                (page.projection.sessionState !== "ready" &&
+                  page.projection.sessionState !== "stopped" &&
+                  page.projection.sessionState !== "running")
               ) return;
 
               const form = event.currentTarget;
@@ -329,7 +286,7 @@ function ActiveSessionEventView(handle: Handle<SessionEventViewProps>) {
               if (!prompt.success || prompt.value.trim().length === 0) return;
 
               const optimisticId = `optimistic:${crypto.randomUUID()}`;
-              const followUpSubmission = transcriptState.sessionState === "running";
+              const followUpSubmission = page.projection.sessionState === "running";
               actionError = undefined;
               promptRequestPending = true;
               transcriptState = appendOptimisticUserMessage(
@@ -755,20 +712,6 @@ function renderUsageStatus(
   );
 }
 
-async function actionResponseAccepted(response: Response): Promise<boolean> {
-  const [body, readError] = await tryAsync(response.json(), () => true);
-  if (readError !== undefined) return false;
-  return parseSafe(actionAcceptedResponseSchema, body).success;
-}
-
-async function actionResponseError(response: Response, label: string): Promise<string> {
-  const fallback = response.status > 0 ? `${label} (${response.status}).` : `${label}.`;
-  const [body, readError] = await tryAsync(response.json(), () => true);
-  if (readError !== undefined) return fallback;
-  const parsed = parseSafe(actionErrorResponseSchema, body);
-  return parsed.success && parsed.value.error.trim() ? parsed.value.error : fallback;
-}
-
 function formatTokens(count: number): string {
   if (count < 1_000) return count.toString();
   if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
@@ -779,19 +722,6 @@ function formatTokens(count: number): string {
 
 function formatCost(cost: number): string {
   return cost < 0.01 ? cost.toFixed(4) : cost.toFixed(3);
-}
-
-function parseSessionEvent(source: string): SessionEvent | null {
-  const [value, parseError] = trySync(
-    () => {
-      // SAFETY: The gateway emits only runner events decoded by the canonical WatchSessionEvent
-      // schema, and serves the matching browser assets in the same deployment.
-      return JSON.parse(source) as SessionEvent;
-    },
-    () => true,
-  );
-  if (parseError !== undefined) return null;
-  return value;
 }
 
 const sessionFrameStyle = css({
@@ -871,6 +801,7 @@ const assistantMessageStyle = css({
   color: "var(--foreground)",
 });
 const toolItemStyle = css({ marginTop: "-16px" });
+const stoppedMarkerStyle = css({ flexShrink: 0 });
 const richMarkerStyle = css({ alignItems: "flex-start" });
 const markerDetailStyle = css({
   display: "grid",
