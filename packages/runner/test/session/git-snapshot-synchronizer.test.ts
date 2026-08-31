@@ -22,7 +22,6 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
 const METADATA: RunnerSessionMetadata = {
-  version: 3,
   id: SESSION_ID,
   definition: new RunnerSessionDefinition({
     userId: Schema.decodeUnknownSync(UserId)(

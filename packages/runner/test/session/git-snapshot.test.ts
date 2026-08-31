@@ -1,19 +1,36 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
-import { GitAuthor, ProjectId, SessionId, UserId } from "@openorb/protocol/runner-api";
-import { Effect, Exit, Schema, Scope } from "effect";
+import * as DenoPath from "@effect/platform-deno/DenoPath";
+import {
+  GitAuthor,
+  ProjectId,
+  RunnerId,
+  RunnerSessionCreatedAt,
+  SessionId,
+  UserId,
+} from "@openorb/protocol/runner-api";
+import { Context, Effect, Exit, Layer, Schema, Scope } from "effect";
 
 import type {
   AgentEnvironment,
   AgentEnvironmentCommandOptions,
 } from "@/src/environment/agent-environment.ts";
 import { createGondolinAgentEnvironment } from "@/src/environment/gondolin/layer.ts";
+import { Journal } from "@/src/session/persistent-actor/journal.ts";
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
 import { generateSessionGitSnapshot, updateSessionGitFile } from "@/src/session/git-snapshot.ts";
-import { makeRunnerSessionStore } from "@/src/session/store.ts";
+import { sessionJournalLayer } from "@/src/session/persistent-actor/session-journal.ts";
+import { sessionMetadata } from "@/src/session/actor/state.ts";
+import { RunnerSessionStore, runnerSessionStoreLayer } from "@/src/session/store.ts";
 import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
+import { makeSessionFixture } from "./session-fixture.ts";
 
-const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
+const platformLayer = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
+
+const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c09",
+);
+const CREATED_AT = Schema.decodeUnknownSync(RunnerSessionCreatedAt)("2026-08-17T12:00:00Z");
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
@@ -37,6 +54,19 @@ function sessionDefinition(branchName: string): RunnerSessionDefinition {
     initialPrompt: "Inspect the repository",
     model: "opencode-go/deepseek-v4-flash",
     orbSize: "small",
+  });
+}
+
+function makeStore(workingDirectory: string) {
+  const storeLive = runnerSessionStoreLayer({ workingDirectory, runnerId: RUNNER_ID }).pipe(
+    Layer.provideMerge(
+      sessionJournalLayer(workingDirectory).pipe(Layer.provideMerge(platformLayer)),
+    ),
+  );
+  return Effect.runPromise(Effect.scoped(Layer.build(storeLive))).then((context) => {
+    const journal = Context.get(context, Journal);
+    const store = Context.get(context, RunnerSessionStore);
+    return { store, fixture: makeSessionFixture(store, journal, RUNNER_ID) };
   });
 }
 
@@ -214,22 +244,17 @@ function emitCommandOutput(
 Deno.test("Git Snapshot is generated through bounded direct guest commands", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await Effect.runPromise(
-      makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-        Effect.provide(DenoFileSystem.layer),
-      ),
-    );
-    await Effect.runPromise(store.ensureSession(
+    const { fixture } = await makeStore(workingDirectory);
+    await Effect.runPromise(fixture.create(
       SESSION_ID,
       sessionDefinition(
         "openorb/snapshot-test",
       ),
+      CREATED_AT,
     ));
-    const metadata = await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "running",
-      checkoutState: "available",
-      baseCommit: BASE_COMMIT,
-    }));
+    const metadata = sessionMetadata(
+      await Effect.runPromise(fixture.startInitialRun(SESSION_ID, "available", BASE_COMMIT)),
+    );
     const environment = new GitSnapshotEnvironment();
     const snapshot = await Effect.runPromise(generateSessionGitSnapshot(environment, metadata));
 
@@ -385,22 +410,17 @@ Deno.test("Git Snapshot is generated through bounded direct guest commands", asy
 Deno.test("Git file updates proxy fixed direct mutation commands", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await Effect.runPromise(
-      makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-        Effect.provide(DenoFileSystem.layer),
-      ),
-    );
-    await Effect.runPromise(store.ensureSession(
+    const { fixture } = await makeStore(workingDirectory);
+    await Effect.runPromise(fixture.create(
       SESSION_ID,
       sessionDefinition(
         "openorb/git-mutation-test",
       ),
+      CREATED_AT,
     ));
-    const metadata = await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "ready",
-      checkoutState: "available",
-      baseCommit: BASE_COMMIT,
-    }));
+    const metadata = sessionMetadata(
+      await Effect.runPromise(fixture.completeInitialRun(SESSION_ID, "available", BASE_COMMIT)),
+    );
     const environment = new GitMutationEnvironment();
 
     const exactPath = "src/literal*.ts";
@@ -459,22 +479,17 @@ Deno.test("Git file updates proxy fixed direct mutation commands", async () => {
 Deno.test("Git Snapshot bounds large file lists and binary/control patch output", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await Effect.runPromise(
-      makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-        Effect.provide(DenoFileSystem.layer),
-      ),
-    );
-    await Effect.runPromise(store.ensureSession(
+    const { fixture } = await makeStore(workingDirectory);
+    await Effect.runPromise(fixture.create(
       SESSION_ID,
       sessionDefinition(
         "openorb/snapshot-bounds-test",
       ),
+      CREATED_AT,
     ));
-    const metadata = await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "running",
-      checkoutState: "available",
-      baseCommit: BASE_COMMIT,
-    }));
+    const metadata = sessionMetadata(
+      await Effect.runPromise(fixture.startInitialRun(SESSION_ID, "available", BASE_COMMIT)),
+    );
     const snapshot = await Effect.runPromise(
       generateSessionGitSnapshot(new GitSnapshotEnvironment("bounds"), metadata),
     );
@@ -508,16 +523,13 @@ Deno.test({
     const workingDirectory = await Deno.makeTempDir();
     const hostMarker = `${workingDirectory}/runner-host-marker`;
     const guestMarker = "/workspace/git-snapshot-helper-executed";
-    const store = await Effect.runPromise(
-      makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-        Effect.provide(DenoFileSystem.layer),
-      ),
-    );
-    await Effect.runPromise(store.ensureSession(
+    const { fixture, store } = await makeStore(workingDirectory);
+    await Effect.runPromise(fixture.create(
       SESSION_ID,
       sessionDefinition(
         "openorb/hostile-snapshot-test",
       ),
+      CREATED_AT,
     ));
     const workspacePath = await Effect.runPromise(store.getSessionWorkspacePath(SESSION_ID));
     const scope = await Effect.runPromise(Scope.make());
@@ -617,11 +629,11 @@ Deno.test({
             if (output.stream === "stdout") revision += output.text;
           }),
       }));
-      const metadata = await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-        state: "running",
-        checkoutState: "available",
-        baseCommit: revision.trim(),
-      }));
+      const metadata = sessionMetadata(
+        await Effect.runPromise(
+          fixture.startInitialRun(SESSION_ID, "available", revision.trim()),
+        ),
+      );
       const snapshotDiagnostics: string[] = [];
       const snapshotEnvironment: AgentEnvironment = {
         ...runtime,

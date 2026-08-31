@@ -85,6 +85,7 @@ function openPiSession(
   options: AgentHarnessOpenOptions,
 ): Effect.Effect<AgentHarnessSession, AgentHarnessError, Scope.Scope> {
   return Effect.gen(function* () {
+    const scope = yield* Effect.scope;
     const created = yield* Effect.acquireRelease(
       create({
         sessionId: options.sessionId,
@@ -110,7 +111,7 @@ function openPiSession(
     const raw = created.session;
 
     return {
-      start: (input) => startPiRun(raw, options.modelRuntime, input),
+      start: (input) => startPiRun(raw, options.modelRuntime, input, scope),
     };
   });
 }
@@ -119,6 +120,7 @@ function startPiRun(
   raw: RawPiSession,
   modelRuntime: AgentHarnessOpenOptions["modelRuntime"],
   input: string,
+  scope: Scope.Scope,
 ): Effect.Effect<ActiveAgentRun, AgentHarnessError> {
   return Effect.gen(function* () {
     const rawEvents = yield* Queue.unbounded<RawRunItem>();
@@ -166,7 +168,7 @@ function startPiRun(
             : new AgentHarnessError("Could not normalize agent events.", cause),
         }).pipe(Effect.asVoid)
       ),
-      Effect.forkChild({ startImmediately: true }),
+      Effect.forkIn(scope, { startImmediately: true }),
     );
 
     const prompt = yield* Effect.tryPromise({
@@ -187,7 +189,7 @@ function startPiRun(
             : {}),
         }).pipe(Effect.asVoid)
       ),
-      Effect.forkChild({ startImmediately: true }),
+      Effect.forkIn(scope, { startImmediately: true }),
     );
 
     if (!(yield* Deferred.await(accepted))) {
@@ -210,7 +212,7 @@ function startPiRun(
             return Effect.fail(item.error);
         }
       }),
-      Stream.ensuring(Fiber.join(processor).pipe(Effect.ignore)),
+      Stream.ensuring(Fiber.interrupt(processor)),
       Stream.ensuring(Effect.sync(unsubscribe)),
       Stream.ensuring(Queue.shutdown(rawEvents)),
       Stream.ensuring(Queue.shutdown(output)),

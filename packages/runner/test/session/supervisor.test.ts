@@ -1,19 +1,22 @@
 import { assert, assertEquals } from "@std/assert";
 import { delay } from "@std/async/delay";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
+import * as DenoPath from "@effect/platform-deno/DenoPath";
 import {
   AbortSessionPayload,
   GitAuthor,
   ProjectId,
   PromptSessionPayload,
   ProvisionSessionPayload,
+  RunId,
+  RunnerId,
   SessionId,
   StopSessionPayload,
   UpdateSessionGitFilePayload,
   UserId,
   WakeSessionPayload,
 } from "@openorb/protocol/runner-api";
-import { Effect, Schema, Stream } from "effect";
+import { Effect, Layer, Schema, Stream } from "effect";
 import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 
@@ -27,27 +30,34 @@ import {
 import { AgentHarness, AgentHarnessError } from "../../src/harness/agent-harness.ts";
 import { type CreateRawPiSession, makePiAgentHarness } from "../../src/harness/pi/layer.ts";
 import type { OpenOrbPiSessionOptions } from "../../src/harness/pi/session.ts";
+import { Journal } from "../../src/session/persistent-actor/journal.ts";
 import { RunnerSessionDefinition } from "../../src/session/definition.ts";
 import { makeSessionEvents, SessionEvents } from "../../src/session/events.ts";
+import { sessionJournalLayer } from "../../src/session/persistent-actor/session-journal.ts";
 import {
   makeSessionSupervisor,
   type SessionSupervisor,
   type SessionSupervisorOptions,
 } from "../../src/session/supervisor.ts";
 import {
-  makeRunnerSessionStore,
   RunnerSessionStore,
   type RunnerSessionStore as RunnerSessionStoreService,
   RunnerSessionStoreFailure,
+  runnerSessionStoreLayer,
 } from "../../src/session/store.ts";
 import {
   makeSessionActorFactory,
   type SessionActor,
   SessionActorFactory,
   type SessionActorInput,
-} from "../../src/session/actor.ts";
+} from "../../src/session/actor/index.ts";
+import { makeSessionFixture, type SessionFixture } from "./session-fixture.ts";
 
-const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
+const platformLayer = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
+
+const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c09",
+);
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
@@ -63,6 +73,12 @@ const MODEL_RUNTIME = {
   thinkingLevel: "high" as const,
   credential: { type: "api_key" as const, value: "model-secret" },
 };
+const CREATED_AT = "2026-08-17T12:00:00Z";
+
+interface TestStore extends RunnerSessionStoreService {
+  readonly journal: Journal;
+  readonly session: SessionFixture;
+}
 
 function sessionDefinition(branchName: string): RunnerSessionDefinition {
   return new RunnerSessionDefinition({
@@ -188,7 +204,6 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
       async (supervisor) => {
         const accepted = await Effect.runPromise(supervisor.provision(payload));
         assertEquals(accepted.session.id, SESSION_ID);
-        assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "created");
         await waitForState(store, "ready");
         assertEquals(runtime.commands.map((command) => command.slice(0, 2)), [
           ["/usr/bin/git", "clone"],
@@ -676,7 +691,7 @@ Deno.test("SessionActor awaits a failed run-end Git Snapshot refresh without fai
     const store = await makeStore(directory);
     const writeStarted = Promise.withResolvers<void>();
     const releaseWrite = Promise.withResolvers<void>();
-    const failingSnapshotStore = RunnerSessionStore.of({
+    const failingSnapshotStore: TestStore = {
       ...store,
       writeGitSnapshotState: () =>
         Effect.sync(() => writeStarted.resolve()).pipe(
@@ -689,7 +704,7 @@ Deno.test("SessionActor awaits a failed run-end Git Snapshot refresh without fai
             }),
           )),
         ),
-    });
+    };
     const runtime = new FakeEnvironment();
     const payload = createProvisionPayload("openorb/final-snapshot-failure-test");
 
@@ -883,13 +898,13 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
     const store = await makeStore(directory);
     const payload = createProvisionPayload("openorb/restart-git-update-test");
     await Effect.runPromise(
-      store.ensureSession(payload.sessionId, sessionDefinition(payload.branchName)),
+      store.session.create(payload.sessionId, sessionDefinition(payload.branchName), CREATED_AT),
     );
-    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "ready",
-      checkoutState: "available",
-      baseCommit: "0123456789abcdef0123456789abcdef01234567",
-    }));
+    await Effect.runPromise(store.session.completeInitialRun(
+      SESSION_ID,
+      "available",
+      "0123456789abcdef0123456789abcdef01234567",
+    ));
     const spawns: SessionActorInput[] = [];
     const updates: UpdateSessionGitFilePayload[] = [];
     const actor: SessionActor = {
@@ -905,6 +920,7 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
           updates.push(update);
           return { ok: true as const };
         }),
+      awaitTermination: Effect.never,
       shutdown: Effect.void,
     };
     const actorFactory = SessionActorFactory.of({
@@ -917,6 +933,7 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const supervisor = yield* makeSessionSupervisor({
+        runnerId: RUNNER_ID,
         cpuCount: 4,
         memoryMiB: 8192,
       }).pipe(
@@ -932,9 +949,60 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
       assert(restored);
       assertEquals(yield* restored.updateGitFile(update), { ok: true });
       assertEquals(updates, [update]);
-      assertEquals(spawns.length, 1);
-      assertEquals(spawns[0]?.restore, true);
-      assertEquals(spawns[0] && "modelRuntime" in spawns[0], false);
+      assertEquals(spawns.length, 2);
+      assertEquals(spawns.map((spawn) => spawn.mode), ["reconcile", "restore"]);
+      assertEquals(spawns.some((spawn) => "modelRuntime" in spawn), false);
+    })));
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("SessionSupervisor removes terminated actors before restoring them again", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(directory);
+    await Effect.runPromise(
+      store.session.create(
+        SESSION_ID,
+        sessionDefinition("openorb/actor-termination-test"),
+        CREATED_AT,
+      ),
+    );
+    await Effect.runPromise(store.session.completeInitialRun(SESSION_ID));
+
+    const firstTermination = Promise.withResolvers<void>();
+    const secondTermination = Promise.withResolvers<void>();
+    let restoreSpawns = 0;
+    const actorFactory = SessionActorFactory.of({
+      spawn: (input) => {
+        if (input.mode === "reconcile") {
+          return Effect.succeed(unavailableActor(Promise.resolve()));
+        }
+        const termination = restoreSpawns++ === 0
+          ? firstTermination.promise
+          : secondTermination.promise;
+        return Effect.succeed(unavailableActor(termination));
+      },
+    });
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* makeSessionSupervisor({
+        runnerId: RUNNER_ID,
+        cpuCount: 4,
+        memoryMiB: 8192,
+      }).pipe(
+        Effect.provideService(RunnerSessionStore, store),
+        Effect.provideService(SessionActorFactory, actorFactory),
+      );
+      const first = yield* supervisor.findOrRestoreActor(SESSION_ID);
+      assert(first);
+      firstTermination.resolve();
+      yield* Effect.sleep(1);
+      const second = yield* supervisor.findOrRestoreActor(SESSION_ID);
+      assert(second);
+      assert(first !== second);
+      assertEquals(restoreSpawns, 2);
     })));
   } finally {
     await Deno.remove(directory, { recursive: true });
@@ -947,13 +1015,13 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
     const store = await makeStore(directory);
     const payload = createProvisionPayload("openorb/git-then-prompt-test");
     await Effect.runPromise(
-      store.ensureSession(payload.sessionId, sessionDefinition(payload.branchName)),
+      store.session.create(payload.sessionId, sessionDefinition(payload.branchName), CREATED_AT),
     );
-    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "ready",
-      checkoutState: "available",
-      baseCommit: "0123456789abcdef0123456789abcdef01234567",
-    }));
+    await Effect.runPromise(store.session.completeInitialRun(
+      SESSION_ID,
+      "available",
+      "0123456789abcdef0123456789abcdef01234567",
+    ));
     let piCreations = 0;
     const createPiSession: CreateRawPiSession = (options) => {
       piCreations++;
@@ -1018,13 +1086,13 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
     const store = await makeStore(directory);
     const payload = createProvisionPayload("openorb/lazy-open-retry-test");
     await Effect.runPromise(
-      store.ensureSession(payload.sessionId, sessionDefinition(payload.branchName)),
+      store.session.create(payload.sessionId, sessionDefinition(payload.branchName), CREATED_AT),
     );
-    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "ready",
-      checkoutState: "available",
-      baseCommit: "0123456789abcdef0123456789abcdef01234567",
-    }));
+    await Effect.runPromise(store.session.completeInitialRun(
+      SESSION_ID,
+      "available",
+      "0123456789abcdef0123456789abcdef01234567",
+    ));
     let piOpenAttempts = 0;
     const createPiSession: CreateRawPiSession = (options) => {
       piOpenAttempts++;
@@ -1075,13 +1143,13 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
   }
 });
 
-Deno.test("SessionSupervisor marks durable created metadata for explicit retry", async () => {
+Deno.test("SessionSupervisor marks interrupted provisioning for explicit retry", async () => {
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
-    const payload = createProvisionPayload("openorb/restart-created-test");
+    const payload = createProvisionPayload("openorb/restart-provisioning-test");
     await Effect.runPromise(
-      store.ensureSession(payload.sessionId, sessionDefinition(payload.branchName)),
+      store.session.create(payload.sessionId, sessionDefinition(payload.branchName), CREATED_AT),
     );
 
     await withSupervisor(
@@ -1114,11 +1182,11 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
   try {
     const store = await makeStore(directory);
     const ids = {
-      created: SESSION_ID,
-      provisioning: Schema.decodeUnknownSync(SessionId)(
+      provisioning: SESSION_ID,
+      initialRun: Schema.decodeUnknownSync(SessionId)(
         "01989d78-65ee-7f6a-a97e-0f16ad134c12",
       ),
-      running: Schema.decodeUnknownSync(SessionId)(
+      promptRun: Schema.decodeUnknownSync(SessionId)(
         "01989d78-65ee-7f6a-a97e-0f16ad134c13",
       ),
       ready: Schema.decodeUnknownSync(SessionId)(
@@ -1128,21 +1196,26 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
         "01989d78-65ee-7f6a-a97e-0f16ad134c15",
       ),
     };
-    const sessions = [
-      ["created", ids.created],
-      ["provisioning", ids.provisioning],
-      ["running", ids.running],
-      ["ready", ids.ready],
-      ["error", ids.error],
-    ] as const;
-    for (const [state, id] of sessions) {
+    for (const [name, id] of Object.entries(ids)) {
       await Effect.runPromise(
-        store.ensureSession(id, sessionDefinition(`openorb/reconcile-${state}`)),
+        store.session.create(id, sessionDefinition(`openorb/reconcile-${name}`), CREATED_AT),
       );
-      if (state !== "created") {
-        await Effect.runPromise(store.updateSessionState(id, state));
-      }
     }
+    await Effect.runPromise(store.session.startInitialRun(ids.initialRun));
+    await Effect.runPromise(store.session.completeInitialRun(ids.promptRun));
+    const promptRunId = Schema.decodeUnknownSync(RunId)(
+      "01989d78-65ee-7f6a-a97e-0f16ad134c16",
+    );
+    await Effect.runPromise(store.session.appendAll(ids.promptRun, [
+      { type: "run.requested", runId: promptRunId, purpose: "prompt" },
+      {
+        type: "run.started",
+        runId: promptRunId,
+        acceptedAt: "2026-08-17T12:10:00Z",
+      },
+    ]));
+    await Effect.runPromise(store.session.completeInitialRun(ids.ready));
+    await Effect.runPromise(store.session.append(ids.error, { type: "provisioning.failed" }));
 
     await withSupervisor(
       {
@@ -1153,12 +1226,12 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
       async (supervisor) => {
-        assertEquals((await Effect.runPromise(store.readMetadata(ids.created))).state, "error");
         assertEquals(
           (await Effect.runPromise(store.readMetadata(ids.provisioning))).state,
           "error",
         );
-        assertEquals((await Effect.runPromise(store.readMetadata(ids.running))).state, "ready");
+        assertEquals((await Effect.runPromise(store.readMetadata(ids.initialRun))).state, "error");
+        assertEquals((await Effect.runPromise(store.readMetadata(ids.promptRun))).state, "ready");
         assertEquals((await Effect.runPromise(store.readMetadata(ids.ready))).state, "ready");
         assertEquals((await Effect.runPromise(store.readMetadata(ids.error))).state, "error");
         assertEquals(supervisor.activeSessionCount(), 0);
@@ -1189,6 +1262,7 @@ Deno.test("SessionSupervisor fails construction when startup reconciliation cann
       Effect.scoped(
         Effect.flip(
           makeSessionSupervisor({
+            runnerId: RUNNER_ID,
             cpuCount: 4,
             memoryMiB: 8192,
           }).pipe(
@@ -1233,7 +1307,7 @@ Deno.test("SessionSupervisor does not impose a concurrent session-count limit", 
           dispose() {},
         },
       });
-    const configuredOptions: SessionSupervisorOptions = {
+    const configuredOptions: Omit<SessionSupervisorOptions, "runnerId"> = {
       cpuCount: 4,
       memoryMiB: 8192,
     };
@@ -1374,15 +1448,17 @@ async function waitForState(
   timeoutMs = 1_000,
 ) {
   const deadline = Date.now() + timeoutMs;
+  let currentState: string | undefined;
   while (Date.now() < deadline) {
     const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
+    currentState = metadata.state;
     if (metadata.state === state) return;
     if (metadata.state === "error" && state !== "error") {
       throw new Error("Session provisioning failed.");
     }
     await delay(10);
   }
-  throw new Error(`Session did not reach ${state}.`);
+  throw new Error(`Session did not reach ${state}; current state is ${currentState}.`);
 }
 
 function promptPayload(prompt: string, githubToken?: string) {
@@ -1416,11 +1492,19 @@ async function assertPathMissing(path: string): Promise<void> {
   }
 }
 
-function makeStore(workingDirectory: string) {
-  return Effect.runPromise(
-    makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-      Effect.provide(DenoFileSystem.layer),
+function makeStore(workingDirectory: string): Promise<TestStore> {
+  const storeLive = runnerSessionStoreLayer({ workingDirectory, runnerId: RUNNER_ID }).pipe(
+    Layer.provideMerge(
+      sessionJournalLayer(workingDirectory).pipe(Layer.provideMerge(platformLayer)),
     ),
+  );
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const journal = yield* Journal;
+      const store = yield* RunnerSessionStore;
+      const session = makeSessionFixture(store, journal, RUNNER_ID);
+      return { ...store, journal, session };
+    }).pipe(Effect.provide(storeLive)),
   );
 }
 
@@ -1428,6 +1512,21 @@ function requireActor(supervisor: SessionSupervisor): SessionActor {
   const actor = supervisor.findActor(SESSION_ID);
   assert(actor, "Session supervisor did not contain the expected actor.");
   return actor;
+}
+
+function unavailableActor(termination: Promise<void>): SessionActor {
+  return {
+    sessionId: SESSION_ID,
+    activeRunId: undefined,
+    active: false,
+    wake: () => Effect.die("unexpected wake"),
+    prompt: () => Effect.die("unexpected prompt"),
+    abort: () => Effect.die("unexpected abort"),
+    stop: () => Effect.die("unexpected stop"),
+    updateGitFile: () => Effect.die("unexpected Git file update"),
+    awaitTermination: Effect.promise(() => termination),
+    shutdown: Effect.void,
+  };
 }
 
 async function waitForActiveRun(supervisor: SessionSupervisor, timeoutMs = 1_000) {
@@ -1464,8 +1563,10 @@ function fakeEnvironmentProvider(environment: FakeEnvironment): AgentEnvironment
 }
 
 async function withSupervisor(
-  options: SessionSupervisorOptions & { readonly createPiSession?: CreateRawPiSession },
-  store: RunnerSessionStoreService,
+  options: Omit<SessionSupervisorOptions, "runnerId"> & {
+    readonly createPiSession?: CreateRawPiSession;
+  },
+  store: TestStore,
   environmentProvider: AgentEnvironmentProvider,
   use: (supervisor: SessionSupervisor, events: SessionEvents) => Promise<void>,
 ): Promise<void> {
@@ -1487,12 +1588,14 @@ async function withSupervisor(
           ...(options.createPiSession === undefined ? {} : { create: options.createPiSession }),
         });
         const actorFactory = yield* makeSessionActorFactory().pipe(
+          Effect.provideService(Journal, store.journal),
           Effect.provideService(RunnerSessionStore, store),
           Effect.provideService(SessionEvents, events),
           Effect.provideService(AgentEnvironmentProvider, environmentProvider),
           Effect.provideService(AgentHarness, harness),
         );
         const supervisor = yield* makeSessionSupervisor({
+          runnerId: RUNNER_ID,
           cpuCount: options.cpuCount,
           memoryMiB: options.memoryMiB,
           ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),

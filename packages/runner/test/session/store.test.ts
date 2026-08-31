@@ -1,22 +1,35 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
+import * as DenoPath from "@effect/platform-deno/DenoPath";
 import {
   GitAuthor,
   ProjectId,
-  RunId,
+  RunnerId,
   RunnerSessionSnapshot,
   SessionGitSnapshot,
   SessionId,
   UserId,
 } from "@openorb/protocol/runner-api";
-import { Effect, Schema } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import { join } from "node:path";
 
+import { Journal } from "@/src/session/persistent-actor/journal.ts";
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
-import { makeRunnerSessionStore } from "@/src/session/store.ts";
+import { sessionJournalLayer } from "@/src/session/persistent-actor/session-journal.ts";
+import { sessionMetadata } from "@/src/session/actor/state.ts";
+import {
+  makeRunnerSessionStore,
+  RunnerSessionStore,
+  runnerSessionStoreLayer,
+} from "@/src/session/store.ts";
+import { makeSessionFixture, type SessionFixture } from "./session-fixture.ts";
 
-const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
+const platformLayer = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
+
+const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c09",
+);
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
@@ -26,18 +39,14 @@ const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)(
 const USER_ID = Schema.decodeUnknownSync(UserId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c12",
 );
-const OTHER_USER_ID = Schema.decodeUnknownSync(UserId)(
-  "01989d78-65ee-7f6a-a97e-0f16ad134c13",
-);
-const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
-const OTHER_GIT_AUTHOR = new GitAuthor({ name: "Another User", email: "other@example.com" });
 const CREATED_AT = "2026-08-17T12:00:00Z";
-const REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
-const REF = "main";
-const BRANCH_NAME = "openorb/session-test";
 const MODEL = "opencode-go/deepseek-v4-flash";
 const GUEST_BUILD_ID = "02e784cb-e063-5138-b1c4-334e8a3307a9";
-const RUN_ID = Schema.decodeUnknownSync(RunId)("01989d78-65ee-7f6a-a97e-0f16ad134c14");
+
+interface TestStore {
+  readonly store: RunnerSessionStore;
+  readonly session: SessionFixture;
+}
 
 function sessionDefinition(
   initialPrompt = "Inspect the repository",
@@ -46,28 +55,30 @@ function sessionDefinition(
   return new RunnerSessionDefinition({
     userId: USER_ID,
     projectId: PROJECT_ID,
-    repositoryUrl: REPOSITORY_URL,
-    ref: REF,
-    branchName: BRANCH_NAME,
-    gitAuthor: GIT_AUTHOR,
+    repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
+    ref: "main",
+    branchName: "openorb/session-test",
+    gitAuthor: new GitAuthor({ name: "OpenOrb User", email: "user@example.com" }),
     initialPrompt,
     model: MODEL,
     orbSize,
   });
 }
 
-Deno.test("creates private runner session files and atomically reloads metadata", async () => {
+Deno.test("creates private session storage and recovers cold session state", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await makeStore(workingDirectory);
+    const { store, session } = await makeStore(workingDirectory);
     const prompt = `  inspect\n\tthis   ${"😀".repeat(205)}  `;
-    const ensured = await Effect.runPromise(
-      store.ensureSession(SESSION_ID, sessionDefinition(prompt), CREATED_AT),
+    const state = await Effect.runPromise(
+      session.create(SESSION_ID, sessionDefinition(prompt), CREATED_AT),
     );
-    const metadata = ensured.metadata;
-    assertEquals(ensured.disposition, "created");
-    assertEquals(metadata.state, "created");
-    assertEquals(metadata.definition.orbSize, "small");
+    const metadata = sessionMetadata(state);
+    assertEquals(metadata.state, "provisioning");
+    assertEquals(
+      await Effect.runPromise(store.ensureSessionStorage(SESSION_ID)),
+      "existing",
+    );
 
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
     for (const directory of ["workspace", "pi", "logs", "snapshots", "checkpoints"]) {
@@ -76,45 +87,21 @@ Deno.test("creates private runner session files and atomically reloads metadata"
       assertEquals(info.isSymlink, false);
       assertPrivateMode(info.mode, 0o700);
     }
-    for (const file of ["lifecycle.jsonl", join("pi", "session.jsonl")]) {
+    for (const file of ["events.jsonl", join("pi", "session.jsonl")]) {
       const info = await Deno.lstat(join(sessionPath, file));
       assert(info.isFile);
       assertEquals(info.isSymlink, false);
       assertPrivateMode(info.mode, 0o600);
     }
 
-    await Deno.writeTextFile(join(sessionPath, "lifecycle.jsonl.interrupted.tmp"), "{");
     const restarted = await makeStore(workingDirectory);
-    assertEquals(await Effect.runPromise(restarted.readMetadata(SESSION_ID)), metadata);
     assertEquals(
-      (await Effect.runPromise(restarted.updateSessionState(SESSION_ID, "error"))).state,
-      "error",
+      await Effect.runPromise(restarted.store.readMetadata(SESSION_ID)),
+      metadata,
     );
-    assertEquals((await Effect.runPromise(restarted.readMetadata(SESSION_ID))).state, "error");
-    const replay = await Effect.runPromise(
-      restarted.ensureSession(SESSION_ID, sessionDefinition(prompt)),
-    );
-    assertEquals(replay.disposition, "existing");
-    assertEquals(replay.metadata, await Effect.runPromise(restarted.readMetadata(SESSION_ID)));
-    for (
-      const differingDefinition of [
-        sessionDefinition("Duplicate session"),
-        new RunnerSessionDefinition({ ...metadata.definition, userId: OTHER_USER_ID }),
-        new RunnerSessionDefinition({ ...metadata.definition, gitAuthor: OTHER_GIT_AUTHOR }),
-      ]
-    ) {
-      const duplicateError = await Effect.runPromise(Effect.flip(
-        restarted.ensureSession(SESSION_ID, differingDefinition),
-      ));
-      assertEquals(duplicateError._tag, "RunnerSessionDefinitionConflict");
-    }
-    assertEquals((await Effect.runPromise(restarted.readMetadata(SESSION_ID))).state, "error");
-
-    const manifest = await Effect.runPromise(restarted.loadSessionManifest());
+    const manifest = await Effect.runPromise(restarted.store.loadSessionManifest());
     assertEquals(manifest.errors, []);
-    assertEquals(manifest.sessions.length, 1);
-    assertEquals(
-      manifest.sessions[0],
+    assertEquals(manifest.sessions, [
       new RunnerSessionSnapshot({
         id: SESSION_ID,
         projectId: PROJECT_ID,
@@ -122,104 +109,43 @@ Deno.test("creates private runner session files and atomically reloads metadata"
         initialPromptPreview: `inspect this ${"😀".repeat(187)}`,
         model: MODEL,
         orbSize: "small",
-        state: "error",
+        state: "provisioning",
         lastEventCursor: 0,
       }),
-    );
+    ]);
     assertEquals(Array.from(manifest.sessions[0]!.initialPromptPreview).length, 200);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("orders run facts without losing a later follow-up timestamp", async () => {
+Deno.test("clears untrusted workspace contents without following symlinks", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await makeStore(workingDirectory);
-    await Effect.runPromise(store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT));
-    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "ready",
-      checkoutState: "available",
-    }));
-    const started = await Effect.runPromise(
-      store.startRun(SESSION_ID, RUN_ID, "2026-08-17T12:15:00Z"),
-    );
+    const { store, session } = await makeStore(workingDirectory);
+    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const workspace = join(workingDirectory, "sessions", SESSION_ID, "workspace");
+    const hostMarker = join(workingDirectory, "host-marker");
+    await Deno.writeTextFile(hostMarker, "keep");
+    await Deno.mkdir(join(workspace, "nested"));
+    await Deno.writeTextFile(join(workspace, "nested", "guest-file"), "remove");
+    await Deno.symlink(hostMarker, join(workspace, "host-marker-link"));
+
+    await Effect.runPromise(store.clearSessionWorkspace(SESSION_ID));
+
+    assertEquals(await Array.fromAsync(Deno.readDir(workspace)), []);
+    assertEquals(await Deno.readTextFile(hostMarker), "keep");
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("derives replay cursors using Pi JSONL parsing semantics", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const { store, session } = await makeStore(workingDirectory);
     await Effect.runPromise(
-      store.acceptFollowUp(SESSION_ID, RUN_ID, "2026-08-17T12:20:00Z"),
-    );
-    const settled = await Effect.runPromise(
-      store.settleRun(SESSION_ID, RUN_ID, started.startedBy),
-    );
-
-    assertEquals(settled.state, "ready");
-    assertEquals(settled.lastAcceptedUserMessageAt, "2026-08-17T12:20:00Z");
-    const events = await readLifecycleEvents(workingDirectory);
-    assertEquals(events.map((event) => event.sequence), [1, 2, 3, 4, 5]);
-    assertEquals(events.map((event) => event.event.type), [
-      "session.created",
-      "provisioning.updated",
-      "run.started",
-      "follow-up.accepted",
-      "run.settled",
-    ]);
-  } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
-  }
-});
-
-Deno.test("discards an incomplete lifecycle tail before appending the next event", async () => {
-  const workingDirectory = await Deno.makeTempDir();
-  try {
-    const store = await makeStore(workingDirectory);
-    await Effect.runPromise(store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT));
-    const lifecyclePath = join(workingDirectory, "sessions", SESSION_ID, "lifecycle.jsonl");
-    await Deno.writeTextFile(lifecyclePath, '{"version":1,"sequence":2', { append: true });
-
-    const restarted = await makeStore(workingDirectory);
-    const updated = await Effect.runPromise(restarted.updateSessionState(SESSION_ID, "error"));
-    assertEquals(updated.state, "error");
-    const events = await readLifecycleEvents(workingDirectory);
-    assertEquals(events.map((event) => event.sequence), [1, 2]);
-    assertEquals(events[1]?.event.type, "session.state-changed");
-  } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
-  }
-});
-
-Deno.test("imports legacy metadata once and appends only lifecycle events afterward", async () => {
-  const workingDirectory = await Deno.makeTempDir();
-  try {
-    const store = await makeStore(workingDirectory);
-    const ensured = await Effect.runPromise(
-      store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT),
-    );
-    const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
-    await Deno.remove(join(sessionPath, "lifecycle.jsonl"));
-    await Deno.writeTextFile(
-      join(sessionPath, "metadata.json"),
-      `${JSON.stringify(ensured.metadata)}\n`,
-    );
-
-    const restarted = await makeStore(workingDirectory);
-    assertEquals(await Effect.runPromise(restarted.readMetadata(SESSION_ID)), ensured.metadata);
-    await Effect.runPromise(restarted.updateSessionState(SESSION_ID, "error"));
-    const events = await readLifecycleEvents(workingDirectory);
-    assertEquals(events.map((event) => event.sequence), [1, 2]);
-    assertEquals(events.map((event) => event.event.type), [
-      "session.imported",
-      "session.state-changed",
-    ]);
-  } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
-  }
-});
-
-Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () => {
-  const workingDirectory = await Deno.makeTempDir();
-  try {
-    const store = await makeStore(workingDirectory);
-    await Effect.runPromise(
-      store.ensureSession(
+      session.create(
         SESSION_ID,
         sessionDefinition("Inspect the repository", "medium"),
         CREATED_AT,
@@ -258,16 +184,8 @@ Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () 
       (await Effect.runPromise(store.getSessionSnapshot(SESSION_ID))).lastEventCursor,
       4,
     );
-    assertEquals(
-      (await Array.fromAsync(Deno.readDir(workingDirectory + "/sessions/" + SESSION_ID))).some(
-        (entry) => entry.name === "events.jsonl",
-      ),
-      false,
-    );
-
     await Deno.writeTextFile(sessionFile, "{", { append: true });
     const manifest = await Effect.runPromise(store.loadSessionManifest());
-    assertEquals(manifest.sessions[0]?.state, "created");
     assertEquals(manifest.sessions[0]?.lastEventCursor, 4);
     assertEquals(manifest.errors, []);
   } finally {
@@ -278,8 +196,8 @@ Deno.test("derives replay cursors using Pi's JSONL parsing semantics", async () 
 Deno.test("atomically stores private validated Git Snapshots outside the workspace", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await makeStore(workingDirectory);
-    await Effect.runPromise(store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const { store, session } = await makeStore(workingDirectory);
+    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
     const snapshot = new SessionGitSnapshot({
       generatedAt: CREATED_AT,
       completeness: "complete",
@@ -300,8 +218,8 @@ Deno.test("atomically stores private validated Git Snapshots outside the workspa
         },
       },
     });
-
     const state = { snapshot, notificationPending: true };
+
     await Effect.runPromise(store.writeGitSnapshotState(SESSION_ID, state));
     assertEquals(await Effect.runPromise(store.readGitSnapshot(SESSION_ID)), snapshot);
     assertEquals(await Effect.runPromise(store.readGitSnapshotState(SESSION_ID)), state);
@@ -322,190 +240,108 @@ Deno.test("atomically stores private validated Git Snapshots outside the workspa
       `${JSON.stringify({ ...state, unexpected: true })}\n`,
     );
     const invalid = await Effect.runPromise(Effect.flip(store.readGitSnapshot(SESSION_ID)));
-    assertEquals(invalid._tag, "RunnerSessionStoreFailure");
-    if (invalid._tag !== "RunnerSessionStoreFailure") throw invalid;
     assertEquals(invalid.operation, "read-git-snapshot");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("publishes only complete checkpoint candidates and safely replaces the current one", async () => {
+Deno.test("manages checkpoint files without owning checkpoint state transitions", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await makeStore(workingDirectory);
-    await Effect.runPromise(store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT));
-    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "ready",
-      checkoutState: "available",
-    }));
-    const acceptedAt = "2026-08-17T12:15:00Z";
-    const run = await Effect.runPromise(store.startRun(SESSION_ID, RUN_ID, acceptedAt));
-    assertEquals(run.metadata.lastAcceptedUserMessageAt, acceptedAt);
-    await Effect.runPromise(store.settleRun(SESSION_ID, RUN_ID, run.startedBy));
+    const { store, session } = await makeStore(workingDirectory);
+    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    await Effect.runPromise(session.completeInitialRun(SESSION_ID));
 
-    const first = await Effect.runPromise(store.beginCheckpoint(SESSION_ID));
-    assertStringIncludes(first.path, join("sessions", SESSION_ID, "checkpoints"));
-    assert(!first.path.includes(join("workspace", "checkpoints")));
-    await Deno.writeTextFile(first.path, "first complete checkpoint");
-    const firstMetadata = await Effect.runPromise(store.publishCheckpoint(
+    const candidate = await Effect.runPromise(store.allocateCheckpoint(SESSION_ID));
+    assertStringIncludes(candidate.path, join("sessions", SESSION_ID, "checkpoints"));
+    assertEquals(
+      await Effect.runPromise(store.checkpointExists(SESSION_ID, candidate.file)),
+      false,
+    );
+    await Deno.writeTextFile(candidate.path, "complete checkpoint");
+    assertEquals(await Effect.runPromise(store.checkpointExists(SESSION_ID, candidate.file)), true);
+
+    await Effect.runPromise(session.append(SESSION_ID, {
+      type: "checkpoint.started",
+      file: candidate.file,
+    }));
+    await Effect.runPromise(store.validateCheckpoint(
       SESSION_ID,
-      first,
-      checkpoint(first.path),
+      candidate,
+      environmentCheckpoint(candidate.path),
     ));
-    assertEquals(firstMetadata.state, "stopped");
-    assertEquals(firstMetadata.checkpoint?.file, first.file);
-    assertEquals(firstMetadata.checkpointCandidate, undefined);
+    await Effect.runPromise(session.append(SESSION_ID, {
+      type: "checkpoint.published",
+      checkpoint: persistedCheckpoint(candidate.file),
+    }));
     assertEquals(
       await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID)),
-      checkpoint(first.path),
+      environmentCheckpoint(candidate.path),
     );
 
-    await Effect.runPromise(store.updateSessionState(SESSION_ID, "ready"));
-    const incomplete = await Effect.runPromise(store.beginCheckpoint(SESSION_ID));
-    const failedPublication = await Effect.runPromise(
-      Effect.flip(store.publishCheckpoint(SESSION_ID, incomplete, checkpoint(incomplete.path))),
-    );
-    assertEquals(failedPublication._tag, "RunnerSessionStoreFailure");
-    const afterIncomplete = await Effect.runPromise(
-      store.failCheckpoint(SESSION_ID, incomplete, false),
-    );
-    assertEquals(afterIncomplete.state, "ready");
-    assertEquals(afterIncomplete.checkpoint?.file, first.file);
-    assertEquals(
-      await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID)),
-      checkpoint(first.path),
-    );
+    const obsolete = await Effect.runPromise(store.allocateCheckpoint(SESSION_ID));
+    await Deno.writeTextFile(obsolete.path, "obsolete");
+    await Effect.runPromise(store.cleanupCheckpoints(SESSION_ID, candidate.file));
+    assertEquals(await Effect.runPromise(store.checkpointExists(SESSION_ID, candidate.file)), true);
+    assertEquals(await Effect.runPromise(store.checkpointExists(SESSION_ID, obsolete.file)), false);
 
-    const second = await Effect.runPromise(store.beginCheckpoint(SESSION_ID));
-    assert(second.path !== first.path);
-    await Deno.writeTextFile(second.path, "second complete checkpoint");
-    const secondMetadata = await Effect.runPromise(store.publishCheckpoint(
-      SESSION_ID,
-      second,
-      checkpoint(second.path),
+    const invalid = await Effect.runPromise(Effect.flip(
+      store.checkpointExists(SESSION_ID, "../checkpoint.qcow2"),
     ));
-    assertEquals(secondMetadata.checkpoint?.file, second.file);
+    assertEquals(invalid.operation, "inspect-checkpoint");
+    await Effect.runPromise(store.discardCheckpoint(SESSION_ID, candidate.file));
     assertEquals(
-      await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID)),
-      checkpoint(second.path),
+      await Effect.runPromise(store.checkpointExists(SESSION_ID, candidate.file)),
+      false,
     );
-    await assertPathMissing(first.path);
-    assertEquals(await Deno.readTextFile(second.path), "second complete checkpoint");
-
-    await Effect.runPromise(store.updateSessionState(SESSION_ID, "ready"));
-    const consumedFailure = await Effect.runPromise(store.beginCheckpoint(SESSION_ID));
-    await Deno.writeTextFile(consumedFailure.path, "partial after shutdown");
-    const failedMetadata = await Effect.runPromise(
-      store.failCheckpoint(SESSION_ID, consumedFailure, true),
-    );
-    assertEquals(failedMetadata.state, "error");
-    assertEquals(failedMetadata.checkpoint?.file, second.file);
-    assertEquals(
-      await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID)),
-      checkpoint(second.path),
-    );
-    await assertPathMissing(consumedFailure.path);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("restart reconciliation removes interrupted and obsolete checkpoint candidates", async () => {
+Deno.test("reports invalid session entries without hiding valid manifest sessions", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await makeStore(workingDirectory);
-    await Effect.runPromise(store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT));
-    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "ready",
-      checkoutState: "available",
-    }));
-    const current = await Effect.runPromise(store.beginCheckpoint(SESSION_ID));
-    await Deno.writeTextFile(current.path, "published");
-    await Effect.runPromise(
-      store.publishCheckpoint(SESSION_ID, current, checkpoint(current.path)),
-    );
-    await Effect.runPromise(store.updateSessionState(SESSION_ID, "ready"));
-    const interrupted = await Effect.runPromise(store.beginCheckpoint(SESSION_ID));
-    await Deno.writeTextFile(interrupted.path, "partial");
-    const obsoletePath = join(
-      workingDirectory,
-      "sessions",
-      SESSION_ID,
-      "checkpoints",
-      `checkpoint-${crypto.randomUUID()}.qcow2`,
-    );
-    await Deno.writeTextFile(obsoletePath, "obsolete");
+    const { store, session } = await makeStore(workingDirectory);
+    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    await Deno.writeTextFile(join(workingDirectory, "sessions", "invalid-entry"), "invalid");
 
-    const restarted = await makeStore(workingDirectory);
-    const reconciled = await Effect.runPromise(restarted.reconcileCheckpoints(SESSION_ID));
-    assertEquals(reconciled.state, "error");
-    assertEquals(reconciled.checkpoint?.file, current.file);
-    assertEquals(reconciled.checkpointCandidate, undefined);
-    assertEquals(
-      await Effect.runPromise(restarted.readCurrentCheckpoint(SESSION_ID)),
-      checkpoint(current.path),
-    );
-    await assertPathMissing(interrupted.path);
-    await assertPathMissing(obsoletePath);
-    assertEquals(await Deno.readTextFile(current.path), "published");
+    const manifest = await Effect.runPromise(store.loadSessionManifest());
+    assertEquals(manifest.sessions.length, 1);
+    assertEquals(manifest.errors.length, 1);
+    assertEquals(manifest.errors[0]?.sessionDirectory, "invalid-entry");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("restart reconciliation records an interrupted active run with its initiating sequence", async () => {
+Deno.test("fails cold reads when persisted session events are invalid", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    const store = await makeStore(workingDirectory);
-    await Effect.runPromise(store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT));
-    await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-      state: "ready",
-      checkoutState: "available",
-    }));
-    const started = await Effect.runPromise(store.startRun(SESSION_ID, RUN_ID));
-
-    const restarted = await makeStore(workingDirectory);
-    const reconciled = await Effect.runPromise(restarted.reconcileCheckpoints(SESSION_ID));
-    assertEquals(reconciled.state, "ready");
-
-    const events = await readLifecycleEvents(workingDirectory);
-    const interrupted = events.at(-1);
-    assertEquals(interrupted?.sequence, started.startedBy + 1);
-    assertEquals(interrupted?.event, {
-      type: "run.interrupted",
-      runId: RUN_ID,
-      startedBy: started.startedBy,
-    });
-  } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
-  }
-});
-
-Deno.test("strictly validates persisted session lifecycle events", async () => {
-  const workingDirectory = await Deno.makeTempDir();
-  try {
-    const store = await makeStore(workingDirectory);
-    await Effect.runPromise(
-      store.ensureSession(SESSION_ID, sessionDefinition(), CREATED_AT),
-    );
-    const lifecyclePath = join(workingDirectory, "sessions", SESSION_ID, "lifecycle.jsonl");
-    const original = await Deno.readTextFile(lifecyclePath);
-    await Deno.writeTextFile(lifecyclePath, `${original}{"version":1,"sequence":2}\n`);
-
-    const missingFieldError = await Effect.runPromise(Effect.flip(store.readMetadata(SESSION_ID)));
-    assertEquals(missingFieldError._tag, "RunnerSessionStoreFailure");
-    if (missingFieldError._tag !== "RunnerSessionStoreFailure") throw missingFieldError;
-    assertEquals(missingFieldError.operation, "read-metadata");
-
+    const { store, session } = await makeStore(workingDirectory);
+    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
     await Deno.writeTextFile(
-      lifecyclePath,
-      `${original}{"version":1,"sequence":2,"event":{"type":"session.state-changed","state":"ready"},"unexpected":true}\n`,
+      join(workingDirectory, "sessions", SESSION_ID, "events.jsonl"),
+      '{"version":1,"sequence":2,"event":{"type":"unknown"}}\n',
+      { append: true },
     );
-    const excessFieldError = await Effect.runPromise(Effect.flip(store.readMetadata(SESSION_ID)));
-    assertEquals(excessFieldError._tag, "RunnerSessionStoreFailure");
-    if (excessFieldError._tag !== "RunnerSessionStoreFailure") throw excessFieldError;
-    assertEquals(excessFieldError.operation, "read-metadata");
+
+    const invalid = await Effect.runPromise(Effect.flip(store.readMetadata(SESSION_ID)));
+    assertEquals(invalid.operation, "read-metadata");
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("removes an abandoned session storage tree", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const { store } = await makeStore(workingDirectory);
+    assertEquals(await Effect.runPromise(store.ensureSessionStorage(SESSION_ID)), "created");
+    const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
+    await Effect.runPromise(store.removeSessionStorage(SESSION_ID));
+    await assertPathMissing(sessionPath);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -517,11 +353,9 @@ Deno.test("fails store construction when session storage cannot be initialized",
     await Deno.writeTextFile(join(workingDirectory, "sessions"), "not a directory");
     const error = await Effect.runPromise(Effect.flip(
       makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-        Effect.provide(DenoFileSystem.layer),
+        Effect.provide(sessionPersistenceLayer(workingDirectory)),
       ),
     ));
-    assertEquals(error._tag, "RunnerSessionStoreFailure");
-    if (error._tag !== "RunnerSessionStoreFailure") throw error;
     assertEquals(error.operation, "initialize");
     assertStringIncludes(error.message, "initialize runner session storage");
   } finally {
@@ -529,11 +363,16 @@ Deno.test("fails store construction when session storage cannot be initialized",
   }
 });
 
-function assertPrivateMode(mode: number | null, expected: number): void {
-  if (Deno.build.os !== "windows" && mode !== null) assertEquals(mode & 0o777, expected);
+function persistedCheckpoint(file: string) {
+  return {
+    file,
+    guestAssetBuildId: GUEST_BUILD_ID,
+    createdWithVmm: "qemu" as const,
+    compatibleVmm: ["qemu" as const],
+  };
 }
 
-function checkpoint(path: string) {
+function environmentCheckpoint(path: string) {
   return {
     path,
     guestAssetBuildId: GUEST_BUILD_ID,
@@ -542,16 +381,8 @@ function checkpoint(path: string) {
   };
 }
 
-async function readLifecycleEvents(workingDirectory: string): Promise<
-  Array<{
-    sequence: number;
-    event: { type: string; runId?: string; startedBy?: number };
-  }>
-> {
-  const text = await Deno.readTextFile(
-    join(workingDirectory, "sessions", SESSION_ID, "lifecycle.jsonl"),
-  );
-  return text.trimEnd().split("\n").map((line) => JSON.parse(line));
+function assertPrivateMode(mode: number | null, expected: number): void {
+  if (Deno.build.os !== "windows" && mode !== null) assertEquals(mode & 0o777, expected);
 }
 
 async function assertPathMissing(path: string): Promise<void> {
@@ -563,10 +394,17 @@ async function assertPathMissing(path: string): Promise<void> {
   }
 }
 
-function makeStore(workingDirectory: string) {
-  return Effect.runPromise(
-    makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-      Effect.provide(DenoFileSystem.layer),
-    ),
+function makeStore(workingDirectory: string): Promise<TestStore> {
+  const storeLive = runnerSessionStoreLayer({ workingDirectory, runnerId: RUNNER_ID }).pipe(
+    Layer.provideMerge(sessionPersistenceLayer(workingDirectory)),
   );
+  return Effect.runPromise(Effect.scoped(Layer.build(storeLive))).then((context) => {
+    const journal = Context.get(context, Journal);
+    const store = Context.get(context, RunnerSessionStore);
+    return { store, session: makeSessionFixture(store, journal, RUNNER_ID) };
+  });
+}
+
+function sessionPersistenceLayer(workingDirectory: string) {
+  return sessionJournalLayer(workingDirectory).pipe(Layer.provideMerge(platformLayer));
 }

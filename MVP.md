@@ -320,7 +320,7 @@ Suggested runner layout:
   images/
   sessions/
     <session-id>/
-      metadata.json
+      events.jsonl
       workspace/
       pi/
         session.jsonl
@@ -333,7 +333,7 @@ Persist only on the runner:
 
 - Workspace and `.git`
 - Pi JSONL
-- Complete session metadata, including the selected orb size, and pinned-runner identity
+- Session facts needed to rebuild state, including the selected orb size and pinned-runner identity
 - Ordinary operation logs. Fine-grained provisioning stages and output remain ephemeral and are
   delivered best-effort while connected.
 - Last bounded Git Snapshot

@@ -8,11 +8,13 @@ import { readRunnerIdentity, writeRunnerIdentity } from "./runtime/identity.ts";
 import { parseRunnerCommand } from "./runtime/options.ts";
 import { checkRunnerPrerequisites } from "./runtime/prerequisites.ts";
 import { validateRunnerWorkingDirectory } from "./runtime/working-directory.ts";
-import { sessionActorFactoryLayer } from "./session/actor.ts";
-import { SessionEvents, sessionEventsLayer } from "./session/events.ts";
-import { RunnerSessionStore, runnerSessionStoreLayer } from "./session/store.ts";
+import { sessionActorFactoryLayer } from "./session/actor/index.ts";
+import { sessionEventsLayer } from "./session/events.ts";
+import { sessionJournalLayer } from "./session/persistent-actor/session-journal.ts";
+import { runnerSessionStoreLayer } from "./session/store.ts";
 import { SessionSupervisor, sessionSupervisorLayer } from "./session/supervisor.ts";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
+import * as DenoPath from "@effect/platform-deno/DenoPath";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
 import { Effect, Exit, Layer, Predicate, Runtime, Schema } from "effect";
 import { RUNNER_PROTOCOL_VERSION, RunnerId } from "@openorb/protocol/runner-api";
@@ -195,34 +197,28 @@ export async function main(
       });
       const initialCapacity = await getCapacity();
       const runnerId = Schema.decodeUnknownSync(RunnerId)(identity.runnerId);
+      const platformLive = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
+      const sessionJournalLive = sessionJournalLayer(workingDirectory).pipe(
+        Layer.provideMerge(platformLive),
+      );
       const sessionStoreLive = runnerSessionStoreLayer({
         workingDirectory,
         runnerId: identity.runnerId,
-      }).pipe(Layer.provide(DenoFileSystem.layer));
-      const sessionEventsLive = sessionEventsLayer.pipe(Layer.provide(sessionStoreLive));
+      }).pipe(Layer.provideMerge(sessionJournalLive));
+      const sessionEventsLive = sessionEventsLayer.pipe(Layer.provideMerge(sessionStoreLive));
       const environmentLive = gondolinAgentEnvironmentProviderLayer(guestImage);
-      const harnessLive = piAgentHarnessLayer().pipe(Layer.provide(sessionEventsLive));
-      const sessionActorLive = sessionActorFactoryLayer.pipe(
-        Layer.provide(
-          Layer.mergeAll(sessionStoreLive, sessionEventsLive, environmentLive, harnessLive),
-        ),
+      const harnessLive = piAgentHarnessLayer().pipe(Layer.provideMerge(sessionEventsLive));
+      const sessionActorLive = sessionActorFactoryLayer().pipe(
+        Layer.provideMerge(Layer.merge(harnessLive, environmentLive)),
       );
-      const sessionSupervisorLive = sessionSupervisorLayer({
+      const runnerServicesLive = sessionSupervisorLayer({
+        runnerId,
         cpuCount: initialCapacity.vmCpuCount,
         memoryMiB: initialCapacity.vmMemoryMiB,
-      }).pipe(
-        Layer.provide(Layer.merge(sessionStoreLive, sessionActorLive)),
-      );
-      const runnerServicesLive = Layer.mergeAll(
-        sessionStoreLive,
-        sessionEventsLive,
-        sessionSupervisorLive,
-      );
+      }).pipe(Layer.provideMerge(sessionActorLive));
       const rpcExit = await Effect.runPromiseExit(
         Effect.scoped(
           Effect.gen(function* () {
-            const sessionStore = yield* RunnerSessionStore;
-            const sessionEvents = yield* SessionEvents;
             const sessionSupervisor = yield* SessionSupervisor;
             getActiveSessionCount = sessionSupervisor.activeSessionCount;
             return yield* runRunnerRpc({
@@ -232,9 +228,6 @@ export async function main(
               runnerVersion: RUNNER_VERSION,
               protocolVersion: RUNNER_PROTOCOL_VERSION,
               getCapacity,
-              store: sessionStore,
-              supervisor: sessionSupervisor,
-              events: sessionEvents,
             });
           }),
         ).pipe(Effect.provide(runnerServicesLive)),

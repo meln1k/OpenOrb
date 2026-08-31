@@ -24,9 +24,9 @@ New run, prompt run
 **Session Event**: A fact about a Session expressed in OpenOrb's stable event vocabulary,
 independent of the provider-specific source that reported it.
 
-**Session Lifecycle Log**: The runner-owned, per-Session append-only log of sequenced lifecycle
-facts used to rebuild internal Session state and correlate asynchronous completions. It is separate
-from Session Events and provider-owned Harness State. _Avoid_: Metadata snapshot, Session Event log
+**Session Journal**: The runner-owned, per-Session append-only sequence of facts used to rebuild
+internal Session state and correlate asynchronous completions. It is separate from Session Events
+and provider-owned Harness State. _Avoid_: Metadata snapshot
 
 **Durable Session Event**: A Session Event backed by Harness State and addressable by a replay
 cursor.

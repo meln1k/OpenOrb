@@ -93,7 +93,7 @@ export function makeSessionEvents(options: {
               runId: null,
               event: {
                 type: "session.state",
-                stage: lifecycleStage(metadata.state),
+                stage: sessionStage(metadata.state),
                 checkoutState: metadata.checkoutState,
               },
             },
@@ -241,7 +241,7 @@ function historyReadFailure(sessionId: SessionId) {
   });
 }
 
-function lifecycleStage(
+function sessionStage(
   state: "created" | "provisioning" | "running" | "ready" | "stopped" | "error",
 ) {
   switch (state) {

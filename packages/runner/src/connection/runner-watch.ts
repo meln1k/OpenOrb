@@ -6,41 +6,37 @@ import {
   RunnerWatchError,
 } from "@openorb/protocol/runner-api";
 
-import type { SessionEvents } from "../session/events.ts";
-import type { RunnerSessionStore } from "../session/store.ts";
-import type { SessionSupervisor } from "../session/supervisor.ts";
+import { SessionEvents } from "../session/events.ts";
+import { RunnerSessionStore } from "../session/store.ts";
+import { SessionSupervisor } from "../session/supervisor.ts";
 
 const WATCH_HANDOFF_BUFFER_CAPACITY = "unbounded";
 
-export interface RunnerWatchOptions {
-  readonly getCapacity: () => Promise<RunnerCapacity>;
-  readonly store: RunnerSessionStore;
-  readonly supervisor: SessionSupervisor;
-  readonly events: SessionEvents;
-}
-
-export function watchRunner(options: RunnerWatchOptions) {
+export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
   return Stream.unwrap(Effect.gen(function* () {
+    const store = yield* RunnerSessionStore;
+    const supervisor = yield* SessionSupervisor;
+    const events = yield* SessionEvents;
     let revision = 0;
     // Start consuming state notifications before any manifest I/O. The unbounded handoff queue
     // cannot silently slide/drop notifications while the initial snapshot is being assembled.
-    const stateChanges = yield* options.events.watchStateChanges().pipe(
+    const stateChanges = yield* events.watchStateChanges().pipe(
       Stream.toQueue({ capacity: WATCH_HANDOFF_BUFFER_CAPACITY }),
     );
     // toQueue runs the source in a child fiber; let it acquire its upstream subscription before
     // manifest loading can expose the handoff point to concurrent publishers.
     yield* Effect.yieldNow;
-    const manifest = yield* options.store.loadSessionManifest().pipe(
+    const manifest = yield* store.loadSessionManifest().pipe(
       Effect.mapError(() =>
         new RunnerWatchError({ message: "Runner manifest could not be read." })
       ),
     );
-    const reportedCapacity = yield* readCapacity(options);
+    const reportedCapacity = yield* readCapacity(getCapacity);
     const capacity = yield* Schema.decodeUnknownEffect(RunnerCapacity)(reportedCapacity).pipe(
       Effect.catch(() => new RunnerWatchError({ message: "Runner capacity was invalid." })),
     );
     const sessions = manifest.sessions.map((session) => {
-      const activeRunId = options.supervisor.getActiveRunId(session.id);
+      const activeRunId = supervisor.getActiveRunId(session.id);
       return {
         type: "snapshot.session" as const,
         session: withActiveRun(session, activeRunId),
@@ -56,7 +52,7 @@ export function watchRunner(options: RunnerWatchOptions) {
     const lastSessionValues = new Map(
       sessions.map(({ session }) => [session.id, JSON.stringify(session)]),
     );
-    const observed = Stream.fromEffect(readCapacity(options)).pipe(
+    const observed = Stream.fromEffect(readCapacity(getCapacity)).pipe(
       Stream.repeat(Schedule.spaced("10 seconds")),
       Stream.mapEffect((capacity) =>
         Schema.decodeUnknownEffect(RunnerCapacity)(capacity).pipe(
@@ -74,12 +70,12 @@ export function watchRunner(options: RunnerWatchOptions) {
     // live source, so there is no second subscription boundary where an update can disappear.
     const sessionUpdates = Stream.fromQueue(stateChanges).pipe(
       Stream.mapEffect((sessionId) =>
-        options.store.getSessionSnapshot(sessionId).pipe(
+        store.getSessionSnapshot(sessionId).pipe(
           Effect.mapError(() =>
             new RunnerWatchError({ message: "Runner session state could not be read." })
           ),
           Effect.map((session) => {
-            const activeRunId = options.supervisor.getActiveRunId(session.id);
+            const activeRunId = supervisor.getActiveRunId(session.id);
             const current = withActiveRun(session, activeRunId);
             const encoded = JSON.stringify(current);
             if (lastSessionValues.get(current.id) === encoded) return null;
@@ -109,9 +105,9 @@ function withActiveRun(
   return new RunnerSessionSnapshot({ ...session, activeRunId: runId });
 }
 
-function readCapacity(options: RunnerWatchOptions) {
+function readCapacity(getCapacity: () => Promise<RunnerCapacity>) {
   return Effect.callback<RunnerCapacity, RunnerWatchError>((resume) => {
-    options.getCapacity().then(
+    getCapacity().then(
       (capacity) => resume(Effect.succeed(capacity)),
       () => resume(capacityReadFailure()),
     );

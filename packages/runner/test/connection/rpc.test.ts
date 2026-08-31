@@ -31,9 +31,9 @@ import {
   type RunnerRpcStartupError,
   runRunnerRpc,
 } from "@/src/connection/rpc.ts";
-import type { SessionEvents } from "@/src/session/events.ts";
-import type { RunnerSessionStore } from "@/src/session/store.ts";
-import type { SessionSupervisor } from "@/src/session/supervisor.ts";
+import { SessionEvents } from "@/src/session/events.ts";
+import { RunnerSessionStore } from "@/src/session/store.ts";
+import { SessionSupervisor } from "@/src/session/supervisor.ts";
 
 const RUNNER_ID = "018f47f2-39b1-7b30-8000-000000000001";
 const SESSION_ID = "018f47f2-39b1-7b30-8000-000000000011";
@@ -113,7 +113,8 @@ Deno.test("WatchRunner observes a state change during manifest-to-live handoff",
       watch: () => Stream.empty,
     } as unknown as SessionEvents;
     const harness = yield* makeGatewayHarness(TOKEN);
-    const launched = yield* runRunnerRpc(runnerOptions(harness.url, store, events)).pipe(
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events),
       Effect.exit,
       Effect.forkScoped,
     );
@@ -164,7 +165,8 @@ Deno.test("cached Git Snapshots are served without restoring a session VM", () =
       watch: () => Stream.empty,
     } as unknown as SessionEvents;
     const harness = yield* makeGatewayHarness(TOKEN);
-    const launched = yield* runRunnerRpc(runnerOptions(harness.url, store, events)).pipe(
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events),
       Effect.exit,
       Effect.forkScoped,
     );
@@ -205,10 +207,11 @@ Deno.test("Git file update RPC resolves and calls the session actor", () =>
       findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
-    const launched = yield* runRunnerRpc({
-      ...runnerOptions(harness.url, store, events),
-      supervisor,
-    }).pipe(Effect.exit, Effect.forkScoped);
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events, supervisor),
+      Effect.exit,
+      Effect.forkScoped,
+    );
 
     yield* pollUntil(
       harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
@@ -260,10 +263,11 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session actor",
       findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
-    const launched = yield* runRunnerRpc({
-      ...runnerOptions(harness.url, store, events),
-      supervisor,
-    }).pipe(Effect.exit, Effect.forkScoped);
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events, supervisor),
+      Effect.exit,
+      Effect.forkScoped,
+    );
 
     yield* pollUntil(
       harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
@@ -321,10 +325,11 @@ Deno.test("Prompt and Abort RPCs resolve and call the session actor", () =>
       findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
-    const launched = yield* runRunnerRpc({
-      ...runnerOptions(harness.url, store, events),
-      supervisor,
-    }).pipe(Effect.exit, Effect.forkScoped);
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events, supervisor),
+      Effect.exit,
+      Effect.forkScoped,
+    );
 
     yield* pollUntil(
       harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
@@ -378,10 +383,11 @@ Deno.test("Stop RPC lazily restores and calls a cold ready session actor", () =>
       findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
-    const launched = yield* runRunnerRpc({
-      ...runnerOptions(harness.url, store, events),
-      supervisor,
-    }).pipe(Effect.exit, Effect.forkScoped);
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events, supervisor),
+      Effect.exit,
+      Effect.forkScoped,
+    );
 
     yield* pollUntil(
       harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
@@ -408,8 +414,12 @@ Deno.test("launched runner RPC layer terminates after the adapter receives perma
       watch: () => Stream.empty,
     } as unknown as SessionEvents;
     const launched = yield* runRunnerRpc(
-      runnerOptions(harness.url, store, events, "openorb_runner_rejected"),
-    ).pipe(Effect.exit, Effect.forkScoped);
+      runnerOptions(harness.url, "openorb_runner_rejected"),
+    ).pipe(
+      provideRunnerServices(store, events),
+      Effect.exit,
+      Effect.forkScoped,
+    );
 
     const exit = yield* pollFiber(launched, "Layer.launch remained running after close 4401");
     assert(Exit.isSuccess(exit), "the Effect.exit wrapper must expose RPC-layer termination");
@@ -418,8 +428,6 @@ Deno.test("launched runner RPC layer terminates after the adapter receives perma
 
 function runnerOptions(
   gatewayUrl: string,
-  store: RunnerSessionStore,
-  events: SessionEvents,
   runnerToken = TOKEN,
 ) {
   return {
@@ -429,15 +437,25 @@ function runnerOptions(
     runnerVersion: "test-1",
     protocolVersion: RUNNER_PROTOCOL_VERSION,
     getCapacity: () => Promise.resolve(capacity),
-    store,
-    supervisor: {
-      getActiveRunId: () => undefined,
-      findActor: () => undefined,
-      findOrRestoreActor: () => Effect.die("unexpected actor restore"),
-      provision: () => Effect.die("unexpected provision"),
-    } as unknown as SessionSupervisor,
-    events,
   };
+}
+
+function provideRunnerServices(
+  store: RunnerSessionStore,
+  events: SessionEvents,
+  supervisor: SessionSupervisor = {
+    getActiveRunId: () => undefined,
+    findActor: () => undefined,
+    findOrRestoreActor: () => Effect.die("unexpected actor restore"),
+    provision: () => Effect.die("unexpected provision"),
+  } as unknown as SessionSupervisor,
+) {
+  return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(RunnerSessionStore, store),
+      Effect.provideService(SessionSupervisor, supervisor),
+      Effect.provideService(SessionEvents, events),
+    );
 }
 
 const pollUntil = (predicate: Effect.Effect<boolean>, message: string) =>

@@ -1,5 +1,5 @@
 import * as DenoSocket from "@effect/platform-deno/DenoSocket";
-import { Deferred, Effect, Layer } from "effect";
+import { Deferred, Effect, Layer, Stream } from "effect";
 import {
   AbortRejected,
   AbortSessionAccepted,
@@ -23,9 +23,9 @@ import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import * as Socket from "effect/unstable/socket/Socket";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
 
-import type { SessionEvents } from "../session/events.ts";
-import type { RunnerSessionStore } from "../session/store.ts";
-import type { SessionSupervisor } from "../session/supervisor.ts";
+import { SessionEvents } from "../session/events.ts";
+import { RunnerSessionStore } from "../session/store.ts";
+import { SessionSupervisor } from "../session/supervisor.ts";
 import { makeOutboundSocketServer, type RunnerRpcStartupError } from "./outbound-socket.ts";
 import { watchRunner } from "./runner-watch.ts";
 
@@ -42,12 +42,12 @@ export interface RunnerRpcOptions {
   runnerVersion: string;
   protocolVersion: number;
   getCapacity: () => Promise<RunnerCapacity>;
-  store: RunnerSessionStore;
-  supervisor: SessionSupervisor;
-  events: SessionEvents;
 }
 
 export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: RunnerRpcOptions) {
+  const store = yield* RunnerSessionStore;
+  const supervisor = yield* SessionSupervisor;
+  const events = yield* SessionEvents;
   const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
   const handlers = RunnerApi.toLayer(RunnerApi.of({
     "runner.identify": () =>
@@ -59,10 +59,15 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           protocolVersion: options.protocolVersion,
         }),
       ),
-    "runner.watch": () => watchRunner(options),
-    "session.provision": (payload) => options.supervisor.provision(payload),
+    "runner.watch": () =>
+      watchRunner(options.getCapacity).pipe(
+        Stream.provideService(RunnerSessionStore, store),
+        Stream.provideService(SessionSupervisor, supervisor),
+        Stream.provideService(SessionEvents, events),
+      ),
+    "session.provision": (payload) => supervisor.provision(payload),
     "session.wake": (payload) =>
-      options.store.readMetadata(payload.sessionId).pipe(
+      store.readMetadata(payload.sessionId).pipe(
         Effect.mapError(() =>
           new SessionNotFound({
             sessionId: payload.sessionId,
@@ -75,7 +80,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
               sessionId: payload.sessionId,
               message: "The session model cannot change during restoration.",
             })
-            : options.supervisor.findOrRestoreActor(payload.sessionId).pipe(
+            : supervisor.findOrRestoreActor(payload.sessionId).pipe(
               Effect.flatMap((actor) =>
                 actor ? actor.wake(payload) : Effect.succeed(
                   {
@@ -94,7 +99,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         ),
       ),
     "session.prompt": (payload) =>
-      options.supervisor.findOrRestoreActor(payload.sessionId).pipe(
+      supervisor.findOrRestoreActor(payload.sessionId).pipe(
         Effect.flatMap((actor) =>
           actor ? actor.prompt(payload) : Effect.succeed(
             {
@@ -116,7 +121,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         ),
       ),
     "session.abort": (payload) => {
-      const actor = options.supervisor.findActor(payload.sessionId);
+      const actor = supervisor.findActor(payload.sessionId);
       if (!actor) {
         return new AbortRejected({
           sessionId: payload.sessionId,
@@ -137,7 +142,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
       );
     },
     "session.stop": (payload) =>
-      options.supervisor.findOrRestoreActor(payload.sessionId).pipe(
+      supervisor.findOrRestoreActor(payload.sessionId).pipe(
         Effect.flatMap((actor) =>
           actor ? actor.stop(payload) : Effect.succeed(
             {
@@ -154,12 +159,12 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         ),
       ),
     "session.git-snapshot.read": ({ sessionId }) =>
-      options.store.readMetadata(sessionId).pipe(
+      store.readMetadata(sessionId).pipe(
         Effect.mapError(() =>
           new SessionNotFound({ sessionId, message: "The session does not exist on this runner." })
         ),
         Effect.andThen(
-          options.store.readGitSnapshot(sessionId).pipe(
+          store.readGitSnapshot(sessionId).pipe(
             Effect.mapError(() =>
               new GitSnapshotReadError({
                 sessionId,
@@ -170,7 +175,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         ),
       ),
     "session.git-file.update": (payload) =>
-      options.store.readMetadata(payload.sessionId).pipe(
+      store.readMetadata(payload.sessionId).pipe(
         Effect.mapError(() =>
           new SessionNotFound({
             sessionId: payload.sessionId,
@@ -178,7 +183,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           })
         ),
         Effect.andThen(
-          options.supervisor.findOrRestoreActor(payload.sessionId).pipe(
+          supervisor.findOrRestoreActor(payload.sessionId).pipe(
             Effect.flatMap((actor) =>
               actor ? actor.updateGitFile(payload) : Effect.succeed(
                 {
@@ -198,7 +203,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           ),
         ),
       ),
-    "session.watch": ({ sessionId, afterCursor }) => options.events.watch(sessionId, afterCursor),
+    "session.watch": ({ sessionId, afterCursor }) => events.watch(sessionId, afterCursor),
   }));
   const socketUrl = new URL("/api/runners/connect", options.gatewayUrl);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";

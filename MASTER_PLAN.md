@@ -386,7 +386,7 @@ Recommended layout:
     uv/
   sessions/
     <session-id>/
-      metadata.json
+      events.jsonl
       workspace/
       pi/
         session.jsonl
@@ -648,7 +648,7 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 - Retry when subsequent `WatchRunner` observations show capacity.
 - For previews, show a temporary unavailable/waiting response rather than routing elsewhere.
 
-## 13. Session lifecycle
+## 13. Session flow
 
 ### 13.1 Draft and first prompt
 
@@ -1580,13 +1580,13 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 
 It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, checkpoints, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
 
-Each runner owns a file-backed local session metadata/event store in addition to the filesystem layout in section 10. It persists:
+Each runner owns a file-backed local Session Journal in addition to the filesystem layout in section 10. It persists:
 
 - Session identity, project snapshot/reference, and pinned runner
 - Conversation/tool/usage records and event cursors
 - Pending handoff state
 - Preview definitions/capability hashes
-- Git Snapshots and session lifecycle state
+- Git Snapshots and session state
 
 The gateway keeps a user-scoped in-memory session routing index populated by complete, reconciled `WatchRunner` snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot entry also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the user-owned control-plane marker without waiting for the runner.
 

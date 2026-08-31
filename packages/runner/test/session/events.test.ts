@@ -1,15 +1,17 @@
 import { assertEquals } from "@std/assert";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
+import * as DenoPath from "@effect/platform-deno/DenoPath";
 import {
   GitAuthor,
   ProjectId,
   RunId,
+  RunnerId,
   type SessionId,
   SessionId as SessionIdSchema,
   UserId,
 } from "@openorb/protocol/runner-api";
-import { Effect, Exit, Fiber, Schema, Scope, Stream } from "effect";
+import { Context, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
 
 import { makeSessionEvents, type SessionEvents } from "@/src/session/events.ts";
 import { eventsFromPiEntries, readPiSessionEvents } from "@/src/harness/pi/history.ts";
@@ -18,10 +20,17 @@ import {
   createOpenOrbPiSession,
   observeSessionManagerPersistence,
 } from "@/src/harness/pi/session.ts";
+import { Journal } from "@/src/session/persistent-actor/journal.ts";
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
-import { makeRunnerSessionStore, RunnerSessionStore } from "@/src/session/store.ts";
+import { sessionJournalLayer } from "@/src/session/persistent-actor/session-journal.ts";
+import { RunnerSessionStore, runnerSessionStoreLayer } from "@/src/session/store.ts";
+import { makeSessionFixture, type SessionFixture } from "@/test/session/session-fixture.ts";
 
-const RUNNER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
+const platformLayer = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
+
+const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c09",
+);
 const SESSION_ID = Schema.decodeUnknownSync(SessionIdSchema)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
@@ -35,14 +44,11 @@ const MODEL_RUNTIME = {
   credential: { type: "api_key" as const, value: "test-model-provider-key" },
 };
 
-Deno.test("WatchSession emits the current lifecycle state after a runner restart", async () => {
+Deno.test("WatchSession emits the current session state after a runner restart", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
-    await withSession(workingDirectory, SESSION_ID, async ({ events, store }) => {
-      await Effect.runPromise(store.updateProvisioning(SESSION_ID, {
-        state: "ready",
-        checkoutState: "available",
-      }));
+    await withSession(workingDirectory, SESSION_ID, async ({ events, session }) => {
+      await Effect.runPromise(session.completeInitialRun(SESSION_ID));
 
       const replay = await Effect.runPromise(
         events.watch(SESSION_ID, 0).pipe(Stream.take(2), Stream.runCollect),
@@ -65,7 +71,7 @@ Deno.test("WatchSession emits the current lifecycle state after a runner restart
   }
 });
 
-Deno.test("WatchSession retains the latest lifecycle state across watch reconnects", async () => {
+Deno.test("WatchSession retains the latest session state across watch reconnects", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     await withSession(workingDirectory, SESSION_ID, async ({ events }) => {
@@ -486,7 +492,7 @@ async function withSession(
       events: SessionEvents;
       pi: SessionManager;
       sessionFile: string;
-      store: RunnerSessionStore;
+      session: SessionFixture;
       scope: Scope.Scope;
       disposeCache: () => void;
     },
@@ -496,12 +502,16 @@ async function withSession(
     eventOptions?: Parameters<typeof makeSessionEvents>[0];
   } = {},
 ) {
-  const store = await Effect.runPromise(
-    makeRunnerSessionStore({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-      Effect.provide(DenoFileSystem.layer),
+  const storeLive = runnerSessionStoreLayer({ workingDirectory, runnerId: RUNNER_ID }).pipe(
+    Layer.provideMerge(
+      sessionJournalLayer(workingDirectory).pipe(Layer.provideMerge(platformLayer)),
     ),
   );
-  await Effect.runPromise(store.ensureSession(
+  const context = await Effect.runPromise(Effect.scoped(Layer.build(storeLive)));
+  const journal = Context.get(context, Journal);
+  const store = Context.get(context, RunnerSessionStore);
+  const session = makeSessionFixture(store, journal, RUNNER_ID);
+  await Effect.runPromise(session.create(
     sessionId,
     new RunnerSessionDefinition({
       userId: USER_ID,
@@ -539,7 +549,7 @@ async function withSession(
         () => activeConversation.update(eventsFromPiEntries(pi.getBranch())),
       );
     }
-    await use({ events, pi, sessionFile: paths.sessionFile, store, scope, disposeCache });
+    await use({ events, pi, sessionFile: paths.sessionFile, session, scope, disposeCache });
   } finally {
     await Effect.runPromise(Scope.close(scope, Exit.void));
   }

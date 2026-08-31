@@ -127,7 +127,7 @@ Deno.test({
     const runtimeOptions = {
       workspacePath,
       guestImage,
-      sessionLabel: "openorb checkpoint lifecycle test",
+      sessionLabel: "openorb checkpoint cycle test",
       cpuCount: 2,
       memoryMiB: 2 * 1024,
     };

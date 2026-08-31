@@ -1,6 +1,7 @@
 import {
   Context,
   Data,
+  DateTime,
   Effect,
   Layer,
   MutableHashMap,
@@ -9,19 +10,16 @@ import {
   Semaphore,
 } from "effect";
 import { type OrbSize, orbSizeResources } from "@openorb/protocol";
-import type { ProvisionSessionPayload, SessionId } from "@openorb/protocol/runner-api";
+import type { ProvisionSessionPayload, RunnerId, SessionId } from "@openorb/protocol/runner-api";
 import { ProvisionRejected, ProvisionSessionSuccess } from "@openorb/protocol/runner-api";
 
 import { RunnerSessionDefinition } from "./definition.ts";
-import { type SessionActor, SessionActorFactory } from "./actor.ts";
-import {
-  RunnerSessionDefinitionConflict,
-  type RunnerSessionMetadata,
-  RunnerSessionStore,
-  type RunnerSessionStoreError,
-} from "./store.ts";
+import { runnerSessionDefinitionsEqual } from "./definition.ts";
+import { type SessionActor, SessionActorFactory } from "./actor/index.ts";
+import { type RunnerSessionMetadata, RunnerSessionStore } from "./store.ts";
 
 export interface SessionSupervisorOptions {
+  readonly runnerId: RunnerId;
   readonly cpuCount: number;
   readonly memoryMiB: number;
   readonly idleTimeoutMs?: number;
@@ -52,7 +50,7 @@ export class SessionSupervisorInitializationError extends Data.TaggedError(
   "SessionSupervisorInitializationError",
 )<{
   readonly message: string;
-  readonly cause: RunnerSessionStoreError;
+  readonly cause: unknown;
 }> {}
 
 export class SessionSupervisorConfigurationError extends Error {
@@ -66,6 +64,12 @@ type ProvisionAcceptance =
   | { readonly ok: true; readonly value: ProvisionSessionSuccess }
   | { readonly ok: false; readonly message: string };
 
+interface PreparedProvision {
+  readonly metadata: RunnerSessionMetadata;
+  readonly mode: "create" | "retry" | "restore";
+  readonly removeStorageOnFailure: boolean;
+}
+
 /** Process-scoped admission and routing service for per-session actors. */
 export function makeSessionSupervisor(
   options: SessionSupervisorOptions,
@@ -77,6 +81,7 @@ export function makeSessionSupervisor(
   return Effect.gen(function* () {
     const store = yield* RunnerSessionStore;
     const actorFactory = yield* SessionActorFactory;
+    const scope = yield* Effect.scope;
     const actors = MutableHashMap.empty<string, ActorRegistryEntry>();
     const admission = yield* Semaphore.make(1);
     const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
@@ -87,7 +92,23 @@ export function makeSessionSupervisor(
         ),
       );
     }
-    yield* reconcilePersistedSessions(store);
+    yield* reconcilePersistedSessions(store, actorFactory, idleTimeoutMs);
+
+    const registerActor = Effect.fn("SessionSupervisor.registerActor")(function* (
+      sessionId: SessionId,
+      actor: SessionActor,
+    ) {
+      MutableHashMap.set(actors, sessionId, { actor });
+      yield* Effect.forkIn(
+        actor.awaitTermination.pipe(
+          Effect.andThen(Effect.sync(() => {
+            const current = Option.getOrUndefined(MutableHashMap.get(actors, sessionId));
+            if (current?.actor === actor) MutableHashMap.remove(actors, sessionId);
+          })),
+        ),
+        scope,
+      );
+    });
 
     const supportsOrbSize = (orbSize: OrbSize): boolean => {
       const resources = orbSizeResources(orbSize);
@@ -110,19 +131,44 @@ export function makeSessionSupervisor(
     const prepareCreate = Effect.fn("SessionSupervisor.prepareCreate")(function* (
       payload: Extract<typeof ProvisionSessionPayload.Type, { mode: "create" }>,
     ) {
-      const ensured = yield* store.ensureSession(
-        payload.sessionId,
-        definitionFromCreate(payload),
-      );
-      const metadata = ensured.metadata;
-      if (ensured.disposition === "created") return metadata;
-      if (MutableHashMap.has(actors, metadata.id)) return metadata;
+      const definition = definitionFromCreate(payload);
+      const disposition = yield* store.ensureSessionStorage(payload.sessionId);
+      if (disposition === "created") {
+        const metadata: RunnerSessionMetadata = {
+          id: payload.sessionId,
+          definition,
+          runnerId: options.runnerId,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+          state: "created",
+          checkoutState: "pending",
+        };
+        return {
+          metadata,
+          mode: "create",
+          removeStorageOnFailure: true,
+        } satisfies PreparedProvision;
+      }
+      const metadata = yield* store.readMetadata(payload.sessionId);
+      if (!runnerSessionDefinitionsEqual(metadata.definition, definition)) {
+        return yield* new SessionCreateRejected(
+          "This session already exists on the runner.",
+        );
+      }
+      if (MutableHashMap.has(actors, metadata.id)) {
+        return {
+          metadata,
+          mode: "restore",
+          removeStorageOnFailure: false,
+        } satisfies PreparedProvision;
+      }
       if (metadata.state === "provisioning" || metadata.state === "running") {
-        yield* store.updateProvisioning(payload.sessionId, {
-          state: "error",
-          checkoutState: metadata.checkoutState,
-          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+        const actor = yield* actorFactory.spawn({
+          metadata,
+          mode: "reconcile",
+          correlationId: crypto.randomUUID(),
+          idleTimeoutMs,
         });
+        yield* actor.shutdown;
         return yield* new InterruptedProvisioning({});
       }
       if (metadata.state === "error") {
@@ -130,7 +176,11 @@ export function makeSessionSupervisor(
           "A failed session must use the explicit retry operation.",
         );
       }
-      return metadata;
+      return {
+        metadata,
+        mode: "restore",
+        removeStorageOnFailure: false,
+      } satisfies PreparedProvision;
     });
     const prepareRetry = (
       payload: Extract<typeof ProvisionSessionPayload.Type, { mode: "retry" }>,
@@ -146,11 +196,11 @@ export function makeSessionSupervisor(
         if (!supportsOrbSize(metadata.definition.orbSize)) {
           return yield* new RetryRejected(unsupportedOrbSizeMessage(metadata.definition.orbSize));
         }
-        return yield* store.updateProvisioning(payload.sessionId, {
-          state: "created",
-          checkoutState: metadata.checkoutState,
-          ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
-        });
+        return {
+          metadata,
+          mode: "retry",
+          removeStorageOnFailure: false,
+        } satisfies PreparedProvision;
       });
     const acceptProvision = (
       payload: typeof ProvisionSessionPayload.Type,
@@ -159,14 +209,14 @@ export function makeSessionSupervisor(
         if (payload.mode === "create" && !supportsOrbSize(payload.orbSize)) {
           return { ok: false, message: unsupportedOrbSizeMessage(payload.orbSize) } as const;
         }
-        const preparation: Effect.Effect<RunnerSessionMetadata, unknown> = payload.mode === "create"
+        const preparation: Effect.Effect<PreparedProvision, unknown> = payload.mode === "create"
           ? prepareCreate(payload)
           : prepareRetry(payload);
         const prepared = yield* Effect.match(
           preparation,
           {
             onFailure: (error) => ({ error } as const),
-            onSuccess: (metadata) => ({ metadata } as const),
+            onSuccess: (value) => ({ value } as const),
           },
         );
         if ("error" in prepared) {
@@ -175,38 +225,67 @@ export function makeSessionSupervisor(
             message: commandRejectionMessage(payload.mode, prepared.error),
           } as const;
         }
-        const metadata = prepared.metadata;
-        const snapshot = yield* store.getSessionSnapshot(metadata.id).pipe(Effect.option);
-        if (Option.isNone(snapshot)) {
-          return {
-            ok: false,
-            message: "The runner could not read the durable session snapshot.",
-          } as const;
-        }
-        if (payload.mode === "create" && metadata.state === "ready") {
-          return { ok: true, value: provisionSuccess(metadata, snapshot.value) } as const;
-        }
+        const { metadata } = prepared.value;
         if (payload.mode === "retry") {
           const existing = Option.getOrUndefined(MutableHashMap.get(actors, metadata.id));
           if (existing) yield* existing.actor.shutdown;
           MutableHashMap.remove(actors, metadata.id);
         }
         const existing = Option.getOrUndefined(MutableHashMap.get(actors, metadata.id));
-        if (existing) {
-          return { ok: true, value: provisionSuccess(metadata, snapshot.value) } as const;
+        if (
+          existing ||
+          (payload.mode === "create" && prepared.value.mode === "restore" &&
+            metadata.state === "ready")
+        ) {
+          const snapshot = yield* store.getSessionSnapshot(metadata.id).pipe(Effect.option);
+          return Option.isSome(snapshot)
+            ? { ok: true, value: provisionSuccess(metadata, snapshot.value) } as const
+            : {
+              ok: false,
+              message: "The runner could not read the durable session snapshot.",
+            } as const;
         }
-        const actor = yield* actorFactory.spawn({
-          metadata,
-          ...(payload.mode === "create" && payload.githubToken !== undefined
-            ? { githubToken: payload.githubToken }
-            : {}),
-          modelRuntime: payload.modelRuntime,
-          correlationId: crypto.randomUUID(),
-          idleTimeoutMs,
-          restore: metadata.state === "ready" || metadata.state === "stopped",
-        });
-        MutableHashMap.set(actors, metadata.id, { actor });
-        return { ok: true, value: provisionSuccess(metadata, snapshot.value) } as const;
+        const actorInput = prepared.value.mode === "restore"
+          ? {
+            metadata,
+            mode: "restore" as const,
+            correlationId: crypto.randomUUID(),
+            idleTimeoutMs,
+          }
+          : {
+            metadata,
+            mode: prepared.value.mode,
+            ...(payload.mode === "create" && payload.githubToken !== undefined
+              ? { githubToken: payload.githubToken }
+              : {}),
+            modelRuntime: payload.modelRuntime,
+            correlationId: crypto.randomUUID(),
+            idleTimeoutMs,
+          };
+        const spawned = yield* Effect.result(actorFactory.spawn(actorInput));
+        if (spawned._tag === "Failure") {
+          if (prepared.value.removeStorageOnFailure) {
+            yield* store.removeSessionStorage(metadata.id).pipe(Effect.ignore);
+          }
+          return {
+            ok: false,
+            message: "The runner could not start the session actor.",
+          } as const;
+        }
+        const actor = spawned.success;
+        yield* registerActor(metadata.id, actor);
+        const durableMetadata = yield* store.readMetadata(metadata.id).pipe(Effect.option);
+        const snapshot = yield* store.getSessionSnapshot(metadata.id).pipe(Effect.option);
+        if (Option.isNone(durableMetadata) || Option.isNone(snapshot)) {
+          return {
+            ok: false,
+            message: "The runner could not read the durable session snapshot.",
+          } as const;
+        }
+        return {
+          ok: true,
+          value: provisionSuccess(durableMetadata.value, snapshot.value),
+        } as const;
       });
     const findOrRestoreActor = (
       sessionId: SessionId,
@@ -223,11 +302,18 @@ export function makeSessionSupervisor(
         ) return undefined;
         const actor = yield* actorFactory.spawn({
           metadata: metadata.value,
+          mode: "restore",
           correlationId: crypto.randomUUID(),
           idleTimeoutMs,
-          restore: true,
-        });
-        MutableHashMap.set(actors, sessionId, { actor });
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              `Could not restore session actor ${sessionId}: ${error.message}`,
+            ).pipe(Effect.as(undefined))
+          ),
+        );
+        if (actor === undefined) return undefined;
+        yield* registerActor(sessionId, actor);
         return actor;
       }));
     };
@@ -288,6 +374,8 @@ class SessionCreateRejected extends Data.TaggedError("SessionCreateRejected")<{
 
 function reconcilePersistedSessions(
   store: RunnerSessionStore,
+  actorFactory: SessionActorFactory,
+  idleTimeoutMs: number,
 ): Effect.Effect<void, SessionSupervisorInitializationError> {
   return Effect.gen(function* () {
     const manifest = yield* store.loadSessionManifest().pipe(
@@ -306,18 +394,14 @@ function reconcilePersistedSessions(
       (snapshot) => {
         if (corruptDirectories.has(snapshot.id)) return Effect.void;
         return Effect.gen(function* () {
-          const metadata = yield* store.reconcileCheckpoints(snapshot.id);
-          const state = metadata.state === "running"
-            ? "ready" as const
-            : metadata.state === "created" || metadata.state === "provisioning"
-            ? "error" as const
-            : undefined;
-          if (state === undefined) return;
-          yield* store.updateProvisioning(metadata.id, {
-            state,
-            checkoutState: metadata.checkoutState,
-            ...(metadata.baseCommit === undefined ? {} : { baseCommit: metadata.baseCommit }),
+          const metadata = yield* store.readMetadata(snapshot.id);
+          const actor = yield* actorFactory.spawn({
+            metadata,
+            mode: "reconcile",
+            correlationId: crypto.randomUUID(),
+            idleTimeoutMs,
           });
+          yield* actor.shutdown;
         }).pipe(
           Effect.mapError((cause) =>
             new SessionSupervisorInitializationError({
@@ -352,9 +436,6 @@ function commandRejectionMessage(mode: "create" | "retry", error: unknown): stri
     return "The previous provisioning attempt was interrupted and must be retried explicitly.";
   }
   if (mode === "retry") return "The runner could not prepare this session retry.";
-  if (error instanceof RunnerSessionDefinitionConflict) {
-    return "This session already exists on the runner.";
-  }
   return "The runner could not durably create the session.";
 }
 
