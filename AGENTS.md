@@ -35,7 +35,10 @@ Topics: quick-start, project-setup, tsconfig, basics, services-and-layers, data-
 Never guess at Effect patterns.
 <!-- effect-solutions:end -->
 
-## Local Effect Source
+## Local Framework Sources
 
 If the guides are insufficient, inspect the Effect v4 clone at
 `~/.local/share/effect-solutions/effect`.
+
+For Remix internals, inspect the Remix 3 beta 10 checkout at
+`~/.local/share/remix/remix`.
