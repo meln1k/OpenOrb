@@ -1219,11 +1219,16 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
     await Effect.runPromise(store.session.completeInitialRun(ids.ready));
     await Effect.runPromise(store.session.append(ids.error, { type: "provisioning.failed" }));
 
+    let piCreations = 0;
+    const createPiSession: CreateRawPiSession = (options) => {
+      piCreations++;
+      return createSettlingPiSession(options);
+    };
     await withSupervisor(
       {
         cpuCount: 4,
         memoryMiB: 8192,
-        createPiSession: createSettlingPiSession,
+        createPiSession,
       },
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
@@ -1237,6 +1242,144 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
         assertEquals((await Effect.runPromise(store.readMetadata(ids.ready))).state, "ready");
         assertEquals((await Effect.runPromise(store.readMetadata(ids.error))).state, "error");
         assertEquals(supervisor.activeSessionCount(), 0);
+        assertEquals(piCreations, 0);
+      },
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("SessionSupervisor restart preserves only a valid published checkpoint", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(directory);
+    const sessions = {
+      interruptedResume: Schema.decodeUnknownSync(SessionId)(
+        "01989d78-65ee-7f6a-a97e-0f16ad134c21",
+      ),
+      interruptedCheckpoint: Schema.decodeUnknownSync(SessionId)(
+        "01989d78-65ee-7f6a-a97e-0f16ad134c22",
+      ),
+      missingCheckpoint: Schema.decodeUnknownSync(SessionId)(
+        "01989d78-65ee-7f6a-a97e-0f16ad134c23",
+      ),
+    };
+    const checkpointFiles = {
+      current: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c31.qcow2",
+      obsolete: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c32.qcow2",
+      partial: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c33.qcow2",
+      missing: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c34.qcow2",
+      invalidObsolete: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c35.qcow2",
+    };
+    const checkpointMetadata = (file: string) => ({
+      file,
+      guestAssetBuildId: "02e784cb-e063-5138-b1c4-334e8a3307a9",
+      createdWithVmm: "qemu" as const,
+      compatibleVmm: ["qemu" as const],
+    });
+    const checkpointPath = (sessionId: SessionId, file: string) =>
+      join(directory, "sessions", sessionId, "checkpoints", file);
+
+    for (const [name, sessionId] of Object.entries(sessions)) {
+      await Effect.runPromise(
+        store.session.create(
+          sessionId,
+          sessionDefinition(`openorb/restart-checkpoint-${name}`),
+          CREATED_AT,
+        ),
+      );
+      await Effect.runPromise(store.session.completeInitialRun(sessionId));
+    }
+
+    await Effect.runPromise(store.session.append(sessions.interruptedResume, {
+      type: "checkpoint.started",
+      file: checkpointFiles.current,
+    }));
+    await Deno.writeTextFile(
+      checkpointPath(sessions.interruptedResume, checkpointFiles.current),
+      "published checkpoint",
+    );
+    await Effect.runPromise(store.session.append(sessions.interruptedResume, {
+      type: "checkpoint.published",
+      checkpoint: checkpointMetadata(checkpointFiles.current),
+    }));
+    await Deno.writeTextFile(
+      checkpointPath(sessions.interruptedResume, checkpointFiles.obsolete),
+      "obsolete checkpoint",
+    );
+    await Effect.runPromise(store.session.append(sessions.interruptedResume, {
+      type: "resume.started",
+      resumeId: "01989d78-65ee-7f6a-a97e-0f16ad134c41",
+      continuation: { _tag: "Wake" },
+    }));
+
+    await Effect.runPromise(store.session.append(sessions.interruptedCheckpoint, {
+      type: "checkpoint.started",
+      file: checkpointFiles.partial,
+    }));
+    await Deno.writeTextFile(
+      checkpointPath(sessions.interruptedCheckpoint, checkpointFiles.partial),
+      "partial checkpoint",
+    );
+
+    await Effect.runPromise(store.session.append(sessions.missingCheckpoint, {
+      type: "checkpoint.started",
+      file: checkpointFiles.missing,
+    }));
+    await Effect.runPromise(store.session.append(sessions.missingCheckpoint, {
+      type: "checkpoint.published",
+      checkpoint: checkpointMetadata(checkpointFiles.missing),
+    }));
+    await Deno.writeTextFile(
+      checkpointPath(sessions.missingCheckpoint, checkpointFiles.invalidObsolete),
+      "obsolete checkpoint",
+    );
+
+    let piCreations = 0;
+    await withSupervisor(
+      {
+        cpuCount: 4,
+        memoryMiB: 8192,
+        createPiSession: (options) => {
+          piCreations++;
+          return createSettlingPiSession(options);
+        },
+      },
+      store,
+      fakeEnvironmentProvider(new FakeEnvironment()),
+      async (supervisor) => {
+        const resumed = await Effect.runPromise(
+          store.readMetadata(sessions.interruptedResume),
+        );
+        assertEquals(resumed.state, "stopped");
+        assertEquals(resumed.checkpoint?.file, checkpointFiles.current);
+        assertEquals(resumed.checkpointCandidate, undefined);
+        await Deno.stat(checkpointPath(sessions.interruptedResume, checkpointFiles.current));
+        await assertPathMissing(
+          checkpointPath(sessions.interruptedResume, checkpointFiles.obsolete),
+        );
+
+        const interrupted = await Effect.runPromise(
+          store.readMetadata(sessions.interruptedCheckpoint),
+        );
+        assertEquals(interrupted.state, "error");
+        assertEquals(interrupted.checkpoint, undefined);
+        assertEquals(interrupted.checkpointCandidate, undefined);
+        await assertPathMissing(
+          checkpointPath(sessions.interruptedCheckpoint, checkpointFiles.partial),
+        );
+
+        const invalid = await Effect.runPromise(
+          store.readMetadata(sessions.missingCheckpoint),
+        );
+        assertEquals(invalid.state, "error");
+        assertEquals(invalid.checkpoint, undefined);
+        await assertPathMissing(
+          checkpointPath(sessions.missingCheckpoint, checkpointFiles.invalidObsolete),
+        );
+        assertEquals(supervisor.activeSessionCount(), 0);
+        assertEquals(piCreations, 0);
       },
     );
   } finally {

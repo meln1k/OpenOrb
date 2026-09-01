@@ -16,6 +16,7 @@ import {
   UpdateSessionGitFilePayload,
   WakeSessionAccepted,
   WakeSessionPayload,
+  WatchSessionEvent,
 } from "@openorb/protocol/runner-api";
 import { Context, Deferred, Effect, Exit, Fiber, Layer, PubSub, Schema, Stream } from "effect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
@@ -37,6 +38,9 @@ import { SessionSupervisor } from "@/src/session/supervisor.ts";
 
 const RUNNER_ID = "018f47f2-39b1-7b30-8000-000000000001";
 const SESSION_ID = "018f47f2-39b1-7b30-8000-000000000011";
+const READY_SESSION_ID = "018f47f2-39b1-7b30-8000-000000000012";
+const STOPPED_SESSION_ID = "018f47f2-39b1-7b30-8000-000000000013";
+const TOMBSTONED_SESSION_ID = "018f47f2-39b1-7b30-8000-000000000014";
 const PROJECT_ID = "018f47f2-39b1-7b30-8000-000000000021";
 const USER_ID = "user-1";
 const TOKEN = "openorb_runner_test-token";
@@ -50,9 +54,13 @@ const capacity = decode(RunnerCapacity)({
   diskFreeMiB: 50_000,
 });
 
-function snapshot(state: "ready" | "running", activeRunId?: string) {
+function snapshot(
+  state: "ready" | "running" | "stopped",
+  activeRunId?: string,
+  sessionId = SESSION_ID,
+) {
   return decode(RunnerSessionSnapshot)({
-    id: SESSION_ID,
+    id: sessionId,
     projectId: PROJECT_ID,
     createdAt: "2026-08-23T12:00:00Z",
     initialPromptPreview: "handoff regression",
@@ -91,6 +99,175 @@ Deno.test("outbound adapter propagates permanent gateway rejection", async () =>
   // SAFETY: The socket test double supplies every service used by the adapter invocation.
   await Effect.runPromise(program as Effect.Effect<void>);
 });
+
+Deno.test("transient gateway restart preserves runner work and reconnects from durable state", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const activeRunId = "01989d78-65ee-7f6a-a97e-0f16ad134c30";
+    const messageId = "01989d78-65ee-7f6a-a97e-0f16ad134c31";
+    const catalogSessionIds = new Set<string>();
+    const promptWorkStarted = yield* Deferred.make<void>();
+    const releasePromptWork = yield* Deferred.make<void>();
+    const promptWorkCompleted = yield* Deferred.make<void>();
+    const promptAcknowledgement = yield* Deferred.make<{
+      readonly ok: true;
+      readonly runId: string;
+      readonly mode: "follow-up";
+    }>();
+    const firstWatchStarted = yield* Deferred.make<void>();
+    const firstWatchFinalized = yield* Deferred.make<void>();
+    const durableWorkScope = yield* Effect.scope;
+    const replayedEvent = decode(WatchSessionEvent)({
+      runId: activeRunId,
+      cursor: 3,
+      event: { type: "user.message", messageId, text: "Continued while disconnected" },
+    });
+    let promptCalls = 0;
+    let watchCalls = 0;
+    let tombstoneCleanupCalls = 0;
+    let manifestSnapshots = [
+      snapshot("running", activeRunId),
+      snapshot("ready", undefined, READY_SESSION_ID),
+      snapshot("stopped", undefined, STOPPED_SESSION_ID),
+      snapshot("ready", undefined, TOMBSTONED_SESSION_ID),
+    ];
+    const tombstonedSessionIds = new Set([TOMBSTONED_SESSION_ID]);
+    const store = {
+      loadSessionManifest: () => Effect.succeed({ sessions: [...manifestSnapshots], errors: [] }),
+    } as unknown as RunnerSessionStore;
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: (_sessionId: string, afterCursor: number) => {
+        assertEquals(afterCursor, 2);
+        watchCalls++;
+        if (watchCalls === 1) {
+          return Stream.unwrap(
+            Deferred.succeed(firstWatchStarted, undefined).pipe(Effect.as(Stream.never)),
+          ).pipe(Stream.ensuring(Deferred.succeed(firstWatchFinalized, undefined)));
+        }
+        return Stream.make(replayedEvent);
+      },
+      publishRemoved: () => Effect.void,
+    } as unknown as SessionEvents;
+    const actor = {
+      prompt: () =>
+        Effect.gen(function* () {
+          promptCalls++;
+          yield* Effect.forkIn(
+            Effect.gen(function* () {
+              yield* Deferred.succeed(promptWorkStarted, undefined);
+              yield* Deferred.await(releasePromptWork);
+              yield* Deferred.succeed(promptWorkCompleted, undefined);
+              yield* Deferred.succeed(
+                promptAcknowledgement,
+                {
+                  ok: true,
+                  runId: activeRunId,
+                  mode: "follow-up",
+                } as const,
+              );
+            }),
+            durableWorkScope,
+          );
+          return yield* Deferred.await(promptAcknowledgement);
+        }),
+    };
+    const supervisor = {
+      getActiveRunId: () => activeRunId,
+      findActor: () => actor,
+      findOrRestoreActor: () => Effect.succeed(actor),
+      deleteSession: (sessionId: string) =>
+        Effect.sync(() => {
+          assertEquals(sessionId, TOMBSTONED_SESSION_ID);
+          tombstoneCleanupCalls++;
+          manifestSnapshots = manifestSnapshots.filter((item) => item.id !== sessionId);
+          return { ok: true as const };
+        }),
+    } as unknown as SessionSupervisor;
+    const harness = yield* makeGatewayHarness(
+      TOKEN,
+      catalogSessionIds,
+      tombstonedSessionIds,
+    );
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events, supervisor),
+      Effect.exit,
+      Effect.forkScoped,
+    );
+
+    const originalGateway = harness.gateway;
+    yield* pollEventually(
+      originalGateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      "the connected runner did not publish its running session",
+    );
+    assertEquals(yield* originalGateway.getSessionRunner(USER_ID, READY_SESSION_ID), RUNNER_ID);
+    assertEquals(yield* originalGateway.getSessionRunner(USER_ID, STOPPED_SESSION_ID), RUNNER_ID);
+    assertEquals(yield* originalGateway.getSessionRunner(USER_ID, TOMBSTONED_SESSION_ID), null);
+    yield* pollUntil(
+      Effect.sync(() => tombstoneCleanupCalls === 1),
+      "the runner did not clean up its tombstoned session",
+    );
+    assert(catalogSessionIds.has(SESSION_ID));
+    assert(catalogSessionIds.has(READY_SESSION_ID));
+    assert(catalogSessionIds.has(STOPPED_SESSION_ID));
+    assert(!catalogSessionIds.has(TOMBSTONED_SESSION_ID));
+    catalogSessionIds.delete(READY_SESSION_ID);
+
+    const prompted = yield* originalGateway.promptSession({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+      payload: {
+        prompt: "Continue through the restart",
+        modelRuntime: {
+          model: "opencode-go/deepseek-v4-flash",
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: "model-secret" },
+        },
+      },
+    }).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(promptWorkStarted);
+    const watching = yield* originalGateway.watchSession(USER_ID, SESSION_ID, 2).pipe(
+      Stream.runDrain,
+      Effect.exit,
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.await(firstWatchStarted);
+
+    const restartedGateway = yield* harness.restart();
+    assertEquals((yield* Fiber.join(prompted)).status, "delivery-uncertain");
+    yield* Deferred.await(firstWatchFinalized);
+    yield* Fiber.join(watching);
+    assertEquals(promptCalls, 1);
+
+    yield* Deferred.succeed(releasePromptWork, undefined);
+    yield* Deferred.await(promptWorkCompleted);
+    yield* pollEventually(
+      restartedGateway.getSessionRunner(USER_ID, SESSION_ID).pipe(
+        Effect.map((id) => id === RUNNER_ID),
+      ),
+      "the runner did not reconnect and republish its session after a transient restart",
+    );
+    assertEquals(yield* restartedGateway.getSessionRunner(USER_ID, READY_SESSION_ID), RUNNER_ID);
+    assertEquals(yield* restartedGateway.getSessionRunner(USER_ID, STOPPED_SESSION_ID), RUNNER_ID);
+    assertEquals(yield* restartedGateway.getSessionRunner(USER_ID, TOMBSTONED_SESSION_ID), null);
+    assert(
+      catalogSessionIds.has(READY_SESSION_ID),
+      "the reconnect snapshot did not repair the catalog",
+    );
+    assertEquals(
+      launched.pollUnsafe(),
+      undefined,
+      "a transient restart terminated the runner layer",
+    );
+
+    const replayed = yield* restartedGateway.watchSession(USER_ID, SESSION_ID, 2).pipe(
+      Stream.take(1),
+      Stream.runCollect,
+    );
+    assertEquals(Array.from(replayed), [replayedEvent]);
+    assertEquals(watchCalls, 2);
+    assertEquals(promptCalls, 1);
+    yield* Fiber.interrupt(launched);
+  }))));
 
 Deno.test("WatchRunner observes a state change during manifest-to-live handoff", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
@@ -527,6 +704,15 @@ const pollUntil = (predicate: Effect.Effect<boolean>, message: string) =>
     return yield* Effect.die(message);
   });
 
+const pollEventually = (predicate: Effect.Effect<boolean>, message: string) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 300; attempt++) {
+      if (yield* predicate) return;
+      yield* Effect.sleep(25);
+    }
+    return yield* Effect.die(message);
+  });
+
 const pollFiber = <A, E>(fiber: Fiber.Fiber<A, E>, message: string) =>
   Effect.gen(function* () {
     for (let attempt = 0; attempt < 2_000; attempt++) {
@@ -537,25 +723,38 @@ const pollFiber = <A, E>(fiber: Fiber.Fiber<A, E>, message: string) =>
     return yield* Effect.die(message);
   });
 
-const makeGatewayHarness = Effect.fn(function* (validToken: string) {
-  const gateway = yield* makeRunnerRegistry({
+const makeGatewayHarness = Effect.fn(function* (
+  validToken: string,
+  catalogSessionIds: Set<string> = new Set(),
+  tombstonedSessionIds: ReadonlySet<string> = new Set(),
+) {
+  const repository: Parameters<typeof makeRunnerRegistry>[0] = {
     authenticateRunner: (token: string) =>
       Promise.resolve(token === validToken ? { id: RUNNER_ID, userId: USER_ID } : null),
     reconcileSessionManifestEntries: (_userId: string, entries: RunnerSessionSnapshot[]) => {
       const rejected: RejectedSessionManifestEntry[] = [];
+      const tombstones = entries.filter((entry) => tombstonedSessionIds.has(entry.id)).map((
+        entry,
+      ) => entry.id);
+      const accepted = entries.filter((entry) => !tombstonedSessionIds.has(entry.id)).map((
+        entry,
+      ) => entry.id);
+      for (const sessionId of accepted) catalogSessionIds.add(sessionId);
       return Promise.resolve(
         [{
-          acceptedSessionIds: entries.map((entry) => entry.id),
-          tombstonedSessionIds: [],
+          acceptedSessionIds: accepted,
+          tombstonedSessionIds: tombstones,
           rejected,
         }, undefined] as const,
       );
     },
-  });
+  };
+  let gateway = yield* makeRunnerRegistry(repository);
+  const gatewayScope = yield* Effect.scope;
   const app = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const socket = yield* request.upgrade;
-    yield* gateway.accept(socket);
+    yield* Effect.forkIn(gateway.accept(socket), gatewayScope);
     return HttpServerResponse.empty();
   });
   const layer = HttpServer.serve(app).pipe(Layer.provideMerge(DenoHttpServer.layer({
@@ -566,7 +765,18 @@ const makeGatewayHarness = Effect.fn(function* (validToken: string) {
   const context = yield* Layer.build(layer);
   const server = Context.get(context, HttpServer.HttpServer);
   if (server.address._tag !== "TcpAddress") return yield* Effect.die("Expected TCP server");
-  return { gateway, url: `http://127.0.0.1:${server.address.port}` };
+  return {
+    get gateway() {
+      return gateway;
+    },
+    restart: Effect.fn(function* () {
+      const previousGateway = gateway;
+      gateway = yield* makeRunnerRegistry(repository);
+      yield* previousGateway.disconnectRunner(USER_ID, RUNNER_ID);
+      return gateway;
+    }),
+    url: `http://127.0.0.1:${server.address.port}`,
+  };
 });
 
 function closeError(code: number) {

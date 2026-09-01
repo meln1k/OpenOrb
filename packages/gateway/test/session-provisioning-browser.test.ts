@@ -808,6 +808,19 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(connections.aborts.length, 1);
 
     connections.sessionId = null;
+    const offlineDetail = await fetch(new URL(location, server.baseUrl), {
+      headers: { Cookie: client.cookie },
+    });
+    assertEquals(offlineDetail.status, 200);
+    const offlineHtml = await offlineDetail.text();
+    assertStringIncludes(
+      offlineHtml,
+      "Conversation history is unavailable while the pinned runner is offline.",
+    );
+    assertMatch(offlineHtml, /aria-label="Gondolin VM: Offline"/);
+    assertNotMatch(offlineHtml, /openorb\/browser-test/);
+    assertNotMatch(offlineHtml, /0123456789abcdef0123456789abcdef01234567/);
+
     const offlineContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -829,11 +842,42 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(offlineAbort.status, 503);
     assertMatch(await offlineAbort.text(), /pinned runner is offline/);
     assertEquals(connections.aborts.length, 1);
+    const offlineStop = await fetch(new URL(stopHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(offlineHtml) }),
+    });
+    assertEquals(offlineStop.status, 503);
+    assertEquals(await offlineStop.json(), { error: "The pinned runner is offline." });
+    assertEquals(connections.stops.length, 1);
+    const offlineWake = await fetch(new URL(wakeHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(offlineHtml) }),
+    });
+    assertEquals(offlineWake.status, 503);
+    assertEquals(await offlineWake.json(), { error: "The pinned runner is offline." });
+    assertEquals(connections.wakes.length, 2);
     const offlineGitSnapshot = await fetch(new URL(gitSnapshotHref, server.baseUrl), {
       headers: { Accept: "application/json", Cookie: client.cookie },
     });
     assertEquals(offlineGitSnapshot.status, 503);
     assertEquals(offlineGitSnapshot.headers.get("cache-control"), "no-store");
+    const offlineGitFileUpdate = await fetch(new URL(changesHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(offlineHtml),
+        action: "stage",
+        path: "README.md",
+      }),
+    });
+    assertEquals(offlineGitFileUpdate.status, 503);
+    assertEquals(await offlineGitFileUpdate.json(), {
+      error: "The pinned runner is offline.",
+    });
+    assertEquals(connections.gitFileUpdates.length, 2);
     connections.sessionId = provision.sessionId;
 
     connections.beforeAcceptance = undefined;

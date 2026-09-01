@@ -393,7 +393,7 @@ Deno.test("valid identity and complete snapshot admit; invalid token closes 4401
     assertEquals(invalid.watchCalls, 0);
   }))));
 
-Deno.test("replacement is make-before-break and stale generation cannot overwrite routes", () =>
+Deno.test("partial replacement stays hidden until make-before-break admission completes", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const { gateway, url } = yield* makeHarness();
     const first = yield* makeProbe();
