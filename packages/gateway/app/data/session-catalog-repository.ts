@@ -31,9 +31,16 @@ export interface SessionCatalogEntry {
   initialPromptPreview: string;
 }
 
+export type DeleteSessionCatalogResult = "deleted" | "not-found";
+
 export interface SessionCatalogRepository {
   listSessionCatalogEntries(userId: string): Promise<SessionCatalogEntry[]>;
   getSessionCatalogEntry(userId: string, sessionId: string): Promise<SessionCatalogEntry | null>;
+  deleteSessionCatalogEntry(
+    userId: string,
+    sessionId: string,
+    deletedAt: string,
+  ): Promise<Result<DeleteSessionCatalogResult, SessionCatalogPersistenceError>>;
   reconcileSessionManifestEntries(
     userId: string,
     entries: RunnerSessionSnapshot[],
@@ -61,6 +68,36 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
         where: { user_id: userId, id: sessionId },
       });
       return row ? mapSessionCatalogEntry(row) : null;
+    },
+
+    async deleteSessionCatalogEntry(userId, sessionId, deletedAt) {
+      return await tryAsync(
+        database.transaction(async (transaction) => {
+          // Reconciliation takes the same user-row lock. Exactly one transaction can decide
+          // whether this session is live or tombstoned at a time.
+          await transaction.exec(
+            "select id from users where id = $1 for update",
+            [userId],
+          );
+          const row = await transaction.findOne(sessions, {
+            where: { user_id: userId, id: sessionId },
+          });
+          if (!row) return "not-found" as const;
+
+          await transaction.exec(
+            `insert into deleted_sessions (user_id, session_id, deleted_at)
+             values ($1, $2, $3)
+             on conflict (user_id, session_id) do nothing`,
+            [userId, sessionId, deletedAt],
+          );
+          await transaction.exec(
+            "delete from sessions where user_id = $1 and id = $2",
+            [userId, sessionId],
+          );
+          return "deleted" as const;
+        }),
+        (cause) => new SessionCatalogPersistenceError(cause),
+      );
     },
 
     async reconcileSessionManifestEntries(userId, entries) {

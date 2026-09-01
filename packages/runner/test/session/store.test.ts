@@ -11,7 +11,7 @@ import {
   SessionId,
   UserId,
 } from "@openorb/protocol/runner-api";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, FileSystem, Layer, Schema } from "effect";
 import { join } from "node:path";
 
 import { Journal } from "@/src/session/persistent-actor/journal.ts";
@@ -24,8 +24,6 @@ import {
   runnerSessionStoreLayer,
 } from "@/src/session/store.ts";
 import { makeSessionFixture, type SessionFixture } from "./session-fixture.ts";
-
-const platformLayer = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
 
 const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c09",
@@ -93,6 +91,10 @@ Deno.test("creates private session storage and recovers cold session state", asy
       assertEquals(info.isSymlink, false);
       assertPrivateMode(info.mode, 0o600);
     }
+    const deletionQueue = await Deno.lstat(join(workingDirectory, "session-deletions"));
+    assert(deletionQueue.isDirectory);
+    assertEquals(deletionQueue.isSymlink, false);
+    assertPrivateMode(deletionQueue.mode, 0o700);
 
     const restarted = await makeStore(workingDirectory);
     assertEquals(
@@ -334,14 +336,83 @@ Deno.test("fails cold reads when persisted session events are invalid", async ()
   }
 });
 
-Deno.test("removes an abandoned session storage tree", async () => {
+Deno.test("idempotently removes every session-owned storage path", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     const { store } = await makeStore(workingDirectory);
     assertEquals(await Effect.runPromise(store.ensureSessionStorage(SESSION_ID)), "created");
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
+    for (
+      const [directory, file] of [
+        ["workspace", "source.ts"],
+        ["pi", "history.jsonl"],
+        ["logs", "runner.log"],
+        ["snapshots", "git-snapshot.json"],
+        ["checkpoints", "candidate.qcow2"],
+      ] as const
+    ) {
+      await Deno.writeTextFile(join(sessionPath, directory, file), directory);
+    }
+    await Deno.mkdir(join(sessionPath, "workspace", "nested"));
+    await Deno.writeTextFile(join(sessionPath, "workspace", "nested", "file.txt"), "nested");
+    await Deno.mkdir(join(sessionPath, "obsolete"));
+    await Deno.writeTextFile(join(sessionPath, "obsolete", "vm-state"), "obsolete");
+
     await Effect.runPromise(store.removeSessionStorage(SESSION_ID));
     await assertPathMissing(sessionPath);
+    await Effect.runPromise(store.removeSessionStorage(SESSION_ID));
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("failed cleanup leaves an admitted deletion queued for startup recovery", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const initial = await makeStore(workingDirectory);
+    await Effect.runPromise(initial.session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
+    const queuedPath = join(workingDirectory, "session-deletions", SESSION_ID);
+    const failing = await makeStore(workingDirectory, failRemovalAt(queuedPath));
+
+    const failure = await Effect.runPromise(Effect.flip(
+      failing.store.removeSessionStorage(SESSION_ID),
+    ));
+
+    assertEquals(failure.operation, "remove-session-storage");
+    await assertPathMissing(sessionPath);
+    assert((await Deno.lstat(queuedPath)).isDirectory);
+    assert((await Deno.lstat(join(queuedPath, "events.jsonl"))).isFile);
+
+    const restarted = await makeStore(workingDirectory);
+    await assertPathMissing(queuedPath);
+    assertEquals(await Effect.runPromise(restarted.store.loadSessionManifest()), {
+      sessions: [],
+      errors: [],
+    });
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("startup sweeps a partially removed queued deletion without its journal", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const initial = await makeStore(workingDirectory);
+    await Effect.runPromise(initial.session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
+    const queuedPath = join(workingDirectory, "session-deletions", SESSION_ID);
+    await Deno.rename(sessionPath, queuedPath);
+    await Deno.remove(join(queuedPath, "events.jsonl"));
+    await Deno.remove(join(queuedPath, "workspace"), { recursive: true });
+
+    const restarted = await makeStore(workingDirectory);
+
+    await assertPathMissing(queuedPath);
+    assertEquals(await Effect.runPromise(restarted.store.loadSessionManifest()), {
+      sessions: [],
+      errors: [],
+    });
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -394,9 +465,12 @@ async function assertPathMissing(path: string): Promise<void> {
   }
 }
 
-function makeStore(workingDirectory: string): Promise<TestStore> {
+function makeStore(
+  workingDirectory: string,
+  fileSystemLayer: Layer.Layer<FileSystem.FileSystem> = DenoFileSystem.layer,
+): Promise<TestStore> {
   const storeLive = runnerSessionStoreLayer({ workingDirectory, runnerId: RUNNER_ID }).pipe(
-    Layer.provideMerge(sessionPersistenceLayer(workingDirectory)),
+    Layer.provideMerge(sessionPersistenceLayer(workingDirectory, fileSystemLayer)),
   );
   return Effect.runPromise(Effect.scoped(Layer.build(storeLive))).then((context) => {
     const journal = Context.get(context, Journal);
@@ -405,6 +479,24 @@ function makeStore(workingDirectory: string): Promise<TestStore> {
   });
 }
 
-function sessionPersistenceLayer(workingDirectory: string) {
-  return sessionJournalLayer(workingDirectory).pipe(Layer.provideMerge(platformLayer));
+function sessionPersistenceLayer(
+  workingDirectory: string,
+  fileSystemLayer: Layer.Layer<FileSystem.FileSystem> = DenoFileSystem.layer,
+) {
+  const platform = Layer.merge(fileSystemLayer, DenoPath.layer);
+  return sessionJournalLayer(workingDirectory).pipe(Layer.provideMerge(platform));
+}
+
+function failRemovalAt(target: string): Layer.Layer<FileSystem.FileSystem> {
+  return Layer.effect(
+    FileSystem.FileSystem,
+    Effect.map(FileSystem.FileSystem, (fileSystem) =>
+      FileSystem.FileSystem.of({
+        ...fileSystem,
+        remove: (path, options) =>
+          path === target
+            ? fileSystem.remove(`${target}.injected-missing`)
+            : fileSystem.remove(path, options),
+      })),
+  ).pipe(Layer.provide(DenoFileSystem.layer));
 }

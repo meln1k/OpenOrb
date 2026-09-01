@@ -31,7 +31,7 @@ import {
   type RunnerRpcStartupError,
   runRunnerRpc,
 } from "@/src/connection/rpc.ts";
-import { SessionEvents } from "@/src/session/events.ts";
+import { SessionEvents, type SessionStateChange } from "@/src/session/events.ts";
 import { RunnerSessionStore } from "@/src/session/store.ts";
 import { SessionSupervisor } from "@/src/session/supervisor.ts";
 
@@ -96,7 +96,7 @@ Deno.test("WatchRunner observes a state change during manifest-to-live handoff",
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const manifestStarted = yield* Deferred.make<void>();
     const releaseManifest = yield* Deferred.make<void>();
-    const stateChanges = yield* PubSub.unbounded<typeof SessionId.Type>();
+    const stateChanges = yield* PubSub.unbounded<SessionStateChange>();
     let current = snapshot("ready");
     const store = {
       loadSessionManifest: () =>
@@ -121,7 +121,10 @@ Deno.test("WatchRunner observes a state change during manifest-to-live handoff",
 
     yield* Deferred.await(manifestStarted);
     current = snapshot("running");
-    yield* PubSub.publish(stateChanges, decode(SessionId)(SESSION_ID));
+    yield* PubSub.publish(stateChanges, {
+      type: "updated" as const,
+      sessionId: decode(SessionId)(SESSION_ID),
+    });
     yield* Deferred.succeed(releaseManifest, undefined);
 
     yield* pollUntil(
@@ -400,6 +403,63 @@ Deno.test("Stop RPC lazily restores and calls a cold ready session actor", () =>
     assert(stopped.status === "accepted");
     assert(stopped.acknowledgement instanceof StopSessionAccepted);
     assertEquals(stopCalls, 1);
+    yield* Fiber.interrupt(launched);
+  }))));
+
+Deno.test("Delete RPC rejects busy work, cleans an idle session, and publishes removal", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const store = {
+      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
+    } as unknown as RunnerSessionStore;
+    const removed: string[] = [];
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: () => Stream.empty,
+      publishRemoved: (sessionId: string) =>
+        Effect.sync(() => {
+          removed.push(sessionId);
+        }),
+    } as unknown as SessionEvents;
+    let busy = true;
+    let deleteCalls = 0;
+    const supervisor = {
+      deleteSession: () =>
+        Effect.sync(() => {
+          deleteCalls++;
+          return busy
+            ? { ok: false as const, message: "Wait for active session work to finish." }
+            : { ok: true as const };
+        }),
+      getActiveRunId: () => undefined,
+      findActor: () => undefined,
+      findOrRestoreActor: () => Effect.die("unexpected actor restore"),
+      provision: () => Effect.die("unexpected provision"),
+    } as unknown as SessionSupervisor;
+    const harness = yield* makeGatewayHarness(TOKEN);
+    const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events, supervisor),
+      Effect.exit,
+      Effect.forkScoped,
+    );
+    yield* pollUntil(
+      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      "the connected runner did not publish its ready session",
+    );
+
+    yield* harness.gateway.deleteSession({ userId: USER_ID, sessionId: SESSION_ID });
+    yield* pollUntil(
+      Effect.sync(() => deleteCalls === 1),
+      "runner deletion was not requested",
+    );
+    assertEquals(removed, []);
+    busy = false;
+    yield* Effect.sleep(1_100);
+    yield* pollUntil(
+      Effect.sync(() => deleteCalls === 2 && removed.length === 1),
+      "runner deletion did not publish session removal",
+    );
+    assertEquals(removed, [SESSION_ID]);
+    assertEquals(yield* harness.gateway.getSessionRunner(USER_ID, SESSION_ID), null);
     yield* Fiber.interrupt(launched);
   }))));
 

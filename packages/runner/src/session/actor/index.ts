@@ -15,6 +15,7 @@ import { makePersistentActor, type PersistentActor } from "../persistent-actor/p
 import { actorError, SessionActorError } from "./actor-error.ts";
 import type {
   AbortAcceptance,
+  DeletionAcceptance,
   GitFileUpdateAcceptance,
   PromptAcceptance,
   SessionActorInput,
@@ -31,6 +32,7 @@ import type { RunnerSessionStore } from "../store.ts";
 
 export type {
   AbortAcceptance,
+  DeletionAcceptance,
   GitFileUpdateAcceptance,
   PromptAcceptance,
   SessionActorInput,
@@ -47,6 +49,7 @@ export interface SessionActor {
   readonly prompt: (payload: PromptSessionPayload) => Effect.Effect<PromptAcceptance>;
   readonly abort: (payload: AbortSessionPayload) => Effect.Effect<AbortAcceptance>;
   readonly stop: (payload: StopSessionPayload) => Effect.Effect<StopAcceptance>;
+  readonly delete: () => Effect.Effect<DeletionAcceptance>;
   readonly updateGitFile: (
     payload: UpdateSessionGitFilePayload,
   ) => Effect.Effect<GitFileUpdateAcceptance>;
@@ -187,6 +190,11 @@ const makeSessionActor = Effect.fn("makeSessionActor")(function* (
     stop: (payload) =>
       request<StopAcceptance>(
         (reply) => ({ kind: "command", _tag: "Stop", payload, idle: false, reply }),
+        { ok: false, message: "The session actor is unavailable." },
+      ),
+    delete: () =>
+      request<DeletionAcceptance>(
+        (reply) => ({ kind: "command", _tag: "Delete", reply }),
         { ok: false, message: "The session actor is unavailable." },
       ),
     updateGitFile: (payload) =>

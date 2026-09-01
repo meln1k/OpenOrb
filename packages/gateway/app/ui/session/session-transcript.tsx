@@ -3,6 +3,7 @@ import { tryAsync, trySync } from "../../../../result/src/index.ts";
 import { object, parseSafe, string } from "remix/data-schema";
 import { css, type Dispatched, type Handle, on } from "remix/ui";
 
+import { routes } from "@/app/routes.ts";
 import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
 import { Marker, MarkerContent, MarkerIcon } from "@/app/ui/components/marker.tsx";
@@ -35,12 +36,9 @@ import {
 import { SessionPageScope } from "@/app/ui/session/session-page-controller.tsx";
 
 export type SessionTranscriptProps = {
-  abortHref: string;
   canRetry: boolean;
   contextWindow: number;
   csrfToken: string;
-  messageHref: string;
-  retryHref: string;
   sessionId: string;
 };
 const bashToolArgumentsSchema = object(
@@ -171,7 +169,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
             <form
               id={abortFormId}
               method="post"
-              action={handle.props.abortHref}
+              action={routes.app.sessions.abort.href({ sessionId: handle.props.sessionId })}
               mix={abortSubmit}
             >
               <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
@@ -180,7 +178,11 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
           : null}
         {handle.props.canRetry && sessionState === "error"
           ? (
-            <form method="post" action={handle.props.retryHref} mix={retryStyle}>
+            <form
+              method="post"
+              action={routes.app.sessions.retry.href({ sessionId: handle.props.sessionId })}
+              mix={retryStyle}
+            >
               <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
               <Button type="submit" size="sm">Retry provisioning</Button>
             </form>
@@ -266,7 +268,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
         </MessageScroller>
         <form
           method="post"
-          action={handle.props.messageHref}
+          action={routes.app.sessions.message.href({ sessionId: handle.props.sessionId })}
           mix={[
             sessionFooterItemStyle,
             promptFormStyle,

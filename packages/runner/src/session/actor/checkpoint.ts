@@ -8,6 +8,7 @@ import { actorError, SessionActorError } from "./actor-error.ts";
 import type { OpenAgentSession, SessionAgentRuntime } from "./agent-runtime.ts";
 import type {
   ActorCommand,
+  DeletionAcceptance,
   GitFileUpdateAcceptance,
   InternalCommand,
   SessionCommand,
@@ -44,6 +45,26 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
   } = options;
   const { none, persist, reply, fail } = options.decisions;
   let gitOperationActive = false;
+
+  function deletionAcceptance(state: SessionState): DeletionAcceptance {
+    if (
+      state.phase._tag !== "Ready" && state.phase._tag !== "Stopped" &&
+      state.phase._tag !== "Failed"
+    ) {
+      return {
+        ok: false,
+        message: "Wait for active session work to finish before deleting the session.",
+      };
+    }
+    if (gitOperationActive) {
+      return {
+        ok: false,
+        message:
+          "Wait for the active Git Snapshot operation to finish before deleting the session.",
+      };
+    }
+    return { ok: true };
+  }
 
   function stop(
     state: SessionState,
@@ -352,7 +373,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
     )).pipe(Effect.asVoid);
   }
 
-  return { stop, complete, failed, updateGitFile, refreshGitSnapshot };
+  return { deletionAcceptance, stop, complete, failed, updateGitFile, refreshGitSnapshot };
 }
 
 function rejectGitFileUpdate(message: string): GitFileUpdateAcceptance {

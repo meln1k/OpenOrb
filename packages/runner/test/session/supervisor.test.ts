@@ -482,6 +482,7 @@ Deno.test("Stop rejects an active Git Snapshot and succeeds after it finishes", 
         await snapshotStarted.promise;
         const rejected = await Effect.runPromise(actor.stop(stopPayload()));
         assertEquals(rejected.ok, false);
+        assertEquals((await Effect.runPromise(supervisor.deleteSession(SESSION_ID))).ok, false);
 
         environment.gitSnapshotBlock = undefined;
         releaseSnapshot.resolve();
@@ -915,6 +916,7 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
       prompt: () => Effect.die("unexpected prompt"),
       abort: () => Effect.die("unexpected abort"),
       stop: () => Effect.die("unexpected stop"),
+      delete: () => Effect.succeed({ ok: true }),
       updateGitFile: (update) =>
         Effect.sync(() => {
           updates.push(update);
@@ -1396,6 +1398,114 @@ Deno.test("SessionSupervisor serializes two closely queued idle prompts into one
   }
 });
 
+Deno.test("SessionSupervisor rejects active deletion, then removes an idle session idempotently", async () => {
+  const directory = await Deno.makeTempDir();
+  const initialRunStarted = Promise.withResolvers<void>();
+  const releaseInitialRun = Promise.withResolvers<void>();
+  const createPiSession: CreateRawPiSession = () => {
+    let active = false;
+    return Effect.succeed({
+      session: {
+        get isIdle() {
+          return !active;
+        },
+        sessionManager: EMPTY_PI_SESSION_MANAGER,
+        subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
+        prompt: async (
+          _input: string,
+          options?: { preflightResult?: (success: boolean) => void },
+        ) => {
+          active = true;
+          options?.preflightResult?.(true);
+          initialRunStarted.resolve();
+          await releaseInitialRun.promise;
+          active = false;
+        },
+        followUp: () => Promise.resolve(),
+        clearQueue: () => ({ steering: [], followUp: [] }),
+        abort: () => Promise.resolve(),
+        dispose() {},
+      },
+    });
+  };
+
+  try {
+    const store = await makeStore(directory);
+    await withSupervisor(
+      { cpuCount: 4, memoryMiB: 8192, createPiSession },
+      store,
+      fakeEnvironmentProvider(new FakeEnvironment()),
+      async (supervisor) => {
+        await Effect.runPromise(
+          supervisor.provision(createProvisionPayload("openorb/session-deletion-test")),
+        );
+        await initialRunStarted.promise;
+        const active = await Effect.runPromise(supervisor.deleteSession(SESSION_ID));
+        assertEquals(active.ok, false);
+        assert(supervisor.findActor(SESSION_ID));
+
+        releaseInitialRun.resolve();
+        await waitForState(store, "ready");
+        assertEquals(await Effect.runPromise(supervisor.deleteSession(SESSION_ID)), { ok: true });
+        await assertPathMissing(join(directory, "sessions", SESSION_ID));
+        assertEquals(await Effect.runPromise(supervisor.deleteSession(SESSION_ID)), { ok: true });
+      },
+    );
+  } finally {
+    releaseInitialRun.resolve();
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("SessionSupervisor retains deletion admission after a retryable storage failure", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    let removeCalls = 0;
+    const durableStore = await makeStore(directory);
+    const store: RunnerSessionStoreService = {
+      ...durableStore,
+      removeSessionStorage: () =>
+        Effect.suspend(() => {
+          removeCalls++;
+          return removeCalls === 1
+            ? Effect.fail(
+              new RunnerSessionStoreFailure({
+                operation: "remove-session-storage",
+                message: "Injected partial cleanup failure.",
+                cause: new Error("injected"),
+              }),
+            )
+            : Effect.void;
+        }),
+    };
+    const { failure, restored, retried } = await Effect.runPromise(Effect.scoped(Effect.gen(
+      function* () {
+        const supervisor = yield* makeSessionSupervisor({
+          runnerId: RUNNER_ID,
+          cpuCount: 4,
+          memoryMiB: 8192,
+        }).pipe(
+          Effect.provideService(RunnerSessionStore, store),
+          Effect.provideService(SessionActorFactory, {
+            spawn: () => Effect.die("unexpected actor spawn"),
+          }),
+        );
+
+        const failure = yield* Effect.flip(supervisor.deleteSession(SESSION_ID));
+        const restored = yield* supervisor.findOrRestoreActor(SESSION_ID);
+        const retried = yield* supervisor.deleteSession(SESSION_ID);
+        return { failure, restored, retried };
+      },
+    )));
+    assertEquals(failure.operation, "remove-session-storage");
+    assertEquals(restored, undefined);
+    assertEquals(retried, { ok: true });
+    assertEquals(removeCalls, 2);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 function createProvisionPayload(
   branchName: string,
 ): Extract<typeof ProvisionSessionPayload.Type, { mode: "create" }> {
@@ -1523,6 +1633,7 @@ function unavailableActor(termination: Promise<void>): SessionActor {
     prompt: () => Effect.die("unexpected prompt"),
     abort: () => Effect.die("unexpected abort"),
     stop: () => Effect.die("unexpected stop"),
+    delete: () => Effect.succeed({ ok: true }),
     updateGitFile: () => Effect.die("unexpected Git file update"),
     awaitTermination: Effect.promise(() => termination),
     shutdown: Effect.void,

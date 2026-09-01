@@ -10,6 +10,10 @@ import {
   AbortSessionPayload,
   type CapacityExceeded,
   ClientRequestId,
+  type DeleteFailed,
+  type DeleteRejected,
+  DeleteSessionAccepted,
+  DeleteSessionPayload,
   DurableSessionEvent,
   EphemeralSessionEvent,
   GitFileUpdateAccepted,
@@ -40,7 +44,9 @@ import {
   SessionId,
   SessionModelRuntime,
   type SessionNotFound,
+  type StopRejected,
   StopSessionAccepted,
+  StopSessionPayload,
   UpdateSessionGitFilePayload,
   UserId,
   type WakeRejected,
@@ -60,6 +66,8 @@ import {
 type RunnerApiError =
   | AbortRejected
   | CapacityExceeded
+  | DeleteFailed
+  | DeleteRejected
   | GitFileUpdateRejected
   | GitSnapshotReadError
   | HistoryReadError
@@ -70,6 +78,7 @@ type RunnerApiError =
   | SessionConflict
   | SessionCorrupt
   | SessionNotFound
+  | StopRejected
   | WakeRejected;
 
 const SESSION_ID = SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
@@ -439,6 +448,7 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
     "session.wake": () => Effect.succeed(new WakeSessionAccepted({})),
     "session.abort": ({ runId }) => Effect.succeed(new AbortSessionAccepted({ runId })),
     "session.stop": () => Effect.succeed(new StopSessionAccepted({})),
+    "session.delete": () => Effect.succeed(new DeleteSessionAccepted({})),
     "session.git-snapshot.read": () =>
       Effect.succeed(
         new SessionGitSnapshot({
@@ -477,6 +487,8 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
     modelRuntime: new SessionModelRuntime(modelRuntime()),
   });
   const abortPayload = new AbortSessionPayload({ sessionId: SESSION_ID, runId: RUN_ID });
+  const stopPayload = new StopSessionPayload({ sessionId: SESSION_ID });
+  const deletePayload = new DeleteSessionPayload({ sessionId: SESSION_ID });
   const wakePayload = new WakeSessionPayload({
     sessionId: SESSION_ID,
     modelRuntime: new SessionModelRuntime(modelRuntime()),
@@ -519,6 +531,8 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
       (yield* client["session.abort"](abortPayload)).runId,
       RUN_ID,
     );
+    assert((yield* client["session.stop"](stopPayload)) instanceof StopSessionAccepted);
+    assert((yield* client["session.delete"](deletePayload)) instanceof DeleteSessionAccepted);
     assertEquals(
       (yield* client["session.git-snapshot.read"](snapshotPayload)).sections.unstaged.files[0]
         ?.path,

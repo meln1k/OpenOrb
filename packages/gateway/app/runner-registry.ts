@@ -2,6 +2,9 @@ import {
   AbortRejected,
   CapacityExceeded,
   ClientRequestId,
+  DeleteFailed,
+  DeleteRejected,
+  DeleteSessionPayload,
   type GitFileUpdateAccepted,
   GitFileUpdateRejected,
   initialPromptPreview,
@@ -98,6 +101,10 @@ export interface StopSessionInput {
   userId: string;
   sessionId: string;
 }
+export interface DeleteSessionInput {
+  userId: string;
+  sessionId: string;
+}
 export interface UpdateSessionGitFileInput {
   userId: string;
   sessionId: string;
@@ -134,6 +141,7 @@ export interface RunnerRegistryService {
   readonly stopSession: (
     input: StopSessionInput,
   ) => Effect.Effect<OperationResult<StopSessionAccepted>>;
+  readonly deleteSession: (input: DeleteSessionInput) => Effect.Effect<void>;
   readonly watchSession: (
     userId: string,
     sessionId: string,
@@ -156,6 +164,8 @@ interface Connection {
   readonly sessions: ReadonlyMap<string, RunnerSessionSnapshot>;
   readonly reservations: ReadonlySet<string>;
   readonly createReservations: ReadonlySet<string>;
+  readonly tombstones: ReadonlySet<string>;
+  readonly cleanupInFlight: ReadonlySet<string>;
 }
 interface ConnectionRuntime {
   readonly client: Client;
@@ -165,6 +175,7 @@ interface RegistryState {
   readonly nextGeneration: number;
   readonly connections: ReadonlyMap<string, Connection>;
   readonly routes: ReadonlyMap<string, Connection>;
+  readonly deletions: ReadonlySet<string>;
   readonly revoked: ReadonlySet<string>;
 }
 type ReservationResult =
@@ -192,6 +203,7 @@ const OperationRejection = Schema.Union([
   StopRejected,
   GitFileUpdateRejected,
 ]);
+const DeletionFailure = Schema.Union([DeleteRejected, DeleteFailed]);
 
 interface RegistryRuntime {
   readonly repository: GatewayRepository;
@@ -210,6 +222,7 @@ export function makeRunnerRegistry(
       nextGeneration: 1,
       connections: new Map(),
       routes: new Map(),
+      deletions: new Set(),
       revoked: new Set(),
     });
     const runtime: RegistryRuntime = { repository, state };
@@ -226,6 +239,7 @@ export function makeRunnerRegistry(
       promptSession: (input) => promptSession(runtime, input),
       abortSession: (input) => abortSession(runtime, input),
       stopSession: (input) => stopSession(runtime, input),
+      deleteSession: (input) => deleteSession(runtime, input),
       watchSession: (userId, sessionId, afterCursor) =>
         watchSession(runtime, userId, sessionId, afterCursor),
       disconnectRunner: (userId, runnerId) => disconnectRunner(runtime, userId, runnerId),
@@ -319,13 +333,21 @@ const accept = Effect.fn("RunnerRegistry.accept")(
             return yield* Effect.fail(new CandidateRejected());
           }
           const accepted = new Set(reconciled.acceptedSessionIds);
-          const sessions = new Map(
+          const reconciledSessions = new Map(
             initial.filter((x) => accepted.has(x.id)).map((x) => [x.id, x]),
           );
           const connectionRuntime: ConnectionRuntime = { client, scope };
           const [connection, old] = yield* SynchronizedRef.modifyEffect(
             registry.state,
             (current) => {
+              const sessions = new Map(reconciledSessions);
+              const tombstones = new Set(reconciled.tombstonedSessionIds);
+              for (const sessionId of sessions.keys()) {
+                if (current.deletions.has(routeKey(authenticated.userId, sessionId))) {
+                  sessions.delete(sessionId);
+                  tombstones.add(sessionId);
+                }
+              }
               for (const sessionId of sessions.keys()) {
                 const routed = current.routes.get(routeKey(authenticated.userId, sessionId));
                 if (routed && routed.runner.id !== authenticated.id) {
@@ -339,6 +361,8 @@ const accept = Effect.fn("RunnerRegistry.accept")(
                 sessions,
                 reservations: new Set(),
                 createReservations: new Set(),
+                tombstones,
+                cleanupInFlight: new Set(),
                 capacity: completed.capacity,
                 revision: completed.revision,
                 observedAt: completed.observedAt,
@@ -370,6 +394,11 @@ const accept = Effect.fn("RunnerRegistry.accept")(
           );
           ownedConnection = connection;
           if (old) yield* Scope.close(old.runtime.scope, Exit.void);
+          yield* Effect.forEach(
+            connection.tombstones,
+            (sessionId) => scheduleDeletedSessionCleanup(registry, connection, sessionId),
+            { discard: true },
+          );
         }),
     ).pipe(
       Effect.ensuring(Effect.suspend(() => {
@@ -386,39 +415,84 @@ function applyEvent(
   connection: Connection,
   event: typeof RunnerStateEvent.Type,
 ) {
-  return SynchronizedRef.modify(registry.state, (state) => {
-    const current = state.connections.get(connection.runner.id);
-    if (!current || current.generation !== connection.generation) return [null, state] as const;
-    let removedSessionId: string | null = null;
-    const routes = new Map(state.routes);
-    const sessions = new Map(current.sessions);
-    if (event.type === "session.updated" && event.revision > current.revision) {
-      sessions.set(event.session.id, event.session);
-    } else if (event.type === "session.removed" && event.revision > current.revision) {
-      sessions.delete(event.sessionId);
-      routes.delete(routeKey(connection.runner.userId, event.sessionId));
-      removedSessionId = event.sessionId;
-    }
-    let updated = current;
-    if (event.type === "runner.observed" && event.revision > current.revision) {
-      updated = {
-        ...current,
-        capacity: event.capacity,
-        observedAt: event.observedAt,
-        revision: event.revision,
-      };
-    } else if (event.type === "session.updated" || event.type === "session.removed") {
-      updated = { ...current, sessions, revision: Math.max(current.revision, event.revision) };
-    }
-    if (updated === current) return [removedSessionId, state] as const;
+  return Effect.gen(function* () {
+    let unknownSessionDisposition: "accepted" | "tombstoned" | "rejected" | null = null;
     if (event.type === "session.updated") {
-      routes.set(routeKey(current.runner.userId, event.session.id), updated);
+      const current = (yield* SynchronizedRef.get(registry.state)).connections.get(
+        connection.runner.id,
+      );
+      if (
+        current?.generation === connection.generation && event.revision > current.revision &&
+        !current.sessions.has(event.session.id) && !current.tombstones.has(event.session.id)
+      ) {
+        const reconciled = yield* reconcile(registry, connection.runner.userId, [event.session]);
+        unknownSessionDisposition = reconciled.tombstonedSessionIds.includes(event.session.id)
+          ? "tombstoned"
+          : reconciled.acceptedSessionIds.includes(event.session.id)
+          ? "accepted"
+          : "rejected";
+      }
     }
-    const connections = new Map(state.connections).set(connection.runner.id, updated);
-    for (const [id, route] of routes) {
-      if (route.generation === current.generation) routes.set(id, updated);
+
+    const cleanupSessionId = yield* SynchronizedRef.modify(registry.state, (state) => {
+      const current = state.connections.get(connection.runner.id);
+      if (!current || current.generation !== connection.generation) return [null, state] as const;
+      let cleanupSessionId: string | null = null;
+      const routes = new Map(state.routes);
+      const sessions = new Map(current.sessions);
+      const tombstones = new Set(current.tombstones);
+      if (event.type === "session.updated") {
+        if (
+          unknownSessionDisposition === "tombstoned" ||
+          state.deletions.has(routeKey(connection.runner.userId, event.session.id))
+        ) {
+          tombstones.add(event.session.id);
+        }
+      }
+      if (event.type === "session.updated" && event.revision > current.revision) {
+        if (tombstones.has(event.session.id)) {
+          sessions.delete(event.session.id);
+          routes.delete(routeKey(connection.runner.userId, event.session.id));
+          cleanupSessionId = event.session.id;
+        } else if (unknownSessionDisposition !== "rejected") {
+          sessions.set(event.session.id, event.session);
+        }
+      } else if (event.type === "session.removed" && event.revision > current.revision) {
+        sessions.delete(event.sessionId);
+        routes.delete(routeKey(connection.runner.userId, event.sessionId));
+      }
+      let updated = current;
+      if (event.type === "runner.observed" && event.revision > current.revision) {
+        updated = {
+          ...current,
+          capacity: event.capacity,
+          observedAt: event.observedAt,
+          revision: event.revision,
+        };
+      } else if (event.type === "session.updated" || event.type === "session.removed") {
+        updated = {
+          ...current,
+          sessions,
+          tombstones,
+          revision: Math.max(current.revision, event.revision),
+        };
+      }
+      if (updated === current) return [cleanupSessionId, state] as const;
+      if (
+        event.type === "session.updated" && !tombstones.has(event.session.id) &&
+        unknownSessionDisposition !== "rejected"
+      ) {
+        routes.set(routeKey(current.runner.userId, event.session.id), updated);
+      }
+      const connections = new Map(state.connections).set(connection.runner.id, updated);
+      for (const [id, route] of routes) {
+        if (route.generation === current.generation) routes.set(id, updated);
+      }
+      return [cleanupSessionId, { ...state, connections, routes }] as const;
+    });
+    if (cleanupSessionId) {
+      yield* scheduleDeletedSessionCleanup(registry, connection, cleanupSessionId);
     }
-    return [removedSessionId, { ...state, connections, routes }] as const;
   });
 }
 
@@ -712,6 +786,42 @@ const stopSession = Effect.fn("RunnerRegistry.stopSession")(
     );
   },
 );
+const deleteSession = Effect.fn("RunnerRegistry.deleteSession")(
+  function* (registry: RegistryRuntime, input: DeleteSessionInput) {
+    const connection = yield* SynchronizedRef.modify(registry.state, (state) => {
+      const key = routeKey(input.userId, input.sessionId);
+      const deletions = new Set(state.deletions).add(key);
+      const routed = state.routes.get(key);
+      const current = routed && state.connections.get(routed.runner.id);
+      if (
+        !routed || !current || current.generation !== routed.generation ||
+        current.runner.userId !== input.userId
+      ) return [null, { ...state, deletions }] as const;
+
+      const sessions = new Map(current.sessions);
+      sessions.delete(input.sessionId);
+      const reservations = new Set(current.reservations);
+      reservations.delete(input.sessionId);
+      const createReservations = new Set(current.createReservations);
+      createReservations.delete(input.sessionId);
+      const updated: Connection = {
+        ...current,
+        sessions,
+        reservations,
+        createReservations,
+        tombstones: new Set(current.tombstones).add(input.sessionId),
+      };
+      const replaced = replaceConnection(state, current, updated);
+      const routes = new Map(replaced.routes);
+      routes.delete(key);
+      return [updated, { ...replaced, routes, deletions }] as const;
+    });
+    if (connection) {
+      yield* scheduleDeletedSessionCleanup(registry, connection, input.sessionId);
+    }
+  },
+);
+
 function watchSession(
   registry: RegistryRuntime,
   userId: string,
@@ -775,6 +885,81 @@ function releaseReservation(
   });
 }
 
+function scheduleDeletedSessionCleanup(
+  registry: RegistryRuntime,
+  connection: Connection,
+  sessionId: string,
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const runtime = yield* SynchronizedRef.modify(registry.state, (state) => {
+      const current = state.connections.get(connection.runner.id);
+      if (
+        !current || current.generation !== connection.generation ||
+        !current.tombstones.has(sessionId) || current.cleanupInFlight.has(sessionId)
+      ) return [null, state] as const;
+      const updated = {
+        ...current,
+        cleanupInFlight: new Set(current.cleanupInFlight).add(sessionId),
+      };
+      return [updated.runtime, replaceConnection(state, current, updated)] as const;
+    });
+    if (!runtime) return;
+    const decoded = Schema.decodeUnknownOption(SessionId)(sessionId);
+    if (Option.isNone(decoded)) return;
+    yield* Effect.forkIn(
+      cleanupDeletedSession(connection, decoded.value).pipe(
+        Effect.ensuring(clearCleanupInFlight(registry, connection, sessionId)),
+      ),
+      runtime.scope,
+    );
+  });
+}
+
+function cleanupDeletedSession(
+  connection: Connection,
+  sessionId: typeof SessionId.Type,
+): Effect.Effect<void> {
+  const retry = () =>
+    Effect.sleep(1_000).pipe(
+      Effect.andThen(Effect.suspend(() => cleanupDeletedSession(connection, sessionId))),
+    );
+  return connection.runtime.client["session.delete"](
+    new DeleteSessionPayload({ sessionId }),
+  ).pipe(
+    Effect.timeout(OPERATION_TIMEOUT_MS),
+    Effect.asVoid,
+    Effect.catchCause((cause) => {
+      const failure = Option.flatMap(
+        Cause.findErrorOption(cause),
+        Schema.decodeUnknownOption(DeletionFailure),
+      );
+      if (Option.isSome(failure) && failure.value instanceof DeleteFailed) {
+        return Effect.logWarning(
+          `Runner cleanup for deleted session ${sessionId} failed and will be retried: ${failure.value.message}`,
+        ).pipe(Effect.andThen(retry()));
+      }
+      return retry();
+    }),
+  );
+}
+
+function clearCleanupInFlight(
+  registry: RegistryRuntime,
+  connection: Connection,
+  sessionId: string,
+) {
+  return SynchronizedRef.update(registry.state, (state) => {
+    const current = state.connections.get(connection.runner.id);
+    if (
+      !current || current.generation !== connection.generation ||
+      !current.cleanupInFlight.has(sessionId)
+    ) return state;
+    const cleanupInFlight = new Set(current.cleanupInFlight);
+    cleanupInFlight.delete(sessionId);
+    return replaceConnection(state, current, { ...current, cleanupInFlight });
+  });
+}
+
 function routeSession(
   registry: RegistryRuntime,
   userId: string,
@@ -833,9 +1018,27 @@ function acceptProvisioned(
         );
       }
     }
-    yield* SynchronizedRef.update(registry.state, (state) => {
+    const cleanupConnection = yield* SynchronizedRef.modify(registry.state, (state) => {
       const current = state.connections.get(connection.runner.id);
-      if (!current || current.generation !== connection.generation) return state;
+      if (!current || current.generation !== connection.generation) {
+        return [null, state] as const;
+      }
+      if (
+        current.tombstones.has(input.sessionId) ||
+        state.deletions.has(routeKey(input.userId, input.sessionId))
+      ) {
+        const sessions = new Map(current.sessions);
+        sessions.delete(input.sessionId);
+        const updated = {
+          ...current,
+          sessions,
+          tombstones: new Set(current.tombstones).add(input.sessionId),
+        };
+        const replaced = replaceConnection(state, current, updated);
+        const routes = new Map(replaced.routes);
+        routes.delete(routeKey(input.userId, input.sessionId));
+        return [updated, { ...replaced, routes }] as const;
+      }
       const sessions = new Map(current.sessions).set(
         input.sessionId,
         acknowledgement.session,
@@ -846,8 +1049,11 @@ function acceptProvisioned(
         routeKey(input.userId, input.sessionId),
         updated,
       );
-      return { ...replaced, routes };
+      return [null, { ...replaced, routes }] as const;
     });
+    if (cleanupConnection) {
+      yield* scheduleDeletedSessionCleanup(registry, cleanupConnection, input.sessionId);
+    }
   });
 }
 

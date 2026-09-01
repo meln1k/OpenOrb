@@ -30,6 +30,7 @@ export {
 } from "@/src/orb-size.ts";
 export {
   AbortSession,
+  DeleteSession,
   IdentifyRunner,
   PromptSession,
   ProvisionSession,

@@ -1,6 +1,7 @@
 import { tryAsync } from "../../../../result/src/index.ts";
 import { css, type Dispatched, type Handle, on } from "remix/ui";
 
+import { routes } from "@/app/routes.ts";
 import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
 import { media } from "@/app/ui/responsive.ts";
@@ -23,8 +24,7 @@ import {
 
 export type SessionVmControlProps = {
   csrfToken: string;
-  stopHref: string;
-  wakeHref: string;
+  sessionId: string;
 };
 
 type VmAction = "start" | "stop";
@@ -158,7 +158,9 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
         {action === undefined ? null : (
           <form
             method="post"
-            action={action === "start" ? handle.props.wakeHref : handle.props.stopHref}
+            action={action === "start"
+              ? routes.api.sessions.wake.href({ sessionId: handle.props.sessionId })
+              : routes.app.sessions.stop.href({ sessionId: handle.props.sessionId })}
             mix={vmActionSubmit}
           >
             <input type="hidden" name="_csrf" value={handle.props.csrfToken} />

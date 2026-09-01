@@ -4,6 +4,9 @@ import * as DenoSocket from "@effect/platform-deno/DenoSocket";
 import {
   AbortSessionAccepted,
   AbortSessionPayload,
+  DeleteFailed,
+  DeleteSessionAccepted,
+  DeleteSessionPayload,
   GitAuthor,
   GitFileUpdateAccepted,
   ProjectId,
@@ -84,6 +87,8 @@ interface Probe {
   wakeRequests: unknown[];
   abortRequests: unknown[];
   stopRequests: unknown[];
+  deleteRequests: unknown[];
+  deleteFailuresRemaining: number;
   gitSnapshotRequests: unknown[];
   gitFileUpdateRequests: unknown[];
   sessionWatches: SessionWatchProbe[];
@@ -97,6 +102,10 @@ interface SessionWatchProbe {
   request: unknown;
   events: Queue.Queue<typeof WatchSessionEvent.Type>;
   finalized: Deferred.Deferred<void>;
+}
+
+interface ReconciliationProbe {
+  block: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
 }
 
 const makeProbe = Effect.fn(function* (token = TOKEN) {
@@ -115,6 +124,8 @@ const makeProbe = Effect.fn(function* (token = TOKEN) {
     wakeRequests: [],
     abortRequests: [],
     stopRequests: [],
+    deleteRequests: [],
+    deleteFailuresRemaining: 0,
     gitSnapshotRequests: [],
     gitFileUpdateRequests: [],
     sessionWatches: [],
@@ -126,20 +137,33 @@ const makeProbe = Effect.fn(function* (token = TOKEN) {
   return probe;
 });
 
-function fakeRepository() {
+function fakeRepository(
+  tombstonedSessionIds: ReadonlySet<string> = new Set(),
+  probe?: ReconciliationProbe,
+) {
   return {
     authenticateRunner: (token: string) =>
       Promise.resolve(token === TOKEN ? { id: RUNNER_ID, userId: USER_ID } : null),
     reconcileSessionManifestEntries: (_userId: string, entries: RunnerSessionSnapshot[]) => {
-      const tombstonedSessionIds: string[] = [];
-      const rejected: RejectedSessionManifestEntry[] = [];
-      return Promise.resolve(
-        [{
-          acceptedSessionIds: entries.map((entry) => entry.id),
-          tombstonedSessionIds,
+      return Effect.runPromise(Effect.gen(function* () {
+        const block = probe?.block;
+        if (block) {
+          probe.block = null;
+          yield* Deferred.succeed(block.started, undefined);
+          yield* Deferred.await(block.release);
+        }
+        const tombstones = entries.filter((entry) => tombstonedSessionIds.has(entry.id)).map((
+          entry,
+        ) => entry.id);
+        const rejected: RejectedSessionManifestEntry[] = [];
+        return [{
+          acceptedSessionIds: entries.filter((entry) => !tombstonedSessionIds.has(entry.id)).map(
+            (entry) => entry.id,
+          ),
+          tombstonedSessionIds: tombstones,
           rejected,
-        }, undefined] as const,
-      );
+        }, undefined] as const;
+      }));
     },
   };
 }
@@ -229,6 +253,18 @@ function handlers(probe: Probe) {
         probe.stopRequests.push(request);
         return new StopSessionAccepted({});
       }),
+    "session.delete": (request) =>
+      Effect.gen(function* () {
+        probe.deleteRequests.push(request);
+        if (probe.deleteFailuresRemaining > 0) {
+          probe.deleteFailuresRemaining--;
+          return yield* new DeleteFailed({
+            sessionId: request.sessionId,
+            message: "Injected cleanup failure.",
+          });
+        }
+        return new DeleteSessionAccepted({});
+      }),
     "session.git-snapshot.read": (request) =>
       Effect.sync(() => {
         probe.gitSnapshotRequests.push(request);
@@ -313,8 +349,10 @@ const connectRunner = Effect.fn(function* (url: string, probe: Probe) {
   ).pipe(Effect.forkScoped);
 });
 
-const makeHarness = Effect.fn(function* () {
-  const gateway = yield* makeRunnerRegistry(fakeRepository());
+const makeHarness = Effect.fn(function* (
+  repository: ReturnType<typeof fakeRepository> = fakeRepository(),
+) {
+  const gateway = yield* makeRunnerRegistry(repository);
   const gatewayScope = yield* Effect.scope;
   const app = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -554,6 +592,249 @@ Deno.test("Stop routes only ready sessions to the pinned runner", () =>
     const busy = yield* gateway.stopSession({ userId: USER_ID, sessionId: SESSION_1 });
     assertEquals(busy.status, "rejected");
     assertEquals(probe.stopRequests.length, 1);
+  }))));
+
+Deno.test("session deletion removes routes and cleans stale updates", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    yield* gateway.deleteSession({
+      userId: "018f47f2-39b1-7b30-8000-000000000099",
+      sessionId: SESSION_1,
+    });
+    assertEquals(probe.deleteRequests, []);
+
+    const provisionBlock = {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+    };
+    probe.provisionBlock = provisionBlock;
+    const retry = yield* gateway.provisionSession({
+      userId: USER_ID,
+      runnerId: RUNNER_ID,
+      sessionId: SESSION_1,
+      payload: {
+        mode: "retry",
+        modelRuntime: {
+          model: "opencode-go/deepseek-v4-flash",
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: "secret" },
+        },
+      },
+    }).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(provisionBlock.started);
+    yield* gateway.deleteSession({
+      userId: USER_ID,
+      sessionId: SESSION_1,
+    });
+    yield* Deferred.succeed(provisionBlock.release, undefined);
+    assertEquals((yield* Fiber.join(retry)).status, "accepted");
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    yield* waitUntil(
+      () => Effect.sync(() => probe.deleteRequests.length === 1),
+      "runner cleanup was not requested",
+    );
+    yield* Effect.sleep(20);
+
+    yield* Queue.offer(
+      probe.runnerEvents,
+      decode(RunnerStateEvent)({
+        type: "session.updated",
+        revision: 2,
+        session: snapshot(SESSION_1),
+      }),
+    );
+    yield* waitUntil(
+      () => Effect.sync(() => probe.deleteRequests.length === 2),
+      "stale tombstoned update did not request cleanup",
+    );
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(probe.deleteRequests, [
+      decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
+      decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
+    ]);
+  }))));
+
+Deno.test("deletion during reconnect reconciliation blocks stale route publication", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const block = {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+    };
+    const reconciliation: ReconciliationProbe = { block };
+    const { gateway, url } = yield* makeHarness(fakeRepository(new Set(), reconciliation));
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* Deferred.await(block.started);
+
+    yield* gateway.deleteSession({ userId: USER_ID, sessionId: SESSION_1 });
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    yield* Deferred.succeed(block.release, undefined);
+
+    yield* waitUntil(
+      () => Effect.sync(() => probe.deleteRequests.length === 1),
+      "reconciled deleted session was not cleaned up",
+    );
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    assertEquals(probe.deleteRequests, [
+      decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
+    ]);
+  }))));
+
+Deno.test("deletion during unknown-session reconciliation blocks stale update publication", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const reconciliation: ReconciliationProbe = { block: null };
+    const { gateway, url } = yield* makeHarness(fakeRepository(new Set(), reconciliation));
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_2)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
+      "initial route missing",
+    );
+
+    const block = {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+    };
+    reconciliation.block = block;
+    yield* Queue.offer(
+      probe.runnerEvents,
+      decode(RunnerStateEvent)({
+        type: "session.updated",
+        revision: 2,
+        session: snapshot(SESSION_1),
+      }),
+    );
+    yield* Deferred.await(block.started);
+
+    yield* gateway.deleteSession({ userId: USER_ID, sessionId: SESSION_1 });
+    yield* Deferred.succeed(block.release, undefined);
+
+    yield* waitUntil(
+      () => Effect.sync(() => probe.deleteRequests.length === 1),
+      "deleted late session update was not cleaned up",
+    );
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_2), RUNNER_ID);
+  }))));
+
+Deno.test("deletion during create reconciliation blocks late provisioning publication", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const reconciliation: ReconciliationProbe = { block: null };
+    const { gateway, url } = yield* makeHarness(fakeRepository(new Set(), reconciliation));
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, []);
+    yield* waitUntil(
+      () =>
+        gateway.getRunnerLiveState(USER_ID, RUNNER_ID).pipe(Effect.map((live) => live !== null)),
+      "runner not admitted",
+    );
+
+    const block = {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+    };
+    reconciliation.block = block;
+    const provision = yield* gateway.provisionSession({
+      userId: USER_ID,
+      runnerId: RUNNER_ID,
+      sessionId: SESSION_1,
+      payload: {
+        mode: "create",
+        projectId,
+        repositoryUrl: "https://github.com/openorb/test.git",
+        ref: "main",
+        branchName: "openorb/test",
+        gitAuthor: GIT_AUTHOR,
+        orbSize: "small",
+        initialPrompt: "Build it",
+        modelRuntime: {
+          model: "opencode-go/deepseek-v4-flash",
+          thinkingLevel: "high",
+          credential: { type: "api_key", value: "secret" },
+        },
+      },
+    }).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(block.started);
+
+    yield* gateway.deleteSession({ userId: USER_ID, sessionId: SESSION_1 });
+    yield* Deferred.succeed(block.release, undefined);
+
+    assertEquals((yield* Fiber.join(provision)).status, "accepted");
+    yield* waitUntil(
+      () => Effect.sync(() => probe.deleteRequests.length === 1),
+      "deleted provisioned session was not cleaned up",
+    );
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+  }))));
+
+Deno.test("tombstoned reconnect snapshots stay hidden while cleanup retries", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness(fakeRepository(new Set([SESSION_1])));
+    const probe = yield* makeProbe();
+    probe.deleteFailuresRemaining = 1;
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1), snapshot(SESSION_2)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
+      "non-tombstoned route missing",
+    );
+
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    yield* waitUntil(
+      () => Effect.sync(() => probe.deleteRequests.length === 2),
+      "failed runner cleanup was not retried",
+    );
+    assertEquals(probe.deleteRequests, [
+      decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
+      decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
+    ]);
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_2), RUNNER_ID);
+  }))));
+
+Deno.test("a tombstoned session first reported after connect is never routed", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness(fakeRepository(new Set([SESSION_1])));
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_2)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
+      "initial route missing",
+    );
+
+    yield* Queue.offer(
+      probe.runnerEvents,
+      decode(RunnerStateEvent)({
+        type: "session.updated",
+        revision: 2,
+        session: snapshot(SESSION_1),
+      }),
+    );
+    yield* waitUntil(
+      () => Effect.sync(() => probe.deleteRequests.length === 1),
+      "late tombstoned session was not cleaned up",
+    );
+    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    assertEquals(probe.deleteRequests, [
+      decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
+    ]);
   }))));
 
 Deno.test("concurrent Prompt and Abort both reach the runner for serialized handling", () =>

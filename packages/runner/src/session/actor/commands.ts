@@ -38,6 +38,10 @@ export type StopAcceptance =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string };
 
+export type DeletionAcceptance =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string };
+
 interface SessionActorInputBase {
   metadata: RunnerSessionMetadata;
   githubToken?: string | undefined;
@@ -94,6 +98,11 @@ export type ActorCommand =
     readonly _tag: "UpdateGitFile";
     readonly payload: UpdateSessionGitFilePayload;
     readonly reply: Deferred.Deferred<GitFileUpdateAcceptance>;
+  }
+  | {
+    readonly kind: "command";
+    readonly _tag: "Delete";
+    readonly reply: Deferred.Deferred<DeletionAcceptance>;
   };
 
 export type ResumeContinuation =

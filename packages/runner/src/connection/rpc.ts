@@ -3,6 +3,10 @@ import { Deferred, Effect, Layer, Stream } from "effect";
 import {
   AbortRejected,
   AbortSessionAccepted,
+  DeleteFailed,
+  DeleteRejected,
+  DeleteSessionAccepted,
+  type DeleteSessionPayload,
   GitFileUpdateAccepted,
   GitFileUpdateRejected,
   GitSnapshotReadError,
@@ -49,6 +53,27 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
   const supervisor = yield* SessionSupervisor;
   const events = yield* SessionEvents;
   const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
+  const deleteSession = (payload: DeleteSessionPayload) =>
+    supervisor.deleteSession(payload.sessionId).pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning(
+          `Runner session ${payload.sessionId} cleanup failed and remains retryable: ${error.message}`,
+        )
+      ),
+      Effect.mapError(() =>
+        new DeleteFailed({
+          sessionId: payload.sessionId,
+          message: "Runner session storage cleanup failed and can be retried.",
+        })
+      ),
+      Effect.flatMap((acceptance) =>
+        acceptance.ok
+          ? events.publishRemoved(payload.sessionId).pipe(
+            Effect.as(new DeleteSessionAccepted({})),
+          )
+          : new DeleteRejected({ sessionId: payload.sessionId, message: acceptance.message })
+      ),
+    );
   const handlers = RunnerApi.toLayer(RunnerApi.of({
     "runner.identify": () =>
       Effect.succeed(
@@ -158,6 +183,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           })
         ),
       ),
+    "session.delete": deleteSession,
     "session.git-snapshot.read": ({ sessionId }) =>
       store.readMetadata(sessionId).pipe(
         Effect.mapError(() =>

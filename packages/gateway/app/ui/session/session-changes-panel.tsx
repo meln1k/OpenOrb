@@ -6,6 +6,7 @@ import { tryAsync, trySync } from "../../../../result/src/index.ts";
 import { object, parseSafe, string } from "remix/data-schema";
 import { css, type Handle } from "remix/ui";
 
+import { routes } from "@/app/routes.ts";
 import { Icon } from "../components/icons.tsx";
 import {
   type PreparedSessionChanges,
@@ -17,9 +18,7 @@ import { SessionPageScope } from "./session-page-controller.tsx";
 const errorResponseSchema = object({ error: string() }, { unknownKeys: "error" });
 
 export type SessionChangesPanelProps = {
-  changesHref: string;
   csrfToken: string;
-  gitSnapshotHref: string;
   sessionId: string;
 };
 
@@ -95,7 +94,7 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
     body.set("path", path);
     if (previousPath !== undefined) body.set("previousPath", previousPath);
     const [response, requestError] = await tryAsync(
-      fetch(handle.props.changesHref, {
+      fetch(routes.api.sessions.changes.href({ sessionId: handle.props.sessionId }), {
         method: "POST",
         credentials: "same-origin",
         headers: { Accept: "application/json" },
@@ -131,7 +130,7 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
     }
     if (handle.signal.aborted) return;
     const [response, requestError] = await tryAsync(
-      fetch(handle.props.gitSnapshotHref, {
+      fetch(routes.api.sessions.gitSnapshot.href({ sessionId: handle.props.sessionId }), {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
         signal: handle.signal,

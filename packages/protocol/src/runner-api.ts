@@ -7,6 +7,10 @@ import {
   AbortSessionAccepted,
   AbortSessionPayload,
   CapacityExceeded,
+  DeleteFailed,
+  DeleteRejected,
+  DeleteSessionAccepted,
+  DeleteSessionPayload,
   GitFileUpdateAccepted,
   GitFileUpdateRejected,
   GitSnapshotReadError,
@@ -81,6 +85,12 @@ export class StopSession extends Rpc.make("session.stop", {
   error: Schema.Union([SessionNotFound, StopRejected]),
 }) {}
 
+export class DeleteSession extends Rpc.make("session.delete", {
+  payload: DeleteSessionPayload,
+  success: DeleteSessionAccepted,
+  error: Schema.Union([DeleteRejected, DeleteFailed]),
+}) {}
+
 export class WatchSession extends Rpc.make("session.watch", {
   payload: WatchSessionPayload,
   success: WatchSessionEvent,
@@ -108,6 +118,7 @@ export const RunnerApi = RpcGroup.make(
   WakeSession,
   AbortSession,
   StopSession,
+  DeleteSession,
   WatchSession,
   ReadSessionGitSnapshot,
   UpdateSessionGitFile,

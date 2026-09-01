@@ -17,6 +17,7 @@ import { recoverSessionState, type RunnerSessionMetadata, sessionMetadata } from
 export type { RunnerSessionMetadata } from "./actor/state.ts";
 
 const SESSIONS_DIRECTORY = "sessions";
+const SESSION_DELETIONS_DIRECTORY = "session-deletions";
 const CHECKPOINTS_DIRECTORY = "checkpoints";
 
 const gitSnapshotStateSchema = Schema.Struct({
@@ -162,13 +163,55 @@ export function makeRunnerSessionStore(
     const piSessionFile = paths.join("pi", "session.jsonl");
     const gitSnapshotFile = paths.join("snapshots", "git-snapshot.json");
     const sessionsPath = paths.join(config.workingDirectory, SESSIONS_DIRECTORY);
+    const sessionDeletionsPath = paths.join(
+      config.workingDirectory,
+      SESSION_DELETIONS_DIRECTORY,
+    );
     const sessionPath = (sessionId: SessionId) => paths.join(sessionsPath, sessionId);
+    const sessionDeletionPath = (sessionId: SessionId) =>
+      paths.join(sessionDeletionsPath, sessionId);
     const checkpointsPath = (sessionId: SessionId) =>
       paths.join(sessionPath(sessionId), CHECKPOINTS_DIRECTORY);
     const fileSystem = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(Effect.mapError(sessionDataError));
-    yield* ensurePrivateDirectory(fs, sessionsPath).pipe(
+    yield* Effect.forEach(
+      [sessionsPath, sessionDeletionsPath],
+      (path) => ensurePrivateDirectory(fs, path),
+      { discard: true },
+    ).pipe(
       Effect.mapError(storeError("initialize", "Could not initialize runner session storage")),
+    );
+    yield* syncDirectory(fs, config.workingDirectory).pipe(
+      Effect.mapError(storeError("initialize", "Could not sync runner session storage")),
+    );
+
+    const removeQueuedSessionStorage = Effect.fn(
+      "RunnerSessionStore.removeQueuedSessionStorage",
+    )(function* (sessionId: SessionId) {
+      const path = sessionDeletionPath(sessionId);
+      const exists = yield* fs.exists(path).pipe(Effect.mapError(sessionDataError));
+      if (!exists) return;
+      yield* fileSystem(fs.remove(path, { recursive: true, force: true }));
+      yield* syncDirectory(fs, sessionDeletionsPath);
+    });
+
+    yield* Effect.gen(function* () {
+      const entries = yield* fs.readDirectory(sessionDeletionsPath).pipe(
+        Effect.mapError(sessionDataError),
+      );
+      yield* Effect.forEach(
+        entries,
+        (entry) =>
+          Schema.decodeUnknownEffect(SessionId)(entry).pipe(
+            Effect.mapError(sessionDataError),
+            Effect.flatMap(removeQueuedSessionStorage),
+          ),
+        { discard: true },
+      );
+    }).pipe(
+      Effect.mapError(
+        storeError("initialize", "Could not recover pending runner session deletions"),
+      ),
     );
 
     const readMetadataValue = (
@@ -329,8 +372,17 @@ export function makeRunnerSessionStore(
 
       removeSessionStorage: Effect.fn("RunnerSessionStore.removeSessionStorage")(
         function* (sessionId: SessionId) {
-          yield* fileSystem(fs.remove(sessionPath(sessionId), { recursive: true }));
-          yield* syncDirectory(fs, sessionsPath);
+          const path = sessionPath(sessionId);
+          const queuedPath = sessionDeletionPath(sessionId);
+          const queued = yield* fs.exists(queuedPath).pipe(Effect.mapError(sessionDataError));
+          if (!queued) {
+            const exists = yield* fs.exists(path).pipe(Effect.mapError(sessionDataError));
+            if (!exists) return;
+            yield* fs.rename(path, queuedPath).pipe(Effect.mapError(sessionDataError));
+            yield* syncDirectory(fs, sessionDeletionsPath);
+            yield* syncDirectory(fs, sessionsPath);
+          }
+          yield* removeQueuedSessionStorage(sessionId);
         },
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(

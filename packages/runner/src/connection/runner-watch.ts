@@ -3,6 +3,7 @@ import {
   type RunId,
   RunnerCapacity,
   RunnerSessionSnapshot,
+  type RunnerStateEvent,
   RunnerWatchError,
 } from "@openorb/protocol/runner-api";
 
@@ -30,6 +31,14 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
       Effect.mapError(() =>
         new RunnerWatchError({ message: "Runner manifest could not be read." })
       ),
+    );
+    yield* Effect.forEach(
+      manifest.errors,
+      (error) =>
+        Effect.logWarning(
+          `Runner session ${error.sessionDirectory} could not be fully inspected: ${error.message}`,
+        ),
+      { discard: true },
     );
     const reportedCapacity = yield* readCapacity(getCapacity);
     const capacity = yield* Schema.decodeUnknownEffect(RunnerCapacity)(reportedCapacity).pipe(
@@ -69,8 +78,19 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
     // The same queue first drains notifications buffered during the snapshot and then remains the
     // live source, so there is no second subscription boundary where an update can disappear.
     const sessionUpdates = Stream.fromQueue(stateChanges).pipe(
-      Stream.mapEffect((sessionId) =>
-        store.getSessionSnapshot(sessionId).pipe(
+      Stream.mapEffect((change): Effect.Effect<
+        typeof RunnerStateEvent.Type | null,
+        RunnerWatchError
+      > => {
+        if (change.type === "removed") {
+          lastSessionValues.delete(change.sessionId);
+          return Effect.succeed({
+            type: "session.removed" as const,
+            revision: ++revision,
+            sessionId: change.sessionId,
+          });
+        }
+        return store.getSessionSnapshot(change.sessionId).pipe(
           Effect.mapError(() =>
             new RunnerWatchError({ message: "Runner session state could not be read." })
           ),
@@ -80,16 +100,15 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
             const encoded = JSON.stringify(current);
             if (lastSessionValues.get(current.id) === encoded) return null;
             lastSessionValues.set(current.id, encoded);
-            return current;
+            return {
+              type: "session.updated" as const,
+              revision: ++revision,
+              session: current,
+            };
           }),
-        )
-      ),
+        );
+      }),
       Stream.filter(Predicate.isNotNull),
-      Stream.map((session) => ({
-        type: "session.updated" as const,
-        revision: ++revision,
-        session,
-      })),
     );
     return Stream.concat(snapshot, Stream.merge(observed, sessionUpdates));
   }));

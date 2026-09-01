@@ -6,6 +6,7 @@ import { trySync } from "../../../../result/src/index.ts";
 import { parseSafe, string } from "remix/data-schema";
 import { type Handle, type RemixNode, TypedEventTarget } from "remix/ui";
 
+import { routes } from "@/app/routes.ts";
 import {
   runnerSessionStateForProvisioningStage,
   type SessionState,
@@ -59,9 +60,8 @@ export class SessionPageController extends TypedEventTarget<SessionPageEventMap>
 interface SessionPageScopeProps {
   readonly children?: RemixNode;
   readonly csrfToken: string;
-  readonly eventsHref: string;
   readonly initialState: SessionState;
-  readonly wakeHref: string;
+  readonly sessionId: string;
 }
 
 export function SessionPageScope(
@@ -75,7 +75,7 @@ export function SessionPageScope(
 
     const body = new FormData();
     body.set("_csrf", handle.props.csrfToken);
-    void fetch(handle.props.wakeHref, {
+    void fetch(routes.api.sessions.wake.href({ sessionId: handle.props.sessionId }), {
       method: "POST",
       body,
       credentials: "same-origin",
@@ -83,7 +83,9 @@ export function SessionPageScope(
       signal: handle.signal,
     }).catch(() => undefined);
 
-    const stream = new EventSource(handle.props.eventsHref);
+    const stream = new EventSource(
+      routes.api.sessions.events.href({ sessionId: handle.props.sessionId }),
+    );
     stream.addEventListener("open", () => controller.setConnectionInterrupted(false));
     stream.addEventListener("session", (message) => {
       if (!(message instanceof MessageEvent)) return;

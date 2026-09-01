@@ -103,6 +103,26 @@ Deno.test("WatchSession retains the latest session state across watch reconnects
   }
 });
 
+Deno.test("session cleanup publishes a typed removal state change", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    await withSession(workingDirectory, SESSION_ID, async ({ events }) => {
+      const watching = Effect.runFork(
+        events.watchStateChanges().pipe(Stream.take(1), Stream.runCollect),
+      );
+      await Effect.runPromise(Effect.yieldNow);
+      await Effect.runPromise(events.publishRemoved(SESSION_ID));
+
+      assertEquals(Array.from(await Effect.runPromise(Fiber.join(watching))), [{
+        type: "removed",
+        sessionId: SESSION_ID,
+      }]);
+    });
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
 Deno.test("active conversation reads use the cache and coalesced updates preserve every cursor", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {

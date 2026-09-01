@@ -343,6 +343,31 @@ export default createController(routes.app.sessions, {
       return sessionCommandAccepted(context, sessionId);
     },
 
+    async delete(context) {
+      const userId = context.auth.identity.id;
+      const sessionId = parseSessionId(context.params.sessionId);
+      if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
+      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      if (!session) return await sessionCommandError(context, "Session not found.", 404);
+
+      const [deleted, deletionError] = await context.services.store.deleteSessionCatalogEntry(
+        userId,
+        sessionId,
+        new Date().toISOString(),
+      );
+      if (deletionError !== undefined) {
+        return await sessionCommandError(context, deletionError.message, 500);
+      }
+      if (deleted === "not-found") {
+        return new Response("Session not found.", { status: 404 });
+      }
+
+      await Effect.runPromise(
+        context.services.runnerConnections.deleteSession({ userId, sessionId }),
+      );
+      return redirect(routes.app.index.href(), 303);
+    },
+
     async retry(context) {
       const userId = context.auth.identity.id;
       const sessionId = parseSessionId(context.params.sessionId);
@@ -490,14 +515,6 @@ async function renderDetailPage(
       session={session}
       runnerId={runnerId}
       snapshot={snapshot}
-      abortHref={routes.app.sessions.abort.href({ sessionId })}
-      eventsHref={routes.api.sessions.events.href({ sessionId })}
-      gitSnapshotHref={routes.api.sessions.gitSnapshot.href({ sessionId })}
-      changesHref={routes.api.sessions.changes.href({ sessionId })}
-      messageHref={routes.app.sessions.message.href({ sessionId })}
-      retryHref={routes.app.sessions.retry.href({ sessionId })}
-      stopHref={routes.app.sessions.stop.href({ sessionId })}
-      wakeHref={routes.api.sessions.wake.href({ sessionId })}
       sidebarSessions={sidebarSessions}
       error={error}
     />,

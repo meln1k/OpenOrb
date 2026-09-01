@@ -15,8 +15,12 @@ import { ProvisionRejected, ProvisionSessionSuccess } from "@openorb/protocol/ru
 
 import { RunnerSessionDefinition } from "./definition.ts";
 import { runnerSessionDefinitionsEqual } from "./definition.ts";
-import { type SessionActor, SessionActorFactory } from "./actor/index.ts";
-import { type RunnerSessionMetadata, RunnerSessionStore } from "./store.ts";
+import { type DeletionAcceptance, type SessionActor, SessionActorFactory } from "./actor/index.ts";
+import {
+  type RunnerSessionMetadata,
+  RunnerSessionStore,
+  type RunnerSessionStoreError,
+} from "./store.ts";
 
 export interface SessionSupervisorOptions {
   readonly runnerId: RunnerId;
@@ -41,6 +45,9 @@ export interface SessionSupervisor {
   readonly provision: (
     payload: typeof ProvisionSessionPayload.Type,
   ) => Effect.Effect<ProvisionSessionSuccess, ProvisionRejected>;
+  readonly deleteSession: (
+    sessionId: SessionId,
+  ) => Effect.Effect<DeletionAcceptance, RunnerSessionStoreError>;
 }
 
 export const SessionSupervisor: Context.Service<SessionSupervisor, SessionSupervisor> = Context
@@ -83,6 +90,7 @@ export function makeSessionSupervisor(
     const actorFactory = yield* SessionActorFactory;
     const scope = yield* Effect.scope;
     const actors = MutableHashMap.empty<string, ActorRegistryEntry>();
+    const deletions = new Set<string>();
     const admission = yield* Semaphore.make(1);
     const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
     if (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs <= 0) {
@@ -206,6 +214,9 @@ export function makeSessionSupervisor(
       payload: typeof ProvisionSessionPayload.Type,
     ): Effect.Effect<ProvisionAcceptance> =>
       Effect.gen(function* () {
+        if (deletions.has(payload.sessionId)) {
+          return { ok: false, message: "This session is being deleted." } as const;
+        }
         if (payload.mode === "create" && !supportsOrbSize(payload.orbSize)) {
           return { ok: false, message: unsupportedOrbSizeMessage(payload.orbSize) } as const;
         }
@@ -290,9 +301,11 @@ export function makeSessionSupervisor(
     const findOrRestoreActor = (
       sessionId: SessionId,
     ): Effect.Effect<SessionActor | undefined> => {
+      if (deletions.has(sessionId)) return Effect.sync(() => undefined);
       const existing = Option.getOrUndefined(MutableHashMap.get(actors, sessionId));
       if (existing) return Effect.succeed(existing.actor);
       return admission.withPermit(Effect.gen(function* () {
+        if (deletions.has(sessionId)) return undefined;
         const current = Option.getOrUndefined(MutableHashMap.get(actors, sessionId));
         if (current) return current.actor;
         const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
@@ -318,6 +331,40 @@ export function makeSessionSupervisor(
       }));
     };
 
+    const deleteSession = (
+      sessionId: SessionId,
+    ): Effect.Effect<DeletionAcceptance, RunnerSessionStoreError> =>
+      admission.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+        if (!deletions.has(sessionId)) {
+          const actor = Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor;
+          if (actor) {
+            const acceptance = yield* actor.delete();
+            if (!acceptance.ok) return acceptance;
+          } else {
+            const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
+            if (
+              Option.isSome(metadata) && metadata.value.state !== "ready" &&
+              metadata.value.state !== "stopped" && metadata.value.state !== "error"
+            ) {
+              return {
+                ok: false,
+                message: "Wait for active session work to finish before deleting the session.",
+              } as const;
+            }
+          }
+          deletions.add(sessionId);
+        }
+
+        const actor = Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor;
+        if (actor) {
+          yield* actor.shutdown;
+          MutableHashMap.remove(actors, sessionId);
+        }
+        yield* store.removeSessionStorage(sessionId);
+        deletions.delete(sessionId);
+        return { ok: true } as const;
+      })));
+
     return SessionSupervisor.of({
       activeSessionCount: () => {
         let count = 0;
@@ -328,8 +375,12 @@ export function makeSessionSupervisor(
       },
       getActiveRunId: (sessionId) =>
         Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor.activeRunId,
-      findActor: (sessionId) => Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor,
+      findActor: (sessionId) =>
+        deletions.has(sessionId)
+          ? undefined
+          : Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor,
       findOrRestoreActor,
+      deleteSession,
       provision: (payload) =>
         admission.withPermit(
           Effect.uninterruptible(acceptProvision(payload)),

@@ -46,6 +46,7 @@ export function makeSessionBehavior(
     const runtime = makeSessionRuntime(status);
     const decisions = makeSessionDecisions();
     const idleLoopStarted = MutableRef.make(false);
+    const deletionRequested = MutableRef.make(false);
     const send = context.send;
     const gitSnapshots = makeGitSnapshotSynchronizer({
       sessionId,
@@ -111,6 +112,21 @@ export function makeSessionBehavior(
       state: SessionState,
       command: ActorCommand,
     ): Effect.Effect<SessionDecision, never, Scope.Scope> {
+      if (command._tag === "Delete") {
+        if (MutableRef.get(deletionRequested)) {
+          return Effect.succeed(decisions.reply(command.reply, { ok: true }));
+        }
+        const acceptance = checkpoint.deletionAcceptance(state);
+        return Effect.succeed(
+          acceptance.ok
+            ? decisions.none(() => {
+              MutableRef.set(deletionRequested, true);
+              return Deferred.succeed(command.reply, acceptance).pipe(Effect.asVoid);
+            })
+            : decisions.reply(command.reply, acceptance),
+        );
+      }
+      if (MutableRef.get(deletionRequested)) return Effect.succeed(rejectDuringDeletion(command));
       switch (command._tag) {
         case "Wake":
           return continuation.wake(state, command);
@@ -122,6 +138,27 @@ export function makeSessionBehavior(
           return checkpoint.stop(state, command);
         case "UpdateGitFile":
           return checkpoint.updateGitFile(state, command);
+      }
+    }
+
+    function rejectDuringDeletion(command: ActorCommand): SessionDecision {
+      const rejected = {
+        ok: false as const,
+        message: "The session is being deleted.",
+      };
+      switch (command._tag) {
+        case "Wake":
+          return decisions.reply(command.reply, rejected);
+        case "Prompt":
+          return decisions.reply(command.reply, rejected);
+        case "Abort":
+          return decisions.reply(command.reply, rejected);
+        case "Stop":
+          return decisions.reply(command.reply, rejected);
+        case "UpdateGitFile":
+          return decisions.reply(command.reply, rejected);
+        case "Delete":
+          return decisions.none();
       }
     }
 

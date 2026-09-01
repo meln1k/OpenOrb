@@ -19,6 +19,7 @@ export const routes = route({
       abort: post(":sessionId/abort"),
       stop: post(":sessionId/stop"),
       retry: post(":sessionId/retry"),
+      delete: post(":sessionId/delete"),
     }),
     settings: route("settings", {
       index: get("/"),

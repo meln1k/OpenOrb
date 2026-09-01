@@ -37,12 +37,16 @@ interface ActiveConversation {
   readonly dispose: () => void;
 }
 
+export type SessionStateChange =
+  | { readonly type: "updated"; readonly sessionId: SessionId }
+  | { readonly type: "removed"; readonly sessionId: SessionId };
+
 export interface SessionEvents {
   readonly watch: (
     sessionId: SessionId,
     afterCursor: number,
   ) => Stream.Stream<typeof WatchSessionEvent.Type, EventError>;
-  readonly watchStateChanges: () => Stream.Stream<SessionId>;
+  readonly watchStateChanges: () => Stream.Stream<SessionStateChange>;
   readonly activateConversation: (
     sessionId: SessionId,
     initial: readonly typeof DurableSessionEvent.Type[],
@@ -52,6 +56,7 @@ export interface SessionEvents {
     correlationId: string,
     event: unknown,
   ) => Effect.Effect<void, EventError | Schema.SchemaError>;
+  readonly publishRemoved: (sessionId: SessionId) => Effect.Effect<void>;
 }
 
 export const SessionEvents: Context.Service<SessionEvents, SessionEvents> = Context.Service(
@@ -68,7 +73,7 @@ export function makeSessionEvents(options: {
 > {
   return Effect.gen(function* () {
     const store = yield* RunnerSessionStore;
-    const stateChanged = yield* PubSub.sliding<SessionId>(64);
+    const stateChanged = yield* PubSub.sliding<SessionStateChange>(64);
     const allocation = yield* Semaphore.make(1);
     const sessions = new Map<SessionId, SessionFeed>();
     const readHistory = options.readHistory ?? readHistoryFile;
@@ -205,8 +210,22 @@ export function makeSessionEvents(options: {
           const item: typeof WatchSessionEvent.Type = { runId, event: decoded };
           if (decoded.type === "session.state") feed.latestState = item;
           yield* PubSub.publish(feed.liveEvents, item);
-          if (decoded.type === "session.state") yield* PubSub.publish(stateChanged, sessionId);
+          if (decoded.type === "session.state") {
+            yield* PubSub.publish(stateChanged, { type: "updated" as const, sessionId });
+          }
         }),
+      publishRemoved: (sessionId) =>
+        allocation.withPermit(Effect.gen(function* () {
+          const feed = sessions.get(sessionId);
+          if (feed) {
+            sessions.delete(sessionId);
+            yield* Effect.all(
+              [PubSub.shutdown(feed.conversationChanged), PubSub.shutdown(feed.liveEvents)],
+              { discard: true },
+            );
+          }
+          yield* PubSub.publish(stateChanged, { type: "removed" as const, sessionId });
+        })),
     });
   });
 }

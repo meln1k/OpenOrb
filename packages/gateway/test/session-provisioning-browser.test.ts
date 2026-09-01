@@ -1,4 +1,10 @@
-import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertNotMatch,
+  assertStringIncludes,
+} from "@std/assert";
 
 import {
   GitAuthor,
@@ -14,6 +20,7 @@ import {
 import { Effect, Schema, Stream } from "effect";
 import type {
   AbortSessionInput,
+  DeleteSessionInput,
   OperationResult,
   PromptSessionInput,
   ProvisionSessionInput,
@@ -55,6 +62,7 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   prompts: PromptSessionInput[] = [];
   aborts: AbortSessionInput[] = [];
   stops: StopSessionInput[] = [];
+  deletions: DeleteSessionInput[] = [];
   gitFileUpdates: UpdateSessionGitFileInput[] = [];
   events: (typeof WatchSessionEvent.Type)[] = [];
   afterCursors: number[] = [];
@@ -205,6 +213,14 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     return Effect.sync(() => {
       this.stops.push(input);
       return this.stopResult;
+    });
+  }
+
+  deleteSession(input: DeleteSessionInput): Effect.Effect<void> {
+    return Effect.sync(() => {
+      if (input.userId === this.userId && input.sessionId === this.sessionId) {
+        this.deletions.push(input);
+      }
     });
   }
 
@@ -438,10 +454,6 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(detailHtml, /aria-label="Breadcrumb"/);
     assertNotMatch(detailHtml, /Session <code>/);
     assertNotMatch(detailHtml, /<span>Repository<\/span>/);
-    assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/events`));
-    assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/git-snapshot`));
-    assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/wake`));
-    assertMatch(detailHtml, new RegExp(`/api/sessions/${provision.sessionId}/changes`));
     assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-detail-client\.tsx/);
     assertMatch(detailHtml, /"exportName":"SessionDetailClient"/);
     assertNotMatch(detailHtml, /"exportName":"SessionVmControl"/);
@@ -1092,6 +1104,159 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
   }
 });
 
+Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolates tenants", async () => {
+  const store = await createTestStore();
+  const connections = new BrowserTestRunnerConnections();
+  const router = createAppRouter(createAppServices(store, connections));
+  const server = await createTestServer((request) => router.fetch(request));
+
+  try {
+    const client = await authenticate(server.baseUrl, store);
+    connections.userId = client.userId;
+    const projectResult = await store.saveProject(client.userId, {
+      name: "OpenOrb",
+      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
+    });
+    assert(projectResult.status === "saved");
+    await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
+    await store.saveModelProviderCredential(client.userId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+    const enrolled = await enrollRunner(store, client.userId);
+    connections.runnerId = enrolled.runnerId;
+
+    const onlineSession = deletionSnapshot(
+      crypto.randomUUID(),
+      projectResult.project.id,
+      "Delete this online session",
+    );
+    const [onlineReconciled] = await store.reconcileSessionManifestEntries(client.userId, [
+      onlineSession,
+    ]);
+    assert(onlineReconciled);
+    assertEquals(onlineReconciled.acceptedSessionIds, [onlineSession.id]);
+    connections.sessionId = onlineSession.id;
+    connections.snapshot = onlineSession;
+
+    const detailUrl = new URL(
+      routes.app.sessions.detail.href({ sessionId: onlineSession.id }),
+      server.baseUrl,
+    );
+    const detail = await fetch(detailUrl, { headers: { Cookie: client.cookie } });
+    assertEquals(detail.status, 200);
+    const detailHtml = await detail.text();
+    const csrfToken = csrfFrom(detailHtml);
+    const deleteHref = routes.app.sessions.delete.href({ sessionId: onlineSession.id });
+    assertStringIncludes(detailHtml, "Delete session?");
+    assertStringIncludes(detailHtml, "This cannot be undone.");
+    assertStringIncludes(detailHtml, `action="${deleteHref}"`);
+    assertMatch(detailHtml, /<button[^>]*type="submit"[^>]*>Delete session<\/button>/);
+
+    const missingCsrf = await fetch(new URL(deleteHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+    });
+    assertEquals(missingCsrf.status, 403);
+    assert(await store.getSessionCatalogEntry(client.userId, onlineSession.id));
+    assertEquals(connections.deletions, []);
+
+    const deleted = await submitDeletion(
+      server.baseUrl,
+      client.cookie,
+      onlineSession.id,
+      csrfToken,
+    );
+    assertEquals(deleted.status, 303);
+    assertEquals(deleted.headers.get("location"), routes.app.index.href());
+    assertEquals(await store.getSessionCatalogEntry(client.userId, onlineSession.id), null);
+    assertEquals(connections.deletions, [
+      { userId: client.userId, sessionId: onlineSession.id },
+    ]);
+
+    const offlineSession = deletionSnapshot(
+      crypto.randomUUID(),
+      projectResult.project.id,
+      "Delete this lost runner session",
+    );
+    const [offlineReconciled] = await store.reconcileSessionManifestEntries(client.userId, [
+      offlineSession,
+    ]);
+    assert(offlineReconciled);
+    assertEquals(await store.revokeRunner(client.userId, enrolled.runnerId), "revoked");
+    connections.sessionId = null;
+    connections.snapshot = null;
+    const offlineDeleted = await submitDeletion(
+      server.baseUrl,
+      client.cookie,
+      offlineSession.id,
+      csrfToken,
+    );
+    assertEquals(offlineDeleted.status, 303);
+    assertEquals(await store.getSessionCatalogEntry(client.userId, offlineSession.id), null);
+    assertEquals(connections.deletions.length, 1);
+
+    const otherUserId = await createTestUser(store);
+    const otherProject = await store.saveProject(otherUserId, {
+      name: "Other user project",
+      repositoryUrl: "https://github.com/meln1k/other-user-project.git",
+    });
+    assert(otherProject.status === "saved");
+    const foreignSession = deletionSnapshot(
+      crypto.randomUUID(),
+      otherProject.project.id,
+      "Foreign session",
+    );
+    const [foreignReconciled] = await store.reconcileSessionManifestEntries(otherUserId, [
+      foreignSession,
+    ]);
+    assert(foreignReconciled);
+    const deletionCount = connections.deletions.length;
+    const foreignDelete = await submitDeletion(
+      server.baseUrl,
+      client.cookie,
+      foreignSession.id,
+      csrfToken,
+    );
+    assertEquals(foreignDelete.status, 404);
+    assert(await store.getSessionCatalogEntry(otherUserId, foreignSession.id));
+    assertEquals(connections.deletions.length, deletionCount);
+
+    const sameIdForOtherUser = deletionSnapshot(
+      onlineSession.id,
+      otherProject.project.id,
+      "Same ID in another tenant",
+    );
+    const [sameIdReconciled] = await store.reconcileSessionManifestEntries(otherUserId, [
+      sameIdForOtherUser,
+    ]);
+    assert(sameIdReconciled);
+    assertEquals(sameIdReconciled.acceptedSessionIds, [onlineSession.id]);
+    assert(await store.getSessionCatalogEntry(otherUserId, onlineSession.id));
+    const [staleOwnerSnapshot] = await store.reconcileSessionManifestEntries(client.userId, [
+      onlineSession,
+    ]);
+    assert(staleOwnerSnapshot);
+    assertEquals(staleOwnerSnapshot.acceptedSessionIds, []);
+    assertEquals(staleOwnerSnapshot.tombstonedSessionIds, [onlineSession.id]);
+    assertEquals(await store.getSessionCatalogEntry(client.userId, onlineSession.id), null);
+
+    const markerColumns = await store.pool.query<{ column_name: string }>(
+      `select column_name
+         from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'deleted_sessions'
+        order by ordinal_position`,
+    );
+    assertEquals(markerColumns.rows.map((row: { column_name: string }) => row.column_name), [
+      "user_id",
+      "session_id",
+      "deleted_at",
+    ]);
+  } finally {
+    await server.close();
+    await store.close();
+  }
+});
+
 interface BrowserClient {
   cookie: string;
   userId: string;
@@ -1162,6 +1327,37 @@ function sessionIdFrom(html: string): string {
   const match = html.match(/name="sessionId" value="([^"]+)"/);
   assert(match, "expected a session ID form field");
   return match[1]!;
+}
+
+function deletionSnapshot(
+  sessionId: string,
+  projectId: string,
+  initialPromptPreview: string,
+): RunnerSessionSnapshot {
+  return Schema.decodeUnknownSync(RunnerSessionSnapshot)({
+    id: sessionId,
+    projectId,
+    createdAt: "2026-08-28T12:00:00Z",
+    initialPromptPreview,
+    model: MODEL,
+    orbSize: "medium",
+    state: "ready",
+    lastEventCursor: 1,
+  });
+}
+
+function submitDeletion(
+  baseUrl: URL,
+  cookie: string,
+  sessionId: string,
+  csrfToken: string,
+): Promise<Response> {
+  return fetch(new URL(routes.app.sessions.delete.href({ sessionId }), baseUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { Cookie: cookie },
+    body: new URLSearchParams({ _csrf: csrfToken }),
+  });
 }
 
 function submitSession(

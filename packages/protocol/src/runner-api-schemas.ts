@@ -16,7 +16,7 @@ import {
 } from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 12;
+export const RUNNER_PROTOCOL_VERSION = 13;
 
 export * from "./runner-api-limits.ts";
 
@@ -332,6 +332,16 @@ export class StopSessionAccepted extends Schema.Class<StopSessionAccepted>(
   "StopSessionAccepted",
 )({}) {}
 
+export class DeleteSessionPayload extends Schema.Class<DeleteSessionPayload>(
+  "DeleteSessionPayload",
+)({
+  sessionId: SessionId,
+}) {}
+
+export class DeleteSessionAccepted extends Schema.Class<DeleteSessionAccepted>(
+  "DeleteSessionAccepted",
+)({}) {}
+
 export class WatchSessionPayload extends Schema.Class<WatchSessionPayload>("WatchSessionPayload")({
   sessionId: SessionId,
   afterCursor: SessionCursor,
@@ -520,6 +530,16 @@ export class AbortRejected extends Schema.TaggedError<AbortRejected>()(
 
 export class StopRejected extends Schema.TaggedError<StopRejected>()(
   "StopRejected",
+  { sessionId: SessionId, message: SafeMessage },
+) {}
+
+export class DeleteRejected extends Schema.TaggedError<DeleteRejected>()(
+  "DeleteRejected",
+  { sessionId: SessionId, message: SafeMessage },
+) {}
+
+export class DeleteFailed extends Schema.TaggedError<DeleteFailed>()(
+  "DeleteFailed",
   { sessionId: SessionId, message: SafeMessage },
 ) {}
 
