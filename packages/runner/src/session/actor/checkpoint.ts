@@ -1,3 +1,4 @@
+import type { SessionIssue } from "@openorb/protocol/runner-api";
 import { Clock, Deferred, Effect, type Scope } from "effect";
 
 import type { AgentEnvironment } from "../../environment/agent-environment.ts";
@@ -15,9 +16,10 @@ import type {
   StopAcceptance,
 } from "./commands.ts";
 import type { SessionDecision, SessionDecisions } from "./decision.ts";
-import type { SessionReporter } from "./reporter.ts";
+import { redactedErrorMessage, type SessionReporter } from "./reporter.ts";
 import type { SessionRuntime } from "./runtime.ts";
 import { sessionMetadata, type SessionState } from "./state.ts";
+import { makeSessionIssue } from "./issues.ts";
 
 interface CheckpointBehaviorOptions {
   readonly sessionId: SessionState["data"]["id"];
@@ -119,12 +121,13 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
         { type: "checkpoint.started", file: candidate.file },
         (checkpointing) =>
           emitState(sessionMetadata(checkpointing), "checkpointing", correlationId).pipe(
-            Effect.ignore,
+            Effect.orDie,
             Effect.andThen(
               Effect.forkScoped(checkpointReadySession(
                 current.environment!,
                 current.agentSession,
                 candidate,
+                state.phase.checkpoint !== undefined,
                 correlationId,
                 command.reply,
               )).pipe(Effect.asVoid),
@@ -132,11 +135,20 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
           ),
       );
     }).pipe(
-      Effect.catch(() =>
-        Effect.succeed(reply(command.reply, {
-          ok: false,
-          message: "The session checkpoint could not be started.",
-        }))
+      Effect.catch((error) =>
+        Effect.succeed(none(() =>
+          send({
+            kind: "internal",
+            _tag: "RecordIssue",
+            issue: checkpointIssue(false, state.phase.checkpoint !== undefined, error),
+          }).pipe(
+            Effect.andThen(Deferred.succeed(command.reply, {
+              ok: false,
+              message: "The session checkpoint could not be started.",
+            })),
+            Effect.asVoid,
+          )
+        ))
       ),
     );
   }
@@ -145,6 +157,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
     environment: AgentEnvironment,
     agentSession: OpenAgentSession | undefined,
     candidate: RunnerSessionCheckpointCandidate,
+    hasPriorCheckpoint: boolean,
     correlationId: string,
     commandReply: Deferred.Deferred<StopAcceptance>,
   ): Effect.Effect<void, never> {
@@ -171,7 +184,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
         reply: commandReply,
       });
     }).pipe(
-      Effect.catch(() =>
+      Effect.catch((error) =>
         send({
           kind: "internal",
           _tag: "CheckpointFailed",
@@ -179,6 +192,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
           consumed,
           agentSessionClosed,
           correlationId,
+          issue: checkpointIssue(consumed, hasPriorCheckpoint, error),
           reply: commandReply,
         })
       ),
@@ -219,14 +233,14 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
             Effect.andThen(runtime.updateStatus(false)),
             Effect.andThen(
               emitState(sessionMetadata(stopped), "stopped", command.correlationId).pipe(
-                Effect.ignore,
+                Effect.orDie,
               ),
             ),
             Effect.andThen(Deferred.succeed(command.reply, { ok: true })),
             Effect.asVoid,
           ))
       ),
-      Effect.catch(() =>
+      Effect.catch((error) =>
         Effect.succeed(failed(state, {
           kind: "internal",
           _tag: "CheckpointFailed",
@@ -234,6 +248,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
           consumed: true,
           agentSessionClosed: true,
           correlationId: command.correlationId,
+          issue: checkpointIssue(true, state.phase.checkpoint !== undefined, error),
           reply: command.reply,
         }))
       ),
@@ -254,6 +269,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
       type: "checkpoint.failed",
       file: command.candidate.file,
       consumed: command.consumed,
+      issue: command.issue,
     }, (failedState) =>
       store.discardCheckpoint(sessionId, command.candidate.file).pipe(
         Effect.catch((error) =>
@@ -270,11 +286,11 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
         ),
         Effect.andThen(runtime.updateStatus(!command.consumed)),
         Effect.andThen(
-          command.consumed
-            ? emitState(sessionMetadata(failedState), "failed", command.correlationId).pipe(
-              Effect.ignore,
-            )
-            : Effect.void,
+          emitState(
+            sessionMetadata(failedState),
+            command.consumed ? "failed" : "ready",
+            command.correlationId,
+          ).pipe(Effect.orDie),
         ),
         Effect.andThen(Deferred.succeed(command.reply, {
           ok: false,
@@ -320,10 +336,16 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
           Effect.as<GitFileUpdateAcceptance>(
             result.ok ? { ok: true } : rejectGitFileUpdate(result.message),
           ),
-          Effect.catch(() =>
-            Effect.succeed(rejectGitFileUpdate(
-              "The Git index may have changed, but its refreshed Git Snapshot could not be saved.",
-            ))
+          Effect.catch((error) =>
+            send({
+              kind: "internal",
+              _tag: "RecordIssue",
+              issue: gitSnapshotIssue(error),
+            }).pipe(
+              Effect.as(rejectGitFileUpdate(
+                "The Git index may have changed, but its refreshed Git Snapshot could not be saved.",
+              )),
+            )
           ),
         )
       ),
@@ -355,7 +377,14 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
       startGitOperation(
         gitSnapshots.refresh(environment, metadata, correlationId).pipe(
           Effect.matchEffect({
-            onFailure: (error) => Deferred.fail(command.reply, error),
+            onFailure: (error) =>
+              send({
+                kind: "internal",
+                _tag: "RecordIssue",
+                issue: gitSnapshotIssue(error),
+              }).pipe(
+                Effect.andThen(Deferred.fail(command.reply, error)),
+              ),
             onSuccess: () => Deferred.succeed(command.reply, undefined),
           }),
           Effect.asVoid,
@@ -378,4 +407,40 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
 
 function rejectGitFileUpdate(message: string): GitFileUpdateAcceptance {
   return { ok: false, message };
+}
+
+function checkpointIssue(
+  consumed: boolean,
+  hasPriorCheckpoint: boolean,
+  error: unknown,
+): SessionIssue {
+  if (!consumed) {
+    return makeSessionIssue({
+      category: "checkpoint-create",
+      severity: "warning",
+      message: "The checkpoint could not be created. The current VM remains available; retry Stop.",
+      diagnostics: redactedErrorMessage(error, []),
+      recovery: "none",
+    });
+  }
+  return makeSessionIssue({
+    category: "checkpoint-publish",
+    severity: "failure",
+    message: hasPriorCheckpoint
+      ? "The VM stopped, but its new checkpoint could not be published. Resume the prior checkpoint explicitly; newer guest root-disk changes may roll back, while the Project Workspace and Pi conversation remain preserved."
+      : "The VM stopped, but its checkpoint could not be published. Start a clean VM explicitly; the Project Workspace and Pi conversation remain preserved.",
+    diagnostics: redactedErrorMessage(error, []),
+    recovery: hasPriorCheckpoint ? "resume-prior-checkpoint" : "start-clean-vm",
+  });
+}
+
+function gitSnapshotIssue(error: unknown): SessionIssue {
+  return makeSessionIssue({
+    category: "report",
+    severity: "warning",
+    message:
+      "The Git Snapshot could not be refreshed. The session remains available with its last saved snapshot.",
+    diagnostics: redactedErrorMessage(error, []),
+    recovery: "none",
+  });
 }

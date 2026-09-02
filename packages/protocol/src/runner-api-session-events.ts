@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 
 export const MAX_RPC_SESSION_EVENT_TEXT_BYTES = 32 * 1024;
 export const MAX_RPC_QUEUED_SESSION_MESSAGES = 8;
+export const MAX_SESSION_ISSUES = 16;
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const NonNegativeNumber = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
@@ -50,6 +51,54 @@ export type SessionUsage = typeof SessionUsage.Type;
 export const RunnerCheckoutState = Schema.Literals(["pending", "available", "unavailable"]);
 export type RunnerCheckoutState = typeof RunnerCheckoutState.Type;
 
+export const SessionIssueCategory = Schema.Literals([
+  "vm-start",
+  "github-authentication",
+  "clone",
+  "setup",
+  "resume-hook",
+  "checkpoint-create",
+  "checkpoint-publish",
+  "checkpoint-resume",
+  "model",
+  "report",
+  "operation-uncertain",
+  "actor-crash",
+  "runner-storage",
+]);
+export type SessionIssueCategory = typeof SessionIssueCategory.Type;
+
+export const SessionRecoveryAction = Schema.Literals([
+  "none",
+  "retry-provisioning",
+  "resume-prior-checkpoint",
+  "start-clean-vm",
+]);
+export type SessionRecoveryAction = typeof SessionRecoveryAction.Type;
+
+export const SessionEnvironmentRecoveryMode = Schema.Literals([
+  "resume-prior-checkpoint",
+  "start-clean-vm",
+]);
+export type SessionEnvironmentRecoveryMode = typeof SessionEnvironmentRecoveryMode.Type;
+
+export const SessionIssue = Schema.Struct({
+  category: SessionIssueCategory,
+  severity: Schema.Literals(["warning", "failure"]),
+  message: nonEmptyBoundedText(1_000, "Session issue messages"),
+  diagnostics: Schema.optionalKey(
+    boundedText(MAX_RPC_SESSION_EVENT_TEXT_BYTES, "Session issue diagnostics"),
+  ),
+  recovery: SessionRecoveryAction,
+});
+export type SessionIssue = typeof SessionIssue.Type;
+
+export const SessionIssues = Schema.Array(SessionIssue).check(
+  Schema.isMaxLength(MAX_SESSION_ISSUES, {
+    message: `Expected at most ${MAX_SESSION_ISSUES} current session issues.`,
+  }),
+);
+
 export const SessionProvisioningStage = Schema.Literals([
   "created",
   "starting-vm",
@@ -69,6 +118,7 @@ const ProvisioningStateEvent = Schema.Struct({
   type: Schema.Literal("session.state"),
   stage: SessionProvisioningStage,
   checkoutState: RunnerCheckoutState,
+  issues: SessionIssues,
 });
 
 const UserMessageEvent = Schema.Struct({

@@ -8,13 +8,14 @@ import type { ProvisioningLogBudget } from "./commands.ts";
 import { SessionEvents } from "../events.ts";
 import type { RunnerSessionMetadata } from "../store.ts";
 
-const MAX_CAPTURED_COMMAND_BYTES = 4 * 1024;
+const MAX_CAPTURED_COMMAND_BYTES = MAX_RPC_SESSION_EVENT_TEXT_BYTES / 2;
 const MAX_PROVISIONING_LOG_BYTES = 256 * 1024;
 const OUTPUT_TRUNCATED_MESSAGE = "\n[Provisioning output was truncated.]\n";
 
 export interface CommandOutput {
   readonly exitCode: number;
   readonly stdout: string;
+  readonly stderr: string;
 }
 
 export interface SessionReporter {
@@ -37,7 +38,6 @@ export interface SessionReporter {
     command: string[],
     correlationId: string,
     logBudget: ProvisioningLogBudget,
-    captureStdout?: boolean,
   ) => Effect.Effect<CommandOutput, SessionActorError>;
 }
 
@@ -55,6 +55,11 @@ export function redactedErrorMessage(error: unknown, secrets: readonly string[])
   let redacted = error instanceof Error ? error.message : String(error);
   for (const secret of secrets) redacted = redacted.replaceAll(secret, "[REDACTED]");
   return sanitizeOutput(redacted).slice(0, 1000) || "unknown runner error";
+}
+
+export function commandDiagnostics(output: CommandOutput): string | undefined {
+  const diagnostics = [output.stdout.trim(), output.stderr.trim()].filter(Boolean).join("\n");
+  return diagnostics ? takeUtf8(diagnostics, MAX_RPC_SESSION_EVENT_TEXT_BYTES).head : undefined;
 }
 
 export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
@@ -86,17 +91,16 @@ export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
       type: "session.state",
       stage,
       checkoutState: metadata.checkoutState,
+      issues: metadata.issues,
     });
 
   const emitBoundedOutput = (
     correlationId: string,
     stream: "stdout" | "stderr",
-    rawText: string,
+    text: string,
     budget: ProvisioningLogBudget,
   ): Effect.Effect<void, SessionActorError> =>
     Effect.gen(function* () {
-      let text = sanitizeOutput(rawText);
-      for (const secret of budget.secrets) text = text.replaceAll(secret, "[REDACTED]");
       while (text.length > 0 && budget.remainingBytes > 0) {
         const limit = Math.min(budget.remainingBytes, MAX_RPC_SESSION_EVENT_TEXT_BYTES);
         const { head, tail, bytes } = takeUtf8(text, limit);
@@ -116,20 +120,24 @@ export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
     command: string[],
     correlationId: string,
     logBudget: ProvisioningLogBudget,
-    captureStdout = false,
   ): Effect.Effect<CommandOutput, SessionActorError> => {
     let stdout = "";
+    let stderr = "";
     return Effect.gen(function* () {
       const result = yield* environment.run(command, {
         onOutput: (output) =>
           Effect.gen(function* () {
-            if (captureStdout && output.stream === "stdout") {
-              stdout = appendBounded(stdout, output.text, MAX_CAPTURED_COMMAND_BYTES);
+            const text = sanitizeOutput(output.text);
+            if (output.stream === "stdout") {
+              stdout = appendBounded(stdout, text, MAX_CAPTURED_COMMAND_BYTES);
+            }
+            if (output.stream === "stderr") {
+              stderr = appendBounded(stderr, text, MAX_CAPTURED_COMMAND_BYTES);
             }
             yield* emitBoundedOutput(
               correlationId,
               output.stream,
-              output.text,
+              text,
               logBudget,
             );
           }),
@@ -138,7 +146,7 @@ export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
           new SessionActorError("The session actor operation failed.", cause)
         ),
       );
-      return { exitCode: result.exitCode, stdout };
+      return { exitCode: result.exitCode, stdout, stderr };
     });
   };
 

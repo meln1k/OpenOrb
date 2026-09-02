@@ -23,11 +23,19 @@ const updateGitFileSchema = f.object({
   path: f.field(gitPathSchema),
   previousPath: f.field(s.optional(gitPathSchema)),
 });
+const wakeSessionSchema = f.object({
+  recovery: f.field(s.optional(s.union([
+    s.literal("resume-prior-checkpoint" as const),
+    s.literal("start-clean-vm" as const),
+  ]))),
+});
 
 export default createController(routes.api.sessions, {
   middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
     async wake(context) {
+      const parsed = s.parseSafe(wakeSessionSchema, context.formData);
+      if (!parsed.success) return apiError("Invalid recovery action.", 400);
       const userId = context.auth.identity.id;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return apiError("Session not found.", 404);
@@ -37,12 +45,6 @@ export default createController(routes.api.sessions, {
         context.services.runnerConnections.getSessionSnapshot(userId, sessionId),
       );
       if (!snapshot) return apiError("The pinned runner is offline.", 503);
-      if (
-        snapshot.state !== "ready" && snapshot.state !== "running" &&
-        snapshot.state !== "stopped"
-      ) {
-        return apiError("The session cannot be restored right now.", 409);
-      }
 
       const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] = await Promise
         .all([
@@ -69,6 +71,7 @@ export default createController(routes.api.sessions, {
           payload: {
             modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
             ...(githubToken === null ? {} : { githubToken }),
+            ...(parsed.value.recovery === undefined ? {} : { recovery: parsed.value.recovery }),
           },
         }),
         { signal: context.request.signal },
@@ -141,13 +144,6 @@ export default createController(routes.api.sessions, {
       }
       const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
       if (!session) return new Response("Session not found.", { status: 404 });
-      if (
-        !await Effect.runPromise(
-          context.services.runnerConnections.getSessionRunner(userId, sessionId),
-        )
-      ) {
-        return new Response("The pinned runner is offline.", { status: 503 });
-      }
 
       const afterCursor = parseCursor(context.request);
       if (afterCursor === null) return new Response("Invalid event cursor.", { status: 400 });

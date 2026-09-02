@@ -5,18 +5,20 @@ import * as DenoPath from "@effect/platform-deno/DenoPath";
 import {
   AbortSessionPayload,
   GitAuthor,
+  MAX_RPC_SESSION_EVENT_TEXT_BYTES,
   ProjectId,
   PromptSessionPayload,
   ProvisionSessionPayload,
   RunId,
   RunnerId,
   SessionId,
+  type SessionIssueCategory,
   StopSessionPayload,
   UpdateSessionGitFilePayload,
   UserId,
   WakeSessionPayload,
 } from "@openorb/protocol/runner-api";
-import { Effect, Layer, Schema, Stream } from "effect";
+import { Effect, Exit, Fiber, Layer, Schema, Stream } from "effect";
 import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 
@@ -31,6 +33,7 @@ import { AgentHarness, AgentHarnessError } from "../../src/harness/agent-harness
 import { type CreateRawPiSession, makePiAgentHarness } from "../../src/harness/pi/layer.ts";
 import type { OpenOrbPiSessionOptions } from "../../src/harness/pi/session.ts";
 import { Journal } from "../../src/session/persistent-actor/journal.ts";
+import { PersistentActorError } from "../../src/session/persistent-actor/persistent-actor.ts";
 import { RunnerSessionDefinition } from "../../src/session/definition.ts";
 import { makeSessionEvents, SessionEvents } from "../../src/session/events.ts";
 import { sessionJournalLayer } from "../../src/session/persistent-actor/session-journal.ts";
@@ -102,12 +105,23 @@ class FakeEnvironment implements AgentEnvironment {
     | { started: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> }
     | undefined;
   resumeHookExitCode = 0;
+  cloneResult:
+    | { readonly exitCode: number; readonly stdout?: string; readonly stderr?: string }
+    | undefined;
+  setupResult:
+    | { readonly exitCode: number; readonly stdout?: string; readonly stderr?: string }
+    | undefined;
   closed = false;
 
   run: AgentEnvironment["run"] = (command, options = {}) => {
     this.commands.push([...command]);
     const resumeHookExitCode = this.resumeHookExitCode;
     const gitSnapshotBlock = this.gitSnapshotBlock;
+    const injectedResult = command[1] === "clone"
+      ? this.cloneResult
+      : command.some((argument) => argument.includes(".agents/setup"))
+      ? this.setupResult
+      : undefined;
     return Effect.gen(function* () {
       if (gitSnapshotBlock !== undefined && command.includes("--porcelain=v2")) {
         gitSnapshotBlock.started.resolve();
@@ -121,10 +135,21 @@ class FakeEnvironment implements AgentEnvironment {
           }).pipe(Effect.orDie);
         }
       }
+      if (options.onOutput && injectedResult?.stdout) {
+        yield* options.onOutput({ stream: "stdout", text: injectedResult.stdout }).pipe(
+          Effect.orDie,
+        );
+      }
+      if (options.onOutput && injectedResult?.stderr) {
+        yield* options.onOutput({ stream: "stderr", text: injectedResult.stderr }).pipe(
+          Effect.orDie,
+        );
+      }
       return {
-        exitCode: command.some((argument) => argument.includes(".agents/resume"))
-          ? resumeHookExitCode
-          : 0,
+        exitCode: injectedResult?.exitCode ??
+          (command.some((argument) => argument.includes(".agents/resume"))
+            ? resumeHookExitCode
+            : 0),
       };
     });
   };
@@ -236,6 +261,77 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
   }
 });
 
+Deno.test("clone and setup failures remain bounded warnings and still dispatch the stored prompt", async () => {
+  for (const failure of ["clone", "setup"] as const) {
+    const directory = await Deno.makeTempDir();
+    try {
+      const store = await makeStore(directory);
+      const environment = new FakeEnvironment();
+      if (failure === "clone") {
+        environment.cloneResult = {
+          exitCode: 128,
+          stderr: "fatal: authentication failed\n",
+        };
+      } else {
+        environment.setupResult = {
+          exitCode: 23,
+          stdout: `setup warning ${"x".repeat(20_000)}`,
+          stderr: `setup failed ${"y".repeat(20_000)}`,
+        };
+      }
+      const prompts: string[] = [];
+      const createPiSession: CreateRawPiSession = (options) =>
+        createSettlingPiSession(options).pipe(
+          Effect.map((created) => ({
+            session: {
+              ...created.session,
+              prompt: async (input, promptOptions) => {
+                prompts.push(input);
+                return await created.session.prompt(input, promptOptions);
+              },
+            },
+          })),
+        );
+
+      await withSupervisor(
+        { cpuCount: 4, memoryMiB: 8192, createPiSession },
+        store,
+        fakeEnvironmentProvider(environment),
+        async (supervisor) => {
+          const payload = Schema.decodeUnknownSync(ProvisionSessionPayload)({
+            ...createProvisionPayload(`openorb/${failure}-warning-test`),
+            githubToken: "github-secret",
+          });
+          await Effect.runPromise(
+            supervisor.provision(payload),
+          );
+          await waitForState(store, "ready");
+          const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
+          assertEquals(metadata.checkoutState, failure === "clone" ? "unavailable" : "available");
+          const issue = metadata.issues.find((issue) =>
+            issue.category === (failure === "clone" ? "github-authentication" : "setup")
+          );
+          assert(issue);
+          assertEquals(issue.severity, "warning");
+          assertEquals(issue.recovery, "none");
+          assert(
+            issue.diagnostics?.includes(
+              failure === "clone" ? "authentication failed" : "setup warning",
+            ),
+          );
+          assert(
+            new TextEncoder().encode(issue.diagnostics).byteLength <=
+              MAX_RPC_SESSION_EVENT_TEXT_BYTES,
+          );
+          assertEquals(prompts, ["Inspect the repository"]);
+        },
+      );
+    } finally {
+      await Deno.remove(directory, { recursive: true });
+    }
+  }
+});
+
 Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session generation", async () => {
   const directory = await Deno.makeTempDir();
   const environments: FakeEnvironment[] = [];
@@ -307,6 +403,12 @@ Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session 
         assertEquals(supervisor.activeSessionCount(), 0);
         assertEquals(piDisposals, 1);
 
+        assertEquals(
+          await Effect.runPromise(
+            actor.wake(wakePayload(undefined, "resume-prior-checkpoint")),
+          ),
+          { ok: false, message: "This session does not require environment recovery." },
+        );
         const woken = await Effect.runPromise(actor.wake(wakePayload(
           "continuation-github-token",
         )));
@@ -517,18 +619,30 @@ Deno.test("checkpoint failures distinguish reusable and consumed VMs", async () 
         },
         store,
         fakeEnvironmentProvider(environment),
-        async (supervisor) => {
+        async (supervisor, events) => {
           await Effect.runPromise(supervisor.provision(
             createProvisionPayload(`openorb/checkpoint-failure-${consumed}`),
           ));
           await waitForState(store, "ready");
           const actor = requireActor(supervisor);
+          const visibleIssue = waitForVisibleIssue(
+            events,
+            SESSION_ID,
+            consumed ? "checkpoint-publish" : "checkpoint-create",
+          );
           const stopped = await Effect.runPromise(actor.stop(stopPayload()));
           assertEquals(stopped.ok, false);
+          const { issue, state } = await visibleIssue;
+          assertEquals(issue.severity, consumed ? "failure" : "warning");
+          assertEquals(state.stage, consumed ? "failed" : "ready");
           const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
           assertEquals(metadata.state, consumed ? "error" : "ready");
           assertEquals(metadata.checkpoint, undefined);
           assertEquals(metadata.checkpointCandidate, undefined);
+          assertEquals(
+            metadata.issues.findLast((issue) => issue.severity === "failure")?.recovery,
+            consumed ? "start-clean-vm" : undefined,
+          );
           assertEquals(
             (await Array.fromAsync(
               Deno.readDir(join(directory, "sessions", SESSION_ID, "checkpoints")),
@@ -537,12 +651,31 @@ Deno.test("checkpoint failures distinguish reusable and consumed VMs", async () 
           );
           assertEquals(actor.active, !consumed);
 
+          if (consumed) {
+            const setupCalls = environment.commands.filter((command) =>
+              command.some((argument) =>
+                argument.includes(".agents/setup")
+              )
+            ).length;
+            assertEquals(
+              await Effect.runPromise(actor.wake(wakePayload(undefined, "start-clean-vm"))),
+              { ok: true },
+            );
+            await waitForState(store, "ready");
+            assertEquals(
+              environment.commands.filter((command) =>
+                command.some((argument) => argument.includes(".agents/setup"))
+              ).length,
+              setupCalls + 1,
+            );
+          }
+
           const prompted = await Effect.runPromise(
             actor.prompt(promptPayload("Try after failed checkpoint")),
           );
-          assertEquals(prompted.ok, !consumed);
-          if (!consumed) await waitForState(store, "ready");
-          assertEquals(piCreations, consumed ? 1 : 2);
+          assertEquals(prompted.ok, true);
+          await waitForState(store, "ready");
+          assertEquals(piCreations, 2);
         },
       );
     } finally {
@@ -551,7 +684,7 @@ Deno.test("checkpoint failures distinguish reusable and consumed VMs", async () 
   }
 });
 
-Deno.test("checkpoint resume failure leaves the stopped prompt undispatched", async () => {
+Deno.test("checkpoint resume failure requires explicit retry and leaves the prompt undispatched", async () => {
   const directory = await Deno.makeTempDir();
   let environmentCreations = 0;
   let piPromptCalls = 0;
@@ -610,7 +743,13 @@ Deno.test("checkpoint resume failure leaves the stopped prompt undispatched", as
           actor.prompt(promptPayload("This must remain undispatched")),
         );
         assertEquals(resumed.ok, false);
-        assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "stopped");
+        const failed = await Effect.runPromise(store.readMetadata(SESSION_ID));
+        assertEquals(failed.state, "error");
+        assert(failed.checkpoint !== undefined);
+        assertEquals(
+          failed.issues.findLast((issue) => issue.severity === "failure")?.recovery,
+          "resume-prior-checkpoint",
+        );
         assertEquals(piPromptCalls, promptCallsBeforeResume);
         assertEquals(environmentCreations, 2);
         assertEquals(actor.active, false);
@@ -724,6 +863,12 @@ Deno.test("SessionActor awaits a failed run-end Git Snapshot refresh without fai
 
         releaseWrite.resolve();
         await waitForState(store, "ready");
+        assertEquals(
+          (await Effect.runPromise(store.readMetadata(SESSION_ID))).issues.some((issue) =>
+            issue.category === "report" && issue.severity === "warning"
+          ),
+          true,
+        );
       },
     );
   } finally {
@@ -731,7 +876,7 @@ Deno.test("SessionActor awaits a failed run-end Git Snapshot refresh without fai
   }
 });
 
-Deno.test("SessionSupervisor aborts only the exact active run after clearing follow-ups", async () => {
+Deno.test("SessionSupervisor records failed follow-ups and aborts only the active run", async () => {
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
@@ -765,7 +910,9 @@ Deno.test("SessionSupervisor aborts only the exact active run after clearing fol
             },
             followUp: () => {
               followUpCalls++;
-              return Promise.resolve();
+              return followUpCalls === 1
+                ? Promise.reject(new Error("Injected follow-up failure."))
+                : Promise.resolve();
             },
             clearQueue: () => {
               clearCalls++;
@@ -797,7 +944,7 @@ Deno.test("SessionSupervisor aborts only the exact active run after clearing fol
       supervisorOptions,
       store,
       fakeEnvironmentProvider(runtime),
-      async (supervisor) => {
+      async (supervisor, events) => {
         await Effect.runPromise(supervisor.provision(provision));
         await promptStarted.promise;
         const activeRunId = await waitForActiveRun(supervisor);
@@ -808,11 +955,26 @@ Deno.test("SessionSupervisor aborts only the exact active run after clearing fol
           modelRuntime: MODEL_RUNTIME,
         });
         const actor = requireActor(supervisor);
-        const followUpAccepted = await Effect.runPromise(actor.prompt(followUp));
+        const visibleIssue = waitForVisibleIssue(
+          events,
+          SESSION_ID,
+          "operation-uncertain",
+          "could not confirm the follow-up",
+        );
+        assertEquals((await Effect.runPromise(actor.prompt(followUp))).ok, false);
+        const failedFollowUp = await visibleIssue;
+        assertEquals(failedFollowUp.issue.severity, "warning");
+        assertEquals(failedFollowUp.state.stage, "running");
+        const followUpAccepted = await Effect.runPromise(actor.prompt(
+          Schema.decodeUnknownSync(PromptSessionPayload)({
+            ...followUp,
+            clientRequestId: crypto.randomUUID(),
+          }),
+        ));
         assert(followUpAccepted.ok);
         assertEquals(followUpAccepted.mode, "follow-up");
         assertEquals(followUpAccepted.runId, activeRunId);
-        assertEquals(followUpCalls, 1);
+        assertEquals(followUpCalls, 2);
 
         const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
           sessionId: SESSION_ID,
@@ -934,6 +1096,9 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
     });
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const events = yield* makeSessionEvents().pipe(
+        Effect.provideService(RunnerSessionStore, store),
+      );
       const supervisor = yield* makeSessionSupervisor({
         runnerId: RUNNER_ID,
         cpuCount: 4,
@@ -941,6 +1106,7 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
       }).pipe(
         Effect.provideService(RunnerSessionStore, store),
         Effect.provideService(SessionActorFactory, actorFactory),
+        Effect.provideService(SessionEvents, events),
       );
       const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
         sessionId: SESSION_ID,
@@ -989,6 +1155,9 @@ Deno.test("SessionSupervisor removes terminated actors before restoring them aga
     });
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const events = yield* makeSessionEvents().pipe(
+        Effect.provideService(RunnerSessionStore, store),
+      );
       const supervisor = yield* makeSessionSupervisor({
         runnerId: RUNNER_ID,
         cpuCount: 4,
@@ -996,6 +1165,7 @@ Deno.test("SessionSupervisor removes terminated actors before restoring them aga
       }).pipe(
         Effect.provideService(RunnerSessionStore, store),
         Effect.provideService(SessionActorFactory, actorFactory),
+        Effect.provideService(SessionEvents, events),
       );
       const first = yield* supervisor.findOrRestoreActor(SESSION_ID);
       assert(first);
@@ -1005,6 +1175,117 @@ Deno.test("SessionSupervisor removes terminated actors before restoring them aga
       assert(second);
       assert(first !== second);
       assertEquals(restoreSpawns, 2);
+    })));
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("SessionSupervisor restarts one crashed actor without replay and quarantines a crash loop", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(directory);
+    const stableSessionId = Schema.decodeUnknownSync(SessionId)(
+      "01989d78-65ee-7f6a-a97e-0f16ad134c19",
+    );
+    for (
+      const [id, branch] of [
+        [SESSION_ID, "openorb/crash-loop-test"],
+        [stableSessionId, "openorb/stable-sibling-test"],
+      ] as const
+    ) {
+      await Effect.runPromise(store.session.create(id, sessionDefinition(branch), CREATED_AT));
+      await Effect.runPromise(store.session.completeInitialRun(id));
+    }
+
+    const crashSignals = Array.from(
+      { length: 4 },
+      () => Promise.withResolvers<Exit.Exit<void, PersistentActorError>>(),
+    );
+    const stableTermination = new Promise<void>(() => {});
+    const spawns: SessionActorInput[] = [];
+    let crashActorCount = 0;
+    const actorFactory = SessionActorFactory.of({
+      spawn: (input) =>
+        Effect.sync(() => {
+          spawns.push(input);
+          if (input.mode === "reconcile" && input.trigger === "runner-start") {
+            return passiveActor(
+              input.metadata.id,
+              Effect.never,
+            );
+          }
+          if (input.metadata.id === stableSessionId) {
+            return unavailableActor(stableTermination, stableSessionId);
+          }
+          const signal = crashSignals[crashActorCount++];
+          assert(signal, "Unexpected actor spawn after the restart budget was exhausted.");
+          return passiveActor(
+            SESSION_ID,
+            Effect.promise(() => signal.promise),
+          );
+        }),
+    });
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const events = yield* makeSessionEvents().pipe(
+        Effect.provideService(RunnerSessionStore, store),
+      );
+      const supervisor = yield* makeSessionSupervisor({
+        runnerId: RUNNER_ID,
+        cpuCount: 4,
+        memoryMiB: 8192,
+      }).pipe(
+        Effect.provideService(RunnerSessionStore, store),
+        Effect.provideService(SessionActorFactory, actorFactory),
+        Effect.provideService(SessionEvents, events),
+      );
+      const first = yield* supervisor.findOrRestoreActor(SESSION_ID);
+      const sibling = yield* supervisor.findOrRestoreActor(stableSessionId);
+      assert(first);
+      assert(sibling);
+      const quarantineObserved = yield* events.watch(SESSION_ID, 0).pipe(
+        Stream.filter((item) =>
+          item.event.type === "session.state" &&
+          item.event.issues.some((issue) => issue.category === "actor-crash")
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.timeout("1 second"),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+
+      const crash = Exit.fail(
+        new PersistentActorError({
+          persistenceId: SESSION_ID,
+          operation: "append",
+          message: "Injected actor defect.",
+          cause: new Error("injected"),
+        }),
+      );
+      for (let index = 0; index < crashSignals.length; index++) {
+        crashSignals[index]!.resolve(crash);
+        if (index < crashSignals.length - 1) {
+          yield* Effect.promise(() => waitForValue(() => crashActorCount, index + 2));
+        }
+      }
+      yield* Fiber.join(quarantineObserved);
+
+      assertEquals(supervisor.findActor(stableSessionId), sibling);
+      assertEquals(yield* supervisor.findOrRestoreActor(SESSION_ID), undefined);
+      const quarantined = supervisor.withQuarantineFailure(
+        yield* store.getSessionSnapshot(SESSION_ID),
+      );
+      assertEquals(quarantined.state, "error");
+      assertEquals(quarantined.issues.at(-1)?.category, "actor-crash");
+      assertEquals(quarantined.issues.at(-1)?.recovery, "none");
+      const restarts = spawns.filter((input) =>
+        input.metadata.id === SESSION_ID && input.mode === "reconcile" &&
+        input.trigger === "actor-crash"
+      );
+      assertEquals(restarts.length, 3);
+      assertEquals(restarts.some((input) => "modelRuntime" in input), false);
     })));
   } finally {
     await Deno.remove(directory, { recursive: true });
@@ -1082,7 +1363,7 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
   }
 });
 
-Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore retryable", async () => {
+Deno.test("failed Pi opens are visible and leave a Git-only restore retryable", async () => {
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
@@ -1098,7 +1379,7 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
     let piOpenAttempts = 0;
     const createPiSession: CreateRawPiSession = (options) => {
       piOpenAttempts++;
-      return piOpenAttempts === 1
+      return piOpenAttempts <= 2
         ? Effect.fail(new AgentHarnessError("Injected lazy Pi open failure.", undefined))
         : createSettlingPiSession(options);
     };
@@ -1107,7 +1388,7 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
       { cpuCount: 4, memoryMiB: 8192, createPiSession },
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
-      async (supervisor) => {
+      async (supervisor, events) => {
         const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
           sessionId: SESSION_ID,
           action: "stage",
@@ -1115,6 +1396,18 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
         });
         const actor = await Effect.runPromise(supervisor.findOrRestoreActor(SESSION_ID));
         assert(actor);
+        const visibleWakeIssue = waitForVisibleIssue(
+          events,
+          SESSION_ID,
+          "model",
+          "model session could not be restored",
+        );
+        assertEquals(await Effect.runPromise(actor.wake(wakePayload())), {
+          ok: false,
+          message: "The agent session could not be restored.",
+        });
+        assertEquals((await visibleWakeIssue).state.stage, "ready");
+        assertEquals(piOpenAttempts, 1);
         assertEquals(await Effect.runPromise(actor.updateGitFile(update)), { ok: true });
 
         const prompt = (text: string) =>
@@ -1124,11 +1417,23 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
             prompt: text,
             modelRuntime: MODEL_RUNTIME,
           });
+        const visiblePromptIssue = waitForVisibleIssue(
+          events,
+          SESSION_ID,
+          "model",
+          "model run failed",
+        );
         const first = await Effect.runPromise(
           actor.prompt(prompt("First attempt")).pipe(Effect.timeout("1 second")),
         );
         assertEquals(first.ok, false);
-        assertEquals(piOpenAttempts, 1);
+        assertEquals((await visiblePromptIssue).state.stage, "ready");
+        assertEquals(piOpenAttempts, 2);
+        const issue = (await Effect.runPromise(store.readMetadata(SESSION_ID))).issues.findLast(
+          (candidate) => candidate.category === "model",
+        );
+        assert(issue);
+        assertEquals(issue.diagnostics, undefined);
 
         assertEquals(await Effect.runPromise(actor.updateGitFile(update)), { ok: true });
         const retry = await Effect.runPromise(
@@ -1137,7 +1442,7 @@ Deno.test("a failed Pi open rejects the prompt and leaves a Git-only restore ret
         assert(retry.ok);
         assertEquals(retry.mode, "started");
         await waitForState(store, "ready");
-        assertEquals(piOpenAttempts, 2);
+        assertEquals(piOpenAttempts, 3);
       },
     );
   } finally {
@@ -1209,7 +1514,7 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
       "01989d78-65ee-7f6a-a97e-0f16ad134c16",
     );
     await Effect.runPromise(store.session.appendAll(ids.promptRun, [
-      { type: "run.requested", runId: promptRunId, purpose: "prompt" },
+      { type: "run.requested", runId: promptRunId, purpose: "prompt", issues: [] },
       {
         type: "run.started",
         runId: promptRunId,
@@ -1217,7 +1522,15 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
       },
     ]));
     await Effect.runPromise(store.session.completeInitialRun(ids.ready));
-    await Effect.runPromise(store.session.append(ids.error, { type: "provisioning.failed" }));
+    await Effect.runPromise(store.session.append(ids.error, {
+      type: "provisioning.failed",
+      issue: {
+        category: "vm-start",
+        severity: "failure",
+        message: "The VM could not be started.",
+        recovery: "retry-provisioning",
+      },
+    }));
 
     let piCreations = 0;
     const createPiSession: CreateRawPiSession = (options) => {
@@ -1232,13 +1545,21 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
       },
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
-      async (supervisor) => {
+      async (supervisor, events) => {
+        const interruptedRun = await waitForVisibleIssue(
+          events,
+          ids.promptRun,
+          "operation-uncertain",
+          "Agent Run was interrupted",
+        );
+        assertEquals(interruptedRun.issue.severity, "failure");
+        assertEquals(interruptedRun.state.stage, "failed");
         assertEquals(
           (await Effect.runPromise(store.readMetadata(ids.provisioning))).state,
           "error",
         );
         assertEquals((await Effect.runPromise(store.readMetadata(ids.initialRun))).state, "error");
-        assertEquals((await Effect.runPromise(store.readMetadata(ids.promptRun))).state, "ready");
+        assertEquals((await Effect.runPromise(store.readMetadata(ids.promptRun))).state, "error");
         assertEquals((await Effect.runPromise(store.readMetadata(ids.ready))).state, "ready");
         assertEquals((await Effect.runPromise(store.readMetadata(ids.error))).state, "error");
         assertEquals(supervisor.activeSessionCount(), 0);
@@ -1309,9 +1630,9 @@ Deno.test("SessionSupervisor restart preserves only a valid published checkpoint
       "obsolete checkpoint",
     );
     await Effect.runPromise(store.session.append(sessions.interruptedResume, {
-      type: "resume.started",
-      resumeId: "01989d78-65ee-7f6a-a97e-0f16ad134c41",
-      continuation: { _tag: "Wake" },
+      type: "restoration.started",
+      restorationId: "01989d78-65ee-7f6a-a97e-0f16ad134c41",
+      intent: { _tag: "ResumeCheckpoint", continuation: { _tag: "Wake" } },
     }));
 
     await Effect.runPromise(store.session.append(sessions.interruptedCheckpoint, {
@@ -1352,9 +1673,13 @@ Deno.test("SessionSupervisor restart preserves only a valid published checkpoint
         const resumed = await Effect.runPromise(
           store.readMetadata(sessions.interruptedResume),
         );
-        assertEquals(resumed.state, "stopped");
+        assertEquals(resumed.state, "error");
         assertEquals(resumed.checkpoint?.file, checkpointFiles.current);
         assertEquals(resumed.checkpointCandidate, undefined);
+        assertEquals(
+          resumed.issues.findLast((issue) => issue.severity === "failure")?.recovery,
+          "resume-prior-checkpoint",
+        );
         await Deno.stat(checkpointPath(sessions.interruptedResume, checkpointFiles.current));
         await assertPathMissing(
           checkpointPath(sessions.interruptedResume, checkpointFiles.obsolete),
@@ -1403,20 +1728,22 @@ Deno.test("SessionSupervisor fails construction when startup reconciliation cann
     const actorFactory = SessionActorFactory.of({
       spawn: () => Effect.die("An actor must not be spawned during reconciliation."),
     });
-    const error = await Effect.runPromise(
-      Effect.scoped(
-        Effect.flip(
-          makeSessionSupervisor({
-            runnerId: RUNNER_ID,
-            cpuCount: 4,
-            memoryMiB: 8192,
-          }).pipe(
-            Effect.provideService(RunnerSessionStore, failingStore),
-            Effect.provideService(SessionActorFactory, actorFactory),
-          ),
+    const error = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const events = yield* makeSessionEvents().pipe(
+        Effect.provideService(RunnerSessionStore, failingStore),
+      );
+      return yield* Effect.flip(
+        makeSessionSupervisor({
+          runnerId: RUNNER_ID,
+          cpuCount: 4,
+          memoryMiB: 8192,
+        }).pipe(
+          Effect.provideService(RunnerSessionStore, failingStore),
+          Effect.provideService(SessionActorFactory, actorFactory),
+          Effect.provideService(SessionEvents, events),
         ),
-      ),
-    );
+      );
+    })));
     assertEquals(error._tag, "SessionSupervisorInitializationError");
     assertEquals(error.cause, cause);
   } finally {
@@ -1623,6 +1950,9 @@ Deno.test("SessionSupervisor retains deletion admission after a retryable storag
     };
     const { failure, restored, retried } = await Effect.runPromise(Effect.scoped(Effect.gen(
       function* () {
+        const events = yield* makeSessionEvents().pipe(
+          Effect.provideService(RunnerSessionStore, store),
+        );
         const supervisor = yield* makeSessionSupervisor({
           runnerId: RUNNER_ID,
           cpuCount: 4,
@@ -1632,6 +1962,7 @@ Deno.test("SessionSupervisor retains deletion admission after a retryable storag
           Effect.provideService(SessionActorFactory, {
             spawn: () => Effect.die("unexpected actor spawn"),
           }),
+          Effect.provideService(SessionEvents, events),
         );
 
         const failure = yield* Effect.flip(supervisor.deleteSession(SESSION_ID));
@@ -1714,6 +2045,36 @@ async function waitForState(
   throw new Error(`Session did not reach ${state}; current state is ${currentState}.`);
 }
 
+async function waitForVisibleIssue(
+  events: SessionEvents,
+  sessionId: typeof SessionId.Type,
+  category: SessionIssueCategory,
+  messagePart?: string,
+) {
+  const entries = await Effect.runPromise(
+    events.watch(sessionId, 0).pipe(
+      Stream.filter((entry) =>
+        entry.event.type === "session.state" &&
+        entry.event.issues.some((issue) =>
+          issue.category === category &&
+          (messagePart === undefined || issue.message.includes(messagePart))
+        )
+      ),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.timeout("1 second"),
+    ),
+  );
+  const state = Array.from(entries)[0]?.event;
+  assert(state?.type === "session.state");
+  const issue = state.issues.find((candidate) =>
+    candidate.category === category &&
+    (messagePart === undefined || candidate.message.includes(messagePart))
+  );
+  assert(issue !== undefined);
+  return { issue, state };
+}
+
 function promptPayload(prompt: string, githubToken?: string) {
   return Schema.decodeUnknownSync(PromptSessionPayload)({
     sessionId: SESSION_ID,
@@ -1724,11 +2085,15 @@ function promptPayload(prompt: string, githubToken?: string) {
   });
 }
 
-function wakePayload(githubToken?: string) {
+function wakePayload(
+  githubToken?: string,
+  recovery?: "resume-prior-checkpoint" | "start-clean-vm",
+) {
   return Schema.decodeUnknownSync(WakeSessionPayload)({
     sessionId: SESSION_ID,
     modelRuntime: MODEL_RUNTIME,
     ...(githubToken === undefined ? {} : { githubToken }),
+    ...(recovery === undefined ? {} : { recovery }),
   });
 }
 
@@ -1767,9 +2132,22 @@ function requireActor(supervisor: SessionSupervisor): SessionActor {
   return actor;
 }
 
-function unavailableActor(termination: Promise<void>): SessionActor {
+function unavailableActor(
+  termination: Promise<void>,
+  sessionId: typeof SessionId.Type = SESSION_ID,
+): SessionActor {
+  return passiveActor(
+    sessionId,
+    Effect.promise(() => termination).pipe(Effect.as(Exit.void)),
+  );
+}
+
+function passiveActor(
+  sessionId: typeof SessionId.Type,
+  awaitTermination: SessionActor["awaitTermination"],
+): SessionActor {
   return {
-    sessionId: SESSION_ID,
+    sessionId,
     activeRunId: undefined,
     active: false,
     wake: () => Effect.die("unexpected wake"),
@@ -1778,9 +2156,23 @@ function unavailableActor(termination: Promise<void>): SessionActor {
     stop: () => Effect.die("unexpected stop"),
     delete: () => Effect.succeed({ ok: true }),
     updateGitFile: () => Effect.die("unexpected Git file update"),
-    awaitTermination: Effect.promise(() => termination),
+    awaitTermination,
     shutdown: Effect.void,
   };
+}
+
+async function waitForValue<Value>(
+  read: () => Value,
+  expected: Value,
+  timeoutMs = 1_000,
+): Promise<Value> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (Object.is(value, expected)) return value;
+    await delay(10);
+  }
+  throw new Error("Timed out waiting for the expected value.");
 }
 
 async function waitForActiveRun(supervisor: SessionSupervisor, timeoutMs = 1_000) {
@@ -1856,6 +2248,7 @@ async function withSupervisor(
         }).pipe(
           Effect.provideService(RunnerSessionStore, store),
           Effect.provideService(SessionActorFactory, actorFactory),
+          Effect.provideService(SessionEvents, events),
         );
         yield* Effect.promise(() => use(supervisor, events));
       }),

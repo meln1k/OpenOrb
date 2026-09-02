@@ -46,6 +46,24 @@ const checkpoint = {
   guestAssetBuildId: "02e784cb-e063-5138-b1c4-334e8a3307a9",
   compatibleVmm: ["qemu" as const],
 };
+const modelIssue = {
+  category: "model" as const,
+  severity: "failure" as const,
+  message: "The model operation failed.",
+  recovery: "none" as const,
+};
+const interruptedIssue = {
+  category: "operation-uncertain" as const,
+  severity: "failure" as const,
+  message: "The operation was interrupted.",
+  recovery: "start-clean-vm" as const,
+};
+const followUpIssue = {
+  category: "operation-uncertain" as const,
+  severity: "warning" as const,
+  message: "Follow-up delivery is uncertain.",
+  recovery: "none" as const,
+};
 
 Deno.test("session facts drive explicit run phases", () => {
   let state = applyAll([
@@ -58,6 +76,7 @@ Deno.test("session facts drive explicit run phases", () => {
     type: "run.requested",
     runId: RUN_ID,
     purpose: "initial",
+    issues: [],
   })!;
   assertEquals(state.phase, {
     _tag: "StartingRun",
@@ -97,38 +116,58 @@ Deno.test("session facts drive explicit run phases", () => {
 Deno.test("stale correlated facts are harmless no-ops", () => {
   const running = applyAll([
     ...readyEvents(),
-    { type: "run.requested", runId: RUN_ID, purpose: "prompt" },
+    { type: "run.requested", runId: RUN_ID, purpose: "prompt", issues: [] },
     { type: "run.started", runId: RUN_ID, acceptedAt: "2026-08-17T12:15:00Z" },
     { type: "follow-up.requested", runId: RUN_ID, followUpId: FOLLOW_UP_ID },
   ]);
 
   const afterStaleFacts = applyAll([
-    { type: "run.start-failed", runId: OTHER_RUN_ID },
+    { type: "run.start-failed", runId: OTHER_RUN_ID, issue: modelIssue },
     {
       type: "follow-up.failed",
       runId: OTHER_RUN_ID,
       followUpId: "01989d78-65ee-7f6a-a97e-0f16ad134c17",
+      issue: followUpIssue,
     },
     { type: "abort.confirmed", runId: OTHER_RUN_ID },
     { type: "run.completed", runId: OTHER_RUN_ID },
-    { type: "run.interrupted", runId: OTHER_RUN_ID },
+    { type: "run.interrupted", runId: OTHER_RUN_ID, issue: interruptedIssue },
   ], running);
 
   assertEquals(afterStaleFacts, running);
 });
 
+Deno.test("failed follow-up delivery records an issue and leaves the run active", () => {
+  const state = applyAll([
+    ...readyEvents(),
+    { type: "run.requested", runId: RUN_ID, purpose: "prompt", issues: [] },
+    { type: "run.started", runId: RUN_ID, acceptedAt: "2026-08-17T12:15:00Z" },
+    { type: "follow-up.requested", runId: RUN_ID, followUpId: FOLLOW_UP_ID },
+    { type: "follow-up.failed", runId: RUN_ID, followUpId: FOLLOW_UP_ID, issue: followUpIssue },
+  ]);
+
+  assertEquals(state.phase, {
+    _tag: "Running",
+    runId: RUN_ID,
+    purpose: "prompt",
+    followUp: { _tag: "Idle" },
+    abort: { _tag: "Idle" },
+  });
+  assertEquals(state.data.issues, [followUpIssue]);
+});
+
 Deno.test("initial run failure fails provisioning but prompt failure returns to ready", () => {
   const initialFailure = applyAll([
     provisioningStarted(),
-    { type: "run.requested", runId: RUN_ID, purpose: "initial" },
-    { type: "run.start-failed", runId: RUN_ID },
+    { type: "run.requested", runId: RUN_ID, purpose: "initial", issues: [] },
+    { type: "run.start-failed", runId: RUN_ID, issue: modelIssue },
   ]);
   assertEquals(initialFailure.phase, { _tag: "Failed" });
 
   const promptFailure = applyAll([
     ...readyEvents(),
-    { type: "run.requested", runId: RUN_ID, purpose: "prompt" },
-    { type: "run.start-failed", runId: RUN_ID },
+    { type: "run.requested", runId: RUN_ID, purpose: "prompt", issues: [] },
+    { type: "run.start-failed", runId: RUN_ID, issue: modelIssue },
   ]);
   assertEquals(promptFailure.phase, { _tag: "Ready" });
 });
@@ -152,21 +191,22 @@ Deno.test("checkpoint and wake recovery are explicit state transitions", () => {
   assertEquals(sessionMetadata(stopped).state, "stopped");
 
   const resuming = applySessionEvent(stopped, {
-    type: "resume.started",
-    resumeId: RESUME_ID,
-    continuation: { _tag: "Wake" },
+    type: "restoration.started",
+    restorationId: RESUME_ID,
+    intent: { _tag: "ResumeCheckpoint", continuation: { _tag: "Wake" } },
   });
   assert(resuming);
   assertEquals(resuming.phase, {
-    _tag: "Resuming",
-    resumeId: RESUME_ID,
-    continuation: { _tag: "Wake" },
+    _tag: "Restoring",
+    restorationId: RESUME_ID,
+    intent: { _tag: "ResumeCheckpoint", continuation: { _tag: "Wake" } },
     checkpoint,
   });
 
   const ready = applySessionEvent(resuming, {
-    type: "resume.completed",
-    resumeId: RESUME_ID,
+    type: "restoration.completed",
+    restorationId: RESUME_ID,
+    issues: [],
   });
   assert(ready);
   assertEquals(ready.phase, { _tag: "Ready", checkpoint });
@@ -180,11 +220,14 @@ Deno.test("prompt recovery resumes directly into its durable run intent", () => 
   ]);
   const starting = applyAll([
     {
-      type: "resume.started",
-      resumeId: RESUME_ID,
-      continuation: { _tag: "Prompt", runId: RUN_ID },
+      type: "restoration.started",
+      restorationId: RESUME_ID,
+      intent: {
+        _tag: "ResumeCheckpoint",
+        continuation: { _tag: "Prompt", runId: RUN_ID },
+      },
     },
-    { type: "resume.completed", resumeId: RESUME_ID },
+    { type: "restoration.completed", restorationId: RESUME_ID, issues: [] },
   ], stopped);
 
   assertEquals(starting.phase, {
@@ -195,11 +238,46 @@ Deno.test("prompt recovery resumes directly into its durable run intent", () => 
   });
 });
 
+Deno.test("clean VM recovery drops the prior root-disk checkpoint", () => {
+  const failed = applyAll([
+    ...readyEvents(),
+    { type: "checkpoint.started", file: CHECKPOINT_FILE },
+    { type: "checkpoint.published", checkpoint },
+    {
+      type: "restoration.started",
+      restorationId: RESUME_ID,
+      intent: { _tag: "ResumeCheckpoint", continuation: { _tag: "Wake" } },
+    },
+    { type: "restoration.completed", restorationId: RESUME_ID, issues: [] },
+    {
+      type: "actor.crashed",
+      issue: interruptedIssue,
+    },
+  ]);
+  assertEquals(failed.phase, { _tag: "Failed", checkpoint });
+
+  const recovering = applyAll([
+    {
+      type: "restoration.started",
+      restorationId: RESUME_ID,
+      intent: { _tag: "StartCleanVm" },
+    },
+  ], failed);
+  assertEquals(sessionMetadata(recovering).state, "provisioning");
+
+  const ready = applyAll([
+    { type: "restoration.completed", restorationId: RESUME_ID, issues: [] },
+  ], recovering);
+
+  assertEquals(ready.phase, { _tag: "Ready" });
+  assertEquals(sessionMetadata(ready).checkpoint, undefined);
+});
+
 function readyEvents(): readonly SessionEvent[] {
   return [
     provisioningStarted(),
     { type: "checkout.updated", checkoutState: "available" },
-    { type: "run.requested", runId: OTHER_RUN_ID, purpose: "initial" },
+    { type: "run.requested", runId: OTHER_RUN_ID, purpose: "initial", issues: [] },
     {
       type: "run.started",
       runId: OTHER_RUN_ID,

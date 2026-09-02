@@ -162,7 +162,7 @@ function initialRunEvents(
       checkoutState,
       ...(baseCommit === undefined ? {} : { baseCommit }),
     },
-    { type: "run.requested", runId: FIXTURE_RUN_ID, purpose: "initial" },
+    { type: "run.requested", runId: FIXTURE_RUN_ID, purpose: "initial", issues: [] },
     {
       type: "run.started",
       runId: FIXTURE_RUN_ID,

@@ -13,7 +13,8 @@ export function createSessionEventStream(
   return events.pipe(
     Stream.filterMap(eventForBrowser),
     Stream.map(encodeEvent),
-    Stream.merge(keepalive),
+    Stream.merge(keepalive, { haltStrategy: "left" }),
+    Stream.catchCause(() => Stream.empty),
     Stream.toReadableStreamEffect<Uint8Array>(),
   );
 }

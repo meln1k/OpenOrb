@@ -684,6 +684,7 @@ function snapshotFrom(
     model: metadata.definition.model,
     orbSize: metadata.definition.orbSize,
     state,
+    issues: metadata.issues,
     lastEventCursor,
   });
 }

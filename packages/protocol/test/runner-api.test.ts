@@ -20,6 +20,7 @@ import {
   type GitFileUpdateRejected,
   type GitSnapshotReadError,
   type HistoryReadError,
+  MAX_SESSION_ISSUES,
   ProjectId,
   type PromptRejected,
   PromptSessionAccepted,
@@ -42,6 +43,8 @@ import {
   SessionEvent,
   SessionGitSnapshot,
   SessionId,
+  SessionIssue,
+  SessionIssues,
   SessionModelRuntime,
   type SessionNotFound,
   type StopRejected,
@@ -214,6 +217,27 @@ Deno.test("one SessionEvent schema validates durable and ephemeral wire payloads
   assertEquals(Schema.decodeUnknownSync(EphemeralSessionEvent)(ephemeral), ephemeral);
   assertThrows(() => Schema.decodeUnknownSync(DurableSessionEvent)(ephemeral));
   assertThrows(() => Schema.decodeUnknownSync(EphemeralSessionEvent)(durable));
+});
+
+Deno.test("session issues are categorized, bounded, and carry explicit recovery", () => {
+  const issue = Schema.decodeUnknownSync(SessionIssue)({
+    category: "checkpoint-publish",
+    severity: "failure",
+    message: "The checkpoint could not be published.",
+    diagnostics: "safe bounded diagnostics",
+    recovery: "resume-prior-checkpoint",
+  });
+  assertEquals(issue.recovery, "resume-prior-checkpoint");
+  assertEquals(
+    Schema.decodeUnknownSync(SessionIssues)(Array(MAX_SESSION_ISSUES).fill(issue)).length,
+    MAX_SESSION_ISSUES,
+  );
+  assertThrows(() =>
+    Schema.decodeUnknownSync(SessionIssues)(Array(MAX_SESSION_ISSUES + 1).fill(issue))
+  );
+  assertThrows(() =>
+    Schema.decodeUnknownSync(SessionIssue)({ ...issue, message: "x".repeat(1_001) })
+  );
 });
 
 Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budgets", () => {
@@ -576,6 +600,7 @@ function sessionSnapshot(): RunnerSessionSnapshot {
     model: "opencode-go/deepseek-v4-flash",
     orbSize: "medium",
     state: "ready",
+    issues: [],
     lastEventCursor: 0,
   });
 }

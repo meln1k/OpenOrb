@@ -112,6 +112,7 @@ Deno.test("creates private session storage and recovers cold session state", asy
         model: MODEL,
         orbSize: "small",
         state: "provisioning",
+        issues: [],
         lastEventCursor: 0,
       }),
     ]);

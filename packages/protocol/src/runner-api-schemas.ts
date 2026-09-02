@@ -4,6 +4,8 @@ import {
   DurableSessionEvent,
   EphemeralSessionEvent,
   RunnerCheckoutState,
+  SessionEnvironmentRecoveryMode,
+  SessionIssues,
 } from "./runner-api-session-events.ts";
 import {
   MAX_SESSION_GIT_PATH_CHARACTERS,
@@ -16,7 +18,7 @@ import {
 } from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 13;
+export const RUNNER_PROTOCOL_VERSION = 14;
 
 export * from "./runner-api-limits.ts";
 
@@ -137,6 +139,7 @@ export class RunnerSessionSnapshot extends Schema.Class<RunnerSessionSnapshot>(
   model: ModelReference,
   orbSize: OrbSize,
   state: RunnerSessionState,
+  issues: SessionIssues,
   lastEventCursor: SessionCursor,
   activeRunId: Schema.optionalKey(RunId),
 }) {}
@@ -308,6 +311,7 @@ export class WakeSessionPayload extends Schema.Class<WakeSessionPayload>("WakeSe
   sessionId: SessionId,
   modelRuntime: SessionModelRuntime,
   githubToken: Schema.optionalKey(Secret),
+  recovery: Schema.optionalKey(SessionEnvironmentRecoveryMode),
 }) {}
 
 export class WakeSessionAccepted

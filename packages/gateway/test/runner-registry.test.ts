@@ -62,7 +62,8 @@ const capacity = decode(RunnerCapacity)({
 function snapshot(
   id: string,
   activeRunId?: string,
-  state: "ready" | "running" | "stopped" = activeRunId ? "running" : "ready",
+  state: "ready" | "running" | "stopped" | "error" = activeRunId ? "running" : "ready",
+  issues: RunnerSessionSnapshot["issues"] = [],
 ) {
   return decode(RunnerSessionSnapshot)({
     id,
@@ -72,6 +73,7 @@ function snapshot(
     model: "opencode-go/deepseek-v4-flash",
     orbSize: "small",
     state,
+    issues,
     lastEventCursor: 3,
     ...(activeRunId ? { activeRunId } : {}),
   });
@@ -217,6 +219,7 @@ function handlers(probe: Probe) {
               model: request.modelRuntime.model,
               orbSize: request.orbSize,
               state: "created",
+              issues: [],
               lastEventCursor: 0,
             }
             : snapshot(request.sessionId),
@@ -557,6 +560,49 @@ Deno.test("Wake routes model and GitHub credentials to a stopped session's runne
         }),
       ],
     );
+  }))));
+
+Deno.test("Wake routes only the recovery offered by the runner snapshot", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1, undefined, "error", [{
+      category: "checkpoint-publish",
+      severity: "failure",
+      message: "The VM stopped before its checkpoint could be published.",
+      recovery: "start-clean-vm",
+    }])]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    const modelRuntime = {
+      model: "opencode-go/deepseek-v4-flash",
+      thinkingLevel: "high" as const,
+      credential: { type: "api_key" as const, value: "secret" },
+    };
+    const missingRecovery = yield* gateway.wakeSession({
+      userId: USER_ID,
+      sessionId: SESSION_1,
+      payload: { modelRuntime },
+    });
+    assertEquals(missingRecovery.status, "rejected");
+
+    const accepted = yield* gateway.wakeSession({
+      userId: USER_ID,
+      sessionId: SESSION_1,
+      payload: { modelRuntime, recovery: "start-clean-vm" },
+    });
+    assertEquals(accepted.status, "accepted");
+    assertEquals(probe.wakeRequests, [
+      decode(WakeSessionPayload)({
+        sessionId: SESSION_1,
+        modelRuntime,
+        recovery: "start-clean-vm",
+      }),
+    ]);
   }))));
 
 Deno.test("Stop routes only ready sessions to the pinned runner", () =>

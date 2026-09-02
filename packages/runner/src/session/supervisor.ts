@@ -1,8 +1,10 @@
 import {
+  Cause,
   Context,
   Data,
   DateTime,
   Effect,
+  Exit,
   Layer,
   MutableHashMap,
   Option,
@@ -10,12 +12,24 @@ import {
   Semaphore,
 } from "effect";
 import { type OrbSize, orbSizeResources } from "@openorb/protocol";
-import type { ProvisionSessionPayload, RunnerId, SessionId } from "@openorb/protocol/runner-api";
-import { ProvisionRejected, ProvisionSessionSuccess } from "@openorb/protocol/runner-api";
+import type {
+  ProvisionSessionPayload,
+  RunnerId,
+  RunnerSessionSnapshot,
+  SessionId,
+  SessionIssue,
+} from "@openorb/protocol/runner-api";
+import {
+  ProvisionRejected,
+  ProvisionSessionSuccess,
+  RunnerSessionSnapshot as RunnerSessionSnapshotValue,
+} from "@openorb/protocol/runner-api";
 
 import { RunnerSessionDefinition } from "./definition.ts";
 import { runnerSessionDefinitionsEqual } from "./definition.ts";
+import { SessionEvents } from "./events.ts";
 import { type DeletionAcceptance, type SessionActor, SessionActorFactory } from "./actor/index.ts";
+import { appendSessionIssues } from "./actor/issues.ts";
 import {
   type RunnerSessionMetadata,
   RunnerSessionStore,
@@ -30,14 +44,23 @@ export interface SessionSupervisorOptions {
 }
 
 export const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 15 * 60 * 1_000;
+const SESSION_RESTART_LIMIT = 3;
+const SESSION_RESTART_WINDOW_MS = 30_000;
 
-interface ActorRegistryEntry {
-  readonly actor: SessionActor;
-}
+type SessionSlot =
+  | {
+    readonly _tag: "Running";
+    readonly actor: SessionActor;
+    readonly restartTimes: readonly number[];
+  }
+  | { readonly _tag: "Restarting"; readonly restartTimes: readonly number[] }
+  | { readonly _tag: "Quarantined"; readonly issue: SessionIssue }
+  | { readonly _tag: "Deleting" };
 
 export interface SessionSupervisor {
   readonly activeSessionCount: () => number;
   readonly getActiveRunId: (sessionId: SessionId) => string | undefined;
+  readonly withQuarantineFailure: (snapshot: RunnerSessionSnapshot) => RunnerSessionSnapshot;
   readonly findActor: (sessionId: SessionId) => SessionActor | undefined;
   readonly findOrRestoreActor: (
     sessionId: SessionId,
@@ -83,14 +106,14 @@ export function makeSessionSupervisor(
 ): Effect.Effect<
   SessionSupervisor,
   SessionSupervisorInitializationError,
-  Scope.Scope | RunnerSessionStore | SessionActorFactory
+  Scope.Scope | RunnerSessionStore | SessionEvents | SessionActorFactory
 > {
   return Effect.gen(function* () {
     const store = yield* RunnerSessionStore;
     const actorFactory = yield* SessionActorFactory;
+    const events = yield* SessionEvents;
     const scope = yield* Effect.scope;
-    const actors = MutableHashMap.empty<string, ActorRegistryEntry>();
-    const deletions = new Set<string>();
+    const slots = MutableHashMap.empty<string, SessionSlot>();
     const admission = yield* Semaphore.make(1);
     const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
     if (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs <= 0) {
@@ -102,21 +125,107 @@ export function makeSessionSupervisor(
     }
     yield* reconcilePersistedSessions(store, actorFactory, idleTimeoutMs);
 
-    const registerActor = Effect.fn("SessionSupervisor.registerActor")(function* (
+    function registerActor(
       sessionId: SessionId,
       actor: SessionActor,
-    ) {
-      MutableHashMap.set(actors, sessionId, { actor });
-      yield* Effect.forkIn(
-        actor.awaitTermination.pipe(
-          Effect.andThen(Effect.sync(() => {
-            const current = Option.getOrUndefined(MutableHashMap.get(actors, sessionId));
-            if (current?.actor === actor) MutableHashMap.remove(actors, sessionId);
-          })),
-        ),
-        scope,
+      restartTimes: readonly number[] = [],
+    ): Effect.Effect<void> {
+      return Effect.sync(() => {
+        MutableHashMap.set(slots, sessionId, { _tag: "Running", actor, restartTimes });
+      }).pipe(
+        Effect.andThen(Effect.forkIn(
+          Effect.gen(function* () {
+            const exit = yield* actor.awaitTermination;
+            yield* admission.withPermit(Effect.suspend(() => {
+              const current = getSlot(sessionId);
+              if (current?._tag !== "Running" || current.actor !== actor) return Effect.void;
+              if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) {
+                MutableHashMap.remove(slots, sessionId);
+                return Effect.void;
+              }
+              return restartActor(sessionId, current.restartTimes);
+            }));
+          }),
+          scope,
+        )),
+        Effect.asVoid,
       );
-    });
+    }
+
+    function restartActor(
+      sessionId: SessionId,
+      priorRestartTimes: readonly number[],
+    ): Effect.Effect<void> {
+      return Effect.gen(function* () {
+        let restartTimes = priorRestartTimes;
+        while (true) {
+          const reserved = reserveRestart(restartTimes);
+          if (reserved === undefined) return yield* quarantine(sessionId);
+          restartTimes = reserved;
+          MutableHashMap.set(slots, sessionId, { _tag: "Restarting", restartTimes });
+          const metadata = yield* Effect.result(store.readMetadata(sessionId));
+          if (metadata._tag === "Failure") continue;
+          const spawned = yield* Effect.result(actorFactory.spawn({
+            metadata: metadata.success,
+            mode: "reconcile",
+            trigger: "actor-crash",
+            correlationId: crypto.randomUUID(),
+            idleTimeoutMs,
+          }));
+          if (spawned._tag === "Failure") continue;
+          yield* registerActor(sessionId, spawned.success, restartTimes);
+          return;
+        }
+      });
+    }
+
+    const reserveRestart = (restartTimes: readonly number[]): readonly number[] | undefined => {
+      const now = Date.now();
+      const recent = restartTimes.filter((time) => now - time < SESSION_RESTART_WINDOW_MS);
+      return recent.length >= SESSION_RESTART_LIMIT ? undefined : [...recent, now];
+    };
+
+    function quarantine(
+      sessionId: SessionId,
+    ): Effect.Effect<void> {
+      return Effect.gen(function* () {
+        const issue: SessionIssue = {
+          category: "actor-crash",
+          severity: "failure",
+          message:
+            "The session actor repeatedly crashed and was quarantined. No command was replayed; restart the runner after checking its logs and durable session storage.",
+          recovery: "none",
+        };
+        MutableHashMap.set(slots, sessionId, { _tag: "Quarantined", issue });
+        yield* Effect.logError(
+          `Session actor ${sessionId} was quarantined after repeated failures.`,
+        );
+        const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
+        if (Option.isNone(metadata)) return;
+        yield* events.publishLive(sessionId, crypto.randomUUID(), {
+          type: "session.state",
+          stage: "failed",
+          checkoutState: metadata.value.checkoutState,
+          issues: appendSessionIssues(metadata.value.issues, [issue]),
+        }).pipe(Effect.orDie);
+      });
+    }
+
+    const shutdownActor = (sessionId: SessionId, actor: SessionActor) => {
+      const current = getSlot(sessionId);
+      if (current?._tag === "Running" && current.actor === actor) {
+        MutableHashMap.remove(slots, sessionId);
+      }
+      return actor.shutdown;
+    };
+
+    const getSlot = (sessionId: SessionId): SessionSlot | undefined =>
+      Option.getOrUndefined(MutableHashMap.get(slots, sessionId));
+
+    const getActor = (sessionId: SessionId): SessionActor | undefined => {
+      const slot = getSlot(sessionId);
+      return slot?._tag === "Running" ? slot.actor : undefined;
+    };
 
     const supportsOrbSize = (orbSize: OrbSize): boolean => {
       const resources = orbSizeResources(orbSize);
@@ -149,6 +258,7 @@ export function makeSessionSupervisor(
           createdAt: DateTime.formatIso(yield* DateTime.now),
           state: "created",
           checkoutState: "pending",
+          issues: [],
         };
         return {
           metadata,
@@ -162,7 +272,7 @@ export function makeSessionSupervisor(
           "This session already exists on the runner.",
         );
       }
-      if (MutableHashMap.has(actors, metadata.id)) {
+      if (getActor(metadata.id) !== undefined) {
         return {
           metadata,
           mode: "restore",
@@ -173,6 +283,7 @@ export function makeSessionSupervisor(
         const actor = yield* actorFactory.spawn({
           metadata,
           mode: "reconcile",
+          trigger: "provision-request",
           correlationId: crypto.randomUUID(),
           idleTimeoutMs,
         });
@@ -198,6 +309,14 @@ export function makeSessionSupervisor(
         if (metadata.state !== "error") {
           return yield* new RetryRejected("Only a failed provisioning attempt can be retried.");
         }
+        if (
+          metadata.issues.findLast((issue) => issue.severity === "failure")?.recovery !==
+            "retry-provisioning"
+        ) {
+          return yield* new RetryRejected(
+            "This session failure requires its offered environment recovery action.",
+          );
+        }
         if (metadata.definition.model !== payload.modelRuntime.model) {
           return yield* new RetryRejected("A session retry must use its original model.");
         }
@@ -214,8 +333,18 @@ export function makeSessionSupervisor(
       payload: typeof ProvisionSessionPayload.Type,
     ): Effect.Effect<ProvisionAcceptance> =>
       Effect.gen(function* () {
-        if (deletions.has(payload.sessionId)) {
+        const slot = getSlot(payload.sessionId);
+        if (slot?._tag === "Deleting") {
           return { ok: false, message: "This session is being deleted." } as const;
+        }
+        if (slot?._tag === "Quarantined") {
+          return {
+            ok: false,
+            message: "This session actor is quarantined until the runner restarts.",
+          } as const;
+        }
+        if (slot?._tag === "Restarting") {
+          return { ok: false, message: "This session actor is restarting." } as const;
         }
         if (payload.mode === "create" && !supportsOrbSize(payload.orbSize)) {
           return { ok: false, message: unsupportedOrbSizeMessage(payload.orbSize) } as const;
@@ -238,11 +367,10 @@ export function makeSessionSupervisor(
         }
         const { metadata } = prepared.value;
         if (payload.mode === "retry") {
-          const existing = Option.getOrUndefined(MutableHashMap.get(actors, metadata.id));
-          if (existing) yield* existing.actor.shutdown;
-          MutableHashMap.remove(actors, metadata.id);
+          const existing = getActor(metadata.id);
+          if (existing) yield* shutdownActor(metadata.id, existing);
         }
-        const existing = Option.getOrUndefined(MutableHashMap.get(actors, metadata.id));
+        const existing = getActor(metadata.id);
         if (
           existing ||
           (payload.mode === "create" && prepared.value.mode === "restore" &&
@@ -301,17 +429,17 @@ export function makeSessionSupervisor(
     const findOrRestoreActor = (
       sessionId: SessionId,
     ): Effect.Effect<SessionActor | undefined> => {
-      if (deletions.has(sessionId)) return Effect.sync(() => undefined);
-      const existing = Option.getOrUndefined(MutableHashMap.get(actors, sessionId));
-      if (existing) return Effect.succeed(existing.actor);
+      const slot = getSlot(sessionId);
+      if (slot?._tag === "Running") return Effect.succeed(slot.actor);
       return admission.withPermit(Effect.gen(function* () {
-        if (deletions.has(sessionId)) return undefined;
-        const current = Option.getOrUndefined(MutableHashMap.get(actors, sessionId));
-        if (current) return current.actor;
+        const current = getSlot(sessionId);
+        if (current?._tag === "Running") return current.actor;
+        if (current !== undefined) return undefined;
         const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
         if (
           Option.isNone(metadata) ||
-          (metadata.value.state !== "ready" && metadata.value.state !== "stopped")
+          (metadata.value.state !== "ready" && metadata.value.state !== "stopped" &&
+            metadata.value.state !== "error")
         ) return undefined;
         const actor = yield* actorFactory.spawn({
           metadata: metadata.value,
@@ -335,8 +463,9 @@ export function makeSessionSupervisor(
       sessionId: SessionId,
     ): Effect.Effect<DeletionAcceptance, RunnerSessionStoreError> =>
       admission.withPermit(Effect.uninterruptible(Effect.gen(function* () {
-        if (!deletions.has(sessionId)) {
-          const actor = Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor;
+        const slot = getSlot(sessionId);
+        if (slot?._tag !== "Deleting") {
+          const actor = slot?._tag === "Running" ? slot.actor : undefined;
           if (actor) {
             const acceptance = yield* actor.delete();
             if (!acceptance.ok) return acceptance;
@@ -352,33 +481,33 @@ export function makeSessionSupervisor(
               } as const;
             }
           }
-          deletions.add(sessionId);
+          MutableHashMap.set(slots, sessionId, { _tag: "Deleting" });
+          if (actor) yield* actor.shutdown;
         }
 
-        const actor = Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor;
-        if (actor) {
-          yield* actor.shutdown;
-          MutableHashMap.remove(actors, sessionId);
-        }
         yield* store.removeSessionStorage(sessionId);
-        deletions.delete(sessionId);
+        MutableHashMap.remove(slots, sessionId);
         return { ok: true } as const;
       })));
 
     return SessionSupervisor.of({
       activeSessionCount: () => {
         let count = 0;
-        for (const [, { actor }] of actors) {
-          if (actor.active) count++;
+        for (const [, slot] of slots) {
+          if (slot._tag === "Running" && slot.actor.active) count++;
         }
         return count;
       },
-      getActiveRunId: (sessionId) =>
-        Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor.activeRunId,
-      findActor: (sessionId) =>
-        deletions.has(sessionId)
-          ? undefined
-          : Option.getOrUndefined(MutableHashMap.get(actors, sessionId))?.actor,
+      getActiveRunId: (sessionId) => getActor(sessionId)?.activeRunId,
+      withQuarantineFailure: (snapshot) => {
+        const slot = getSlot(snapshot.id);
+        return slot?._tag !== "Quarantined" ? snapshot : new RunnerSessionSnapshotValue({
+          ...snapshot,
+          state: "error",
+          issues: appendSessionIssues(snapshot.issues, [slot.issue]),
+        });
+      },
+      findActor: getActor,
       findOrRestoreActor,
       deleteSession,
       provision: (payload) =>
@@ -400,7 +529,7 @@ export function sessionSupervisorLayer(
 ): Layer.Layer<
   SessionSupervisor,
   SessionSupervisorInitializationError,
-  RunnerSessionStore | SessionActorFactory
+  RunnerSessionStore | SessionEvents | SessionActorFactory
 > {
   return Layer.effect(SessionSupervisor, makeSessionSupervisor(options));
 }
@@ -449,6 +578,7 @@ function reconcilePersistedSessions(
           const actor = yield* actorFactory.spawn({
             metadata,
             mode: "reconcile",
+            trigger: "runner-start",
             correlationId: crypto.randomUUID(),
             idleTimeoutMs,
           });

@@ -1,4 +1,5 @@
 import { Deferred, Effect, MutableRef, type Scope } from "effect";
+import type { SessionProvisioningStage } from "@openorb/protocol/runner-api";
 
 import { makeGitSnapshotCoordinator } from "../git-snapshot-coordinator.ts";
 import { makeGitSnapshotSynchronizer } from "../git-snapshot-synchronizer.ts";
@@ -27,10 +28,11 @@ import {
 import type { SessionEvent } from "./events.ts";
 import { makeSessionInitialization } from "./initialization.ts";
 import { makeSessionProvisioner } from "./provisioner.ts";
-import { makeSessionReporter } from "./reporter.ts";
+import { makeSessionReporter, redactedErrorMessage } from "./reporter.ts";
 import { makeSessionRun } from "./run.ts";
 import { makeSessionRuntime, type SessionActorStatus } from "./runtime.ts";
-import type { SessionState } from "./state.ts";
+import { sessionMetadata, type SessionState } from "./state.ts";
+import { makeSessionIssue } from "./issues.ts";
 
 export function makeSessionBehavior(
   input: SessionActorInput,
@@ -48,10 +50,26 @@ export function makeSessionBehavior(
     const idleLoopStarted = MutableRef.make(false);
     const deletionRequested = MutableRef.make(false);
     const send = context.send;
+    const recordGitSnapshotIssue = (error: unknown) =>
+      send({
+        kind: "internal",
+        _tag: "RecordIssue",
+        issue: makeSessionIssue({
+          category: "report",
+          severity: "warning",
+          message:
+            "The Git Snapshot could not be refreshed. The session remains available with its last saved snapshot.",
+          diagnostics: redactedErrorMessage(error, []),
+          recovery: "none",
+        }),
+      }).pipe(Effect.asVoid);
     const gitSnapshots = makeGitSnapshotSynchronizer({
       sessionId,
       store,
-      generate: generateSessionGitSnapshot,
+      generate: (environment, metadata) =>
+        generateSessionGitSnapshot(environment, metadata).pipe(
+          Effect.tapError(recordGitSnapshotIssue),
+        ),
       publishUpdated: (correlationId) => publish(correlationId, { type: "git.snapshot.updated" }),
     });
     const requestGitSnapshot = Effect.gen(function* () {
@@ -197,12 +215,20 @@ export function makeSessionBehavior(
           return checkpoint.complete(state, command);
         case "CheckpointFailed":
           return Effect.succeed(checkpoint.failed(state, command));
-        case "ResumeCompleted":
-          return Effect.succeed(continuation.resumeCompleted(state, command));
-        case "ResumeFailed":
-          return Effect.succeed(continuation.resumeFailed(state, command));
+        case "RestorationCompleted":
+          return Effect.succeed(continuation.restorationCompleted(state, command));
+        case "RestorationFailed":
+          return Effect.succeed(continuation.restorationFailed(state, command));
         case "RefreshGitSnapshot":
           return Effect.succeed(checkpoint.refreshGitSnapshot(state, command));
+        case "RecordIssue":
+          return Effect.succeed(decisions.persist(
+            { type: "issue.recorded", issue: command.issue },
+            (next) =>
+              emitState(sessionMetadata(next), stageForState(next), crypto.randomUUID()).pipe(
+                Effect.orDie,
+              ),
+          ));
       }
     }
 
@@ -241,4 +267,26 @@ export function makeSessionBehavior(
       SessionEvent
     >;
   });
+}
+
+function stageForState(state: SessionState): SessionProvisioningStage {
+  switch (state.phase._tag) {
+    case "Provisioning":
+      return "starting-vm";
+    case "StartingRun":
+      return state.phase.purpose === "initial" ? "starting-vm" : "ready";
+    case "Running":
+      return "running";
+    case "Ready":
+    case "Waking":
+      return "ready";
+    case "Restoring":
+      return state.phase.intent._tag === "ResumeCheckpoint" ? "resuming" : "starting-vm";
+    case "Checkpointing":
+      return "checkpointing";
+    case "Stopped":
+      return "stopped";
+    case "Failed":
+      return "failed";
+  }
 }

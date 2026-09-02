@@ -28,7 +28,7 @@ export type CommandHandler<State, Command, Event> = (
 export interface PersistentActor<Command> {
   readonly persistenceId: string;
   readonly send: (command: Command) => Effect.Effect<boolean, never, never>;
-  readonly awaitTermination: Effect.Effect<void, never, never>;
+  readonly awaitTermination: Effect.Effect<Exit.Exit<void, PersistentActorError>, never, never>;
   readonly shutdown: Effect.Effect<void, never, never>;
 }
 
@@ -163,7 +163,7 @@ export function makePersistentActor<State, Command, Event>(
     return {
       persistenceId: options.persistenceId,
       send,
-      awaitTermination: Fiber.await(fiber).pipe(Effect.asVoid),
+      awaitTermination: Fiber.await(fiber),
       shutdown,
     };
   });

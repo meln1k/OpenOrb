@@ -6,6 +6,7 @@ import type {
   RunnerSessionState,
   SessionGitHead,
   SessionId,
+  SessionIssue,
 } from "@openorb/protocol/runner-api";
 import { Data, Effect, Schema } from "effect";
 
@@ -17,12 +18,13 @@ import {
 } from "../persistent-actor/persistent-actor.ts";
 import type { RunnerSessionDefinition } from "../definition.ts";
 import {
-  type PersistedResumeContinuation,
+  type PersistedRestorationIntent,
   type RunnerSessionCheckpointMetadata,
   type RunPurpose,
   SessionEvent,
   type SessionEvent as SessionEventType,
 } from "./events.ts";
+import { appendSessionIssues, clearFailureIssues, clearIssueCategories } from "./issues.ts";
 
 const strictSchemaOptions = { onExcessProperty: "error" } as const;
 
@@ -32,6 +34,7 @@ export interface SessionData {
   readonly runnerId: typeof RunnerId.Type;
   readonly createdAt: typeof RunnerSessionCreatedAt.Type;
   readonly checkoutState: RunnerCheckoutState;
+  readonly issues: readonly SessionIssue[];
   readonly baseCommit?: typeof SessionGitHead.Type;
   readonly lastAcceptedUserMessageAt?: typeof RunnerSessionCreatedAt.Type;
 }
@@ -49,6 +52,19 @@ interface CheckpointRetainingPhase {
   readonly checkpoint?: RunnerSessionCheckpointMetadata;
 }
 
+type RestoringPhase =
+  | {
+    readonly _tag: "Restoring";
+    readonly restorationId: string;
+    readonly intent: Extract<PersistedRestorationIntent, { readonly _tag: "ResumeCheckpoint" }>;
+    readonly checkpoint: RunnerSessionCheckpointMetadata;
+  }
+  | ({
+    readonly _tag: "Restoring";
+    readonly restorationId: string;
+    readonly intent: Extract<PersistedRestorationIntent, { readonly _tag: "StartCleanVm" }>;
+  } & CheckpointRetainingPhase);
+
 export type SessionPhase =
   | ({ readonly _tag: "Provisioning" } & CheckpointRetainingPhase)
   | ({ readonly _tag: "Ready" } & CheckpointRetainingPhase)
@@ -65,12 +81,7 @@ export type SessionPhase =
     readonly followUp: FollowUpPhase;
     readonly abort: AbortPhase;
   } & CheckpointRetainingPhase)
-  | {
-    readonly _tag: "Resuming";
-    readonly resumeId: string;
-    readonly continuation: PersistedResumeContinuation;
-    readonly checkpoint: RunnerSessionCheckpointMetadata;
-  }
+  | RestoringPhase
   | ({ readonly _tag: "Checkpointing"; readonly file: string } & CheckpointRetainingPhase)
   | {
     readonly _tag: "Stopped";
@@ -143,7 +154,8 @@ export function publicSessionState(phase: SessionPhase): RunnerSessionState {
     case "Waking":
     case "Checkpointing":
       return "ready";
-    case "Resuming":
+    case "Restoring":
+      return phase.intent._tag === "ResumeCheckpoint" ? "stopped" : "provisioning";
     case "Stopped":
       return "stopped";
     case "Failed":
@@ -163,6 +175,7 @@ export function applySessionEvent(
         runnerId: event.runnerId,
         createdAt: event.createdAt,
         checkoutState: "pending",
+        issues: [],
       },
       phase: { _tag: "Provisioning" },
     };
@@ -173,17 +186,35 @@ export function applySessionEvent(
   switch (event.type) {
     case "provisioning.retried":
       return phase._tag === "Failed"
-        ? { data, phase: { _tag: "Provisioning", ...retainedCheckpoint(phase) } }
+        ? {
+          data: { ...data, issues: clearFailureIssues(data.issues) },
+          phase: { _tag: "Provisioning", ...retainedCheckpoint(phase) },
+        }
         : current;
     case "provisioning.interrupted":
     case "provisioning.failed":
       return phase._tag === "Provisioning"
-        ? { data, phase: { _tag: "Failed", ...retainedCheckpoint(phase) } }
+        ? {
+          data: withIssues(data, [event.issue]),
+          phase: { _tag: "Failed", ...retainedCheckpoint(phase) },
+        }
         : current;
     case "restore.failed":
       return phase._tag === "Ready"
-        ? { data, phase: { _tag: "Failed", ...retainedCheckpoint(phase) } }
+        ? {
+          data: withIssues(data, [event.issue]),
+          phase: { _tag: "Failed", ...retainedCheckpoint(phase) },
+        }
         : current;
+    case "actor.crashed":
+      return phase._tag === "Ready"
+        ? {
+          data: withIssues(data, [event.issue]),
+          phase: { _tag: "Failed", ...retainedCheckpoint(phase) },
+        }
+        : { data: withIssues(data, [event.issue]), phase };
+    case "issue.recorded":
+      return { data: withIssues(data, [event.issue]), phase };
     case "checkout.updated":
       return phase._tag === "Provisioning"
         ? {
@@ -204,9 +235,18 @@ export function applySessionEvent(
         : current;
     case "wake.completed":
     case "wake.failed":
+      return phase._tag === "Waking" && phase.wakeId === event.wakeId
+        ? {
+          data: event.type === "wake.failed" ? withIssues(data, [event.issue]) : data,
+          phase: { _tag: "Ready", ...retainedCheckpoint(phase) },
+        }
+        : current;
     case "wake.interrupted":
       return phase._tag === "Waking" && phase.wakeId === event.wakeId
-        ? { data, phase: { _tag: "Ready", ...retainedCheckpoint(phase) } }
+        ? {
+          data: withIssues(data, [event.issue]),
+          phase: { _tag: "Failed", ...retainedCheckpoint(phase) },
+        }
         : current;
     case "run.requested": {
       const allowed = event.purpose === "initial"
@@ -214,7 +254,7 @@ export function applySessionEvent(
         : phase._tag === "Ready";
       return allowed
         ? {
-          data,
+          data: withIssues(data, event.issues),
           phase: {
             _tag: "StartingRun",
             runId: event.runId,
@@ -240,7 +280,7 @@ export function applySessionEvent(
         : current;
     case "run.start-failed":
       return phase._tag === "StartingRun" && phase.runId === event.runId
-        ? finishRun(data, phase, phase.purpose === "initial")
+        ? finishRun(withIssues(data, [event.issue]), phase, phase.purpose === "initial")
         : current;
     case "follow-up.requested":
       return phase._tag === "Running" && phase.runId === event.runId &&
@@ -261,6 +301,12 @@ export function applySessionEvent(
         }
         : current;
     case "follow-up.failed":
+      return matchesFollowUp(phase, event)
+        ? {
+          data: withIssues(data, [event.issue]),
+          phase: { ...phase, followUp: { _tag: "Idle" } },
+        }
+        : current;
     case "follow-up.interrupted":
       return matchesFollowUp(phase, event)
         ? { data, phase: { ...phase, followUp: { _tag: "Idle" } } }
@@ -282,51 +328,98 @@ export function applySessionEvent(
         : current;
     case "run.completed":
       return phase._tag === "Running" && phase.runId === event.runId
-        ? finishRun(data, phase, false)
+        ? finishRun(
+          {
+            ...data,
+            issues: clearIssueCategories(data.issues, ["model", "operation-uncertain"]),
+          },
+          phase,
+          false,
+        )
         : current;
     case "run.failed":
       return phase._tag === "Running" && phase.runId === event.runId
-        ? finishRun(data, phase, phase.purpose === "initial")
+        ? finishRun(withIssues(data, [event.issue]), phase, phase.purpose === "initial")
         : current;
     case "run.interrupted":
       return (phase._tag === "StartingRun" || phase._tag === "Running") &&
           phase.runId === event.runId
-        ? finishRun(data, phase, phase.purpose === "initial")
+        ? {
+          data: withIssues(data, [event.issue]),
+          phase: { _tag: "Failed", ...retainedCheckpoint(phase) },
+        }
         : current;
-    case "resume.started":
-      return phase._tag === "Stopped"
+    case "restoration.started": {
+      if (event.intent._tag === "ResumeCheckpoint") {
+        return (phase._tag === "Stopped" || phase._tag === "Failed") &&
+            phase.checkpoint !== undefined
+          ? {
+            data: {
+              ...data,
+              issues: clearIssueCategories(data.issues, ["checkpoint-resume"]),
+            },
+            phase: {
+              _tag: "Restoring",
+              restorationId: event.restorationId,
+              intent: event.intent,
+              checkpoint: phase.checkpoint,
+            },
+          }
+          : current;
+      }
+      return phase._tag === "Failed"
         ? {
           data,
           phase: {
-            _tag: "Resuming",
-            resumeId: event.resumeId,
-            continuation: event.continuation,
-            checkpoint: phase.checkpoint,
+            _tag: "Restoring",
+            restorationId: event.restorationId,
+            intent: event.intent,
+            ...retainedCheckpoint(phase),
           },
         }
         : current;
-    case "resume.completed":
-      if (phase._tag !== "Resuming" || phase.resumeId !== event.resumeId) return current;
-      return phase.continuation._tag === "Wake"
-        ? { data, phase: { _tag: "Ready", checkpoint: phase.checkpoint } }
+    }
+    case "restoration.completed": {
+      if (phase._tag !== "Restoring" || phase.restorationId !== event.restorationId) {
+        return current;
+      }
+      const restoredData = withIssues(
+        { ...data, issues: clearFailureIssues(data.issues) },
+        event.issues,
+      );
+      if (phase.intent._tag === "StartCleanVm") {
+        return { data: restoredData, phase: { _tag: "Ready" } };
+      }
+      return phase.intent.continuation._tag === "Wake"
+        ? { data: restoredData, phase: { _tag: "Ready", ...retainedCheckpoint(phase) } }
         : {
-          data,
+          data: restoredData,
           phase: {
             _tag: "StartingRun",
-            runId: phase.continuation.runId,
+            runId: phase.intent.continuation.runId,
             purpose: "prompt",
-            checkpoint: phase.checkpoint,
+            ...retainedCheckpoint(phase),
           },
         };
-    case "resume.failed":
-    case "resume.interrupted":
-      return phase._tag === "Resuming" && phase.resumeId === event.resumeId
-        ? { data, phase: { _tag: "Stopped", checkpoint: phase.checkpoint } }
+    }
+    case "restoration.failed":
+    case "restoration.interrupted":
+      return phase._tag === "Restoring" && phase.restorationId === event.restorationId
+        ? {
+          data: withIssues(data, [event.issue]),
+          phase: { _tag: "Failed", ...retainedCheckpoint(phase) },
+        }
         : current;
     case "checkpoint.started":
       return phase._tag === "Ready"
         ? {
-          data,
+          data: {
+            ...data,
+            issues: clearIssueCategories(data.issues, [
+              "checkpoint-create",
+              "checkpoint-publish",
+            ]),
+          },
           phase: {
             _tag: "Checkpointing",
             file: event.file,
@@ -341,7 +434,7 @@ export function applySessionEvent(
     case "checkpoint.failed":
       if (phase._tag !== "Checkpointing" || phase.file !== event.file) return current;
       return {
-        data,
+        data: withIssues(data, [event.issue]),
         phase: {
           _tag: event.consumed ? "Failed" : "Ready",
           ...retainedCheckpoint(phase),
@@ -349,11 +442,20 @@ export function applySessionEvent(
       };
     case "checkpoint.interrupted":
       return phase._tag === "Checkpointing" && phase.file === event.file
-        ? { data, phase: { _tag: "Failed", ...retainedCheckpoint(phase) } }
+        ? {
+          data: withIssues(data, [event.issue]),
+          phase: { _tag: "Failed", ...retainedCheckpoint(phase) },
+        }
         : current;
     case "checkpoint.invalidated":
-      return phase.checkpoint?.file === event.file ? { data, phase: { _tag: "Failed" } } : current;
+      return phase.checkpoint?.file === event.file
+        ? { data: withIssues(data, [event.issue]), phase: { _tag: "Failed" } }
+        : current;
   }
+}
+
+function withIssues(data: SessionData, issues: readonly SessionIssue[]): SessionData {
+  return issues.length === 0 ? data : { ...data, issues: appendSessionIssues(data.issues, issues) };
 }
 
 function retainedCheckpoint(

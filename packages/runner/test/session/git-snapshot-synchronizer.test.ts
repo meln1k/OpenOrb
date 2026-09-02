@@ -46,6 +46,7 @@ const METADATA: RunnerSessionMetadata = {
   createdAt: Schema.decodeUnknownSync(RunnerSessionCreatedAt)("2026-08-27T12:00:00Z"),
   state: "running",
   checkoutState: "available",
+  issues: [],
   baseCommit: "0123456789abcdef0123456789abcdef01234567",
 };
 

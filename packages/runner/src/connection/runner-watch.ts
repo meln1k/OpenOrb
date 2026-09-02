@@ -48,7 +48,7 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
       const activeRunId = supervisor.getActiveRunId(session.id);
       return {
         type: "snapshot.session" as const,
-        session: withActiveRun(session, activeRunId),
+        session: supervisor.withQuarantineFailure(withActiveRun(session, activeRunId)),
       };
     });
     const snapshot = Stream.fromIterable([...sessions, {
@@ -96,7 +96,7 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
           ),
           Effect.map((session) => {
             const activeRunId = supervisor.getActiveRunId(session.id);
-            const current = withActiveRun(session, activeRunId);
+            const current = supervisor.withQuarantineFailure(withActiveRun(session, activeRunId));
             const encoded = JSON.stringify(current);
             if (lastSessionValues.get(current.id) === encoded) return null;
             lastSessionValues.set(current.id, encoded);

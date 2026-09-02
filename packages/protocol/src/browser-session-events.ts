@@ -4,6 +4,9 @@ export type {
   EphemeralSessionEvent,
   RunnerCheckoutState,
   SessionEvent,
+  SessionIssue,
+  SessionIssueCategory,
   SessionProvisioningStage,
+  SessionRecoveryAction,
   SessionUsage,
 } from "./runner-api-session-events.ts";

@@ -62,11 +62,6 @@
     },
     "dev:gateway": "deno task --filter @openorb/gateway dev",
     "dev:runner": "deno task --filter @openorb/runner dev",
-    "dev:otel": {
-      "dependencies": ["dev:otel:gateway", "dev:otel:runner"]
-    },
-    "dev:otel:gateway": "deno task --filter @openorb/gateway dev:otel",
-    "dev:otel:runner": "deno task --filter @openorb/runner dev:otel",
     "check": "deno fmt --check && deno lint && deno check && deno task typecheck:effect",
     "test": "NODE_ENV=test deno test --allow-env --allow-ffi --allow-net=127.0.0.1,localhost --allow-read --allow-write --allow-sys=homedir",
     "test:gondolin": "GONDOLIN_START_TIMEOUT_MS=300000 OPENORB_RUN_GONDOLIN_TESTS=1 NODE_ENV=test deno test --allow-env --allow-ffi --allow-net --allow-read --allow-write --allow-sys=gid,homedir,networkInterfaces,uid --allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img,ps,pwdx packages/runner/test/environment/gondolin/environment.test.ts packages/runner/test/environment/gondolin/github-mediation.integration.test.ts",

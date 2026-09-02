@@ -1,4 +1,5 @@
 import { clientEntry, css, type Handle } from "remix/ui";
+import type { SessionIssue } from "@openorb/protocol/browser-session-events";
 
 import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
 import { routes } from "@/app/routes.ts";
@@ -23,12 +24,12 @@ type SerializableData<Value> = Value extends readonly (infer Item)[] ? Serializa
   : Value;
 
 export type SessionDetailClientProps = {
-  readonly canRetry: boolean;
   readonly composer: SerializableData<SessionComposerData>;
   readonly contextWindow: number;
   readonly csrfToken: string;
   readonly error: string | undefined;
   readonly initialState: SessionState;
+  readonly initialIssues: SerializableData<readonly SessionIssue[]>;
   readonly session: SerializableData<SessionCatalogEntry>;
   readonly sidebarSessions: SerializableData<SessionCatalogEntry[]>;
 };
@@ -43,6 +44,7 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
           key={handle.props.session.id}
           csrfToken={handle.props.csrfToken}
           initialState={handle.props.initialState}
+          initialIssues={handle.props.initialIssues}
           sessionId={handle.props.session.id}
         >
           <AppShellLayout
@@ -73,7 +75,6 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
           >
             {handle.props.error ? <p role="alert" mix={errorStyle}>{handle.props.error}</p> : null}
             <SessionTranscript
-              canRetry={handle.props.canRetry}
               contextWindow={handle.props.contextWindow}
               csrfToken={handle.props.csrfToken}
               sessionId={handle.props.session.id}

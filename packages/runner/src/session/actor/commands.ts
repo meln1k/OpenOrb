@@ -2,6 +2,7 @@ import type {
   AbortSessionPayload,
   PromptSessionPayload,
   RunId,
+  SessionIssue,
   SessionModelRuntime,
   StopSessionPayload,
   UpdateSessionGitFilePayload,
@@ -43,17 +44,23 @@ export type DeletionAcceptance =
   | { readonly ok: false; readonly message: string };
 
 interface SessionActorInputBase {
-  metadata: RunnerSessionMetadata;
-  githubToken?: string | undefined;
-  correlationId: string;
-  idleTimeoutMs: number;
+  readonly metadata: RunnerSessionMetadata;
+  readonly correlationId: string;
+  readonly idleTimeoutMs: number;
 }
 
 export type SessionActorInput =
-  | (SessionActorInputBase & { readonly mode: "restore" | "reconcile" })
+  | (SessionActorInputBase & {
+    readonly mode: "restore";
+  })
+  | (SessionActorInputBase & {
+    readonly mode: "reconcile";
+    readonly trigger: "runner-start" | "provision-request" | "actor-crash";
+  })
   | (SessionActorInputBase & {
     readonly mode: "create" | "retry";
-    modelRuntime: SessionModelRuntime;
+    readonly githubToken?: string | undefined;
+    readonly modelRuntime: SessionModelRuntime;
   });
 
 export interface ProvisioningLogBudget {
@@ -105,7 +112,7 @@ export type ActorCommand =
     readonly reply: Deferred.Deferred<DeletionAcceptance>;
   };
 
-export type ResumeContinuation =
+export type RestorationContinuation =
   | {
     readonly _tag: "Wake";
     readonly payload: WakeSessionPayload;
@@ -118,11 +125,22 @@ export type ResumeContinuation =
     readonly reply: Deferred.Deferred<PromptAcceptance>;
   };
 
+export type RestorationRequest =
+  | {
+    readonly _tag: "ResumeCheckpoint";
+    readonly continuation: RestorationContinuation;
+  }
+  | {
+    readonly _tag: "StartCleanVm";
+    readonly continuation: Extract<RestorationContinuation, { readonly _tag: "Wake" }>;
+  };
+
 export type RunCompletion =
   | {
     readonly _tag: "Provisioning";
     readonly correlationId: string;
     readonly logBudget: ProvisioningLogBudget;
+    readonly issues: readonly SessionIssue[];
   }
   | {
     readonly _tag: "Prompt";
@@ -154,6 +172,7 @@ export type InternalCommand =
     readonly modelRuntime: SessionModelRuntime;
     readonly correlationId: string;
     readonly logBudget: ProvisioningLogBudget;
+    readonly issues: readonly SessionIssue[];
   }
   | {
     readonly kind: "internal";
@@ -161,6 +180,7 @@ export type InternalCommand =
     readonly correlationId: string;
     readonly logBudget: ProvisioningLogBudget;
     readonly error: SessionActorError;
+    readonly issue: SessionIssue;
   }
   | {
     readonly kind: "internal";
@@ -173,6 +193,7 @@ export type InternalCommand =
     readonly kind: "internal";
     readonly _tag: "WakeOpenFailed";
     readonly wakeId: string;
+    readonly issue: SessionIssue;
     readonly reply: Deferred.Deferred<WakeAcceptance>;
   }
   | {
@@ -242,28 +263,36 @@ export type InternalCommand =
     readonly consumed: boolean;
     readonly agentSessionClosed: boolean;
     readonly correlationId: string;
+    readonly issue: SessionIssue;
     readonly reply: Deferred.Deferred<StopAcceptance>;
   }
   | {
     readonly kind: "internal";
-    readonly _tag: "ResumeCompleted";
-    readonly resumeId: string;
+    readonly _tag: "RestorationCompleted";
+    readonly restorationId: string;
     readonly environment: AgentEnvironment;
     readonly agentSession: OpenAgentSession;
     readonly correlationId: string;
-    readonly continuation: ResumeContinuation;
+    readonly request: RestorationRequest;
+    readonly issues: readonly SessionIssue[];
   }
   | {
     readonly kind: "internal";
-    readonly _tag: "ResumeFailed";
-    readonly resumeId: string;
+    readonly _tag: "RestorationFailed";
+    readonly restorationId: string;
     readonly correlationId: string;
-    readonly continuation: ResumeContinuation;
+    readonly request: RestorationRequest;
+    readonly issue: SessionIssue;
   }
   | {
     readonly kind: "internal";
     readonly _tag: "RefreshGitSnapshot";
     readonly reply: Deferred.Deferred<void, unknown>;
+  }
+  | {
+    readonly kind: "internal";
+    readonly _tag: "RecordIssue";
+    readonly issue: SessionIssue;
   };
 
 export type SessionCommand = ActorCommand | InternalCommand;

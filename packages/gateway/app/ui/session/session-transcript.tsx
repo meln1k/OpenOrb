@@ -19,6 +19,7 @@ import {
   actionResponseAccepted,
   actionResponseError,
 } from "@/app/ui/session/session-action-response.ts";
+import { SessionFailureNotices } from "@/app/ui/session/session-failure-notices.tsx";
 import { AssistantMarkdown } from "@/app/ui/session/session-markdown.tsx";
 import {
   activeActivityId,
@@ -36,7 +37,6 @@ import {
 import { SessionPageScope } from "@/app/ui/session/session-page-controller.tsx";
 
 export type SessionTranscriptProps = {
-  canRetry: boolean;
   contextWindow: number;
   csrfToken: string;
   sessionId: string;
@@ -176,18 +176,13 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
             </form>
           )
           : null}
-        {handle.props.canRetry && sessionState === "error"
-          ? (
-            <form
-              method="post"
-              action={routes.app.sessions.retry.href({ sessionId: handle.props.sessionId })}
-              mix={retryStyle}
-            >
-              <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
-              <Button type="submit" size="sm">Retry provisioning</Button>
-            </form>
-          )
-          : null}
+        <SessionFailureNotices
+          connectionInterrupted={connectionInterrupted}
+          csrfToken={handle.props.csrfToken}
+          issues={page.projection.issues}
+          recoveryAllowed={sessionState === "error"}
+          sessionId={handle.props.sessionId}
+        />
         {sessionState === "stopped"
           ? (
             <Marker data-session-stopped mix={[richMarkerStyle, stoppedMarkerStyle]}>
@@ -941,7 +936,6 @@ const spinnerStyle = css({
   "@keyframes openorb-session-spin": { to: { transform: "rotate(360deg)" } },
   "@media (prefers-reduced-motion: reduce)": { animation: "none" },
 });
-const retryStyle = css({ flexShrink: 0, margin: 0 });
 const screenReaderOnlyStyle = css({
   position: "absolute",
   width: "1px",

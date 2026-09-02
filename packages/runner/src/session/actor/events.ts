@@ -5,6 +5,8 @@ import {
   RunnerSessionCreatedAt,
   SessionGitHead,
   SessionId,
+  SessionIssue,
+  SessionIssues,
 } from "@openorb/protocol/runner-api";
 import { Schema } from "effect";
 
@@ -27,14 +29,20 @@ export const checkpointMetadataSchema = Schema.Struct({
 });
 const operationIdSchema = Schema.String.check(Schema.isUUID());
 const runPurposeSchema = Schema.Literals(["initial", "prompt"]);
-const resumeContinuationSchema = Schema.Union([
+const restorationContinuationSchema = Schema.Union([
   Schema.TaggedStruct("Wake", {}),
   Schema.TaggedStruct("Prompt", { runId: RunId }),
+]);
+const restorationIntentSchema = Schema.Union([
+  Schema.TaggedStruct("ResumeCheckpoint", {
+    continuation: restorationContinuationSchema,
+  }),
+  Schema.TaggedStruct("StartCleanVm", {}),
 ]);
 
 export type RunnerSessionCheckpointMetadata = typeof checkpointMetadataSchema.Type;
 export type RunPurpose = typeof runPurposeSchema.Type;
-export type PersistedResumeContinuation = typeof resumeContinuationSchema.Type;
+export type PersistedRestorationIntent = typeof restorationIntentSchema.Type;
 
 const sessionProvisioningStartedEventSchema = Schema.Struct({
   type: Schema.Literal("session.provisioning-started"),
@@ -48,12 +56,23 @@ const provisioningRetriedEventSchema = Schema.Struct({
 });
 const provisioningInterruptedEventSchema = Schema.Struct({
   type: Schema.Literal("provisioning.interrupted"),
+  issue: SessionIssue,
 });
 const provisioningFailedEventSchema = Schema.Struct({
   type: Schema.Literal("provisioning.failed"),
+  issue: SessionIssue,
 });
 const restoreFailedEventSchema = Schema.Struct({
   type: Schema.Literal("restore.failed"),
+  issue: SessionIssue,
+});
+const actorCrashedEventSchema = Schema.Struct({
+  type: Schema.Literal("actor.crashed"),
+  issue: SessionIssue,
+});
+const issueRecordedEventSchema = Schema.Struct({
+  type: Schema.Literal("issue.recorded"),
+  issue: SessionIssue,
 });
 const checkoutUpdatedEventSchema = Schema.Struct({
   type: Schema.Literal("checkout.updated"),
@@ -71,15 +90,18 @@ const wakeCompletedEventSchema = Schema.Struct({
 const wakeFailedEventSchema = Schema.Struct({
   type: Schema.Literal("wake.failed"),
   wakeId: operationIdSchema,
+  issue: SessionIssue,
 });
 const wakeInterruptedEventSchema = Schema.Struct({
   type: Schema.Literal("wake.interrupted"),
   wakeId: operationIdSchema,
+  issue: SessionIssue,
 });
 const runRequestedEventSchema = Schema.Struct({
   type: Schema.Literal("run.requested"),
   runId: RunId,
   purpose: runPurposeSchema,
+  issues: SessionIssues,
 });
 const runStartedEventSchema = Schema.Struct({
   type: Schema.Literal("run.started"),
@@ -89,6 +111,7 @@ const runStartedEventSchema = Schema.Struct({
 const runStartFailedEventSchema = Schema.Struct({
   type: Schema.Literal("run.start-failed"),
   runId: RunId,
+  issue: SessionIssue,
 });
 const followUpRequestedEventSchema = Schema.Struct({
   type: Schema.Literal("follow-up.requested"),
@@ -105,6 +128,7 @@ const followUpFailedEventSchema = Schema.Struct({
   type: Schema.Literal("follow-up.failed"),
   runId: RunId,
   followUpId: operationIdSchema,
+  issue: SessionIssue,
 });
 const followUpInterruptedEventSchema = Schema.Struct({
   type: Schema.Literal("follow-up.interrupted"),
@@ -130,27 +154,32 @@ const runCompletedEventSchema = Schema.Struct({
 const runFailedEventSchema = Schema.Struct({
   type: Schema.Literal("run.failed"),
   runId: RunId,
+  issue: SessionIssue,
 });
 const runInterruptedEventSchema = Schema.Struct({
   type: Schema.Literal("run.interrupted"),
   runId: RunId,
+  issue: SessionIssue,
 });
-const resumeStartedEventSchema = Schema.Struct({
-  type: Schema.Literal("resume.started"),
-  resumeId: operationIdSchema,
-  continuation: resumeContinuationSchema,
+const restorationStartedEventSchema = Schema.Struct({
+  type: Schema.Literal("restoration.started"),
+  restorationId: operationIdSchema,
+  intent: restorationIntentSchema,
 });
-const resumeCompletedEventSchema = Schema.Struct({
-  type: Schema.Literal("resume.completed"),
-  resumeId: operationIdSchema,
+const restorationCompletedEventSchema = Schema.Struct({
+  type: Schema.Literal("restoration.completed"),
+  restorationId: operationIdSchema,
+  issues: SessionIssues,
 });
-const resumeFailedEventSchema = Schema.Struct({
-  type: Schema.Literal("resume.failed"),
-  resumeId: operationIdSchema,
+const restorationFailedEventSchema = Schema.Struct({
+  type: Schema.Literal("restoration.failed"),
+  restorationId: operationIdSchema,
+  issue: SessionIssue,
 });
-const resumeInterruptedEventSchema = Schema.Struct({
-  type: Schema.Literal("resume.interrupted"),
-  resumeId: operationIdSchema,
+const restorationInterruptedEventSchema = Schema.Struct({
+  type: Schema.Literal("restoration.interrupted"),
+  restorationId: operationIdSchema,
+  issue: SessionIssue,
 });
 const checkpointStartedEventSchema = Schema.Struct({
   type: Schema.Literal("checkpoint.started"),
@@ -164,22 +193,26 @@ const checkpointFailedEventSchema = Schema.Struct({
   type: Schema.Literal("checkpoint.failed"),
   file: checkpointFileSchema,
   consumed: Schema.Boolean,
+  issue: SessionIssue,
 });
 const checkpointInterruptedEventSchema = Schema.Struct({
   type: Schema.Literal("checkpoint.interrupted"),
   file: checkpointFileSchema,
+  issue: SessionIssue,
 });
 const checkpointInvalidatedEventSchema = Schema.Struct({
   type: Schema.Literal("checkpoint.invalidated"),
   file: checkpointFileSchema,
+  issue: SessionIssue,
 });
-
 export const SessionEvent = Schema.Union([
   sessionProvisioningStartedEventSchema,
   provisioningRetriedEventSchema,
   provisioningInterruptedEventSchema,
   provisioningFailedEventSchema,
   restoreFailedEventSchema,
+  actorCrashedEventSchema,
+  issueRecordedEventSchema,
   checkoutUpdatedEventSchema,
   wakeStartedEventSchema,
   wakeCompletedEventSchema,
@@ -198,10 +231,10 @@ export const SessionEvent = Schema.Union([
   runCompletedEventSchema,
   runFailedEventSchema,
   runInterruptedEventSchema,
-  resumeStartedEventSchema,
-  resumeCompletedEventSchema,
-  resumeFailedEventSchema,
-  resumeInterruptedEventSchema,
+  restorationStartedEventSchema,
+  restorationCompletedEventSchema,
+  restorationFailedEventSchema,
+  restorationInterruptedEventSchema,
   checkpointStartedEventSchema,
   checkpointPublishedEventSchema,
   checkpointFailedEventSchema,

@@ -100,6 +100,7 @@ export function makeSessionEvents(options: {
                 type: "session.state",
                 stage: sessionStage(metadata.state),
                 checkoutState: metadata.checkoutState,
+                issues: metadata.issues,
               },
             },
           };

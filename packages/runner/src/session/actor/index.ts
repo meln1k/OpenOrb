@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, Layer, MutableRef, type Scope } from "effect";
+import { Context, Deferred, Effect, type Exit, Layer, MutableRef, type Scope } from "effect";
 import type {
   AbortSessionPayload,
   PromptSessionPayload,
@@ -11,7 +11,11 @@ import type {
 import type { AgentEnvironmentProvider } from "../../environment/agent-environment.ts";
 import type { AgentHarness } from "../../harness/agent-harness.ts";
 import type { Journal } from "../persistent-actor/journal.ts";
-import { makePersistentActor, type PersistentActor } from "../persistent-actor/persistent-actor.ts";
+import {
+  makePersistentActor,
+  type PersistentActor,
+  type PersistentActorError,
+} from "../persistent-actor/persistent-actor.ts";
 import { actorError, SessionActorError } from "./actor-error.ts";
 import type {
   AbortAcceptance,
@@ -53,7 +57,7 @@ export interface SessionActor {
   readonly updateGitFile: (
     payload: UpdateSessionGitFilePayload,
   ) => Effect.Effect<GitFileUpdateAcceptance>;
-  readonly awaitTermination: Effect.Effect<void>;
+  readonly awaitTermination: Effect.Effect<Exit.Exit<void, PersistentActorError>>;
   readonly shutdown: Effect.Effect<void>;
 }
 

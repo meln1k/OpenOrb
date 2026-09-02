@@ -1,4 +1,4 @@
-import type { RunId, SessionModelRuntime } from "@openorb/protocol/runner-api";
+import type { RunId, SessionIssue, SessionModelRuntime } from "@openorb/protocol/runner-api";
 import { DateTime, Deferred, Effect, Exit, type Scope } from "effect";
 
 import type { AgentEnvironment } from "../../environment/agent-environment.ts";
@@ -9,6 +9,7 @@ import type { SessionDecision, SessionDecisions } from "./decision.ts";
 import { redactedErrorMessage, type SessionReporter } from "./reporter.ts";
 import type { SessionRuntime } from "./runtime.ts";
 import { sessionMetadata, type SessionState } from "./state.ts";
+import { makeSessionIssue } from "./issues.ts";
 
 interface SessionRunOptions {
   readonly runtime: SessionRuntime;
@@ -25,6 +26,7 @@ export interface SessionRunBehavior {
     runId: RunId,
     prompt: string,
     completion: RunCompletion,
+    issues: readonly SessionIssue[],
   ) => SessionDecision;
   readonly start: (
     environment: AgentEnvironment,
@@ -82,11 +84,13 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     runId,
     prompt,
     completion,
+    issues,
   ) =>
     persist({
       type: "run.requested",
       runId,
       purpose: completion._tag === "Provisioning" ? "initial" : "prompt",
+      issues,
     }, () =>
       start(
         environment,
@@ -183,7 +187,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
         Effect.andThen(runtime.updateStatus(true, command.runId)),
         Effect.andThen(
           reporter.emitState(sessionMetadata(running), "running", command.runId).pipe(
-            Effect.ignore,
+            Effect.orDie,
           ),
         ),
         Effect.andThen(
@@ -234,21 +238,27 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
       );
     }
     const initial = state.phase.purpose === "initial";
+    const issue = modelIssue(command.error, command.completion, initial);
     return Effect.succeed(
       persist(
-        { type: "run.start-failed", runId: command.runId },
+        { type: "run.start-failed", runId: command.runId, issue },
         (next) =>
           closeOpenedSession(command.openedAgentSession).pipe(
             Effect.andThen(runtime.updateStatus(runtime.get().environment !== undefined)),
             Effect.andThen(
               initial
                 ? reportInitialFailure(next, command.completion, command.error)
-                : command.completion._tag === "Prompt"
-                ? Deferred.succeed(command.completion.reply, {
-                  ok: false,
-                  message: "The agent prompt could not be started. Try again.",
-                }).pipe(Effect.asVoid)
-                : Effect.void,
+                : reporter.emitState(sessionMetadata(next), "ready", command.runId).pipe(
+                  Effect.orDie,
+                  Effect.andThen(
+                    command.completion._tag === "Prompt"
+                      ? Deferred.succeed(command.completion.reply, {
+                        ok: false,
+                        message: "The agent prompt could not be started. Try again.",
+                      }).pipe(Effect.asVoid)
+                      : Effect.void,
+                  ),
+                ),
             ),
           ),
       ),
@@ -261,9 +271,11 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     }
     const initialFailure = command.error !== undefined && state.phase.purpose === "initial";
     return Effect.succeed(persist(
-      command.error === undefined
-        ? { type: "run.completed", runId: command.runId }
-        : { type: "run.failed", runId: command.runId },
+      command.error === undefined ? { type: "run.completed", runId: command.runId } : {
+        type: "run.failed",
+        runId: command.runId,
+        issue: modelIssue(command.error, command.completion, initialFailure),
+      },
       (next) =>
         runtime.clearActiveRun.pipe(
           Effect.andThen(runtime.updateStatus(runtime.get().environment !== undefined)),
@@ -274,7 +286,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
                 sessionMetadata(next),
                 "ready",
                 command.runId,
-              ).pipe(Effect.ignore),
+              ).pipe(Effect.orDie),
           ),
         ),
     ));
@@ -370,16 +382,21 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
         message: "The follow-up no longer matches the active run.",
       }));
     }
+    const issue = followUpIssue();
     return Effect.succeed(persist({
       type: "follow-up.failed",
       runId: command.runId,
       followUpId: command.followUpId,
-    }, () =>
-      Deferred.succeed(command.reply, {
-        ok: false,
-        message:
-          "Pi could not confirm the follow-up; delivery may be uncertain and will not be retried automatically.",
-      }).pipe(Effect.asVoid)));
+      issue,
+    }, (next) =>
+      reporter.emitState(sessionMetadata(next), "running", command.runId).pipe(
+        Effect.orDie,
+        Effect.andThen(Deferred.succeed(command.reply, {
+          ok: false,
+          message: issue.message,
+        })),
+        Effect.asVoid,
+      )));
   };
 
   const abort: SessionRunBehavior["abort"] = (state, command) => {
@@ -457,18 +474,20 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     error: unknown,
   ): Effect.Effect<void, never> {
     if (completion._tag !== "Provisioning") return Effect.void;
-    return Effect.all([
-      reporter.emitLog(
-        completion.correlationId,
-        "stderr",
-        `Provisioning failed: ${redactedErrorMessage(error, completion.logBudget.secrets)}\n`,
-      ).pipe(Effect.ignore),
-      reporter.emitState(
-        sessionMetadata(state),
-        "failed",
-        completion.correlationId,
-      ).pipe(Effect.ignore),
-    ], { concurrency: "unbounded", discard: true });
+    return reporter.emitState(
+      sessionMetadata(state),
+      "failed",
+      completion.correlationId,
+    ).pipe(
+      Effect.orDie,
+      Effect.andThen(
+        reporter.emitLog(
+          completion.correlationId,
+          "stderr",
+          `Provisioning failed: ${redactedErrorMessage(error, completion.logBudget.secrets)}\n`,
+        ).pipe(Effect.orDie),
+      ),
+    );
   }
 
   return {
@@ -484,6 +503,34 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     abortConfirmed,
     abortFailed,
   };
+}
+
+function modelIssue(
+  error: unknown,
+  completion: RunCompletion,
+  initial: boolean,
+): SessionIssue {
+  return makeSessionIssue({
+    category: "model",
+    severity: initial ? "failure" : "warning",
+    message: initial
+      ? "The model failed before the initial prompt completed. Retry provisioning explicitly."
+      : "The model run failed. OpenOrb did not replay the prompt; review the transcript before deciding whether to send another prompt.",
+    diagnostics: completion._tag === "Provisioning"
+      ? redactedErrorMessage(error, completion.logBudget.secrets)
+      : undefined,
+    recovery: initial ? "retry-provisioning" : "none",
+  });
+}
+
+function followUpIssue(): SessionIssue {
+  return makeSessionIssue({
+    category: "operation-uncertain",
+    severity: "warning",
+    message:
+      "Pi could not confirm the follow-up; delivery may be uncertain and will not be retried automatically.",
+    recovery: "none",
+  });
 }
 
 function matchesFollowUp(

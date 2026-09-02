@@ -234,6 +234,7 @@ Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's li
     type: "session.state",
     stage: "ready",
     checkoutState: "available",
+    issues: [],
   }, "ready");
   assertEquals(ready.followUpQueue, []);
 });
@@ -241,7 +242,7 @@ Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's li
 Deno.test("checkpoint lifecycle stages expose transcript-specific status", () => {
   const checkpointing = reduceSessionTranscriptState(
     createSessionTranscriptState("ready"),
-    { type: "session.state", stage: "checkpointing", checkoutState: "available" },
+    { type: "session.state", stage: "checkpointing", checkoutState: "available", issues: [] },
     "provisioning",
   );
   assertEquals(checkpointing.status, "Creating checkpoint");
@@ -250,6 +251,7 @@ Deno.test("checkpoint lifecycle stages expose transcript-specific status", () =>
     type: "session.state",
     stage: "stopped",
     checkoutState: "available",
+    issues: [],
   }, "stopped");
   assertEquals(stopped.status, "Stopped");
 
@@ -257,6 +259,7 @@ Deno.test("checkpoint lifecycle stages expose transcript-specific status", () =>
     type: "session.state",
     stage: "resuming",
     checkoutState: "available",
+    issues: [],
   }, "provisioning");
   assertEquals(resuming.status, "Resuming checkpoint");
 });

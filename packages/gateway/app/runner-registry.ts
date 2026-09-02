@@ -31,6 +31,7 @@ import {
   type WatchSessionEvent,
 } from "@openorb/protocol/runner-api";
 import { orbSizeResources } from "@openorb/protocol";
+import { sessionWakeKind } from "@/app/utils/session-recovery.ts";
 import {
   Cause,
   Context,
@@ -713,21 +714,21 @@ const wakeSession = Effect.fn("RunnerRegistry.wakeSession")(
       registry,
       input.userId,
       input.sessionId,
-      (snapshot) => {
-        if (
-          snapshot.state !== "ready" && snapshot.state !== "running" &&
-          snapshot.state !== "stopped"
-        ) {
-          return "The session cannot be restored right now.";
-        }
-        return snapshot.model === input.payload.modelRuntime.model
+      (snapshot) =>
+        snapshot.model === input.payload.modelRuntime.model
           ? undefined
-          : "The session model cannot change during restoration.";
-      },
+          : "The session model cannot change during restoration.",
     );
     if (routed.status === "unavailable") return unavailable(routed.message);
     if (routed.status === "rejected") {
       return { status: "rejected" as const, message: routed.message };
+    }
+    const wakeKind = sessionWakeKind(routed.snapshot, input.payload.recovery);
+    if (wakeKind === undefined) {
+      return {
+        status: "rejected" as const,
+        message: "The session cannot be restored right now.",
+      };
     }
     const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
     return yield* routed.connection.runtime.client["session.wake"]({
@@ -735,7 +736,7 @@ const wakeSession = Effect.fn("RunnerRegistry.wakeSession")(
       sessionId,
     }).pipe(
       Effect.timeout(
-        routed.snapshot.state === "stopped" ? COLD_CONTINUATION_TIMEOUT_MS : OPERATION_TIMEOUT_MS,
+        wakeKind === "cold" ? COLD_CONTINUATION_TIMEOUT_MS : OPERATION_TIMEOUT_MS,
       ),
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
       Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),

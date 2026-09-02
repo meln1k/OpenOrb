@@ -25,6 +25,7 @@ import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
 import { isModelReference, sessionModelRuntime } from "@/app/model-provider-catalog.ts";
 import type { SessionComposerValues } from "@/app/ui/session-composer.tsx";
+import { currentSessionRecovery } from "@/app/utils/session-recovery.ts";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
 const projectIdSchema = s.string().refine(
@@ -58,6 +59,13 @@ const createSessionSchema = f.object({
 });
 const continueSessionSchema = f.object({
   prompt: f.field(promptSchema),
+});
+const retrySessionSchema = f.object({
+  recovery: f.field(s.union([
+    s.literal("retry-provisioning" as const),
+    s.literal("resume-prior-checkpoint" as const),
+    s.literal("start-clean-vm" as const),
+  ])),
 });
 
 type SessionsContext = MiddlewareContext<
@@ -374,6 +382,10 @@ export default createController(routes.app.sessions, {
       if (!sessionId) return new Response("Session not found.", { status: 404 });
       const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
       if (!session) return new Response("Session not found.", { status: 404 });
+      const parsed = s.parseSafe(retrySessionSchema, context.formData);
+      if (!parsed.success) {
+        return await renderDetailPage(context, "Choose an offered recovery action.", 400);
+      }
 
       const runnerId = await Effect.runPromise(
         context.services.runnerConnections.getSessionRunner(userId, sessionId),
@@ -387,7 +399,22 @@ export default createController(routes.app.sessions, {
       if (!snapshot || snapshot.state !== "error") {
         return await renderDetailPage(
           context,
-          "Only a failed provisioning attempt can be retried.",
+          "Only a failed session with an offered recovery action can be retried.",
+          409,
+        );
+      }
+      const recovery = currentSessionRecovery(snapshot.issues);
+      if (recovery === undefined) {
+        return await renderDetailPage(
+          context,
+          "This failure has no automatic recovery action.",
+          409,
+        );
+      }
+      if (parsed.value.recovery !== recovery) {
+        return await renderDetailPage(
+          context,
+          "The offered recovery action changed. Review the current failure before trying again.",
           409,
         );
       }
@@ -421,21 +448,35 @@ export default createController(routes.app.sessions, {
           409,
         );
       }
-      const provisioned = await Effect.runPromise(
-        context.services.runnerConnections.provisionSession({
-          userId,
-          runnerId,
-          sessionId,
-          payload: {
-            mode: "retry",
-            modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
-            ...(githubToken ? { githubToken } : {}),
-          },
-        }),
-        { signal: context.request.signal },
-      );
-      if (provisioned.status !== "accepted") {
-        return await renderDetailPage(context, provisioned.message, 503);
+      const modelRuntime = sessionModelRuntime(snapshot.model, modelApiKey);
+      const recovered = recovery === "retry-provisioning"
+        ? await Effect.runPromise(
+          context.services.runnerConnections.provisionSession({
+            userId,
+            runnerId,
+            sessionId,
+            payload: {
+              mode: "retry",
+              modelRuntime,
+              ...(githubToken ? { githubToken } : {}),
+            },
+          }),
+          { signal: context.request.signal },
+        )
+        : await Effect.runPromise(
+          context.services.runnerConnections.wakeSession({
+            userId,
+            sessionId,
+            payload: {
+              modelRuntime,
+              recovery,
+              ...(githubToken ? { githubToken } : {}),
+            },
+          }),
+          { signal: context.request.signal },
+        );
+      if (recovered.status !== "accepted") {
+        return await renderDetailPage(context, recovered.message, 503);
       }
       return redirect(routes.app.sessions.detail.href({ sessionId }), 303);
     },

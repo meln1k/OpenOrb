@@ -67,6 +67,7 @@ function snapshot(
     model: "opencode-go/deepseek-v4-flash",
     orbSize: "small",
     state,
+    issues: [],
     lastEventCursor: state === "ready" ? 1 : 2,
     ...(activeRunId === undefined ? {} : { activeRunId }),
   });
@@ -690,7 +691,13 @@ function provideRunnerServices(
   return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.provideService(RunnerSessionStore, store),
-      Effect.provideService(SessionSupervisor, supervisor),
+      Effect.provideService(
+        SessionSupervisor,
+        Object.assign(
+          { withQuarantineFailure: (snapshot: RunnerSessionSnapshot) => snapshot },
+          supervisor,
+        ),
+      ),
       Effect.provideService(SessionEvents, events),
     );
 }

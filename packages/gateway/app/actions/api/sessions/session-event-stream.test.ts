@@ -41,6 +41,22 @@ Deno.test("SSE reset clears the EventSource cursor with an empty id", async () =
   );
 });
 
+Deno.test("SSE closes when the runner watch ends instead of retaining only keepalives", async () => {
+  const body = await Effect.runPromise(
+    createSessionEventStream(Stream.fromIterable<typeof WatchSessionEvent.Type>([])),
+  );
+
+  assertEquals(await body.getReader().read(), { value: undefined, done: true });
+});
+
+Deno.test("SSE closes cleanly when the runner watch fails so EventSource can reconnect", async () => {
+  const body = await Effect.runPromise(
+    createSessionEventStream(Stream.fail(new Error("Runner disconnected."))),
+  );
+
+  assertEquals(await body.getReader().read(), { value: undefined, done: true });
+});
+
 Deno.test("cancelling SSE interrupts the matching Effect stream", async () => {
   const finalized = await Effect.runPromise(Deferred.make<void>());
   const started = await Effect.runPromise(Deferred.make<void>());

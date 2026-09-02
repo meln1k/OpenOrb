@@ -168,6 +168,7 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
         model: input.payload.modelRuntime.model,
         orbSize: input.payload.orbSize,
         state: "created",
+        issues: [],
         lastEventCursor: 0,
       });
       await this.reconcileAcceptance?.(snapshot);
@@ -413,6 +414,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         model: MODEL,
         orbSize: "medium",
         state: "ready",
+        issues: [],
         lastEventCursor: 1,
       }),
       Schema.decodeUnknownSync(RunnerSessionSnapshot)({
@@ -423,6 +425,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         model: MODEL,
         orbSize: "medium",
         state: "ready",
+        issues: [],
         lastEventCursor: 1,
       }),
     ]);
@@ -817,6 +820,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       offlineHtml,
       "Conversation history is unavailable while the pinned runner is offline.",
     );
+    assertMatch(offlineHtml, /data-runner-disconnected/);
     assertMatch(offlineHtml, /aria-label="Gondolin VM: Offline"/);
     assertNotMatch(offlineHtml, /openorb\/browser-test/);
     assertNotMatch(offlineHtml, /0123456789abcdef0123456789abcdef01234567/);
@@ -882,23 +886,55 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
     connections.beforeAcceptance = undefined;
     assert(connections.snapshot);
-    connections.snapshot = { ...connections.snapshot, state: "error" };
+    connections.snapshot = {
+      ...connections.snapshot,
+      state: "error",
+      issues: [{
+        category: "vm-start",
+        severity: "failure",
+        message: "The Gondolin VM could not be started.",
+        diagnostics: "qemu exited safely",
+        recovery: "retry-provisioning",
+      }],
+    };
     const failedDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
     const failedHtml = await failedDetail.text();
+    assertMatch(failedHtml, /data-session-issue="vm-start"/);
+    assertMatch(failedHtml, /data-session-issue-diagnostics/);
+    assertStringIncludes(failedHtml, "qemu exited safely");
+    assertMatch(failedHtml, /name="recovery" value="retry-provisioning"/);
     await store.saveModelProviderCredential(
       client.userId,
       PROVIDER_ID,
       RETRY_MODEL_PROVIDER_KEY,
     );
+    const staleRetryResponse = await fetch(
+      new URL(routes.app.sessions.retry.href({ sessionId: provision.sessionId }), server.baseUrl),
+      {
+        method: "POST",
+        redirect: "manual",
+        headers: { Cookie: client.cookie },
+        body: new URLSearchParams({
+          _csrf: csrfFrom(failedHtml),
+          recovery: "start-clean-vm",
+        }),
+      },
+    );
+    assertEquals(staleRetryResponse.status, 409);
+    assertMatch(await staleRetryResponse.text(), /offered recovery action changed/i);
+    assertEquals(connections.provisions.length, 1);
     const retryResponse = await fetch(
       new URL(routes.app.sessions.retry.href({ sessionId: provision.sessionId }), server.baseUrl),
       {
         method: "POST",
         redirect: "manual",
         headers: { Cookie: client.cookie },
-        body: new URLSearchParams({ _csrf: csrfFrom(failedHtml) }),
+        body: new URLSearchParams({
+          _csrf: csrfFrom(failedHtml),
+          recovery: "retry-provisioning",
+        }),
       },
     );
     assertEquals(retryResponse.status, 303);
@@ -966,7 +1002,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       new URL(routes.api.sessions.events.href({ sessionId: provision.sessionId }), server.baseUrl),
       { headers: { Cookie: client.cookie } },
     );
-    assertEquals(offlineEvents.status, 503);
+    assertEquals(offlineEvents.status, 200);
+    assertEquals(await offlineEvents.body?.getReader().read(), { value: undefined, done: true });
   } finally {
     await server.close();
     await store.close();
@@ -1386,6 +1423,7 @@ function deletionSnapshot(
     model: MODEL,
     orbSize: "medium",
     state: "ready",
+    issues: [],
     lastEventCursor: 1,
   });
 }

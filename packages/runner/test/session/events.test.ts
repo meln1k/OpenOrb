@@ -62,6 +62,7 @@ Deno.test("WatchSession emits the current session state after a runner restart",
             type: "session.state",
             stage: "ready",
             checkoutState: "available",
+            issues: [],
           },
         },
       ]);
@@ -80,6 +81,7 @@ Deno.test("WatchSession retains the latest session state across watch reconnects
         type: "session.state",
         stage: "running",
         checkoutState: "available",
+        issues: [],
       }));
 
       const replay = await Effect.runPromise(
@@ -94,6 +96,7 @@ Deno.test("WatchSession retains the latest session state across watch reconnects
             type: "session.state",
             stage: "running",
             checkoutState: "available",
+            issues: [],
           },
         },
       ]);
