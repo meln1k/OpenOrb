@@ -13,6 +13,7 @@ export const routes = route({
     index: get("/"),
     projects: form("projects"),
     sessions: route("sessions", {
+      index: get("/"),
       create: post("/"),
       detail: get(":sessionId"),
       message: post(":sessionId/messages"),

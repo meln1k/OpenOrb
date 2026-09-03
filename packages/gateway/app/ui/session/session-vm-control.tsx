@@ -4,7 +4,7 @@ import { css, type Dispatched, type Handle, on } from "remix/ui";
 import { routes } from "@/app/routes.ts";
 import { Button } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
-import { media } from "@/app/ui/responsive.ts";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/app/ui/components/tooltip.tsx";
 import {
   actionResponseAccepted,
   actionResponseError,
@@ -139,22 +139,19 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
         {actionError
           ? <span role="alert" title={actionError} mix={vmActionErrorStyle}>{actionError}</span>
           : null}
-        <div
-          aria-label={`Gondolin VM: ${phaseLabel}`}
-          data-session-vm-status
-          data-phase={vmPhase}
-          mix={vmStatusStyle}
-        >
-          <Icon name="server" size={14} />
-          <span data-slot="vm-name">VM</span>
-          <span
-            aria-hidden="true"
-            data-slot="vm-state-indicator"
-            data-transitioning={transitioning ? "true" : undefined}
-            mix={vmStateIndicatorStyle}
-          />
-          <span role="status">{phaseLabel}</span>
-        </div>
+        <Tooltip>
+          <TooltipTrigger
+            role="status"
+            tabIndex={0}
+            aria-label={`Gondolin VM: ${phaseLabel}`}
+            data-session-vm-status
+            data-phase={vmPhase}
+            mix={vmStatusStyle}
+          >
+            <span aria-hidden="true" data-slot="vm-state-indicator" />
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Gondolin VM: {phaseLabel}</TooltipContent>
+        </Tooltip>
         {action === undefined ? null : (
           <form
             method="post"
@@ -215,36 +212,22 @@ const vmControlStyle = css({
 const vmStatusStyle = css({
   display: "inline-flex",
   alignItems: "center",
-  gap: "6px",
+  justifyContent: "center",
+  width: "24px",
   height: "32px",
-  paddingInline: "10px",
   color: "var(--muted-foreground)",
-  background: "color-mix(in oklab, var(--muted) 65%, transparent)",
-  border: "1px solid var(--border)",
-  borderRadius: "999px",
-  fontSize: "12px",
-  fontWeight: 500,
-  whiteSpace: "nowrap",
-  "& [data-slot='vm-name']": { display: "none" },
-  "&[data-phase='active']": { color: "var(--primary)" },
+  borderRadius: "var(--radius-md)",
+  outline: "none",
+  "&:focus-visible": { outline: "1px solid var(--ring)", outlineOffset: "1px" },
+  "&[data-phase='starting'], &[data-phase='waking']": { color: "#ca8a04" },
+  "&[data-phase='active']": { color: "#16834b" },
   "&[data-phase='failed']": { color: "var(--destructive)" },
-  [media.md]: { "& [data-slot='vm-name']": { display: "inline" } },
-});
-const vmStateIndicatorStyle = css({
-  display: "block",
-  width: "7px",
-  height: "7px",
-  background: "currentColor",
-  borderRadius: "999px",
-  "&[data-transitioning='true']": {
-    background: "transparent",
-    border: "1.5px solid color-mix(in oklab, currentColor 30%, transparent)",
-    borderTopColor: "currentColor",
-    animation: "openorb-vm-state-spin 800ms linear infinite",
-  },
-  "@keyframes openorb-vm-state-spin": { to: { transform: "rotate(360deg)" } },
-  "@media (prefers-reduced-motion: reduce)": {
-    "&[data-transitioning='true']": { animation: "none" },
+  "& [data-slot='vm-state-indicator']": {
+    display: "block",
+    width: "8px",
+    height: "8px",
+    background: "currentColor",
+    borderRadius: "999px",
   },
 });
 const vmActionStyle = css({ borderRadius: "999px" });

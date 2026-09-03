@@ -9,8 +9,8 @@ const THROW_RULE = "openorb/no-generic-error-throw";
 const CATCH_RULE = "openorb/no-catch";
 const FILENAME = "packages/runner/src/example.ts";
 
-function diagnostics(source: string, rule: string = RESULT_RULE) {
-  return Deno.lint.runPlugin(plugin, FILENAME, source).filter(({ id }) => id === rule);
+function diagnostics(source: string, rule: string = RESULT_RULE, filename = FILENAME) {
+  return Deno.lint.runPlugin(plugin, filename, source).filter(({ id }) => id === rule);
 }
 
 Deno.test("Results are immediately destructured and guarded by a terminating failure branch", () => {
@@ -273,6 +273,22 @@ Deno.test("application code cannot throw generic Error or catch exceptions", () 
   );
   assertEquals(diagnostics("throw new DomainError('failed');", THROW_RULE), []);
   assertEquals(diagnostics("try { work(); } finally { cleanup(); }", CATCH_RULE), []);
+});
+
+Deno.test("browser code may catch exceptions without requiring Result wrappers", () => {
+  const source = "try { work(); } catch { recover(); }";
+  assertEquals(
+    diagnostics(source, CATCH_RULE, "packages/gateway/app/ui/session/example.tsx"),
+    [],
+  );
+  assertEquals(
+    diagnostics(source, CATCH_RULE, "packages/gateway/app/assets/client.ts"),
+    [],
+  );
+  assertEquals(
+    diagnostics(source, CATCH_RULE, "packages/gateway/app/actions/example.tsx").map(({ id }) => id),
+    [CATCH_RULE],
+  );
 });
 
 Deno.test("application-created generic exceptions remain forbidden inside a Result boundary", () => {

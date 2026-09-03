@@ -74,14 +74,14 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
         <header mix={headerStyle}>
           <Button
             type="button"
-            variant="ghost"
+            variant="outline"
+            size="icon-sm"
             commandFor={dialogId}
             command="close"
             aria-label="Close new session"
             mix={closeButtonStyle}
           >
             <Icon name="x" size={20} />
-            Close
           </Button>
           <h2 id={titleId} mix={screenReaderOnlyStyle}>New session</h2>
         </header>
@@ -167,11 +167,13 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
             type="submit"
             size="icon-lg"
             aria-label="Start session"
+            aria-keyshortcuts="Enter"
             title={canSubmit ? "Start session" : "Project, model, and runner required"}
             data-submit-enabled={canSubmit ? "true" : "false"}
             data-submit-label="Start session"
             data-submit-pending-label="Starting session"
             disabled={!canSubmit}
+            mix={roundButtonStyle}
           >
             <span aria-hidden="true" data-slot="submit-idle" mix={submitIdleStyle}>
               <Icon name="arrow-right" size={20} />
@@ -202,8 +204,8 @@ const dialogStyle = css({
   inset: "var(--openorb-visual-viewport-center, 50%) auto auto 50%",
   zIndex: 60,
   display: "none",
-  width: "min(calc(100% - 24px), 1040px)",
-  height: "min(620px, calc(var(--openorb-visual-viewport-height, 100dvh) - 24px))",
+  width: "min(calc(100% - 24px), 880px)",
+  height: "min(320px, calc(var(--openorb-visual-viewport-height, 100dvh) - 24px))",
   maxWidth: "none",
   maxHeight: "none",
   margin: 0,
@@ -211,16 +213,16 @@ const dialogStyle = css({
   color: "var(--foreground)",
   background: "var(--background)",
   border: "1px solid var(--border)",
-  borderRadius: "12px",
-  boxShadow: "0 1px 4px rgb(0 0 0 / 0.1)",
+  borderRadius: "32px",
+  boxShadow: "0 16px 48px rgb(0 0 0 / 0.24)",
   outline: "none",
   overflow: "hidden",
   transform: "translate(-50%, -50%)",
   "&[open]": { display: "block" },
   "&::backdrop": { background: "rgb(0 0 0 / 0.5)" },
   [media.sm]: {
-    width: "min(calc(100% - 32px), 1040px)",
-    height: "min(620px, calc(var(--openorb-visual-viewport-height, 100dvh) - 32px))",
+    width: "min(calc(100% - 32px), 880px)",
+    height: "min(320px, calc(var(--openorb-visual-viewport-height, 100dvh) - 32px))",
   },
 });
 const formStyle = css({
@@ -237,13 +239,19 @@ const headerStyle = css({
 });
 const closeButtonStyle = css({
   color: "var(--muted-foreground)",
+  borderRadius: "999px",
+  boxShadow: "none",
+  "&[data-slot='button']:focus-visible": {
+    borderColor: "color-mix(in oklab, var(--border) 60%, var(--foreground))",
+    boxShadow: "none",
+  },
 });
 const promptAreaStyle = css({
   display: "flex",
   flexDirection: "column",
   minHeight: 0,
-  padding: "12px 28px 24px",
-  [media.sm]: { padding: "20px 48px 32px" },
+  padding: "8px 24px 20px",
+  [media.sm]: { padding: "12px 32px 24px" },
 });
 const promptStyle = css({
   flex: 1,
@@ -256,8 +264,8 @@ const promptStyle = css({
   outline: "none",
   resize: "none",
   font: "inherit",
-  fontSize: "clamp(20px, 3vw, 28px)",
-  lineHeight: 1.4,
+  fontSize: "16px",
+  lineHeight: 1.5,
   "&::placeholder": { color: "var(--muted-foreground)" },
 });
 const noticeStyle = css({
@@ -278,11 +286,10 @@ const errorStyle = css({
 const footerStyle = css({
   display: "flex",
   alignItems: "center",
-  gap: "12px",
+  gap: "8px",
   minWidth: 0,
-  padding: "16px",
-  background: "var(--muted)",
-  borderTop: "1px solid var(--border)",
+  padding: "12px",
+  background: "var(--background)",
 });
 const controlsStyle = css({
   display: "flex",
@@ -310,8 +317,8 @@ const controlBaseStyle = css({
   color: "var(--foreground)",
   background: "var(--background)",
   border: "1px solid var(--border)",
-  borderRadius: "var(--radius-md)",
-  boxShadow: "0 1px 2px rgb(0 0 0 / 0.05)",
+  borderRadius: "999px",
+  boxShadow: "none",
   font: "inherit",
   fontSize: "14px",
   fontWeight: 500,
@@ -328,8 +335,8 @@ const selectControlStyle = [
     cursor: "pointer",
     "&:hover": { color: "var(--accent-foreground)", background: "var(--accent)" },
     "&:focus-within": {
-      borderColor: "var(--ring)",
-      boxShadow: "0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent)",
+      borderColor: "color-mix(in oklab, var(--border) 60%, var(--foreground))",
+      boxShadow: "none",
     },
     "&:has(select:disabled)": { cursor: "not-allowed", opacity: 0.55 },
     "@media (prefers-color-scheme: dark)": {
@@ -348,6 +355,15 @@ const selectStyle = css({
   fontWeight: "inherit",
   cursor: "inherit",
   textOverflow: "ellipsis",
+});
+const roundButtonStyle = css({
+  borderWidth: "1px",
+  borderColor: "transparent",
+  borderRadius: "999px",
+  "&[data-slot='button']:focus-visible": {
+    borderColor: "color-mix(in oklab, var(--primary) 60%, var(--foreground))",
+    boxShadow: "none",
+  },
 });
 const submitIdleStyle = css({
   display: "inline-flex",

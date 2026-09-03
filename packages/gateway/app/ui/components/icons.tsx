@@ -32,6 +32,7 @@ import Settings from "lucide/dist/esm/icons/settings.mjs";
 import Sparkles from "lucide/dist/esm/icons/sparkles.mjs";
 import Square from "lucide/dist/esm/icons/square.mjs";
 import Terminal from "lucide/dist/esm/icons/terminal.mjs";
+import Trash2 from "lucide/dist/esm/icons/trash-2.mjs";
 import User from "lucide/dist/esm/icons/user.mjs";
 import Wrench from "lucide/dist/esm/icons/wrench.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
@@ -69,6 +70,7 @@ export type IconName =
   | "sparkles"
   | "square"
   | "terminal"
+  | "trash-2"
   | "user"
   | "wrench"
   | "x";
@@ -173,6 +175,7 @@ const iconNodes = {
   sparkles: Sparkles,
   square: Square,
   terminal: Terminal,
+  "trash-2": Trash2,
   user: User,
   wrench: Wrench,
   x: X,

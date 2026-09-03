@@ -28,7 +28,6 @@ import {
   failOptimisticUserMessage,
   isSessionBusy,
   reduceSessionTranscriptState,
-  removeOptimisticUserMessage,
   type ToolEntry,
   totalSessionUsage,
   type TranscriptEntry,
@@ -54,7 +53,6 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   const page = handle.context.get(SessionPageScope);
   let transcriptState = createSessionTranscriptState(page.projection.sessionState);
   let promptRequestPending = false;
-  let promptDraftPresent = false;
   let abortPending = false;
   let actionError: string | undefined;
   let updateFrame: number | undefined;
@@ -143,11 +141,9 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
     const currentActivityId = activeActivityId(transcriptState);
     const busy = isSessionBusy(sessionState) && !connectionInterrupted;
     const hasActiveRun = sessionState === "running";
-    const canComposePrompt = (
-      sessionState === "ready" || sessionState === "stopped" || hasActiveRun
-    ) &&
-      !connectionInterrupted && !abortPending;
-    const canSubmitPrompt = canComposePrompt && !promptRequestPending;
+    const vmCanAcceptPrompt = sessionState === "ready" || sessionState === "stopped";
+    const canSubmitPrompt = vmCanAcceptPrompt &&
+      !connectionInterrupted && !abortPending && !promptRequestPending;
     const canAbort = hasActiveRun && !connectionInterrupted && !abortPending;
     const usage = totalSessionUsage(transcriptState);
     const status = connectionInterrupted
@@ -183,19 +179,6 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
           recoveryAllowed={sessionState === "error"}
           sessionId={handle.props.sessionId}
         />
-        {sessionState === "stopped"
-          ? (
-            <Marker data-session-stopped mix={[richMarkerStyle, stoppedMarkerStyle]}>
-              <MarkerIcon>
-                <Icon name="activity" />
-              </MarkerIcon>
-              <MarkerContent>
-                The VM is stopped. Your next prompt resumes its checkpoint and runs the project's
-                quick, idempotent <code>.agents/resume</code> hook before Pi continues.
-              </MarkerContent>
-            </Marker>
-          )
-          : null}
         {actionError ? <p role="alert" mix={actionErrorStyle}>{actionError}</p> : null}
         <MessageScroller
           autoScroll
@@ -269,13 +252,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
             promptFormStyle,
             on<HTMLFormElement, "submit">("submit", async (event) => {
               event.preventDefault();
-              if (
-                promptRequestPending || connectionInterrupted ||
-                abortPending ||
-                (page.projection.sessionState !== "ready" &&
-                  page.projection.sessionState !== "stopped" &&
-                  page.projection.sessionState !== "running")
-              ) return;
+              if (!canSubmitPrompt) return;
 
               const form = event.currentTarget;
               const formData = new FormData(form);
@@ -283,7 +260,6 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
               if (!prompt.success || prompt.value.trim().length === 0) return;
 
               const optimisticId = `optimistic:${crypto.randomUUID()}`;
-              const followUpSubmission = page.projection.sessionState === "running";
               actionError = undefined;
               promptRequestPending = true;
               transcriptState = appendOptimisticUserMessage(
@@ -293,7 +269,6 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
               );
               const action = form.action;
               form.reset();
-              promptDraftPresent = false;
               await handle.update();
               if (handle.signal.aborted) return;
 
@@ -333,9 +308,6 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
                   await handle.update();
                   return;
                 }
-                if (followUpSubmission) {
-                  transcriptState = removeOptimisticUserMessage(transcriptState, optimisticId);
-                }
                 await handle.update();
                 return;
               }
@@ -359,46 +331,17 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
           <textarea
             name="prompt"
             aria-label="Continue session"
-            placeholder={canComposePrompt
-              ? hasActiveRun ? "Queue a follow-up…" : "Continue the session…"
-              : abortPending
-              ? "Wait for the abort to finish…"
-              : "Wait until the session can accept a prompt…"}
+            placeholder="Continue the session…"
             required
-            disabled={!canComposePrompt}
             mix={[
               promptInputStyle,
-              on<HTMLTextAreaElement, "input">("input", (event) => {
-                const nextPromptDraftPresent = event.currentTarget.value.trim().length > 0;
-                if (promptDraftPresent === nextPromptDraftPresent) return;
-                promptDraftPresent = nextPromptDraftPresent;
-                void handle.update();
-              }),
               on<HTMLTextAreaElement, "keydown">("keydown", (event) => {
                 if (event.key !== "Enter" || event.isComposing || event.shiftKey) return;
                 event.preventDefault();
-                if (!event.currentTarget.disabled) event.currentTarget.form?.requestSubmit();
+                if (canSubmitPrompt) event.currentTarget.form?.requestSubmit();
               }),
             ]}
           />
-          {!hasActiveRun || promptDraftPresent
-            ? (
-              <Button
-                type="submit"
-                size="icon-lg"
-                aria-label={hasActiveRun ? "Queue follow-up" : "Send prompt"}
-                title={canSubmitPrompt
-                  ? hasActiveRun ? "Queue follow-up" : "Send prompt"
-                  : promptRequestPending
-                  ? "Wait for prompt acknowledgement"
-                  : "Session cannot accept a prompt"}
-                disabled={!canSubmitPrompt}
-                mix={sendButtonStyle}
-              >
-                <Icon name="arrow-right" size={16} />
-              </Button>
-            )
-            : null}
           {hasActiveRun
             ? (
               <Button
@@ -417,7 +360,24 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
                 <span aria-hidden="true" data-slot="stop-icon" mix={stopIconStyle} />
               </Button>
             )
-            : null}
+            : (
+              <Button
+                type="submit"
+                size="icon-lg"
+                aria-label="Send prompt"
+                title={canSubmitPrompt
+                  ? "Send prompt"
+                  : promptRequestPending
+                  ? "Wait for prompt acknowledgement"
+                  : busy || abortPending
+                  ? "The VM is busy"
+                  : "The VM is not available"}
+                disabled={!canSubmitPrompt}
+                mix={sendButtonStyle}
+              >
+                <Icon name="arrow-right" size={16} />
+              </Button>
+            )}
         </form>
         {renderUsageStatus(
           usage,
@@ -726,8 +686,8 @@ const sessionFrameStyle = css({
   flexDirection: "column",
   width: "100%",
   maxWidth: "1100px",
-  height: "calc(100svh - 80px)",
-  minHeight: "440px",
+  height: "calc(100svh - 136px)",
+  minHeight: 0,
   marginInline: "auto",
   overflow: "hidden",
   color: "var(--foreground)",
@@ -735,6 +695,7 @@ const sessionFrameStyle = css({
   [media.md]: {
     // Extend into 8px of shell padding without changing the frame's outer size.
     height: "calc(100svh - 104px + 8px)",
+    minHeight: "440px",
     marginBottom: "-8px",
   },
 });
@@ -798,7 +759,6 @@ const assistantMessageStyle = css({
   color: "var(--foreground)",
 });
 const toolItemStyle = css({ marginTop: "-16px" });
-const stoppedMarkerStyle = css({ flexShrink: 0 });
 const richMarkerStyle = css({ alignItems: "flex-start" });
 const markerDetailStyle = css({
   display: "grid",

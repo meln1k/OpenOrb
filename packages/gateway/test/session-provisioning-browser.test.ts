@@ -321,6 +321,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="sessionId"[^>]*value=""/);
     assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="runnerId"[^>]*value=""/);
     assertMatch(createHtml, /aria-label="Orb size"/);
+    assertMatch(createHtml, /aria-keyshortcuts="Enter"/);
     assertMatch(createHtml, /deepseek-v4-flash/);
     assertNotMatch(createHtml, /name="apiKey"/);
     const projectControl = createHtml.indexOf('name="projectId"');
@@ -459,6 +460,18 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(detailHtml, /<span>Repository<\/span>/);
     assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-detail-client\.tsx/);
     assertMatch(detailHtml, /"exportName":"SessionDetailClient"/);
+    assertMatch(
+      detailHtml,
+      /<link data-rmx(?:-module-preload)? rel="modulepreload" href="\/assets\/app\/ui\/session\/session-detail-client\.tsx" \/>/,
+    );
+    assertNotMatch(
+      detailHtml,
+      /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/app\/ui\/session\/session-changes-panel\.tsx"/,
+    );
+    assertNotMatch(
+      detailHtml,
+      /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/npm\//,
+    );
     assertNotMatch(detailHtml, /"exportName":"SessionVmControl"/);
     assertNotMatch(detailHtml, /"exportName":"SessionChangesPanel"/);
     assertMatch(detailHtml, /aria-label="Session changes"/);
@@ -686,8 +699,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       headers: { Cookie: client.cookie },
     });
     const stoppedHtml = await stoppedDetail.text();
-    assertMatch(stoppedHtml, /The VM is stopped/);
-    assertMatch(stoppedHtml, /\.agents\/resume/);
+    assertNotMatch(stoppedHtml, /data-session-stopped/);
     assertMatch(stoppedHtml, /aria-label="Continue session"/);
     assertMatch(stoppedHtml, /aria-label="Gondolin VM: Sleeping"/);
     assertMatch(stoppedHtml, /aria-label="Start Gondolin VM"/);
@@ -751,6 +763,15 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(runningHtml, /aria-label="Stop active turn"/);
     assertMatch(runningHtml, /title="Stop active turn"/);
     assertMatch(runningHtml, /data-slot="stop-icon"/);
+    assertMatch(
+      runningHtml,
+      /<textarea(?=[^>]*aria-label="Continue session")(?![^>]*disabled)[^>]*>/,
+    );
+    assertMatch(
+      runningHtml,
+      /<button(?=[^>]*aria-label="Stop active turn")(?![^>]*disabled)[^>]*>/,
+    );
+    assertNotMatch(runningHtml, /aria-label="Send prompt"/);
     assertNotMatch(runningHtml, />Abort<\/button>/);
     const busyStop = await fetch(new URL(stopHref, server.baseUrl), {
       method: "POST",
@@ -822,6 +843,14 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
     assertMatch(offlineHtml, /data-runner-disconnected/);
     assertMatch(offlineHtml, /aria-label="Gondolin VM: Offline"/);
+    assertMatch(
+      offlineHtml,
+      /<textarea(?=[^>]*aria-label="Continue session")(?![^>]*disabled)[^>]*>/,
+    );
+    assertMatch(
+      offlineHtml,
+      /<button(?=[^>]*aria-label="Send prompt")(?=[^>]*disabled)[^>]*>/,
+    );
     assertNotMatch(offlineHtml, /openorb\/browser-test/);
     assertNotMatch(offlineHtml, /0123456789abcdef0123456789abcdef01234567/);
 
@@ -1046,6 +1075,12 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     const html = await page.text();
     assertMatch(html, /DeepSeek V4 Flash/);
     assertMatch(html, /GPT-4\.1/);
+    const sessionsIndex = await fetch(
+      new URL(routes.app.sessions.index.href(), server.baseUrl),
+      { redirect: "manual", headers: { Cookie: client.cookie } },
+    );
+    assertEquals(sessionsIndex.status, 302);
+    assertEquals(sessionsIndex.headers.get("location"), routes.app.index.href());
     const composerSessionId = crypto.randomUUID();
     const unCsrf = await submitSession(server.baseUrl, client.cookie, {
       projectId: project.project.id,

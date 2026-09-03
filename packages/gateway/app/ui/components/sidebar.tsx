@@ -1,4 +1,4 @@
-import { css, type Handle, type Props, type RemixNode } from "remix/ui";
+import { clientEntry, css, type Handle, type Props, type RemixNode } from "remix/ui";
 
 import { media } from "@/app/ui/responsive.ts";
 import {
@@ -7,6 +7,8 @@ import {
   CollapsibleTrigger,
 } from "@/app/ui/components/collapsible.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";
+
+const mobileSidebarSlideDuration = 300;
 
 export function SidebarLayout(handle: Handle<Props<"div">>) {
   return () => {
@@ -58,16 +60,296 @@ export function SidebarMobile(handle: Handle<Props<"aside"> & { id: string }>) {
       <aside
         {...props}
         id={id}
-        popover="auto"
+        popover="manual"
         aria-label="Primary navigation"
         data-slot="sidebar-mobile"
         mix={[mobilePanelStyle, mix]}
       >
         {children}
+        <SidebarMobileSwipeBehavior sidebarId={id} />
       </aside>
     );
   };
 }
+
+export const SidebarMobileSwipeBehavior = clientEntry<{ sidebarId: string }>(
+  import.meta.url,
+  function SidebarMobileSwipeBehavior(handle: Handle<{ sidebarId: string }>) {
+    handle.queueTask(() => {
+      const sidebar = document.getElementById(handle.props.sidebarId);
+      const layout = sidebar?.closest<HTMLElement>("[data-slot='sidebar-wrapper']");
+      if (!(sidebar instanceof HTMLElement) || !layout) return;
+      const mobileSidebar = sidebar;
+      const sidebarLayout = layout;
+
+      type SidebarPosition = {
+        width: number;
+        hiddenDistance: number;
+        revealed: number;
+      };
+      type Swipe = SidebarPosition & {
+        pointerId: number;
+        x: number;
+        y: number;
+        active: boolean;
+        scale: number;
+        lastX: number;
+        lastTime: number;
+        velocity: number;
+      };
+
+      let swipe: Swipe | undefined;
+      let settlementCleanup: (() => void) | undefined;
+
+      function setSwipePosition(offset: number, progress: number) {
+        mobileSidebar.style.setProperty("--openorb-sidebar-swipe-offset", `${offset}px`);
+        mobileSidebar.style.setProperty(
+          "--openorb-sidebar-backdrop-alpha",
+          `${progress * 0.5}`,
+        );
+      }
+
+      function clearSwipeStyles() {
+        delete mobileSidebar.dataset.swipe;
+        mobileSidebar.style.removeProperty("--openorb-sidebar-swipe-offset");
+        mobileSidebar.style.removeProperty("--openorb-sidebar-backdrop-alpha");
+        mobileSidebar.style.removeProperty("--openorb-sidebar-motion");
+      }
+
+      function clearSettlement() {
+        const cleanup = settlementCleanup;
+        settlementCleanup = undefined;
+        cleanup?.();
+      }
+
+      function beginSwipe(current: Swipe) {
+        current.active = true;
+        clearSettlement();
+        mobileSidebar.dataset.swipe = "dragging";
+        setSwipePosition(-globalThis.innerWidth, 0);
+        mobileSidebar.showPopover();
+
+        current.width = mobileSidebar.offsetWidth;
+        const left = Number.parseFloat(globalThis.getComputedStyle(mobileSidebar).left) || 0;
+        current.hiddenDistance = current.width + Math.max(0, left);
+        current.scale = current.hiddenDistance / (globalThis.innerWidth * 0.5);
+        sidebarLayout.setPointerCapture(current.pointerId);
+      }
+
+      function setRevealed(current: SidebarPosition, revealed: number) {
+        current.revealed = Math.min(Math.max(revealed, 0), current.hiddenDistance);
+      }
+
+      function renderSwipe(current: SidebarPosition) {
+        setSwipePosition(
+          -current.hiddenDistance + current.revealed,
+          Math.min(current.revealed / current.width, 1),
+        );
+      }
+
+      function revealSwipe(current: SidebarPosition, revealed: number) {
+        setRevealed(current, revealed);
+        renderSwipe(current);
+      }
+
+      function updateSwipe(event: PointerEvent) {
+        const current = swipe;
+        if (!current || event.pointerId !== current.pointerId) return;
+
+        const rightDistance = event.clientX - current.x;
+        const horizontalDistance = Math.abs(rightDistance);
+        const verticalDistance = Math.abs(event.clientY - current.y);
+        if (!current.active) {
+          if (Math.max(horizontalDistance, verticalDistance) < 8) return current;
+          if (rightDistance <= 0 || horizontalDistance < verticalDistance * 1.25) {
+            swipe = undefined;
+            return;
+          }
+          beginSwipe(current);
+        }
+
+        if (event.cancelable) event.preventDefault();
+        revealSwipe(current, rightDistance * current.scale);
+        const now = globalThis.performance.now();
+        const elapsed = (now - current.lastTime) / 1_000;
+        const delta = event.clientX - current.lastX;
+        if (elapsed > 0 && delta !== 0) {
+          const velocity = delta * current.scale / elapsed;
+          current.velocity = current.velocity * 0.5 + velocity * 0.5;
+          current.lastX = event.clientX;
+          current.lastTime = now;
+        }
+        return current;
+      }
+
+      function readSidebarPosition(): SidebarPosition {
+        const width = mobileSidebar.offsetWidth;
+        const left = Number.parseFloat(globalThis.getComputedStyle(mobileSidebar).left) || 0;
+        const hiddenDistance = width + Math.max(0, left);
+        return {
+          width,
+          hiddenDistance,
+          revealed: Math.min(
+            Math.max(width + mobileSidebar.getBoundingClientRect().left, 0),
+            hiddenDistance,
+          ),
+        };
+      }
+
+      function settleSwipe(
+        current: SidebarPosition,
+        open: boolean,
+      ) {
+        clearSettlement();
+        mobileSidebar.dataset.swipe = "dragging";
+        revealSwipe(current, current.revealed);
+        const target = open ? current.hiddenDistance : 0;
+
+        const finish = () => {
+          clearSettlement();
+          revealSwipe(current, target);
+          mobileSidebar.style.removeProperty("--openorb-sidebar-motion");
+          if (open && mobileSidebar.matches(":popover-open")) {
+            mobileSidebar.dataset.swipe = "open";
+            return;
+          }
+          if (mobileSidebar.matches(":popover-open")) mobileSidebar.hidePopover();
+          clearSwipeStyles();
+        };
+        if (globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          finish();
+          return;
+        }
+
+        const distance = target - current.revealed;
+        if (Math.abs(distance) < 1) {
+          finish();
+          return;
+        }
+        const duration = mobileSidebarSlideDuration * Math.abs(distance) / current.hiddenDistance;
+        mobileSidebar.style.setProperty("--openorb-sidebar-motion", `${duration}ms linear`);
+        void globalThis.getComputedStyle(mobileSidebar).transform;
+        mobileSidebar.dataset.swipe = "settling";
+
+        const onTransitionEnd = (event: TransitionEvent) => {
+          if (event.target === mobileSidebar && event.propertyName === "transform") finish();
+        };
+        mobileSidebar.addEventListener("transitionend", onTransitionEnd);
+        const timeout = globalThis.setTimeout(finish, duration + 100);
+        settlementCleanup = () => {
+          globalThis.clearTimeout(timeout);
+          mobileSidebar.removeEventListener("transitionend", onTransitionEnd);
+        };
+        revealSwipe(current, target);
+      }
+
+      function closeSidebar() {
+        if (!mobileSidebar.matches(":popover-open")) return;
+        swipe = undefined;
+        settleSwipe(readSidebarPosition(), false);
+      }
+
+      function releasePointer(current: Swipe) {
+        if (sidebarLayout.hasPointerCapture(current.pointerId)) {
+          sidebarLayout.releasePointerCapture(current.pointerId);
+        }
+      }
+
+      function cancelSwipe(event?: PointerEvent) {
+        const current = swipe;
+        if (!current || (event && event.pointerId !== current.pointerId)) return;
+        swipe = undefined;
+        releasePointer(current);
+        if (current.active) settleSwipe(current, false);
+      }
+
+      function isInsideHorizontalScroller(target: EventTarget | null) {
+        if (!(target instanceof Element)) return false;
+        for (
+          let element: Element | null = target;
+          element !== null && element !== sidebarLayout;
+          element = element.parentElement
+        ) {
+          if (!(element instanceof HTMLElement)) continue;
+          const overflowX = globalThis.getComputedStyle(element).overflowX;
+          if (
+            (overflowX === "auto" || overflowX === "scroll") &&
+            element.scrollWidth > element.clientWidth + 1
+          ) return true;
+        }
+        return false;
+      }
+
+      sidebarLayout.addEventListener("pointerdown", (event) => {
+        if (
+          swipe ||
+          !event.isPrimary ||
+          event.pointerType !== "touch" ||
+          !globalThis.matchMedia("(max-width: 767.98px)").matches ||
+          mobileSidebar.matches(":popover-open") ||
+          isInsideHorizontalScroller(event.target)
+        ) {
+          return;
+        }
+        swipe = {
+          pointerId: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+          active: false,
+          width: 0,
+          hiddenDistance: 0,
+          revealed: 0,
+          scale: 1,
+          lastX: event.clientX,
+          lastTime: globalThis.performance.now(),
+          velocity: 0,
+        };
+      }, { signal: handle.signal });
+      sidebarLayout.addEventListener("pointermove", (event) => {
+        updateSwipe(event);
+      }, { signal: handle.signal });
+      sidebarLayout.addEventListener("pointerup", (event) => {
+        const current = swipe;
+        if (!current || event.pointerId !== current.pointerId) return;
+        swipe = undefined;
+        if (current.active) {
+          releasePointer(current);
+          const idleTime = globalThis.performance.now() - current.lastTime;
+          const velocity = idleTime <= 100 ? current.velocity : 0;
+          settleSwipe(
+            current,
+            velocity === 0 ? current.revealed > current.width / 2 : velocity > 0,
+          );
+        }
+      }, { signal: handle.signal });
+      sidebarLayout.addEventListener("pointercancel", cancelSwipe, { signal: handle.signal });
+      document.addEventListener("pointerdown", (event) => {
+        if (!mobileSidebar.matches(":popover-open")) return;
+        const target = event.target;
+        if (!(target instanceof Element) || mobileSidebar.contains(target)) return;
+        const trigger = target.closest("[popovertarget]");
+        if (trigger?.getAttribute("popovertarget") === mobileSidebar.id) return;
+        closeSidebar();
+      }, { signal: handle.signal });
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || !mobileSidebar.matches(":popover-open")) return;
+        event.preventDefault();
+        closeSidebar();
+      }, { signal: handle.signal });
+      mobileSidebar.addEventListener("toggle", () => {
+        if (mobileSidebar.matches(":popover-open")) return;
+        swipe = undefined;
+        clearSettlement();
+        clearSwipeStyles();
+      }, { signal: handle.signal });
+      handle.signal.addEventListener("abort", () => {
+        clearSettlement();
+      }, { once: true });
+    });
+
+    return () => null;
+  },
+);
 
 export function SidebarTrigger(handle: Handle<Props<"button"> & { target: string }>) {
   return () => {
@@ -260,45 +542,33 @@ const layoutStyle = css({
   width: "100%",
   color: "var(--foreground)",
   background: "var(--sidebar)",
+  touchAction: "pan-y pinch-zoom",
+  [media.md]: { touchAction: "auto" },
 });
 
-const rightDesktopWidth = "clamp(400px, 38vw, 560px)";
-
 const desktopStyle = css({
+  position: "relative",
   display: "none",
-  flex: "0 0 0",
-  width: 0,
+  width: "100%",
+  height: "100%",
   color: "var(--sidebar-foreground)",
-  "&[data-side='left'][open]": { flexBasis: "256px", width: "256px" },
-  "&[data-side='right'][open]": {
-    flexBasis: rightDesktopWidth,
-    width: rightDesktopWidth,
-  },
   [media.md]: { "&[data-side='left']": { display: "block" } },
   [media.xl]: { "&[data-side='right']": { display: "block" } },
 });
 
 const desktopPanelStyle = css({
-  position: "fixed",
-  inset: "8px auto 8px 8px",
+  position: "absolute",
+  inset: "8px",
   zIndex: 10,
   display: "flex",
   flexDirection: "column",
   minHeight: 0,
   color: "var(--sidebar-foreground)",
   background: "var(--sidebar)",
-  "[data-slot='sidebar-desktop'][data-side='left'] > &": {
-    inset: "8px auto 8px 8px",
-    width: "240px",
-  },
-  "[data-slot='sidebar-desktop'][data-side='right'] > &": {
-    inset: "8px 8px 8px auto",
-    width: `calc(${rightDesktopWidth} - 16px)`,
-  },
 });
 
 const desktopTriggerStyle = css({
-  position: "fixed",
+  position: "absolute",
   top: "26px",
   zIndex: 30,
   display: "flex",
@@ -313,10 +583,10 @@ const desktopTriggerStyle = css({
   listStyle: "none",
   cursor: "pointer",
   "[data-slot='sidebar-desktop'][data-side='left'] > &": { right: "auto", left: "20px" },
-  "[data-slot='sidebar-desktop'][data-side='left'][open] > &": { left: "272px" },
+  "[data-slot='sidebar-desktop'][data-side='left'][open] > &": { left: "calc(100% + 16px)" },
   "[data-slot='sidebar-desktop'][data-side='right'] > &": { right: "20px", left: "auto" },
   "[data-slot='sidebar-desktop'][data-side='right'][open] > &": {
-    right: `calc(${rightDesktopWidth} + 16px)`,
+    right: "calc(100% + 16px)",
   },
   "&::-webkit-details-marker": { display: "none" },
   "&:hover": { background: "var(--accent)" },
@@ -344,22 +614,50 @@ const mobilePanelStyle = css({
   "&:popover-open": {
     display: "flex",
     flexDirection: "column",
-    animation: "openorb-sidebar-in 300ms cubic-bezier(0.22, 1, 0.36, 1)",
+    animation: `openorb-sidebar-in ${mobileSidebarSlideDuration}ms linear`,
   },
-  "&::backdrop": { background: "rgb(0 0 0 / 0.5)" },
+  "&[data-swipe]:popover-open": {
+    animation: "none",
+  },
+  "&[data-swipe='dragging']:popover-open, &[data-swipe='settling']:popover-open": {
+    transform: "translate3d(var(--openorb-sidebar-swipe-offset), 0, 0)",
+    willChange: "transform",
+  },
+  "&[data-swipe='dragging']:popover-open, &[data-swipe='open']:popover-open": {
+    transition: "none",
+  },
+  "&[data-swipe='settling']:popover-open": {
+    transition: "transform var(--openorb-sidebar-motion)",
+  },
+  "&::backdrop": {
+    backgroundColor: "rgb(0 0 0 / 0.5)",
+  },
   "&:popover-open::backdrop": {
-    animation: "openorb-sidebar-backdrop-in 250ms ease-out",
+    animation: `openorb-sidebar-backdrop-in ${mobileSidebarSlideDuration}ms linear`,
+  },
+  "&[data-swipe]:popover-open::backdrop": {
+    backgroundColor: "rgb(0 0 0 / var(--openorb-sidebar-backdrop-alpha))",
+    animation: "none",
+  },
+  "&[data-swipe='dragging']:popover-open::backdrop, &[data-swipe='open']:popover-open::backdrop": {
+    transition: "none",
+  },
+  "&[data-swipe='settling']:popover-open::backdrop": {
+    transition: "background-color var(--openorb-sidebar-motion)",
   },
   "@keyframes openorb-sidebar-in": {
-    from: { opacity: 0, transform: "translateX(calc(-100% - 8px))" },
-    to: { opacity: 1, transform: "translateX(0)" },
+    from: { transform: "translateX(calc(-100% - 8px))" },
+    to: { transform: "translateX(0)" },
   },
   "@keyframes openorb-sidebar-backdrop-in": {
-    from: { background: "rgb(0 0 0 / 0)" },
-    to: { background: "rgb(0 0 0 / 0.5)" },
+    from: { backgroundColor: "rgb(0 0 0 / 0)" },
+    to: { backgroundColor: "rgb(0 0 0 / 0.5)" },
   },
   "@media (prefers-reduced-motion: reduce)": {
-    "&:popover-open, &:popover-open::backdrop": { animation: "none" },
+    "&:popover-open, &:popover-open::backdrop": {
+      animation: "none",
+      transition: "none",
+    },
   },
   [media.md]: {
     display: "none",

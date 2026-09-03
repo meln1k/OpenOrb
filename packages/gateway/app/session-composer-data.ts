@@ -6,6 +6,7 @@ import { Effect } from "effect";
 export interface SessionComposerData {
   projects: Project[];
   models: { id: string; name: string; providerId: string; providerName: string }[];
+  hasConfiguredRunner: boolean;
   hasConnectedRunner: boolean;
 }
 
@@ -23,6 +24,7 @@ export async function loadSessionComposerData(
     models: MODEL_OPTIONS.filter((model) =>
       providers.some((provider) => provider.providerId === model.providerId)
     ),
+    hasConfiguredRunner: runners.some((runner) => runner.revokedAt === null),
     hasConnectedRunner: (await Promise.all(runners.map(async (runner) => {
       const live = await Effect.runPromise(
         services.runnerConnections.getRunnerLiveState(userId, runner.id),

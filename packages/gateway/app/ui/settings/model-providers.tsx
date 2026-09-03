@@ -386,7 +386,6 @@ const rowMenuTriggerStyle = css({
   "&:focus-visible": { boxShadow: "0 0 0 2px var(--ring)" },
 });
 const rowMenuContentStyle = css({
-  inset: "calc(100% + 4px) 0 auto auto",
   width: "144px",
   minWidth: "144px",
   textAlign: "left",

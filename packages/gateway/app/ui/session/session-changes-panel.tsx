@@ -20,6 +20,7 @@ const errorResponseSchema = object({ error: string() }, { unknownKeys: "error" }
 export type SessionChangesPanelProps = {
   csrfToken: string;
   sessionId: string;
+  variant?: "sidebar" | "content";
 };
 
 type LoadedSessionChanges = {
@@ -30,7 +31,8 @@ type LoadedSessionChanges = {
 
 export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
   const page = handle.context.get(SessionPageScope);
-  const panelId = `session-${handle.props.sessionId}-changes`;
+  const variant = handle.props.variant ?? "sidebar";
+  const panelId = `session-${handle.props.sessionId}-${variant}-changes`;
   let loaded: LoadedSessionChanges | undefined;
   let loadError: string | undefined;
   let operationError: string | undefined;
@@ -81,44 +83,46 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
     if (mutationInFlight) return;
     mutationInFlight = true;
     operationError = undefined;
-    await using cleanup = new AsyncDisposableStack();
-    cleanup.defer(async () => {
-      mutationInFlight = false;
-      if (handle.signal.aborted) return;
-      await handle.update();
-      await requestRefresh();
-    });
-    const body = new URLSearchParams();
-    body.set("_csrf", handle.props.csrfToken);
-    body.set("action", action);
-    body.set("path", path);
-    if (previousPath !== undefined) body.set("previousPath", previousPath);
-    const [response, requestError] = await tryAsync(
-      fetch(routes.api.sessions.changes.href({ sessionId: handle.props.sessionId }), {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-        body,
-        signal: handle.signal,
-      }),
-      () => true,
-    );
-    if (requestError !== undefined) {
-      if (!handle.signal.aborted) {
-        operationError = "The Git index update could not reach the runner.";
-      }
-      return;
-    }
-    if (!response.ok) {
-      const [responseBody, bodyError] = await tryAsync(response.json(), () => true);
-      if (bodyError !== undefined) {
-        operationError = "The Git index could not be updated.";
+    // Keep browser-side cleanup parseable by Safari, which does not support `using`.
+    try {
+      const body = new URLSearchParams();
+      body.set("_csrf", handle.props.csrfToken);
+      body.set("action", action);
+      body.set("path", path);
+      if (previousPath !== undefined) body.set("previousPath", previousPath);
+      const [response, requestError] = await tryAsync(
+        fetch(routes.api.sessions.changes.href({ sessionId: handle.props.sessionId }), {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+          body,
+          signal: handle.signal,
+        }),
+        () => true,
+      );
+      if (requestError !== undefined) {
+        if (!handle.signal.aborted) {
+          operationError = "The Git index update could not reach the runner.";
+        }
         return;
       }
-      const parsedError = parseSafe(errorResponseSchema, responseBody);
-      operationError = parsedError.success
-        ? parsedError.value.error
-        : "The Git index could not be updated.";
+      if (!response.ok) {
+        const [responseBody, bodyError] = await tryAsync(response.json(), () => true);
+        if (bodyError !== undefined) {
+          operationError = "The Git index could not be updated.";
+          return;
+        }
+        const parsedError = parseSafe(errorResponseSchema, responseBody);
+        operationError = parsedError.success
+          ? parsedError.value.error
+          : "The Git index could not be updated.";
+      }
+    } finally {
+      mutationInFlight = false;
+      if (!handle.signal.aborted) {
+        await handle.update();
+        await requestRefresh();
+      }
     }
   }
 
@@ -182,15 +186,18 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
 
   async function requestRefresh() {
     refreshPending = true;
-    if (mutationInFlight || !sidebar?.open || refreshInFlight || handle.signal.aborted) return;
+    if (
+      mutationInFlight || sidebar?.open === false || refreshInFlight || handle.signal.aborted
+    ) return;
     refreshInFlight = true;
-    using cleanup = new DisposableStack();
-    cleanup.defer(() => {
+    // Keep browser-side cleanup parseable by Safari, which does not support `using`.
+    try {
+      while (refreshPending && (sidebar?.open ?? true) && !handle.signal.aborted) {
+        refreshPending = false;
+        await refresh();
+      }
+    } finally {
       refreshInFlight = false;
-    });
-    while (refreshPending && sidebar.open && !handle.signal.aborted) {
-      refreshPending = false;
-      await refresh();
     }
   }
 
@@ -202,31 +209,44 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
       if (!page.projection.connectionInterrupted) void requestRefresh();
     }, { signal: handle.signal });
 
-    const panel = document.getElementById(panelId);
-    const ancestor = panel?.closest<HTMLDetailsElement>(
-      'details[data-slot="sidebar-desktop"][data-side="right"]',
-    );
-    if (!(ancestor instanceof HTMLDetailsElement)) return;
-    sidebar = ancestor;
-    const onSidebarToggle = () => {
-      if (sidebar?.open) void requestRefresh();
-    };
-    sidebar.addEventListener("toggle", onSidebarToggle);
-    handle.signal.addEventListener("abort", () => {
-      sidebar?.removeEventListener("toggle", onSidebarToggle);
-    }, { once: true });
+    if (variant === "sidebar") {
+      const panel = document.getElementById(panelId);
+      const ancestor = panel?.closest<HTMLDetailsElement>(
+        'details[data-slot="sidebar-desktop"][data-side="right"]',
+      );
+      if (!(ancestor instanceof HTMLDetailsElement)) return;
+      sidebar = ancestor;
+      const onSidebarToggle = () => {
+        if (sidebar?.open) void requestRefresh();
+      };
+      sidebar.addEventListener("toggle", onSidebarToggle);
+      handle.signal.addEventListener("abort", () => {
+        sidebar?.removeEventListener("toggle", onSidebarToggle);
+      }, { once: true });
+    }
     void requestRefresh();
   });
 
   return () => (
-    <section id={panelId} data-slot="changes-panel" mix={changesPanelStyle}>
-      <header mix={panelHeaderStyle}>
-        <span mix={panelTitleStyle}>
-          <Icon name="file-diff" size={18} />
-          <strong data-slot="changes-tab">Changes</strong>
-        </span>
-        {loaded ? <span mix={changedCountStyle}>{changedFileCount(loaded.snapshot)}</span> : null}
-      </header>
+    <section
+      id={panelId}
+      data-slot="changes-panel"
+      data-variant={variant}
+      mix={changesPanelStyle}
+    >
+      {variant === "sidebar"
+        ? (
+          <header mix={panelHeaderStyle}>
+            <span mix={panelTitleStyle}>
+              <Icon name="file-diff" size={18} />
+              <strong data-slot="changes-tab">Changes</strong>
+            </span>
+            {loaded
+              ? <span mix={changedCountStyle}>{changedFileCount(loaded.snapshot)}</span>
+              : null}
+          </header>
+        )
+        : null}
       <div mix={panelContentStyle}>
         {!loaded && !loadError
           ? <p role="status" mix={panelMessageStyle}>Loading changes…</p>
@@ -304,6 +324,10 @@ const changesPanelStyle = css({
   overflow: "hidden",
   color: "var(--sidebar-foreground)",
   background: "var(--sidebar)",
+  "&[data-variant='content']": {
+    color: "var(--foreground)",
+    background: "var(--background)",
+  },
 });
 const panelHeaderStyle = css({
   display: "flex",

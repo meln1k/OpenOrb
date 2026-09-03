@@ -8,9 +8,20 @@ type DialogBehaviorProps = {
   open?: boolean;
 };
 
-export function AlertDialog(handle: Handle<Props<"dialog">>) {
+interface AlertDialogProps extends Props<"dialog"> {
+  keepOpenWhileSubmitting?: boolean;
+}
+
+export function AlertDialog(handle: Handle<AlertDialogProps>) {
   return () => {
-    const { children, id = handle.id, mix, role = "alertdialog", ...props } = handle.props;
+    const {
+      children,
+      id = handle.id,
+      keepOpenWhileSubmitting,
+      mix,
+      role = "alertdialog",
+      ...props
+    } = handle.props;
     return (
       <dialog
         {...props}
@@ -20,7 +31,11 @@ export function AlertDialog(handle: Handle<Props<"dialog">>) {
         mix={[contentStyle, mix]}
       >
         {children}
-        <DialogBehavior dialogId={id} open={Boolean(props.open)} />
+        <DialogBehavior
+          dialogId={id}
+          keepOpenWhileSubmitting={Boolean(keepOpenWhileSubmitting)}
+          open={Boolean(props.open)}
+        />
       </dialog>
     );
   };

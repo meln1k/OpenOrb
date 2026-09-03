@@ -134,12 +134,13 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
     if (mutationKey !== undefined) return;
     mutationKey = row.key;
     setMutationButtons(host);
-    using cleanup = new DisposableStack();
-    cleanup.defer(() => {
+    // Keep browser-side cleanup parseable by Safari, which does not support `using`.
+    try {
+      await handle.props.onUpdate(action, row.file.path, filePreviousPath(row.file));
+    } finally {
       mutationKey = undefined;
       setMutationButtons(host);
-    });
-    await handle.props.onUpdate(action, row.file.path, filePreviousPath(row.file));
+    }
   };
 
   const handleViewerClick: NonNullable<RemixCodeViewProps["onViewerClick"]> = (event, viewer) => {

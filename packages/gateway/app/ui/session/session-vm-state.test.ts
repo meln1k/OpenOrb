@@ -8,9 +8,12 @@ import {
 } from "./session-vm-state.ts";
 
 Deno.test("Gondolin VM phases distinguish active, sleeping, and lifecycle transitions", () => {
+  assertEquals(initialSessionVmPhase("created"), "starting");
+  assertEquals(initialSessionVmPhase("provisioning"), "starting");
   assertEquals(initialSessionVmPhase("ready"), "active");
   assertEquals(initialSessionVmPhase("stopped"), "sleeping");
   assertEquals(initialSessionVmPhase("offline"), "offline");
+  assertEquals(sessionVmPhaseForStage("created"), "starting");
   assertEquals(sessionVmPhaseForStage("starting-vm"), "starting");
   assertEquals(sessionVmPhaseForStage("resuming"), "waking");
   assertEquals(sessionVmPhaseForStage("checkpointing"), "stopping");

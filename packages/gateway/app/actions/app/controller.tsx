@@ -13,14 +13,24 @@ export default createController(routes.app, {
   actions: {
     async index(context) {
       const userId = context.auth.identity.id;
-      const [composer, sidebarSessions] = await Promise.all([
+      const [composer, sidebarSessions, githubCredential, gitAuthor] = await Promise.all([
         loadSessionComposerData(userId, context.services),
         context.services.store.listSessionCatalogEntries(userId),
+        context.services.store.getGitHubCredential(userId),
+        context.services.store.getGitAuthorConfiguration(userId),
       ]);
       return context.render(
         <AppPage
           composer={composer}
           csrfToken={getCsrfToken(context)}
+          setup={{
+            runner: composer.hasConnectedRunner,
+            runnerConfigured: composer.hasConfiguredRunner,
+            provider: composer.models.length > 0,
+            github: githubCredential !== null,
+            gitAuthor: gitAuthor !== null,
+            project: composer.projects.length > 0,
+          }}
           sidebarSessions={sidebarSessions}
         />,
       );

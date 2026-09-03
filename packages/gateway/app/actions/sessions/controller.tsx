@@ -77,6 +77,10 @@ type SessionDetailContext = ContextWithParams<SessionsContext, { sessionId: stri
 export default createController(routes.app.sessions, {
   middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
+    index() {
+      return redirect(routes.app.index.href(), 302);
+    },
+
     async create(context) {
       const parsed = s.parseSafe(createSessionSchema, context.formData);
       const submitted = submittedValues(context.formData);

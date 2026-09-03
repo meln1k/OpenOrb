@@ -11,14 +11,11 @@ import { Button } from "@/app/ui/components/button.tsx";
 import {
   Card,
   CardAction,
-  CardContent,
   CardDescription,
   CardFooter,
   CardHeader,
 } from "@/app/ui/components/card.tsx";
-import { Icon } from "@/app/ui/components/icons.tsx";
 import { Item, ItemActions, ItemContent, ItemTitle } from "@/app/ui/components/item.tsx";
-import { Progress } from "@/app/ui/components/progress.tsx";
 import { media } from "@/app/ui/responsive.ts";
 import {
   listStyle,
@@ -87,130 +84,73 @@ function RunnerCard(
   const revokeDialogId = `${handle.id}-revoke`;
   const deleteDialogId = `${handle.id}-delete`;
 
-  return () => {
-    const allocation = runner.capacity ? placeholderRunnerAllocation(runner.capacity) : null;
-
-    return (
-      <Card mix={runnerCardStyle}>
-        <CardHeader mix={runnerCardHeaderStyle}>
-          <div mix={runnerIdentityStyle}>
-            <h4 mix={runnerNameStyle}>{runner.name}</h4>
-            <CardDescription mix={runnerSpecsStyle}>
-              {formatRunnerSpecs(runner)}
-            </CardDescription>
-          </div>
-          <CardAction mix={runnerCardActionStyle}>
-            <span data-status={runner.status} mix={runnerStatusStyle}>
-              <span
-                aria-hidden="true"
-                data-slot="status-bulb"
-                data-status={runner.status}
-                mix={runnerStatusBulbStyle}
-              />
-              {formatRunnerStatus(runner.status)}
-            </span>
-          </CardAction>
-        </CardHeader>
-        <CardContent mix={runnerCardContentStyle}>
-          {runner.capacity && allocation
-            ? (
-              <div mix={runnerAllocationsStyle}>
-                <RunnerAllocationBar
-                  icon="cpu"
-                  label="CPU allocated"
-                  value={allocation.cpuCount}
-                  max={runner.capacity.vmCpuCount}
-                  valueLabel={`${allocation.cpuCount} of ${runner.capacity.vmCpuCount} CPUs`}
-                />
-                <RunnerAllocationBar
-                  icon="memory"
-                  label="Memory allocated"
-                  value={allocation.memoryMiB}
-                  max={runner.capacity.vmMemoryMiB}
-                  valueLabel={`${formatMiB(allocation.memoryMiB)} of ${
-                    formatMiB(runner.capacity.vmMemoryMiB)
-                  }`}
-                />
-              </div>
-            )
-            : <p mix={runnerUnavailableStyle}>Allocation unavailable.</p>}
-        </CardContent>
-        <CardFooter mix={runnerCardFooterStyle}>
-          <span mix={runnerSessionsStyle}>
-            {runner.capacity ? formatRunnerSessions(runner.capacity) : "No live session data"}
+  return () => (
+    <Card mix={runnerCardStyle}>
+      <CardHeader mix={runnerCardHeaderStyle}>
+        <div mix={runnerIdentityStyle}>
+          <h4 mix={runnerNameStyle}>{runner.name}</h4>
+          <CardDescription mix={runnerSpecsStyle}>
+            {formatRunnerSpecs(runner)}
+          </CardDescription>
+        </div>
+        <CardAction mix={runnerCardActionStyle}>
+          <span data-status={runner.status} mix={runnerStatusStyle}>
+            <span
+              aria-hidden="true"
+              data-slot="status-bulb"
+              data-status={runner.status}
+              mix={runnerStatusBulbStyle}
+            />
+            {formatRunnerStatus(runner.status)}
           </span>
-          {runner.status === "revoked"
-            ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="destructive"
-                commandFor={deleteDialogId}
-                command="show-modal"
-              >
-                Delete
-              </Button>
-            )
-            : (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                commandFor={revokeDialogId}
-                command="show-modal"
-              >
-                Revoke
-              </Button>
-            )}
-        </CardFooter>
+        </CardAction>
+      </CardHeader>
+      <CardFooter mix={runnerCardFooterStyle}>
+        <span mix={runnerSessionsStyle}>
+          {runner.capacity ? formatRunnerSessions(runner.capacity) : "No live session data"}
+        </span>
         {runner.status === "revoked"
           ? (
-            <DeleteRunnerDialog
-              actionHref={actionHref}
-              csrfToken={csrfToken}
-              dialogId={deleteDialogId}
-              runner={runner}
-            />
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              commandFor={deleteDialogId}
+              command="show-modal"
+            >
+              Delete
+            </Button>
           )
           : (
-            <RevokeRunnerDialog
-              actionHref={actionHref}
-              csrfToken={csrfToken}
-              dialogId={revokeDialogId}
-              runner={runner}
-            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              commandFor={revokeDialogId}
+              command="show-modal"
+            >
+              Revoke
+            </Button>
           )}
-      </Card>
-    );
-  };
-}
-
-function RunnerAllocationBar(
-  handle: Handle<{
-    icon: "cpu" | "memory";
-    label: string;
-    value: number;
-    max: number;
-    valueLabel: string;
-  }>,
-) {
-  const { icon, label, max, value, valueLabel } = handle.props;
-
-  return () => (
-    <div mix={runnerAllocationStyle}>
-      <div mix={runnerAllocationHeaderStyle}>
-        <span mix={runnerAllocationLabelStyle}>
-          <Icon name={icon} size={16} />
-          {label}
-        </span>
-        <span mix={runnerAllocationValueStyle}>{valueLabel}</span>
-      </div>
-      <Progress
-        aria-label={`${label}: ${valueLabel}`}
-        value={value}
-        max={max}
-      />
-    </div>
+      </CardFooter>
+      {runner.status === "revoked"
+        ? (
+          <DeleteRunnerDialog
+            actionHref={actionHref}
+            csrfToken={csrfToken}
+            dialogId={deleteDialogId}
+            runner={runner}
+          />
+        )
+        : (
+          <RevokeRunnerDialog
+            actionHref={actionHref}
+            csrfToken={csrfToken}
+            dialogId={revokeDialogId}
+            runner={runner}
+          />
+        )}
+    </Card>
   );
 }
 
@@ -309,14 +249,6 @@ function formatRunnerSessions(capacity: SettingsRunnerCapacity): string {
   return `${capacity.activeSessions} active session${capacity.activeSessions === 1 ? "" : "s"}`;
 }
 
-function placeholderRunnerAllocation(capacity: SettingsRunnerCapacity) {
-  // TODO: Replace these deterministic placeholders with allocations from the Gondolin VM inventory.
-  return {
-    cpuCount: Math.min(capacity.vmCpuCount, Math.max(1, Math.round(capacity.vmCpuCount * 0.35))),
-    memoryMiB: Math.min(capacity.vmMemoryMiB, Math.round(capacity.vmMemoryMiB * 0.42)),
-  };
-}
-
 function formatMiB(value: number): string {
   if (value < 1024) return `${value} MiB`;
   return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(value / 1024)} GiB`;
@@ -360,7 +292,7 @@ const runnerCardsStyle = css({
   gap: "16px",
   [media.md]: { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" },
 });
-const runnerCardStyle = css({ gap: "20px", paddingBlock: "20px", boxShadow: "none" });
+const runnerCardStyle = css({ gap: "12px", paddingBlock: "16px", boxShadow: "none" });
 const runnerCardHeaderStyle = css({ gap: "12px", paddingInline: "20px" });
 const runnerCardActionStyle = css({ gridColumnStart: "2" });
 const runnerIdentityStyle = css({
@@ -397,33 +329,6 @@ const runnerStatusBulbStyle = css({
     boxShadow: "0 0 0 2px color-mix(in oklab, #22c55e 18%, transparent)",
   },
   "&[data-status='revoked']": { background: "var(--destructive)" },
-});
-const runnerCardContentStyle = css({ paddingInline: "20px" });
-const runnerAllocationsStyle = css({ display: "grid", gap: "18px" });
-const runnerAllocationStyle = css({ display: "grid", gap: "8px" });
-const runnerAllocationHeaderStyle = css({
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: "12px",
-  fontSize: "13px",
-});
-const runnerAllocationLabelStyle = css({
-  display: "inline-flex",
-  alignItems: "center",
-  gap: "7px",
-  fontWeight: 500,
-  "& svg": { color: "var(--muted-foreground)", flexShrink: 0 },
-});
-const runnerAllocationValueStyle = css({
-  color: "var(--muted-foreground)",
-  fontSize: "12px",
-  textAlign: "right",
-});
-const runnerUnavailableStyle = css({
-  margin: 0,
-  color: "var(--muted-foreground)",
-  fontSize: "13px",
 });
 const runnerCardFooterStyle = css({
   justifyContent: "space-between",

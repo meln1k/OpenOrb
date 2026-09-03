@@ -173,6 +173,8 @@ function ProjectDialog(
   const { dialogId, csrfToken, project } = handle.props;
   const titleId = `${dialogId}-title`;
   const descriptionId = `${dialogId}-description`;
+  const submitLabel = project ? "Save changes" : "Add project";
+  const submitPendingLabel = project ? "Saving changes" : "Adding project";
 
   return () => (
     <AlertDialog
@@ -180,6 +182,7 @@ function ProjectDialog(
       role="dialog"
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
+      keepOpenWhileSubmitting
     >
       <AlertDialogHeader>
         <AlertDialogTitle id={titleId}>{project ? "Edit project" : "Add project"}</AlertDialogTitle>
@@ -196,7 +199,18 @@ function ProjectDialog(
           <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
-          <Button type="submit">{project ? "Save changes" : "Add project"}</Button>
+          <Button
+            type="submit"
+            data-submit-enabled="true"
+            data-submit-label={submitLabel}
+            data-submit-pending-label={submitPendingLabel}
+          >
+            <span data-slot="submit-idle" mix={submitLabelStyle}>{submitLabel}</span>
+            <span data-slot="spinner" hidden mix={submitLabelStyle}>
+              <span aria-hidden="true" mix={submitSpinnerStyle} />
+              {submitPendingLabel}
+            </span>
+          </Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>
@@ -326,13 +340,28 @@ const rowMenuTriggerStyle = css({
   "&:focus-visible": { boxShadow: "0 0 0 2px var(--ring)" },
 });
 const rowMenuContentStyle = css({
-  inset: "calc(100% + 4px) 0 auto auto",
   width: "144px",
   minWidth: "144px",
   textAlign: "left",
 });
 const dialogFormStyle = css({ display: "grid", gap: "20px" });
 const fieldsStyle = css({ display: "grid", gap: "18px" });
+const submitLabelStyle = css({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "8px",
+  "&[hidden]": { display: "none" },
+});
+const submitSpinnerStyle = css({
+  width: "14px",
+  height: "14px",
+  border: "2px solid color-mix(in oklab, currentColor 35%, transparent)",
+  borderTopColor: "currentColor",
+  borderRadius: "999px",
+  animation: "openorb-project-submit-spin 800ms linear infinite",
+  "@keyframes openorb-project-submit-spin": { to: { transform: "rotate(360deg)" } },
+  "@media (prefers-reduced-motion: reduce)": { animation: "none" },
+});
 const errorStyle = css({
   margin: 0,
   padding: "12px 14px",

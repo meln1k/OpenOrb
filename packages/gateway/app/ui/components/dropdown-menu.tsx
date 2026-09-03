@@ -90,14 +90,16 @@ export function DropdownMenuLink(handle: Handle<Props<"a">>) {
 const menuStyle = css({ position: "relative", width: "100%" });
 
 const triggerStyle = css({
+  anchorName: "--openorb-dropdown-trigger",
   listStyle: "none",
   cursor: "pointer",
   "&::-webkit-details-marker": { display: "none" },
 });
 
 const contentStyle = css({
-  position: "absolute",
-  inset: "calc(100% + 4px) 0 auto auto",
+  position: "fixed",
+  positionAnchor: "--openorb-dropdown-trigger",
+  inset: "calc(anchor(bottom) + 4px) anchor(right) auto auto",
   zIndex: 50,
   display: "flex",
   flexDirection: "column",

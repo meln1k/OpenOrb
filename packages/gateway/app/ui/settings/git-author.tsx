@@ -1,5 +1,5 @@
 import { css, type Handle } from "remix/ui";
-import { Button } from "@/app/ui/components/button.tsx";
+import { Button, SubmitProgressBehavior } from "@/app/ui/components/button.tsx";
 import { Field, FieldLabel } from "@/app/ui/components/field.tsx";
 import { Input } from "@/app/ui/components/input.tsx";
 import { media } from "@/app/ui/responsive.ts";
@@ -68,12 +68,24 @@ export function GitAuthorSection(
               ? `Configured · updated ${formatSettingsDate(gitAuthor.updatedAt)}`
               : "Not configured"}
           </span>
-          <Button type="submit">Save Git author</Button>
+          <Button type="submit">
+            <span data-slot="submit-idle" mix={submitLabelStyle}>Save Git author</span>
+            <span data-slot="submit-progress" hidden mix={submitLabelStyle}>
+              <span aria-hidden="true" mix={submitSpinnerStyle} />
+              Saving Git author
+            </span>
+          </Button>
         </div>
+        <SubmitProgressBehavior
+          formId={formId}
+          idleLabel="Save Git author"
+          pendingLabel="Saving Git author"
+        />
       </form>
     </section>
   );
 }
+
 const authorFormStyle = css({
   display: "grid",
   gap: "20px",
@@ -92,4 +104,20 @@ const authorFooterStyle = css({
   justifyContent: "space-between",
   gap: "12px",
   [media.sm]: { flexDirection: "row", alignItems: "center" },
+});
+const submitLabelStyle = css({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "8px",
+  "&[hidden]": { display: "none" },
+});
+const submitSpinnerStyle = css({
+  width: "14px",
+  height: "14px",
+  border: "2px solid color-mix(in oklab, currentColor 35%, transparent)",
+  borderTopColor: "currentColor",
+  borderRadius: "999px",
+  animation: "openorb-git-author-submit-spin 800ms linear infinite",
+  "@keyframes openorb-git-author-submit-spin": { to: { transform: "rotate(360deg)" } },
+  "@media (prefers-reduced-motion: reduce)": { animation: "none" },
 });

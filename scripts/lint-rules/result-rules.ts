@@ -55,6 +55,12 @@ function isApplicationTestFile(filename: string): boolean {
   return path.includes("/test/") || /\.(?:test|bench)\.[cm]?[jt]sx?$/.test(path);
 }
 
+function isBrowserFile(filename: string): boolean {
+  const path = normalizedPath(filename);
+  return path.includes("packages/gateway/app/ui/") ||
+    path.endsWith("packages/gateway/app/assets/client.ts");
+}
+
 function isResultPackage(source: Deno.lint.ImportDeclaration["source"]): boolean {
   return source.value === RESULT_PACKAGE;
 }
@@ -695,7 +701,10 @@ const noGenericErrorThrow: Deno.lint.Rule = {
 
 const noCatch: Deno.lint.Rule = {
   create(context) {
-    if (!isApplicationFile(context.filename) || isApplicationTestFile(context.filename)) return {};
+    if (
+      !isApplicationFile(context.filename) || isApplicationTestFile(context.filename) ||
+      isBrowserFile(context.filename)
+    ) return {};
     return {
       CatchClause(node) {
         context.report({

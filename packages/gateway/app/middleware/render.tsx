@@ -24,14 +24,12 @@ export function render() {
               );
             }
 
-            const [href, preloads] = await Promise.all([
-              assetServer.getHref(entryId),
-              assetServer.getPreloads(entryId),
-            ]);
+            const href = await assetServer.getHref(entryId);
             return {
               href,
               exportName: entryId.split("#")[1] || component.name || titleCaseFileName(entryId),
-              preloads,
+              // Let native ESM loading discover dependencies without preloading dynamic imports.
+              preloads: [href],
             };
           },
         });

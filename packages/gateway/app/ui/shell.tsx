@@ -20,6 +20,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Icon,
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
   Separator,
   SidebarContent,
   SidebarDesktop,
@@ -69,14 +72,6 @@ export function AppShell(handle: Handle<AppShellProps>) {
 export function AppShellLayout(handle: Handle<AppShellProps>) {
   return () => (
     <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
-      <SidebarDesktop>
-        <AppNavigation
-          csrfToken={handle.props.csrfToken}
-          activeSection={handle.props.activeSection}
-          activeSessionId={handle.props.activeSessionId}
-          sessions={handle.props.sessions}
-        />
-      </SidebarDesktop>
       <SidebarMobile id={MOBILE_SIDEBAR_ID}>
         <AppNavigation
           csrfToken={handle.props.csrfToken}
@@ -85,60 +80,104 @@ export function AppShellLayout(handle: Handle<AppShellProps>) {
           sessions={handle.props.sessions}
         />
       </SidebarMobile>
-      <SidebarInset
-        aria-label="Authenticated gateway"
-        data-has-right-sidebar={handle.props.rightSidebar ? "true" : undefined}
-      >
-        <header mix={topBarStyle}>
-          <div mix={topBarContentStyle}>
-            <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
-            {handle.props.topBarTitle
-              ? (
-                <>
-                  <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-                  <h1 data-top-bar-title mix={topBarTitleStyle}>
-                    {handle.props.topBarTitle}
-                  </h1>
-                </>
-              )
-              : handle.props.eyebrow
-              ? (
-                <>
-                  <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-                  <Breadcrumb>
-                    <BreadcrumbList>
-                      <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
-                        <BreadcrumbLink href={routes.app.index.href()}>
-                          Gateway
-                        </BreadcrumbLink>
-                      </BreadcrumbItem>
-                      <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
-                      <BreadcrumbItem>
-                        <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
-                      </BreadcrumbItem>
-                    </BreadcrumbList>
-                  </Breadcrumb>
-                </>
-              )
-              : null}
-            {handle.props.topBarAccessory}
-          </div>
-        </header>
-        <div mix={contentStyle}>
-          {handle.props.heading
-            ? (
-              <header mix={pageHeaderStyle}>
-                <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
-                {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
-              </header>
-            )
-            : null}
-          {handle.props.children}
-        </div>
-      </SidebarInset>
-      {handle.props.rightSidebar
-        ? <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
-        : null}
+      <ResizablePanelGroup orientation="horizontal" mix={shellPanelGroupStyle}>
+        <ResizablePanel
+          data-side="left"
+          defaultSize="256px"
+          minSize="192px"
+          maxSize="480px"
+          mix={desktopSidebarPanelStyle}
+        >
+          <SidebarDesktop>
+            <AppNavigation
+              csrfToken={handle.props.csrfToken}
+              activeSection={handle.props.activeSection}
+              activeSessionId={handle.props.activeSessionId}
+              sessions={handle.props.sessions}
+            />
+          </SidebarDesktop>
+        </ResizablePanel>
+        <ResizableHandle
+          aria-label="Resize primary navigation"
+          data-side="left"
+          withHandle
+          mix={desktopSidebarHandleStyle}
+        />
+        <ResizablePanel minSize="360px" mix={shellContentPanelStyle}>
+          <SidebarInset
+            aria-label="Authenticated gateway"
+            data-has-right-sidebar={handle.props.rightSidebar ? "true" : undefined}
+          >
+            <header mix={topBarStyle}>
+              <div mix={topBarContentStyle}>
+                <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
+                {handle.props.topBarTitle
+                  ? (
+                    <>
+                      <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                      <h1 data-top-bar-title mix={topBarTitleStyle}>
+                        {handle.props.topBarTitle}
+                      </h1>
+                    </>
+                  )
+                  : handle.props.eyebrow
+                  ? (
+                    <>
+                      <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                      <Breadcrumb>
+                        <BreadcrumbList>
+                          <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
+                            <BreadcrumbLink href={routes.app.index.href()}>
+                              Gateway
+                            </BreadcrumbLink>
+                          </BreadcrumbItem>
+                          <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
+                          <BreadcrumbItem>
+                            <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
+                          </BreadcrumbItem>
+                        </BreadcrumbList>
+                      </Breadcrumb>
+                    </>
+                  )
+                  : null}
+                {handle.props.topBarAccessory}
+              </div>
+            </header>
+            <div mix={contentStyle}>
+              {handle.props.heading
+                ? (
+                  <header mix={pageHeaderStyle}>
+                    <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
+                    {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
+                  </header>
+                )
+                : null}
+              {handle.props.children}
+            </div>
+          </SidebarInset>
+        </ResizablePanel>
+        {handle.props.rightSidebar
+          ? (
+            <>
+              <ResizableHandle
+                aria-label="Resize session changes"
+                data-side="right"
+                withHandle
+                mix={desktopSidebarHandleStyle}
+              />
+              <ResizablePanel
+                data-side="right"
+                defaultSize="clamp(400px, 38vw, 560px)"
+                minSize="320px"
+                maxSize="720px"
+                mix={desktopSidebarPanelStyle}
+              >
+                <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
+              </ResizablePanel>
+            </>
+          )
+          : null}
+      </ResizablePanelGroup>
       <SessionComposer
         {...handle.props.composer}
         csrfToken={handle.props.csrfToken}
@@ -265,6 +304,40 @@ const appThemeAliasesStyle = css({
   lineHeight: 1.5,
   "& *, & *::before, & *::after": { boxSizing: "border-box" },
 });
+const shellPanelGroupStyle = css({ minWidth: 0, minHeight: "100svh" });
+const shellContentPanelStyle = css({
+  display: "flex",
+  minWidth: 0,
+  "@media (max-width: 1279.98px)": { flexGrow: "1 !important" },
+  "[data-slot='resizable-panel-group']:has(> [data-slot='resizable-panel'] > [data-slot='sidebar-desktop']:not([open])) > &":
+    {
+      flexGrow: "1 !important",
+    },
+});
+const desktopSidebarPanelStyle = css({
+  position: "relative",
+  display: "none",
+  overflow: "visible",
+  "&:has(> [data-slot='sidebar-desktop']:not([open]))": {
+    flexBasis: "0 !important",
+  },
+  [media.md]: { "&[data-side='left']": { display: "block" } },
+  [media.xl]: { "&[data-side='right']": { display: "block" } },
+});
+const desktopSidebarHandleStyle = css({
+  display: "none",
+  height: "auto",
+  alignSelf: "stretch",
+  "&[data-side='right']": { transform: "translateX(-8px)" },
+  "[data-slot='resizable-panel-group']:has(> [data-slot='resizable-panel'][data-side='left'] > [data-slot='sidebar-desktop']:not([open])) > &[data-side='left'], [data-slot='resizable-panel-group']:has(> [data-slot='resizable-panel'][data-side='right'] > [data-slot='sidebar-desktop']:not([open])) > &[data-side='right']":
+    {
+      pointerEvents: "none",
+      opacity: 0,
+      visibility: "hidden",
+    },
+  [media.md]: { "&[data-side='left']": { display: "flex" } },
+  [media.xl]: { "&[data-side='right']": { display: "flex" } },
+});
 const sidebarBrandStyle = css({
   display: "flex",
   alignItems: "center",
@@ -331,8 +404,16 @@ const sidebarAccountTriggerStyle = css({
 });
 const sidebarAccountTextStyle = sidebarBrandTextStyle;
 const accountMenuContentStyle = css({
-  inset: "auto auto calc(100% + 4px) 0",
-  [media.md]: { inset: "auto auto 0 calc(100% + 4px)" },
+  "&[data-slot='dropdown-menu-content']": {
+    inset: "anchor(top) auto auto anchor(left)",
+    transform: "translateY(calc(-100% - 4px))",
+  },
+  [media.md]: {
+    "&[data-slot='dropdown-menu-content']": {
+      inset: "auto auto anchor(bottom) calc(anchor(right) + 4px)",
+      transform: "none",
+    },
+  },
 });
 const accountMenuIdentityStyle = css({
   display: "flex",

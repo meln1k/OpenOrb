@@ -9,9 +9,15 @@ function isTestFile(filename: string): boolean {
   return path.includes("/test/") || /\.(?:test|bench)\.[cm]?[jt]sx?$/.test(path);
 }
 
+function isBrowserFile(filename: string): boolean {
+  const path = filename.replaceAll("\\", "/");
+  return path.includes("packages/gateway/app/ui/") ||
+    path.endsWith("packages/gateway/app/assets/client.ts");
+}
+
 const preferDisposableStack = {
   create(context) {
-    if (isTestFile(context.filename)) return {};
+    if (isTestFile(context.filename) || isBrowserFile(context.filename)) return {};
     return {
       TryStatement(node) {
         if (node.finalizer !== null) context.report({ node, message });
