@@ -147,9 +147,20 @@ clone_effect_repository() {
 
 clone_remix_repository() {
   local target="$HOME/.local/share/remix/remix"
+  local ref='remix@3.0.0-rc.1'
 
   if [[ -d "$target/.git" ]]; then
-    echo "Remix repository already cloned at $target."
+    if ! git -C "$target" rev-parse --verify --quiet "refs/tags/$ref^{commit}" >/dev/null; then
+      git -C "$target" fetch --depth 1 origin "refs/tags/$ref:refs/tags/$ref"
+    fi
+
+    if [[ "$(git -C "$target" rev-parse HEAD)" == \
+      "$(git -C "$target" rev-parse "refs/tags/$ref^{commit}")" ]]; then
+      echo "Remix repository already checked out at $ref."
+      return
+    fi
+
+    git -C "$target" switch --detach "$ref"
     return
   fi
   if [[ -e "$target" ]]; then
@@ -158,7 +169,7 @@ clone_remix_repository() {
   fi
 
   mkdir -p "$(dirname "$target")"
-  git clone --depth 1 --branch remix@3.0.0-beta.10 \
+  git clone --depth 1 --branch "$ref" \
     https://github.com/remix-run/remix.git "$target"
 }
 
@@ -256,7 +267,7 @@ step 'Install system packages' install_system_packages
 step 'Install pinned Deno toolchain' install_deno
 step 'Install Effect Solutions CLI' install_effect_solutions
 step 'Clone Effect v4 reference repository' clone_effect_repository
-step 'Clone Remix 3 beta 10 reference repository' clone_remix_repository
+step 'Clone Remix 3 RC 1 reference repository' clone_remix_repository
 step 'Configure PostgreSQL' configure_postgres
 step 'Create local gateway environment' create_local_environment
 step 'Install locked Deno dependencies' install_dependencies

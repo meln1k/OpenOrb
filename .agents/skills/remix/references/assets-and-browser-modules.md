@@ -4,7 +4,7 @@
 
 How to serve browser scripts and styles from source. Read this when the task involves:
 
-- Configuring `createAssetServer` (`basePath`, `fileMap`, `allowFiles`, `allowPackages`, `denyFiles`, fingerprinting, compiler options)
+- Configuring `createAssetServer` (`basePath`, `mounts`, `allowFiles`, `allowPackages`, `denyFiles`, fingerprinting, compiler options)
 - Choosing between `staticFiles()` for already-built files and `createAssetServer()` for source assets that need import rewriting, preloads, or fingerprinted URLs
 - Generating script URLs or `<link rel="modulepreload">` tags for a client entry
 - Enabling browser HMR for source-served modules
@@ -29,13 +29,9 @@ export const routes = route({
   assets: get('/assets/*path'),
 })
 
-let assetServer = createAssetServer({
+let assets = createAssetServer({
   basePath: '/assets',
   rootDir: process.cwd(),
-  fileMap: {
-    'app/*path': 'app/*path',
-    'node_modules/*path': 'node_modules/*path',
-  },
   allowFiles: ['app/routes.ts', 'app/**/public/**'],
   allowPackages: ['remix'],
   denyFiles: ['app/**/*.test.*'],
@@ -52,7 +48,7 @@ let assetServer = createAssetServer({
 export default createController(routes, {
   actions: {
     async assets({ request }) {
-      return (await assetServer.fetch(request)) ?? new Response('Not Found', { status: 404 })
+      return (await assets.fetch(request)) ?? new Response('Not Found', { status: 404 })
     },
   },
 })
@@ -69,8 +65,8 @@ export default createController(routes, {
 - `denyFiles` takes precedence over both file and package allow rules.
 - Set `rootDir` explicitly in monorepos so relative paths resolve from the intended project root.
 - `basePath` is the public URL namespace handled by the asset server.
-- `fileMap` keys are URL patterns relative to `basePath`, and values are root-relative file path patterns. They use `route-pattern` syntax on both sides.
-- Keep the same wildcard params on both sides of a `fileMap` entry so import rewriting can map source files back to public URLs.
+- The default mounts serve the `app` directory at `/app` and `node_modules` at `/npm`. Use `mounts` to replace these defaults when the app needs different public or root-relative directory roots.
+- Mounts preserve every path segment beneath their public and filesystem roots. Do not configure overlapping public or filesystem roots.
 - CSS files are compiled and served alongside scripts. Local CSS `@import` rules are rewritten and fingerprinted with the same asset server routing rules.
 
 ## Rendering HTML
@@ -78,13 +74,13 @@ export default createController(routes, {
 Use `getHref()` when you need the public URL for one module, and `getPreloads()` when you want `<link rel="modulepreload">` tags or `Link` headers for one or more entrypoints and their dependencies.
 
 ```typescript
-let entryHref = await assetServer.getHref('app/actions/public/entry.ts')
-let entryPreloads = await assetServer.getPreloads('app/actions/public/entry.ts')
+let entryHref = await assets.getHref('app/actions/public/entry.ts')
+let entryPreloads = await assets.getPreloads('app/actions/public/entry.ts')
 ```
 
 Use this when rendering documents or layouts that boot browser behavior with a known client entry.
 
-When resolving hydrated client entries during server rendering, pass the source entry ID from `clientEntry(import.meta.url, ...)` to `getHref()` inside `resolveClientEntry`. Keep export-name resolution in that render helper, and avoid hard-coding public asset URLs in source-owned component modules.
+For normal Remix applications, pass the asset server to `render({ assets })` from `remix/middleware/render`. The middleware resolves source entry IDs from `clientEntry(import.meta.url, ...)` with `getHref()` and `getPreloads()` and applies the UI renderer's explicit-hash or named-component export rules. Use a custom `resolveClientEntry` callback only when building a custom rendering pipeline.
 
 ## Development vs Deployment
 
@@ -117,7 +113,6 @@ const isHmr = Boolean(isDevelopment && process.env.REMIX_NODE_HMR)
 
 const assetServer = createAssetServer({
   basePath: '/assets',
-  fileMap: { '/app/*path': 'app/*path' },
   allowFiles: ['app/routes.ts', 'app/**/public/**'],
   denyFiles: ['app/**/*.test.*'],
   watch: isDevelopment,

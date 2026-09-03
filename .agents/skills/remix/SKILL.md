@@ -122,8 +122,9 @@ When code could live in multiple places:
 
 ### Response Rendering And Utilities
 
-- Treat response rendering as action-layer code: modules that return `Response`, choose HTTP status or headers, call `redirect(...)`, or call the local `render(...)` helper belong in `app/actions`
-- Keep `app/actions/render.tsx` small; it should adapt `remix/ui/server` output to `createHtmlResponse(...)`. Route-specific response assembly can live in flat action modules, but directories under `app/actions/` must still match route-map keys
+- Install `render()` from `remix/middleware/render` in the router middleware stack for normal Remix UI applications. Pass `render({ assets })` when source-based `clientEntry()` modules need browser URLs
+- Render UI responses at the action boundary with `context.render(node, init)`. Status, headers, and other response policy remain explicit in the action
+- Use `renderWith(...)`, `renderToStream(...)`, and `createHtmlResponse(...)` only when an application intentionally owns a custom renderer contract or replaces the standard UI response pipeline
 - Put pure support code in focused `app/utils/<topic>.ts` modules. Formatting, MIME classification, path parsing, sorting, and normalization should be testable without a router, request context, or `Response`, and should not import from `app/actions`, `remix/ui/server`, or `remix/response/*`
 - Do not introduce page-data intermediary shapes only to keep route-specific renderers away from `render(...)`; keep response assembly in actions and extract only the pure helpers
 
@@ -210,7 +211,7 @@ Use this map to find the right package quickly. Each entry says what the package
 - `remix/node-hmr` — optional development Node HMR runner for rapid UI edits. Use `run` in `hmr.ts` to supervise `server.ts` behind an `hmr` script, and use `createHmrReadyFetch` when a stable public proxy should wait for child server readiness during updates
 - `remix/node-hmr/runtime` — child-process runtime API for code running under `remix/node-hmr`. Use to create browser HMR channels for asset servers and to emit server readiness after the child server starts listening
 - `remix/node-hmr/types` — type-only entry for `import.meta.hot` in Node modules
-- `remix/assets` — browser asset server. Use for `createAssetServer` when serving compiled scripts and styles, getting public hrefs, emitting preloads, and wiring browser HMR. Configure a `basePath`, keep `fileMap` URL patterns relative to it, use `allowFiles`/`denyFiles` for path and glob rules, and use exact package names in `allowPackages` for package-level access. Shared compiler options such as `target`, `sourceMaps`, `sourceMapSourcePaths`, and `minify` live at the top level
+- `remix/assets` — browser asset server. Use for `createAssetServer` when serving compiled scripts and styles, getting public hrefs, emitting preloads, and wiring browser HMR. Configure a `basePath`; use optional directory `mounts` configuration when the default mounts that serve `app` at `app` and `node_modules` at `npm` are not enough; use `allowFiles`/`denyFiles` for path and glob rules; and use exact package names in `allowPackages` for package-level access. Shared compiler options such as `target`, `sourceMaps`, `sourceMapSourcePaths`, and `minify` live at the top level
 - `remix/assets/types/hmr` — type-only entry for `import.meta.hot` in browser modules compiled by `remix/assets`
 - `remix/headers` — `SuperHeaders` plus typed header parsers and builders. Use the default export when you want a `Headers` subclass with typed accessors like `headers.contentType`, `headers.cacheControl`, and `headers.setCookie`; use named classes such as `CacheControl`, `ContentDisposition`, and `Vary` when working with individual header values
 - `remix/response/redirect` — `redirect(href, status?)`. Use for the canonical "POST then redirect" pattern and other location changes
@@ -243,13 +244,13 @@ Use this map to find the right package quickly. Each entry says what the package
 - `remix/session-storage/redis` — Redis-backed storage. Use for multi-process or multi-host deployments
 - `remix/session-storage/memcache` — Memcache-backed storage. Same multi-host use case as Redis
 - `remix/cookie` — `createCookie` for plain signed/unsigned cookies. Use for non-sensitive preferences where the client is allowed to control the value (theme, locale, dismissed banner). For state where tampering matters, prefer `remix/session`
-- `remix/auth` — credentials, OAuth, OIDC, and Atmosphere providers. Use to define how identity is verified, start/finish external login, and refresh stored OAuth/OIDC token bundles with `refreshExternalAuth(...)`
+- `remix/auth` — credentials, OAuth, and OIDC providers. Use to define how identity is verified, start/finish external login, and refresh stored OAuth/OIDC token bundles with `refreshExternalAuth(...)`
 - `remix/middleware/auth` — `auth({ schemes })`, `requireAuth`, the `Auth` context key. Use to resolve identity into the request context and to gate routes
 
 ### UI, Hydration, and Browser Behavior
 
 - `remix/ui` — the component runtime: components, core mixins, `clientEntry`, `run`, `<Frame>`, navigation helpers, and `createRoot`. Use for app UI behavior
-- `remix/ui/server` — server rendering: `renderToStream`, `renderToString`. Use in the `app/actions/render.tsx` helper that returns HTML responses
+- `remix/ui/server` — low-level server rendering with `renderToStream` and `renderToString`. Normal apps should install `render()` from `remix/middleware/render`; use this subpath for custom pipelines and static string rendering
 - `remix/ui-hmr` — direct Remix UI component HMR transforms. Use only when writing a custom module hook or build integration
 - `remix/ui-hmr/node` — Node import hook for Remix UI component HMR. Use with `--import remix/ui-hmr/node` in development servers that run through `remix/node-hmr`
 - `remix/ui-hmr/assets` — `remix/assets` loader for Remix UI component HMR. Use `uiHmr()` in `createAssetServer({ scripts: { loaders } })` during development
@@ -264,6 +265,7 @@ Use this map to find the right package quickly. Each entry says what the package
 
 ### Middleware
 
+- `remix/middleware/render` — `render({ assets?, onError? })` for the standard Remix UI renderer and `renderWith(factory)` for custom request-scoped renderers. Normal UI actions return `context.render(node, init)`
 - `remix/middleware/static` — `staticFiles(dir)`. Use to serve files from `public/` exactly as they exist on disk
 - `remix/middleware/form-data` — `formData()`. Use to parse `FormData` once and expose it via `get(FormData)` instead of calling `await request.formData()` in each action
 - `remix/form-data-parser` — lower-level `parseFormData`, `FileUpload`. Use when implementing custom upload handlers. Upload handler errors propagate directly
