@@ -2,77 +2,218 @@
 
 ![OpenOrb logo](logo.png)
 
-OpenOrb is an open-source, self-hostable gateway and runner for Pi coding-agent sessions on user-owned compute. The gateway currently includes password authentication, credential/project configuration, and reusable-PSK runner enrollment over one authenticated outbound WebSocket. Coding sessions arrive in later tickets.
+OpenOrb is an open-source, self-hosted environment for running Pi coding-agent sessions on your own
+compute. Its browser gateway stores projects and encrypted credentials, enrolls runners, streams
+conversations, and presents Git changes. Each runner executes untrusted session work inside a
+Gondolin QEMU/KVM virtual machine and connects outbound to the gateway; runners need no inbound
+port.
 
-## Tooling and prerequisites
+## How OpenOrb runs
 
-- Deno **2.9.5 exactly**
-- PostgreSQL for the gateway and its tests
-- QEMU/KVM for the runner
+A complete installation has two processes:
 
-The Node.js, npm, and pnpm CLIs are not used by OpenOrb. Runtime dependencies published to npm are
-resolved and installed by Deno from exact `npm:` imports. A private `package.json` declares only the
-local TypeScript and Effect language-service tooling, which Deno also installs and runs. Deno owns
-the generated local `node_modules` tree required by those tools and Remix's browser-asset compiler;
-no Node.js runtime is required.
+- **Gateway:** Deno web application backed by PostgreSQL. It serves the UI and coordinates runners.
+- **Runner:** Deno or standalone Linux service that owns session state and Gondolin VMs.
 
-The repository's orb setup installs QEMU for the orb architecture. Outside an orb, install QEMU for
-the host architecture:
+The gateway currently runs from a source checkout. Choose either runner installation:
+
+| Runner installation | Best for | Deno required on runner host? | Updates |
+| --- | --- | --- | --- |
+| [Source checkout](#linux-source-runner) | Simple self-hosting and MVP+ iteration | Deno 2.9.5 exactly | Pull the checkout, install the frozen graph, restart |
+| [Standalone artifact](#linux-standalone-runner) | Minimal production host | No | Replace the verified executable, restart |
+
+Both Linux options use the same hardened systemd unit and the same persistent
+`/var/lib/openorb-runner` state. You can switch between them without re-enrolling the runner.
+
+## Requirements
+
+- Deno **2.9.5 exactly** for the gateway, development, and source runner installation
+- PostgreSQL for the gateway
+- QEMU/KVM and `/dev/kvm` for runners
+- glibc 2.27+ Linux on x86-64 or ARM64 for production runners
+
+OpenOrb does not invoke the Node.js, npm, or pnpm CLIs. Deno resolves the pinned npm and JSR
+dependencies and owns the generated `node_modules` tree. Alpine Linux and other musl distributions
+are not supported runner hosts. macOS can use the temporary development harness, but it is not a
+release target.
+
+## Run the complete project from source
+
+This is the quickest local setup. Install Deno 2.9.5, PostgreSQL, and QEMU, then clone and prepare
+the frozen dependency graph:
 
 ```sh
-# Debian/Ubuntu x86-64
-sudo apt install qemu-system-x86
-
-# Debian/Ubuntu ARM64
-sudo apt install qemu-system-arm
-
-# Optional macOS local harness
-brew install qemu
+git clone https://github.com/meln1k/openorb.git
+cd openorb
+deno --version # first line must be: deno 2.9.5
+deno install --frozen
 ```
 
-Development primarily uses Linux Amp orbs. The macOS runner entry point remains an optional temporary
-local harness, not a supported release target. Release runners target glibc Linux x86-64 and ARM64;
-musl hosts are not supported. The current Deno 2.9.5 artifacts require glibc 2.27 or newer. `gh`
-belongs in the guest image introduced by OO-009, not on the runner host.
-
-## Install and run
-
-From a clean checkout, resolve the frozen Deno graph, provide PostgreSQL and a session-cookie signing secret, and start the gateway:
+Create the gateway database and configuration:
 
 ```sh
-deno install --frozen
-deno task prepare # patch workspace TypeScript with Effect diagnostics
-export DATABASE_URL=postgres://localhost/openorb
-export SESSION_SECRET="replace-with-a-long-random-secret"
+createdb openorb
+cp packages/gateway/.env.example packages/gateway/.env
+```
+
+Edit `packages/gateway/.env` and set all three required values:
+
+```dotenv
+DATABASE_URL=postgres://localhost/openorb
+SESSION_SECRET=<long random session-cookie secret>
+OPENORB_MASTER_KEY=<64 hexadecimal characters from: openssl rand -hex 32>
+```
+
+Start the gateway:
+
+```sh
 deno task dev:gateway
 ```
 
-The gateway is available at <http://localhost:44100>, with process health at <http://localhost:44100/healthz>. On a fresh database, open the gateway to complete administrator setup. Open **Settings → Runners** and copy the always-present runner-enrollment command, which includes the gateway URL and current PSK. The equivalent command is:
+Open <http://localhost:44100>, create the first administrator, then configure a model provider,
+GitHub, and a project. Open **Settings → Runners** and copy the gateway URL and enrollment PSK. In a
+second terminal, enroll the temporary development runner:
 
 ```sh
+read -rsp 'Enrollment PSK: ' OPENORB_ENROLLMENT_PSK; printf '\n'
 deno task dev:runner --gateway http://localhost:44100 \
   --enrollment-token "$OPENORB_ENROLLMENT_PSK" \
   --name "Development runner"
+unset OPENORB_ENROLLMENT_PSK
 ```
 
-The runner stores `runner.json` and a mode-`0600` bearer-token file in the ignored `.openorb-runner-dev/` working directory. The PSK is not retained or reused as runner identity. After first enrollment, `deno task dev:runner` reconnects with the stored bearer token. The harness opens one outbound WebSocket and no inbound listener.
-
-After enrollment, run both development processes together or separately:
+The runner exchanges the PSK for a bearer identity and stores it with mode `0600` under the ignored
+`.openorb-runner-dev/` directory. Subsequent launches need no enrollment arguments:
 
 ```sh
-deno task dev:gateway
-deno task dev:runner
+deno task dev
 ```
 
-`deno task dev` runs both processes. A deployed gateway process uses `deno task --filter @openorb/gateway start`; production Linux runners use the standalone artifacts described below. Use the Deno version pinned in `.tool-versions`; individual tasks do not perform a separate runtime version check.
+`deno task dev` runs the gateway and development runner together. Use `dev:gateway` and `dev:runner`
+when you want separate processes.
 
-## Local observability
+## Run OpenOrb on Linux
 
-The gateway exports Effect spans through its OTLP tracer layer and uses Deno's built-in
-OpenTelemetry integration to export `console` logs. Deno's automatic gateway traces are sampled off
-so they do not duplicate Effect's HTTP spans; consequently, gateway `console` logs are not
-trace-correlated with Effect spans. For local telemetry, install the pinned
-[Motel](https://github.com/kitlangton/motel) development tool before running the development tasks:
+The gateway still launches from its checkout. Configure `packages/gateway/.env` as above, prepare
+the frozen graph, and run the production task under your process supervisor:
+
+```sh
+deno install --frozen
+deno task --filter @openorb/gateway start
+```
+
+The server listens on port `44100` by default and applies committed database migrations at startup.
+Put TLS and public routing in front of it, then install at least one runner using either option
+below. The runner needs the externally reachable gateway origin, not a loopback URL when it is on a
+different host.
+
+### Linux source runner
+
+Use this option when easy source upgrades matter. On the runner host, install Git, Deno 2.9.5, and
+the architecture-appropriate QEMU package. Keep the checkout root-owned at `/opt/openorb`:
+
+```sh
+sudo git clone https://github.com/meln1k/openorb.git /opt/openorb
+sudo install -d -o root -g root -m 0755 /var/cache/openorb-runner/deno
+sudo env DENO_DIR=/var/cache/openorb-runner/deno \
+  /usr/local/bin/deno install --frozen \
+  --config=/opt/openorb/deno.json \
+  --lock=/opt/openorb/deno.lock \
+  --entrypoint /opt/openorb/packages/runner/src/standalone.ts
+sudo chmod -R a+rX /opt/openorb /var/cache/openorb-runner/deno
+```
+
+Install the shared `openorb-runner.service` and the architecture-specific source override from the
+checkout. The override invokes `/usr/local/bin/deno run` directly with a frozen, cached dependency
+graph and the runner's narrow production permissions. It is not a shell wrapper.
+
+For the exact service-account, QEMU, unit, `doctor`, and enrollment commands, follow
+[Linux runner installation — source checkout](docs/runner-installation.md#2b-install-from-a-source-checkout).
+Then launch it with:
+
+```sh
+sudo systemctl enable --now openorb-runner.service
+```
+
+To update this installation:
+
+```sh
+sudo systemctl stop openorb-runner.service
+sudo git -C /opt/openorb pull --ff-only
+sudo env DENO_DIR=/var/cache/openorb-runner/deno \
+  /usr/local/bin/deno install --frozen \
+  --config=/opt/openorb/deno.json \
+  --lock=/opt/openorb/deno.lock \
+  --entrypoint /opt/openorb/packages/runner/src/standalone.ts
+sudo chmod -R a+rX /opt/openorb /var/cache/openorb-runner/deno
+sudo systemctl daemon-reload
+sudo systemctl start openorb-runner.service
+```
+
+Prefer a reviewed tag or commit over a moving branch when reproducibility matters.
+
+### Linux standalone runner
+
+Use this option when the runner host should not contain Deno, Git, Node.js, or the repository. A
+release provides:
+
+- `openorb-runner-linux-x64`
+- `openorb-runner-linux-arm64`
+- `openorb-runner.service`
+- `SHA256SUMS`
+
+Verify `SHA256SUMS`, install the matching executable as `/usr/local/bin/openorb-runner`, install the
+unit, run `doctor`, enroll once, and start systemd. Complete commands are in
+[Linux runner installation — standalone artifact](docs/runner-installation.md#2a-install-the-standalone-artifact).
+
+```sh
+sudo systemctl enable --now openorb-runner.service
+```
+
+The executable embeds denort and the frozen application graph. Guest images remain separate: the
+runner downloads the pinned architecture-specific image and verifies its size, SHA-256, Gondolin
+build ID, architecture, and internal checksums before use.
+
+### Runner behavior shared by both installations
+
+- `WorkingDirectory` is `/var/lib/openorb-runner`; `--data-dir` is intentionally unsupported.
+- Identity, sessions, and completed checkpoints survive service and installation-mode changes.
+- There is no default CPU, memory, or session-count ceiling.
+- Deno has no FFI or `--allow-all` permission and can execute only the native QEMU suite.
+- QEMU, not Deno, opens `/dev/kvm`; systemd grants only that device.
+- The runner uses one authenticated outbound WebSocket and reconnects automatically.
+
+## Development
+
+### Checks
+
+```sh
+deno task check
+deno task test
+deno task test packages/protocol/test/runner-api.test.ts # focused test
+deno task test:gondolin                                 # QEMU integration suite
+```
+
+Always pass tests through `deno task test`; the task owns the required permissions and environment.
+Unit tests use `postgres://localhost/openorb-test` by default and do not start a VM.
+
+### Development database reset
+
+The unreleased PBKDF2 and UUIDv7 schema is intentionally incompatible with older development data.
+If upgrading from the pre-OO-001A schema, reset both databases once:
+
+```sh
+dropdb --if-exists openorb && createdb openorb
+dropdb --if-exists openorb-test && createdb openorb-test
+```
+
+Startup never deletes application data automatically.
+
+### Local observability
+
+Development tasks export OTLP/HTTP protobuf traces and Deno-captured logs to
+[Motel](https://github.com/kitlangton/motel) at `http://127.0.0.1:27686`. Motel 0.2.6 itself requires
+Bun 1.3 or newer; OpenOrb application processes remain Deno-only.
 
 ```sh
 bun add --global @kitlangton/motel@0.2.6
@@ -80,85 +221,20 @@ motel start
 deno task dev
 ```
 
-Motel listens on `http://127.0.0.1:27686`; query its health and discovered OpenOrb services with:
+In an Amp orb, `amp orb services ensure` supervises the configured development services.
 
-```sh
-curl http://127.0.0.1:27686/api/health
-curl http://127.0.0.1:27686/api/services
-```
+## Build standalone runners
 
-In an Amp orb, `amp orb services ensure` supervises Motel and the instrumented gateway process.
-The project-local `motel-debug` agent skill documents the evidence-driven debugging workflow and
-query API.
-
-The application processes remain Deno-only. Motel 0.2.6 itself requires Bun 1.3 or newer because
-its HTTP server uses `@effect/platform-bun`; it cannot currently be launched by Deno without
-porting Motel. Motel does not ingest metrics, so development tasks disable Deno's metric signal
-while exporting Effect traces and Deno-captured logs. Production configures the Effect trace
-exporter and Deno OpenTelemetry signals through the standard `OTEL_*` environment variables;
-Effect traces use OTLP/HTTP protobuf.
-
-## Required development database reset
-
-OO-001A replaces the unreleased Argon2 development schema with the fixed PBKDF2 profile, and user IDs now use UUIDv7 instead of integers. Existing development users, password credentials, browser sessions, encrypted credentials, Git configuration, and projects are intentionally incompatible. Reset the development and test databases once before using this revision; startup never deletes them automatically:
-
-```sh
-dropdb --if-exists openorb && createdb openorb
-dropdb --if-exists openorb-test && createdb openorb-test
-```
-
-Then restart the gateway and recreate the administrator and configuration. There is no legacy-password, dual-KDF, or integer-user-ID compatibility path.
-
-## Checks
-
-```sh
-deno task check  # formatting, linting, and typechecking
-deno task typecheck:effect # Effect-specific diagnostics
-deno task test
-```
-
-Pass test paths through the task for focused verification so the repository's test environment and
-Deno permissions are retained:
-
-```sh
-deno task test packages/protocol/test/runner-api.test.ts
-```
-
-Use `deno task test:gondolin` for the separate QEMU-backed integration suite. Do not invoke
-`deno test` directly; the tasks own required settings such as `NODE_ENV=test`, native FFI access, and
-system permissions.
-
-For a disposable package API probe, run the package-owned `probe` task so its import map and working
-directory apply:
-
-```sh
-deno task --filter @openorb/gateway probe 'import { marked } from "marked"; console.log(marked("ok"))'
-```
-
-Use a checked-in script and an explicit task instead for repeatable logic or maintenance writes.
-
-Run `deno fmt` directly to format files.
-
-Tests use `postgres://localhost/openorb-test`, do not start a VM, and do not require QEMU.
-
-## Standalone Linux runner artifacts
-
-Build both GNU Linux targets with the pinned Deno compiler and produce checksums/ELF metadata:
+With Deno 2.9.5 and the frozen graph installed:
 
 ```sh
 deno task release:runner
 ```
 
-Outputs:
+The command cross-compiles both GNU/Linux architectures, verifies their ELF architecture and glibc
+baseline, copies the hardened service unit, and writes `dist/SHA256SUMS`. Native QEMU/KVM smoke
+testing is still required on each target architecture before publishing a release. See the
+[runner release process](docs/runner-release.md) and [guest image release process](docs/guest-image.md).
 
-- `dist/openorb-runner-linux-x64` (`x86_64-unknown-linux-gnu`)
-- `dist/openorb-runner-linux-arm64` (`aarch64-unknown-linux-gnu`)
-- `dist/SHA256SUMS`
-
-The executables contain denort and do not need an installed Deno or Node executable. They must start from the canonical runner working directory; `--data-dir` is intentionally unsupported. Production compilation bakes in runner-directory read/write access, unrestricted network access, `PATH`/`PWD` environment access, and only the architecture-appropriate `qemu-system-*` plus `qemu-img` subprocess permission. It does not grant `--allow-all` or FFI.
-
-Guest VM assets are not embedded in the standalone executables. The runner installs the architecture-specific pinned guest image under its canonical working directory, verifies its byte count, SHA-256, Gondolin build ID, architecture, and internal asset checksums, and passes only those explicit local paths to Gondolin. See [the guest image release process](docs/guest-image.md).
-
-## Pinned Remix scaffold
-
-The gateway uses `remix@3.0.0-beta.10` (source tag commit `a7a1de4cc535594e673e95905468c9e2b37b00c2`). `deno.json` and `deno.lock` pin that package exactly; upgrades must be explicit.
+The gateway pins `remix@3.0.0-beta.10`; dependency and Deno upgrades are explicit, reviewed changes
+to `deno.json`, `deno.lock`, and `.tool-versions`.

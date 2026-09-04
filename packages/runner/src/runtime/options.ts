@@ -8,9 +8,13 @@ export interface RunnerStartOptions {
   vmMemoryMiB?: number;
 }
 
+export interface RunnerDoctorOptions {
+  gateway?: string;
+}
+
 export type RunnerCommand =
   | { type: "start"; options: RunnerStartOptions }
-  | { type: "doctor" }
+  | { type: "doctor"; options: RunnerDoctorOptions }
   | { type: "version" };
 
 export class RunnerOptionError extends Error {
@@ -24,7 +28,7 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
   if (args.length === 1 && (args[0] === "--version" || args[0] === "version")) {
     return { type: "version" };
   }
-  if (args.length === 1 && args[0] === "doctor") return { type: "doctor" };
+  if (args[0] === "doctor") return parseDoctorCommand(args.slice(1));
 
   const parsed = parseArgs(args, {
     string: [
@@ -71,6 +75,28 @@ export function parseRunnerCommand(args: string[]): RunnerCommand {
   }
 
   return { type: "start", options };
+}
+
+function parseDoctorCommand(args: string[]): RunnerCommand {
+  const parsed = parseArgs(args, {
+    string: ["gateway"],
+    unknown(_argument, key) {
+      if (key === "data-dir") {
+        throw new RunnerOptionError(
+          "--data-dir is not supported. Start the runner from its canonical working directory.",
+        );
+      }
+      throw new RunnerOptionError("Unknown doctor argument.");
+    },
+  });
+  if (parsed._.length > 0) throw new RunnerOptionError("Unknown doctor argument.");
+
+  const options: RunnerDoctorOptions = {};
+  if (parsed.gateway !== undefined) {
+    if (!parsed.gateway) throw new RunnerOptionError("--gateway requires a value.");
+    options.gateway = normalizeGatewayUrl(parsed.gateway);
+  }
+  return { type: "doctor", options };
 }
 
 function parsePositiveInteger(input: string, flag: string): number {

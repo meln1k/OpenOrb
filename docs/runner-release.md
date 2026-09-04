@@ -1,7 +1,7 @@
 # Runner release process
 
 OO-001A establishes the standalone runner build path. OO-009 supplies the first real guest-image
-build metadata and OO-023 will complete supported-host/service validation.
+build metadata and OO-023 completes supported-host/service validation.
 
 ## Pinned toolchain
 
@@ -70,30 +70,49 @@ installing the shim. When upgrading Deno or Gondolin:
 
 - `dist/openorb-runner-linux-x64` from `x86_64-unknown-linux-gnu`
 - `dist/openorb-runner-linux-arm64` from `aarch64-unknown-linux-gnu`
+- `dist/openorb-runner.service`
 - `dist/SHA256SUMS`
 
 `scripts/runner-artifact-metadata.ts` verifies the ELF architecture, computes SHA-256, and checks
-the ELF dynamic string table to reject a glibc symbol requirement newer than 2.27. Rebuilding an
-unchanged source/lock graph with Deno 2.9.5 must produce identical bytes and checksums.
+the ELF dynamic string table to reject a glibc symbol requirement newer than 2.27. It copies the
+reviewed systemd unit into `dist`, and `SHA256SUMS` covers all three installable files. Rebuilding
+an unchanged source/lock graph with Deno 2.9.5 must produce identical bytes and checksums.
 
 The executables embed denort. Smoke-test each on its native architecture in a glibc 2.27+
 environment that has neither a `node` nor a `deno` executable. `--version` must report the matching
-architecture, Deno 2.9.5, and `standalone: true`. `doctor` must install and verify the pinned guest
-image, fail actionably when QEMU/KVM is absent, and reject musl hosts. CI automation is
-intentionally deferred for now; perform this release validation manually on native x86-64 and ARM64
-hosts before publishing artifacts.
+architecture, Deno 2.9.5, and `standalone: true`. `doctor --gateway <origin>` must install and
+verify the pinned guest image, validate the host and gateway, fail actionably when QEMU/KVM is
+absent, and reject musl hosts. Perform this release validation manually on native x86-64 and ARM64
+hosts when CI capacity is unavailable.
+
+## Source checkout alternative
+
+Operators who prefer repository-based upgrades may run the same runner entry point directly with
+Deno 2.9.5. The checkout lives at `/opt/openorb`, its prepared Deno cache lives at
+`/var/cache/openorb-runner/deno`, and both remain root-owned and read-only to the service. The base
+unit remains unchanged; the operator installs either `openorb-runner-source-x64.conf` or
+`openorb-runner-source-arm64.conf` as its `source.conf` drop-in. Each override directly executes
+Deno with a frozen, cached graph and the compiled artifact's architecture-specific permission
+profile, plus read-only access to the checkout and prepared cache. Source overrides are available
+from the checkout and are intentionally not standalone release artifacts. See
+[Linux runner installation](runner-installation.md).
 
 ## Permission boundary
 
 The compile command bakes in:
 
-- read/write access relative to the canonical runner working directory;
+- read/write access relative to the canonical runner working directory; QEMU, rather than Deno,
+  opens `/dev/kvm` and proves acceleration access;
+- read-only access to standard system-library directories so `doctor` can inspect the host glibc
+  version without FFI or another subprocess;
 - unrestricted network access for approved public web access;
-- only `qemu-system-x86_64,qemu-img` or `qemu-system-aarch64,qemu-img` subprocess access;
+- only `/usr/bin/qemu-system-x86_64,/usr/bin/qemu-img` or
+  `/usr/bin/qemu-system-aarch64,/usr/bin/qemu-img` subprocess access (absolute target-host paths
+  keep cross-compilation independent of the build host's installed QEMU architecture);
 - only `PATH`, `PWD`, and Deno's `NODE_V8_COVERAGE` and `TF_BUILD` runtime toggles as environment
   access;
-- host UID/GID, home-directory, network-interface, filesystem-capacity, and system-memory
-  inspection;
+- host UID/GID, home-directory, hostname, CPU, network-interface, OS release, filesystem-capacity,
+  and system-memory inspection;
 - no FFI and no `--allow-all`.
 
 The standalone entry evaluates the Node-compatible dependency graph with a temporary null-prototype
@@ -104,9 +123,10 @@ upgrades fail closed if they introduce an unapproved environment read after modu
 
 Production systemd sets `WorkingDirectory=/var/lib/openorb-runner`. The executable does not accept
 `--data-dir`. Deno permissions only govern the runner process; QEMU is a child outside that sandbox.
-OpenOrb therefore exposes no raw QEMU path/argv/device interface and must create VMs only through
-trusted typed options passed to the pinned Gondolin `VM` API. OO-023 adds the OS-level systemd
-sandbox.
+OpenOrb therefore exposes no raw QEMU path/argv/device interface and creates VMs only through
+trusted typed options passed to the pinned Gondolin `VM` API. The systemd sandbox makes the host
+filesystem read-only except for runner state, removes capabilities, and grants only explicit
+`/dev/kvm` device access. See [Linux runner installation](runner-installation.md).
 
 Unrestricted Deno network permission is not the SSRF boundary. A session may make public HTTP and
 HTTPS requests so setup hooks, package managers, and agent tools can query the web. Gondolin

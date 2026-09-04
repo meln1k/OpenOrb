@@ -35,13 +35,13 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
       task: "compile:runner:linux-x64",
       target: "x86_64-unknown-linux-gnu",
       output: "dist/openorb-runner-linux-x64",
-      qemu: "qemu-system-x86_64,qemu-img",
+      qemu: "/usr/bin/qemu-system-x86_64,/usr/bin/qemu-img",
     },
     {
       task: "compile:runner:linux-arm64",
       target: "aarch64-unknown-linux-gnu",
       output: "dist/openorb-runner-linux-arm64",
-      qemu: "qemu-system-aarch64,qemu-img",
+      qemu: "/usr/bin/qemu-system-aarch64,/usr/bin/qemu-img",
     },
   ];
 
@@ -55,8 +55,9 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
     const arguments_ = command.split(/\s+/);
     assertMatch(command, new RegExp(`--target ${expected.target}`));
     assertMatch(command, new RegExp(`--output ${expected.output}`));
-    assertMatch(command, /--allow-read=\./);
+    assertMatch(command, /--allow-read=\.,\/lib,\/lib64,\/usr\/lib,\/usr\/lib64/);
     assertMatch(command, /--allow-write=\./);
+    assertNotMatch(command, /--allow-(?:read|write)=[^\s]*\/dev\/kvm/);
     assertMatch(command, /--allow-net(?:\s|$)/);
     assertEquals(
       arguments_.filter((argument) =>
@@ -66,7 +67,7 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
     );
     assertMatch(
       command,
-      /--allow-sys=gid,homedir,networkInterfaces,osRelease,statfs,systemMemoryInfo,uid/,
+      /--allow-sys=cpus,gid,homedir,hostname,networkInterfaces,osRelease,statfs,systemMemoryInfo,uid/,
     );
     assertMatch(command, new RegExp(`--allow-run=${expected.qemu}`));
     assertNotMatch(command, /--allow-all|-A(?:\s|$)|--allow-ffi/);
@@ -78,4 +79,8 @@ Deno.test("standalone compile tasks bake the approved least-privilege permission
     "compile:runner:linux-x64",
     "compile:runner:linux-arm64",
   ]);
+  assertMatch(
+    releaseTask.command ?? "",
+    /--allow-read=dist,packages\/runner\/systemd\/openorb-runner\.service/,
+  );
 });

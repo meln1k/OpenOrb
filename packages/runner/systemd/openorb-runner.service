@@ -1,0 +1,46 @@
+[Unit]
+Description=OpenOrb coding runner
+Documentation=https://github.com/meln1k/openorb/blob/main/docs/runner-installation.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/dev/kvm
+
+[Service]
+Type=simple
+User=openorb-runner
+Group=openorb-runner
+SupplementaryGroups=kvm
+WorkingDirectory=/var/lib/openorb-runner
+StateDirectory=openorb-runner
+StateDirectoryMode=0700
+Environment=PATH=/usr/bin
+Environment=PWD=/var/lib/openorb-runner
+ExecStart=/usr/local/bin/openorb-runner
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=120s
+KillMode=mixed
+UMask=0077
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/openorb-runner
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+RemoveIPC=true
+
+[Install]
+WantedBy=multi-user.target

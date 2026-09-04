@@ -128,7 +128,15 @@ function makeGondolinEnvironment(
             memory: `${memoryMiB}M`,
             rootfs: { mode: "cow" },
             ...githubOptions,
-            sandbox: { imagePath },
+            sandbox: {
+              imagePath,
+              // Pin supported hosts to hardware acceleration and skip Gondolin's /dev/kvm probe.
+              ...(Deno.build.os === "linux"
+                ? { accel: "kvm" }
+                : Deno.build.os === "darwin"
+                ? { accel: "hvf" }
+                : {}),
+            },
             vfs: {
               mounts: {
                 [AGENT_WORKSPACE]: new RealFSProvider(workspacePath),

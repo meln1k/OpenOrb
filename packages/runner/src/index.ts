@@ -6,7 +6,10 @@ import { createRunnerCapacityReporter } from "./runtime/capacity.ts";
 import { enrollRunner } from "./runtime/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "./runtime/identity.ts";
 import { parseRunnerCommand } from "./runtime/options.ts";
-import { checkRunnerPrerequisites } from "./runtime/prerequisites.ts";
+import {
+  checkCheckpointCandidateCapacity,
+  checkRunnerPrerequisites,
+} from "./runtime/prerequisites.ts";
 import { validateRunnerWorkingDirectory } from "./runtime/working-directory.ts";
 import { sessionActorFactoryLayer } from "./session/actor/index.ts";
 import { sessionEventsLayer } from "./session/events.ts";
@@ -32,7 +35,7 @@ export async function main(
   if (commandError !== undefined) {
     console.error(`[openorb-runner] error: ${commandError.message}`);
     console.error(
-      "Usage: openorb-runner [doctor|--version] [--gateway URL --enrollment-token PSK] [--name NAME] [--vm-cpu-count COUNT] [--vm-memory-mib MIB]",
+      "Usage: openorb-runner [doctor [--gateway URL]|--version] [--gateway URL --enrollment-token PSK] [--name NAME] [--vm-cpu-count COUNT] [--vm-memory-mib MIB]",
     );
     return 2;
   }
@@ -60,11 +63,41 @@ export async function main(
     return 1;
   }
 
+  const [storedIdentity, identityReadError] = await readRunnerIdentity(workingDirectory);
+  if (identityReadError !== undefined) {
+    console.error(`[openorb-runner] error: Runner identity could not be loaded.`);
+    return 1;
+  }
+  const gatewayUrl = command.options.gateway ?? storedIdentity?.gatewayUrl;
+  if (command.type === "doctor" && !gatewayUrl) {
+    console.error(
+      "[openorb-runner] error: doctor requires --gateway URL before this runner is enrolled.",
+    );
+    return 2;
+  }
+  if (command.type === "start") {
+    if (!storedIdentity && (!gatewayUrl || !command.options.enrollmentToken)) {
+      console.error(
+        "[openorb-runner] error: first start requires --gateway and --enrollment-token.",
+      );
+      return 2;
+    }
+    if (storedIdentity && gatewayUrl !== storedIdentity.gatewayUrl) {
+      console.error(
+        "[openorb-runner] error: --gateway does not match the enrolled runner.",
+      );
+      return 2;
+    }
+  }
+
   const [report, prerequisiteError] = await tracer.startActiveSpan(
     "runner.check_prerequisites",
     async (span) => {
       const [report, prerequisiteError] = await tryAsync(
-        checkRunnerPrerequisites(),
+        checkRunnerPrerequisites({
+          workingDirectory,
+          ...(gatewayUrl === undefined ? {} : { gatewayUrl }),
+        }),
         (cause) => new RunnerRuntimeError("Runner prerequisites could not be checked.", cause),
       );
       if (prerequisiteError !== undefined) {
@@ -93,7 +126,7 @@ export async function main(
     return 1;
   }
 
-  console.log("[openorb-runner] checking development harness prerequisites");
+  console.log("[openorb-runner] checking runner host prerequisites");
   for (const warning of report.warnings) {
     console.warn(`[openorb-runner] warning: ${warning}`);
   }
@@ -112,22 +145,49 @@ export async function main(
     return 1;
   }
 
+  const [checkpointCapacity, checkpointCapacityError] = await tryAsync(
+    checkCheckpointCandidateCapacity({
+      workingDirectory,
+      rootfsPath: `${guestImage.path}/rootfs.ext4`,
+    }),
+    (cause) => new RunnerRuntimeError("Checkpoint capacity could not be checked.", cause),
+  );
+  if (checkpointCapacityError !== undefined) {
+    console.error(`[openorb-runner] error: ${checkpointCapacityError.message}`);
+    return 1;
+  }
+  if (!checkpointCapacity.ok) {
+    for (const error of checkpointCapacity.errors) {
+      console.error(`[openorb-runner] error: ${error}`);
+    }
+    return 1;
+  }
+
   console.log(
     JSON.stringify({
       component: "openorb-runner",
       status: "ready",
-      mode: "development-harness",
+      mode: report.platform === "linux" ? "linux-service" : "development-harness",
       workingDirectory,
       platform: report.platform,
       architecture: report.architecture,
+      kernelRelease: report.kernelRelease,
+      libc: report.libc,
+      glibcVersion: report.glibcVersion,
       denoVersion: report.denoVersion,
       runtime: Deno.build.standalone ? "denort" : "deno",
       qemu: report.qemu,
+      qemuImg: report.qemuImg,
+      kvm: report.kvm,
+      resources: report.resources,
+      dataDirectory: report.dataDirectory,
+      gateway: report.gateway,
       guestImage: {
         releaseId: guestImage.releaseId,
         gondolinBuildId: guestImage.gondolinBuildId,
         path: guestImage.path,
       },
+      checkpointCapacity,
     }),
   );
 
@@ -135,23 +195,11 @@ export async function main(
 
   const [runtimeResult, unexpectedRuntimeError] = await tryAsync(
     (async (): Promise<Result<number, RunnerRuntimeError>> => {
-      const [storedIdentity, identityReadError] = await readRunnerIdentity(workingDirectory);
-      if (identityReadError !== undefined) {
-        return err(
-          new RunnerRuntimeError("Runner identity could not be loaded.", identityReadError),
-        );
-      }
       let identity = storedIdentity;
       if (!identity) {
-        if (!command.options.gateway || !command.options.enrollmentToken) {
-          console.error(
-            "[openorb-runner] error: first start requires --gateway and --enrollment-token.",
-          );
-          return ok(2);
-        }
         const [enrolled, enrollmentError] = await enrollRunner({
-          gatewayUrl: command.options.gateway,
-          enrollmentPsk: command.options.enrollmentToken,
+          gatewayUrl: gatewayUrl!,
+          enrollmentPsk: command.options.enrollmentToken!,
           name: command.options.name,
           architecture: normalizeArchitecture(Deno.build.arch),
         });
@@ -161,7 +209,7 @@ export async function main(
         identity = {
           runnerId: enrolled.runnerId,
           runnerToken: enrolled.runnerToken,
-          gatewayUrl: command.options.gateway,
+          gatewayUrl: gatewayUrl!,
         };
         const [, identityWriteError] = await writeRunnerIdentity(workingDirectory, identity);
         if (identityWriteError !== undefined) {
@@ -173,13 +221,6 @@ export async function main(
           );
         }
         console.log(`[openorb-runner] enrolled runner ${identity.runnerId}`);
-      } else if (
-        command.options.gateway && command.options.gateway !== identity.gatewayUrl
-      ) {
-        console.error(
-          "[openorb-runner] error: --gateway does not match the enrolled runner.",
-        );
-        return ok(2);
       }
 
       const shutdownController = new AbortController();
@@ -272,7 +313,7 @@ function normalizeArchitecture(value: string): "x64" | "arm64" {
 
 function installShutdownListeners(controller: AbortController): () => void {
   const shutdown = (signal: Deno.Signal) => {
-    console.log(`[openorb-runner] received ${signal}; stopping development harness`);
+    console.log(`[openorb-runner] received ${signal}; stopping runner`);
     controller.abort();
   };
   const onSigint = () => shutdown("SIGINT");

@@ -49,6 +49,24 @@ Deno.test("parses first-start enrollment options", () => {
   );
 });
 
+Deno.test("parses doctor gateway options without accepting enrollment credentials", () => {
+  assertEquals(parseRunnerCommand(["doctor"]), { type: "doctor", options: {} });
+  assertEquals(
+    parseRunnerCommand(["doctor", "--gateway", "https://openorb.example.com"]),
+    { type: "doctor", options: { gateway: "https://openorb.example.com" } },
+  );
+  assertThrows(
+    () => parseRunnerCommand(["doctor", "--enrollment-token", ENROLLMENT_PSK]),
+    Error,
+    "Unknown doctor argument",
+  );
+  assertThrows(
+    () => parseRunnerCommand(["doctor", "--data-dir", "/tmp/openorb"]),
+    Error,
+    "--data-dir is not supported",
+  );
+});
+
 Deno.test("enrolls with the PSK and validates the runner-token response", async () => {
   let received: unknown;
   const enrolled = success(

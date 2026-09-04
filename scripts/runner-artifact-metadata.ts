@@ -10,6 +10,10 @@ const knownArtifacts = [
     architecture: "aarch64",
   },
 ] as const;
+const systemdUnit = {
+  source: "packages/runner/systemd/openorb-runner.service",
+  path: "dist/openorb-runner.service",
+} as const;
 
 const requestedPaths = Deno.args.length > 0
   ? Deno.args
@@ -43,6 +47,14 @@ for (const artifact of artifacts) {
       minimumGlibc: glibcBaseline,
     }),
   );
+}
+
+if (Deno.args.length === 0) {
+  await Deno.copyFile(systemdUnit.source, systemdUnit.path);
+  const bytes = await Deno.readFile(systemdUnit.path);
+  const checksum = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)).toHex();
+  checksumLines.push(`${checksum}  ${systemdUnit.path.replace("dist/", "")}`);
+  console.log(JSON.stringify({ artifact: systemdUnit.path, sha256: checksum }));
 }
 
 await Deno.writeTextFile("dist/SHA256SUMS", `${checksumLines.join("\n")}\n`);
