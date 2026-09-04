@@ -6,6 +6,7 @@ import { routes } from "@/app/routes.ts";
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import { media } from "@/app/ui/responsive.ts";
 import { SessionChangesPanel } from "@/app/ui/session/session-changes-panel.tsx";
+import { SessionChangesScope } from "@/app/ui/session/session-changes-resource.tsx";
 import { SessionPageScope } from "@/app/ui/session/session-page-controller.tsx";
 import { SessionTranscript } from "@/app/ui/session/session-transcript.tsx";
 import type { SessionState } from "@/app/ui/session/session-transcript-state.ts";
@@ -84,104 +85,103 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
           initialIssues={handle.props.initialIssues}
           sessionId={handle.props.session.id}
         >
-          <AppShellLayout
-            activeSessionId={handle.props.session.id}
-            composer={handle.props.composer}
+          <SessionChangesScope
             csrfToken={handle.props.csrfToken}
-            sessions={handle.props.sidebarSessions}
-            title={`${sessionName} · OpenOrb`}
-            topBarAccessory={
-              <div mix={topBarActionsStyle}>
-                <SessionVmControl
-                  csrfToken={handle.props.csrfToken}
-                  sessionId={handle.props.session.id}
-                />
-                <SessionDeletionControl
-                  csrfToken={handle.props.csrfToken}
-                  sessionId={handle.props.session.id}
-                />
-              </div>
-            }
-            topBarTitle={sessionName}
-            rightSidebar={
-              <SessionChangesPanel
-                csrfToken={handle.props.csrfToken}
-                sessionId={handle.props.session.id}
-              />
-            }
+            sessionId={handle.props.session.id}
           >
-            <div data-session-mobile-layout mix={mobileLayoutStyle}>
-              <nav aria-label="Session views" mix={mobileTabsStyle}>
-                <div role="tablist" aria-label="Session views" mix={mobileTabListStyle}>
-                  <button
-                    id={agentTabId}
-                    type="button"
-                    role="tab"
-                    aria-selected={mobileView === "agent" ? "true" : "false"}
-                    aria-controls={agentPanelId}
-                    tabIndex={mobileView === "agent" ? 0 : -1}
-                    mix={[
-                      mobileTabStyle,
-                      mobileView === "agent" && mobileTabSelectedStyle,
-                      ...mobileTabInteraction("agent"),
-                    ]}
-                  >
-                    <Icon name="message" size={18} />
-                    Agent
-                  </button>
-                  <button
-                    id={changesTabId}
-                    type="button"
-                    role="tab"
-                    aria-selected={mobileView === "changes" ? "true" : "false"}
-                    aria-controls={changesPanelId}
-                    tabIndex={mobileView === "changes" ? 0 : -1}
-                    mix={[
-                      mobileTabStyle,
-                      mobileView === "changes" && mobileTabSelectedStyle,
-                      ...mobileTabInteraction("changes"),
-                    ]}
-                  >
-                    <Icon name="file-diff" size={18} />
-                    Changes
-                  </button>
+            <AppShellLayout
+              activeSessionId={handle.props.session.id}
+              composer={handle.props.composer}
+              csrfToken={handle.props.csrfToken}
+              sessions={handle.props.sidebarSessions}
+              title={`${sessionName} · OpenOrb`}
+              topBarAccessory={
+                <div mix={topBarActionsStyle}>
+                  <SessionVmControl
+                    csrfToken={handle.props.csrfToken}
+                    sessionId={handle.props.session.id}
+                  />
+                  <SessionDeletionControl
+                    csrfToken={handle.props.csrfToken}
+                    sessionId={handle.props.session.id}
+                  />
                 </div>
-              </nav>
-              <section
-                id={agentPanelId}
-                role="tabpanel"
-                aria-labelledby={agentTabId}
-                data-active={mobileView === "agent" ? "true" : "false"}
-                mix={mobileAgentPanelStyle}
-              >
-                {handle.props.error
-                  ? <p role="alert" mix={errorStyle}>{handle.props.error}</p>
-                  : null}
-                <SessionTranscript
-                  contextWindow={handle.props.contextWindow}
-                  csrfToken={handle.props.csrfToken}
-                  sessionId={handle.props.session.id}
-                />
-              </section>
-              <section
-                id={changesPanelId}
-                role="tabpanel"
-                aria-labelledby={changesTabId}
-                data-active={mobileView === "changes" ? "true" : "false"}
-                mix={mobileChangesPanelStyle}
-              >
-                {mobileView === "changes"
-                  ? (
-                    <SessionChangesPanel
-                      csrfToken={handle.props.csrfToken}
-                      sessionId={handle.props.session.id}
-                      variant="content"
-                    />
-                  )
-                  : null}
-              </section>
-            </div>
-          </AppShellLayout>
+              }
+              topBarTitle={sessionName}
+              rightSidebar={<SessionChangesPanel sessionId={handle.props.session.id} />}
+            >
+              <div data-session-mobile-layout mix={mobileLayoutStyle}>
+                <nav aria-label="Session views" mix={mobileTabsStyle}>
+                  <div role="tablist" aria-label="Session views" mix={mobileTabListStyle}>
+                    <button
+                      id={agentTabId}
+                      type="button"
+                      role="tab"
+                      aria-selected={mobileView === "agent" ? "true" : "false"}
+                      aria-controls={agentPanelId}
+                      tabIndex={mobileView === "agent" ? 0 : -1}
+                      mix={[
+                        mobileTabStyle,
+                        mobileView === "agent" && mobileTabSelectedStyle,
+                        ...mobileTabInteraction("agent"),
+                      ]}
+                    >
+                      <Icon name="message" size={18} />
+                      Agent
+                    </button>
+                    <button
+                      id={changesTabId}
+                      type="button"
+                      role="tab"
+                      aria-selected={mobileView === "changes" ? "true" : "false"}
+                      aria-controls={changesPanelId}
+                      tabIndex={mobileView === "changes" ? 0 : -1}
+                      mix={[
+                        mobileTabStyle,
+                        mobileView === "changes" && mobileTabSelectedStyle,
+                        ...mobileTabInteraction("changes"),
+                      ]}
+                    >
+                      <Icon name="file-diff" size={18} />
+                      Changes
+                    </button>
+                  </div>
+                </nav>
+                <section
+                  id={agentPanelId}
+                  role="tabpanel"
+                  aria-labelledby={agentTabId}
+                  data-active={mobileView === "agent" ? "true" : "false"}
+                  mix={mobileAgentPanelStyle}
+                >
+                  {handle.props.error
+                    ? <p role="alert" mix={errorStyle}>{handle.props.error}</p>
+                    : null}
+                  <SessionTranscript
+                    contextWindow={handle.props.contextWindow}
+                    csrfToken={handle.props.csrfToken}
+                    sessionId={handle.props.session.id}
+                  />
+                </section>
+                <section
+                  id={changesPanelId}
+                  role="tabpanel"
+                  aria-labelledby={changesTabId}
+                  data-active={mobileView === "changes" ? "true" : "false"}
+                  mix={mobileChangesPanelStyle}
+                >
+                  {mobileView === "changes"
+                    ? (
+                      <SessionChangesPanel
+                        sessionId={handle.props.session.id}
+                        variant="content"
+                      />
+                    )
+                    : null}
+                </section>
+              </div>
+            </AppShellLayout>
+          </SessionChangesScope>
         </SessionPageScope>
       );
     };
