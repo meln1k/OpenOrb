@@ -103,9 +103,14 @@ deno task --filter @openorb/gateway start
 ```
 
 The server listens on port `44100` by default and applies committed database migrations at startup.
-Put TLS and public routing in front of it, then install at least one runner using either option
-below. The runner needs the externally reachable gateway origin, not a loopback URL when it is on a
-different host.
+For a concrete source-checkout systemd and Caddy deployment, PostgreSQL and secret backup/restore,
+credential scope, runner backup limitations, troubleshooting, release pins, and upgrades, follow
+the [production operations guide](docs/operations.md). Then install at least one runner using either
+option below. The runner needs the externally reachable HTTPS gateway origin, not a loopback URL
+when it is on a different host.
+
+Before promotion, follow the [release acceptance guide](docs/release-acceptance.md) for CI policy,
+the secret-gated private-repository lifecycle, and test traceability.
 
 ### Linux source runner
 

@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@effect/language-service": "^0.87.2",
+    "playwright": "1.55.0",
     "typescript": "^6.0.3"
   }
 }

@@ -1,0 +1,69 @@
+name: Release acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openorb-release-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: Secret-gated browser, Pi, Gondolin, and GitHub acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+    env:
+      OPENORB_E2E_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      OPENORB_GITHUB_TEST_REPOSITORY: ${{ secrets.OPENORB_GITHUB_TEST_REPOSITORY }}
+      OPENORB_GITHUB_TEST_TOKEN: ${{ secrets.OPENORB_GITHUB_TEST_TOKEN }}
+      OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.5
+          cache: true
+      - name: Require release acceptance secrets
+        shell: bash
+        run: |
+          missing=()
+          for name in OPENORB_GITHUB_TEST_REPOSITORY OPENORB_GITHUB_TEST_TOKEN OPENCODE_API_KEY; do
+            if [[ -z "${!name}" ]]; then missing+=("$name"); fi
+          done
+          if (( ${#missing[@]} )); then
+            printf '::error::Missing required release acceptance secrets: %s\n' "${missing[*]}"
+            exit 1
+          fi
+      - name: Install virtualization, image, and browser dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes e2fsprogs podman qemu-system-x86 qemu-utils
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm
+          deno install --frozen
+          deno run --frozen -A npm:playwright@1.55.0 install --with-deps chromium
+      - name: Build pinned x64 guest image
+        run: deno task build:image x86_64
+      - name: Run credential-enabled Gondolin and Pi security suite
+        env:
+          OPENORB_RUN_GITHUB_WRITE_TESTS: "1"
+          OPENORB_RUN_PI_MODEL_TESTS: "1"
+        run: deno task test:gondolin
+      - name: Run full browser-to-Pi release lifecycle
+        run: deno task release:acceptance

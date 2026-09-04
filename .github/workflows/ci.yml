@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Static checks, docs, tests, and security
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      OPENORB_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.5
+          cache: true
+      - run: deno task check
+      - run: deno task check:docs
+      - run: deno task test
+      - run: deno task test:security
+      - name: Record secret-test policy
+        run: |
+          echo "### Secret-gated acceptance" >> "$GITHUB_STEP_SUMMARY"
+          echo "The release acceptance workflow is intentionally not run in pull-request CI." >> "$GITHUB_STEP_SUMMARY"
+          echo "Run the manually dispatched Release acceptance workflow with its three repository secrets before release." >> "$GITHUB_STEP_SUMMARY"
+
+  gondolin-x64:
+    name: Gondolin security integration (Linux x64, no secrets)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.5
+          cache: true
+      - name: Install virtualization and image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes e2fsprogs podman qemu-system-x86 qemu-utils
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm
+      - name: Build pinned x64 guest image
+        run: deno task build:image x86_64
+      - name: Run non-secret Gondolin suite
+        run: deno task test:gondolin

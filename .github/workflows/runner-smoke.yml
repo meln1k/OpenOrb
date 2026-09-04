@@ -1,0 +1,51 @@
+name: Runner artifact smoke
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  native-smoke:
+    name: Native ${{ matrix.architecture }} artifact
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: ubuntu-24.04
+            task: compile:runner:linux-x64
+            artifact: dist/openorb-runner-linux-x64
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+            task: compile:runner:linux-arm64
+            artifact: dist/openorb-runner-linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.5
+          cache: true
+      - name: Compile native runner
+        run: deno task ${{ matrix.task }}
+      - name: Verify ELF architecture and glibc baseline
+        run: >-
+          deno run --allow-read=dist --allow-write=dist
+          scripts/runner-artifact-metadata.ts ${{ matrix.artifact }}
+      - name: Run without an installed Node.js or Deno runtime
+        shell: bash
+        run: |
+          artifact="$(realpath '${{ matrix.artifact }}')"
+          env -i PATH=/nonexistent PWD="$PWD" "$artifact" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openorb-runner-linux-${{ matrix.architecture }}
+          path: |
+            ${{ matrix.artifact }}
+            dist/SHA256SUMS
+          if-no-files-found: error

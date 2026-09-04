@@ -43,7 +43,8 @@
     "npm:marked@18.0.5": "18.0.5",
     "npm:pg@*": "8.16.3",
     "npm:pg@8.16.3": "8.16.3",
-    "npm:remix@3.0.0-beta.10": "3.0.0-beta.10_pg@8.16.3_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2",
+    "npm:playwright@1.55.0": "1.55.0",
+    "npm:remix@3.0.0-beta.10": "3.0.0-beta.10_pg@8.16.3_playwright@1.55.0",
     "npm:typescript@^6.0.3": "6.0.3"
   },
   "jsr": {
@@ -1431,7 +1432,7 @@
         "@remix-run/session"
       ]
     },
-    "@remix-run/cli@0.5.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2_pg@8.16.3": {
+    "@remix-run/cli@0.5.0_playwright@1.55.0": {
       "integrity": "sha512-WADo/un4eIakPvtLAp27fPnT+DbAKWNuUqFzqtHhEbrSltFLtPqgZ8vQd3DWWbdrr5oqILTd27iKTfO4KNszJw==",
       "dependencies": [
         "@remix-run/data-table",
@@ -1664,7 +1665,7 @@
     "@remix-run/terminal@0.1.1": {
       "integrity": "sha512-M8JNcsYp/mWZ0yOB12Ir+Ud1eLxodPr8YSKQcG2PTPeiq9p9c59D9gvF9m6EU2Hmd4esJMiTyy6lJHc/VKKvcw=="
     },
-    "@remix-run/test@0.6.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
+    "@remix-run/test@0.6.0_playwright@1.55.0": {
       "integrity": "sha512-1m35Okayxu0cdBGpyPucLdDvCgiAe4Unf1J6iigg2GAqwBhqy7K3+KKL08QNhwnBnSQBGca8wCcTp+6UJUa3jg==",
       "dependencies": [
         "@remix-run/node-tsx",
@@ -1677,8 +1678,12 @@
         "istanbul-reports",
         "magic-string",
         "oxc-resolver",
+        "playwright",
         "source-map-js",
         "v8-to-istanbul"
+      ],
+      "optionalPeers": [
+        "playwright"
       ]
     },
     "@remix-run/ui-hmr@0.1.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
@@ -2070,6 +2075,11 @@
       "dependencies": [
         "fetch-blob"
       ]
+    },
+    "fsevents@2.3.2": {
+      "integrity": "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==",
+      "os": ["darwin"],
+      "scripts": true
     },
     "gaxios@7.3.1": {
       "integrity": "sha512-kB3rzJV7d9juLZh8/56QTXCwQfxyhdOMdyYk1HdQKFtF8TJTDTZQJtixWIwXdE9Jji91mC41DUNpjleo4L4eAQ==",
@@ -2622,6 +2632,20 @@
     "picomatch@4.0.5": {
       "integrity": "sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A=="
     },
+    "playwright-core@1.55.0": {
+      "integrity": "sha512-GvZs4vU3U5ro2nZpeiwyb0zuFaqb9sUiAJuyrWpcGouD8y9/HLgGbNRjIph7zU9D3hnPaisMl9zG9CgFi/biIg==",
+      "bin": true
+    },
+    "playwright@1.55.0": {
+      "integrity": "sha512-sdCWStblvV1YU909Xqx0DhOjPZE4/5lJsIS84IfN9dAZfcl/CIZ5O8l3o0j7hPMjDvqoTF8ZUcc+i/GL5erstA==",
+      "dependencies": [
+        "playwright-core"
+      ],
+      "optionalDependencies": [
+        "fsevents"
+      ],
+      "bin": true
+    },
     "postgres-array@2.0.0": {
       "integrity": "sha512-VpZrUqU5A69eQyW2c5CA1jtLecCsN2U/bD6VilrFDWq5+5UIEVO7nazS3TEcHf1zuPYO/sqGvUvW62g86RXZuA=="
     },
@@ -2696,7 +2720,7 @@
         "regex-utilities"
       ]
     },
-    "remix@3.0.0-beta.10_pg@8.16.3_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
+    "remix@3.0.0-beta.10_pg@8.16.3_playwright@1.55.0": {
       "integrity": "sha512-qEXAacXMwf0lEYC/6vTAiCCk0zDyhMbPgFeSwKSWC9zJeSseG9Tmnjd8vt7OySmETe0FfauNwP7K2d261BIwRg==",
       "dependencies": [
         "@remix-run/assert",
@@ -2745,10 +2769,12 @@
         "@remix-run/test",
         "@remix-run/ui",
         "@remix-run/ui-hmr",
-        "pg"
+        "pg",
+        "playwright"
       ],
       "optionalPeers": [
-        "pg"
+        "pg",
+        "playwright"
       ],
       "bin": true
     },
@@ -2952,6 +2978,7 @@
     "packageJson": {
       "dependencies": [
         "npm:@effect/language-service@~0.87.2",
+        "npm:playwright@1.55.0",
         "npm:typescript@^6.0.3"
       ]
     },
