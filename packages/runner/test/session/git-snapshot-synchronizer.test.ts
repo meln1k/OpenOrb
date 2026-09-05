@@ -9,7 +9,7 @@ import {
   SessionGitSnapshot,
   SessionId,
   SessionRepositoryUrl,
-  UserId,
+  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema } from "effect";
 
@@ -24,7 +24,7 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const METADATA: RunnerSessionMetadata = {
   id: SESSION_ID,
   definition: new RunnerSessionDefinition({
-    userId: Schema.decodeUnknownSync(UserId)(
+    workspaceId: Schema.decodeUnknownSync(WorkspaceId)(
       "01989d78-65ee-7f6a-a97e-0f16ad134c12",
     ),
     projectId: Schema.decodeUnknownSync(ProjectId)(

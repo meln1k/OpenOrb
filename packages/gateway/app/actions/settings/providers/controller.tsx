@@ -57,7 +57,7 @@ export default createController(routes.app.settings.providers, {
             );
           }
           await context.services.store.saveModelProviderCredential(
-            context.auth.identity.id,
+            context.auth.identity.workspaceId,
             parsed.value.providerId,
             parsed.value.apiKey.trim(),
           );
@@ -73,7 +73,7 @@ export default createController(routes.app.settings.providers, {
             );
           }
           await context.services.store.deleteModelProviderCredential(
-            context.auth.identity.id,
+            context.auth.identity.workspaceId,
             parsed.value.providerId,
           );
           return redirect(routes.app.settings.providers.index.href(), 303);
@@ -91,7 +91,7 @@ async function renderProviders(
   status = 200,
 ): Promise<Response> {
   const providers = await context.services.store.listModelProviderCredentials(
-    context.auth.identity.id,
+    context.auth.identity.workspaceId,
   );
   return context.render(
     <ProvidersSettingsPage

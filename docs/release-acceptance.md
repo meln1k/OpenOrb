@@ -156,7 +156,7 @@ schema tests, and the review below keep deferred surfaces out of the release:
   injection, resource reservation/scoring, archives, retention workflows, centrally managed agent
   profiles, HA, migration, and telemetry-platform integration remain absent.
 - The standalone Linux runner artifact added for the release path is not a browser terminal or a new
-  runner transport; it speaks the existing version-14 WebSocket/RPC protocol.
+  runner transport; it speaks the existing version-15 WebSocket/RPC protocol.
 - **OO-018 intentionally superseded the checkpoint deferral:** one current Gondolin disk checkpoint
   and `.agents/resume` are supported. RAM/process restoration, services, leases, user-managed
   generations, and checkpoint portability remain absent.

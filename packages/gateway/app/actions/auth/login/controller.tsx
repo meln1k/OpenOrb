@@ -81,7 +81,7 @@ export default createController(routes.auth.login, {
 
       services.loginRateLimiter.reset(key);
       const session = completeAuth(context);
-      session.set("auth", { userId: user.id });
+      session.set("auth", { userId: user.userId, workspaceId: user.workspaceId });
       return redirect(routes.app.index.href(), 303);
     },
   },

@@ -1,16 +1,16 @@
 import { assertEquals } from "@std/assert";
 
-import type { RunnerCapacity } from "@openorb/protocol/runner-api";
+import { type RunnerCapacity, WorkspaceId } from "@openorb/protocol/runner-api";
 import { Effect } from "effect";
 import type { RunnerRecord } from "@/app/data/runner-repository.ts";
 import type { RunnerRegistryService } from "@/app/runner-registry.ts";
 import {
   MIN_RUNNER_DISK_FREE_MIB,
   type RunnerSelectionResult,
-  selectRunnerForUser,
+  selectRunnerForWorkspace,
 } from "@/app/runner-selection.ts";
 
-const USER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c09";
+const WORKSPACE_ID = WorkspaceId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
 
 const AVAILABLE_CAPACITY: RunnerCapacity = {
   activeSessions: 0,
@@ -26,8 +26,8 @@ Deno.test("selects deterministically by active sessions and runner id", async ()
     ["runner-b", { ...AVAILABLE_CAPACITY, activeSessions: 1 }],
     ["runner-c", { ...AVAILABLE_CAPACITY, activeSessions: 2 }],
   ]);
-  const result = await selectRunnerForUser(
-    USER_ID,
+  const result = await selectRunnerForWorkspace(
+    WORKSPACE_ID,
     undefined,
     "medium",
     { listRunners: () => Promise.resolve(runners) },
@@ -54,33 +54,41 @@ Deno.test("manual selection allows busy runners and reports unavailable runners 
   );
 
   assertEquals(
-    (await selectRunnerForUser(USER_ID, "available", "medium", repository, connections)).status,
+    (await selectRunnerForWorkspace(WORKSPACE_ID, "available", "medium", repository, connections))
+      .status,
     "selected",
   );
   assertEquals(
-    (await selectRunnerForUser(USER_ID, "busy", "medium", repository, connections)).status,
+    (await selectRunnerForWorkspace(WORKSPACE_ID, "busy", "medium", repository, connections))
+      .status,
     "selected",
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "low-disk", "medium", repository, connections),
+    await selectRunnerForWorkspace(WORKSPACE_ID, "low-disk", "medium", repository, connections),
     `Runner has less than ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "revoked", "medium", repository, connections),
+    await selectRunnerForWorkspace(WORKSPACE_ID, "revoked", "medium", repository, connections),
     "Runner has been revoked.",
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "foreign-runner", "medium", repository, connections),
+    await selectRunnerForWorkspace(
+      WORKSPACE_ID,
+      "foreign-runner",
+      "medium",
+      repository,
+      connections,
+    ),
     "Runner is unavailable or does not exist.",
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "offline", "medium", {
+    await selectRunnerForWorkspace(WORKSPACE_ID, "offline", "medium", {
       listRunners: () => Promise.resolve([...runners, runnerRecord("offline")]),
     }, connections),
     "Runner is offline.",
   );
   assertSelectionRejected(
-    await selectRunnerForUser(USER_ID, "available", "xxlarge", repository, connections),
+    await selectRunnerForWorkspace(WORKSPACE_ID, "available", "xxlarge", repository, connections),
     "Runner cannot provision the xxlarge orb size.",
   );
 });
@@ -106,8 +114,8 @@ function liveConnections(
   capacities: Map<string, RunnerCapacity>,
 ): Pick<RunnerRegistryService, "getRunnerLiveState"> {
   return {
-    getRunnerLiveState(userId: string, runnerId: string) {
-      assertEquals(userId, USER_ID);
+    getRunnerLiveState(workspaceId: WorkspaceId, runnerId: string) {
+      assertEquals(workspaceId, WORKSPACE_ID);
       const capacity = capacities.get(runnerId);
       return Effect.succeed(
         capacity

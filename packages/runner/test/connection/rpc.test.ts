@@ -17,6 +17,7 @@ import {
   WakeSessionAccepted,
   WakeSessionPayload,
   WatchSessionEvent,
+  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Context, Deferred, Effect, Exit, Fiber, Layer, PubSub, Schema, Stream } from "effect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
@@ -42,7 +43,7 @@ const READY_SESSION_ID = "018f47f2-39b1-7b30-8000-000000000012";
 const STOPPED_SESSION_ID = "018f47f2-39b1-7b30-8000-000000000013";
 const TOMBSTONED_SESSION_ID = "018f47f2-39b1-7b30-8000-000000000014";
 const PROJECT_ID = "018f47f2-39b1-7b30-8000-000000000021";
-const USER_ID = "user-1";
+const WORKSPACE_ID = WorkspaceId.make("018f47f2-39b1-7b30-8000-000000000000");
 const TOKEN = "openorb_runner_test-token";
 const decode = Schema.decodeUnknownSync;
 const runnerId = decode(RunnerId)(RUNNER_ID);
@@ -197,12 +198,23 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
 
     const originalGateway = harness.gateway;
     yield* pollEventually(
-      originalGateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      originalGateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+        Effect.map((id) => id !== null),
+      ),
       "the connected runner did not publish its running session",
     );
-    assertEquals(yield* originalGateway.getSessionRunner(USER_ID, READY_SESSION_ID), RUNNER_ID);
-    assertEquals(yield* originalGateway.getSessionRunner(USER_ID, STOPPED_SESSION_ID), RUNNER_ID);
-    assertEquals(yield* originalGateway.getSessionRunner(USER_ID, TOMBSTONED_SESSION_ID), null);
+    assertEquals(
+      yield* originalGateway.getSessionRunner(WORKSPACE_ID, READY_SESSION_ID),
+      RUNNER_ID,
+    );
+    assertEquals(
+      yield* originalGateway.getSessionRunner(WORKSPACE_ID, STOPPED_SESSION_ID),
+      RUNNER_ID,
+    );
+    assertEquals(
+      yield* originalGateway.getSessionRunner(WORKSPACE_ID, TOMBSTONED_SESSION_ID),
+      null,
+    );
     yield* pollUntil(
       Effect.sync(() => tombstoneCleanupCalls === 1),
       "the runner did not clean up its tombstoned session",
@@ -214,7 +226,7 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
     catalogSessionIds.delete(READY_SESSION_ID);
 
     const prompted = yield* originalGateway.promptSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
       payload: {
         prompt: "Continue through the restart",
@@ -226,7 +238,7 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
       },
     }).pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(promptWorkStarted);
-    const watching = yield* originalGateway.watchSession(USER_ID, SESSION_ID, 2).pipe(
+    const watching = yield* originalGateway.watchSession(WORKSPACE_ID, SESSION_ID, 2).pipe(
       Stream.runDrain,
       Effect.exit,
       Effect.forkChild({ startImmediately: true }),
@@ -242,14 +254,23 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
     yield* Deferred.succeed(releasePromptWork, undefined);
     yield* Deferred.await(promptWorkCompleted);
     yield* pollEventually(
-      restartedGateway.getSessionRunner(USER_ID, SESSION_ID).pipe(
+      restartedGateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
         Effect.map((id) => id === RUNNER_ID),
       ),
       "the runner did not reconnect and republish its session after a transient restart",
     );
-    assertEquals(yield* restartedGateway.getSessionRunner(USER_ID, READY_SESSION_ID), RUNNER_ID);
-    assertEquals(yield* restartedGateway.getSessionRunner(USER_ID, STOPPED_SESSION_ID), RUNNER_ID);
-    assertEquals(yield* restartedGateway.getSessionRunner(USER_ID, TOMBSTONED_SESSION_ID), null);
+    assertEquals(
+      yield* restartedGateway.getSessionRunner(WORKSPACE_ID, READY_SESSION_ID),
+      RUNNER_ID,
+    );
+    assertEquals(
+      yield* restartedGateway.getSessionRunner(WORKSPACE_ID, STOPPED_SESSION_ID),
+      RUNNER_ID,
+    );
+    assertEquals(
+      yield* restartedGateway.getSessionRunner(WORKSPACE_ID, TOMBSTONED_SESSION_ID),
+      null,
+    );
     assert(
       catalogSessionIds.has(READY_SESSION_ID),
       "the reconnect snapshot did not repair the catalog",
@@ -260,7 +281,7 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
       "a transient restart terminated the runner layer",
     );
 
-    const replayed = yield* restartedGateway.watchSession(USER_ID, SESSION_ID, 2).pipe(
+    const replayed = yield* restartedGateway.watchSession(WORKSPACE_ID, SESSION_ID, 2).pipe(
       Stream.take(1),
       Stream.runCollect,
     );
@@ -306,7 +327,7 @@ Deno.test("WatchRunner observes a state change during manifest-to-live handoff",
     yield* Deferred.succeed(releaseManifest, undefined);
 
     yield* pollUntil(
-      harness.gateway.getSessionSnapshot(USER_ID, SESSION_ID).pipe(
+      harness.gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_ID).pipe(
         Effect.map((value) => value?.state === "running"),
       ),
       "state change published during the WatchRunner handoff was not observed",
@@ -353,7 +374,7 @@ Deno.test("cached Git Snapshots are served without restoring a session VM", () =
     );
 
     yield* pollUntil(
-      harness.gateway.getSessionGitSnapshot(USER_ID, SESSION_ID).pipe(
+      harness.gateway.getSessionGitSnapshot(WORKSPACE_ID, SESSION_ID).pipe(
         Effect.map((result) =>
           result.status === "accepted" &&
           result.acknowledgement.sections.unstaged.patch ===
@@ -395,11 +416,13 @@ Deno.test("Git file update RPC resolves and calls the session actor", () =>
     );
 
     yield* pollUntil(
-      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+        Effect.map((id) => id !== null),
+      ),
       "the connected runner did not publish its ready session",
     );
     const result = yield* harness.gateway.updateSessionGitFile({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
       action: "stage",
       path: "src/main.ts",
@@ -451,7 +474,9 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session actor",
     );
 
     yield* pollUntil(
-      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+        Effect.map((id) => id !== null),
+      ),
       "the connected runner did not publish its ready session",
     );
     const modelRuntime = {
@@ -460,7 +485,7 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session actor",
       credential: { type: "api_key" as const, value: "model-secret" },
     };
     const result = yield* harness.gateway.wakeSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
       payload: { modelRuntime, githubToken: "github-token" },
     });
@@ -513,11 +538,13 @@ Deno.test("Prompt and Abort RPCs resolve and call the session actor", () =>
     );
 
     yield* pollUntil(
-      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+        Effect.map((id) => id !== null),
+      ),
       "the connected runner did not publish its running session",
     );
     const prompted = yield* harness.gateway.promptSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
       payload: {
         prompt: "Continue",
@@ -532,7 +559,7 @@ Deno.test("Prompt and Abort RPCs resolve and call the session actor", () =>
     assert(prompted.acknowledgement instanceof PromptSessionAccepted);
 
     const aborted = yield* harness.gateway.abortSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
     });
     assert(aborted.status === "accepted");
@@ -571,11 +598,13 @@ Deno.test("Stop RPC lazily restores and calls a cold ready session actor", () =>
     );
 
     yield* pollUntil(
-      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+        Effect.map((id) => id !== null),
+      ),
       "the connected runner did not publish its ready session",
     );
     const stopped = yield* harness.gateway.stopSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
     });
     assert(stopped.status === "accepted");
@@ -620,11 +649,13 @@ Deno.test("Delete RPC rejects busy work, cleans an idle session, and publishes r
       Effect.forkScoped,
     );
     yield* pollUntil(
-      harness.gateway.getSessionRunner(USER_ID, SESSION_ID).pipe(Effect.map((id) => id !== null)),
+      harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+        Effect.map((id) => id !== null),
+      ),
       "the connected runner did not publish its ready session",
     );
 
-    yield* harness.gateway.deleteSession({ userId: USER_ID, sessionId: SESSION_ID });
+    yield* harness.gateway.deleteSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_ID });
     yield* pollUntil(
       Effect.sync(() => deleteCalls === 1),
       "runner deletion was not requested",
@@ -637,7 +668,7 @@ Deno.test("Delete RPC rejects busy work, cleans an idle session, and publishes r
       "runner deletion did not publish session removal",
     );
     assertEquals(removed, [SESSION_ID]);
-    assertEquals(yield* harness.gateway.getSessionRunner(USER_ID, SESSION_ID), null);
+    assertEquals(yield* harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID), null);
     yield* Fiber.interrupt(launched);
   }))));
 
@@ -737,8 +768,11 @@ const makeGatewayHarness = Effect.fn(function* (
 ) {
   const repository: Parameters<typeof makeRunnerRegistry>[0] = {
     authenticateRunner: (token: string) =>
-      Promise.resolve(token === validToken ? { id: RUNNER_ID, userId: USER_ID } : null),
-    reconcileSessionManifestEntries: (_userId: string, entries: RunnerSessionSnapshot[]) => {
+      Promise.resolve(token === validToken ? { id: RUNNER_ID, workspaceId: WORKSPACE_ID } : null),
+    reconcileSessionManifestEntries: (
+      _workspaceId: WorkspaceId,
+      entries: RunnerSessionSnapshot[],
+    ) => {
       const rejected: RejectedSessionManifestEntry[] = [];
       const tombstones = entries.filter((entry) => tombstonedSessionIds.has(entry.id)).map((
         entry,
@@ -779,7 +813,7 @@ const makeGatewayHarness = Effect.fn(function* (
     restart: Effect.fn(function* () {
       const previousGateway = gateway;
       gateway = yield* makeRunnerRegistry(repository);
-      yield* previousGateway.disconnectRunner(USER_ID, RUNNER_ID);
+      yield* previousGateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID);
       return gateway;
     }),
     url: `http://127.0.0.1:${server.address.port}`,

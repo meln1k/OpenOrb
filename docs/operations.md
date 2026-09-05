@@ -10,7 +10,7 @@ Treat the gateway, runner, and protocol as one release unit. Check out the same 
 SHA on the gateway and every source-installed runner; do not mix independently updated checkouts.
 Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as
 `OPENORB_REVISION` below. A standalone runner must come from the release for that same source
-revision. Protocol version **14** is source-owned and is not a separately upgradeable public API.
+revision. Protocol version **15** is source-owned and is not a separately upgradeable public API.
 
 The exact runtime and application pins in this release graph are:
 
@@ -114,8 +114,10 @@ sudo systemctl enable --now openorb-gateway caddy
 curl --fail --show-error https://openorb.example.com/healthz
 ```
 
-Open the HTTPS origin, complete first-run administrator setup, and retain a strong administrator
-password. In **Settings**, add the credentials and project:
+Open the HTTPS origin and complete first-run setup, which atomically creates one Workspace and the
+single administrator. Retain a strong administrator password. Credentials, projects, runners, and
+enrollment PSKs belong to the Workspace; passwords and Git author identity belong to the user. There
+is no Workspace-selection UI. In **Settings**, add the credentials and project:
 
 - For OpenCode Go, obtain an API key from your OpenCode Go account and save it as provider ID
   `opencode-go`. The default model is `opencode-go/deepseek-v4-flash`; never put the key in the
@@ -156,7 +158,7 @@ Losing or changing `OPENORB_MASTER_KEY` permanently makes the encrypted OpenCode
 credentials in PostgreSQL unreadable; replacing the credentials manually is then required. Losing or
 changing `SESSION_SECRET` invalidates existing browser cookies and signs new cookies with a
 different key, so every user must log in again. It does not decrypt stored credentials. Database
-loss removes administrators, projects, encrypted credentials, runner enrollment records, and the
+loss removes Workspaces, users, projects, encrypted credentials, runner enrollment records, and the
 gateway's session catalog. There are no durable gateway files or secondary service to restore.
 
 ## Runner session-file backups
@@ -179,7 +181,7 @@ Even a consistent runner backup is not a gateway backup and does not make sessio
 provide migration/HA. Keep the matching guest assets or allow the same immutable release assets to
 be downloaded and verified. After restore, run `doctor` before starting the service. A missing or
 incompatible checkpoint may require the UI's explicit **Start clean VM** recovery; the separately
-stored project workspace and Pi conversation can remain available, but guest root-disk-only changes
+stored Project Checkout and Pi conversation can remain available, but guest root-disk-only changes
 are lost.
 
 ## Troubleshooting

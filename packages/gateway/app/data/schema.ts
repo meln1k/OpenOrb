@@ -6,10 +6,20 @@ export const encryptedSecretPurposes = {
   providerApiKey: "provider-api-key",
 } as const;
 
+export const workspaces = table({
+  name: "workspaces",
+  columns: {
+    id: c.uuid().primaryKey(),
+    created_at: c.text().notNull(),
+  },
+});
+
 export const users = table({
   name: "users",
   columns: {
     id: c.uuid().primaryKey(),
+    workspace_id: c.uuid().notNull().references("workspaces", "id", "users_workspace_fk")
+      .onDelete("cascade"),
     is_administrator: c.boolean().notNull(),
     created_at: c.text().notNull(),
   },
@@ -34,10 +44,10 @@ export const encryptedSecrets = table({
   name: "encrypted_secrets",
   columns: {
     id: c.uuid().primaryKey(),
-    user_id: c
+    workspace_id: c
       .uuid()
       .notNull()
-      .references("users", "id", "encrypted_secrets_user_fk")
+      .references("workspaces", "id", "encrypted_secrets_workspace_fk")
       .onDelete("cascade"),
     key: c.text().notNull(),
     purpose: c.text().notNull(),
@@ -52,10 +62,10 @@ export const modelProviderCredentials = table({
   name: "model_provider_credentials",
   columns: {
     id: c.uuid().primaryKey(),
-    user_id: c
+    workspace_id: c
       .uuid()
       .notNull()
-      .references("users", "id", "model_provider_credentials_user_fk")
+      .references("workspaces", "id", "model_provider_credentials_workspace_fk")
       .onDelete("cascade"),
     provider_id: c.text().notNull(),
     encrypted_secret_id: c
@@ -87,10 +97,10 @@ export const gitCredentials = table({
   name: "git_credentials",
   columns: {
     id: c.uuid().primaryKey(),
-    user_id: c
+    workspace_id: c
       .uuid()
       .notNull()
-      .references("users", "id", "git_credentials_user_fk")
+      .references("workspaces", "id", "git_credentials_workspace_fk")
       .onDelete("cascade"),
     host: c.text().notNull(),
     encrypted_secret_id: c
@@ -107,10 +117,10 @@ export const projects = table({
   name: "projects",
   columns: {
     id: c.uuid().primaryKey(),
-    user_id: c
+    workspace_id: c
       .uuid()
       .notNull()
-      .references("users", "id", "projects_user_fk")
+      .references("workspaces", "id", "projects_workspace_fk")
       .onDelete("cascade"),
     name: c.text().notNull(),
     repository_url: c.text().notNull(),
@@ -125,12 +135,12 @@ export const runnerEnrollmentTokens = table({
   name: "runner_enrollment_tokens",
   columns: {
     id: c.uuid().primaryKey(),
-    user_id: c
+    workspace_id: c
       .uuid()
       .notNull()
-      .references("users", "id", "runner_enrollment_tokens_user_fk")
+      .references("workspaces", "id", "runner_enrollment_tokens_workspace_fk")
       .onDelete("cascade"),
-    token: c.text().nullable(),
+    token: c.text().notNull(),
     token_hash: c.text().notNull(),
     created_at: c.text().notNull(),
     revoked_at: c.text().nullable(),
@@ -141,10 +151,10 @@ export const runners = table({
   name: "runners",
   columns: {
     id: c.uuid().primaryKey(),
-    user_id: c
+    workspace_id: c
       .uuid()
       .notNull()
-      .references("users", "id", "runners_user_fk")
+      .references("workspaces", "id", "runners_workspace_fk")
       .onDelete("cascade"),
     enrollment_token_id: c.uuid().notNull(),
     name: c.text().notNull(),
@@ -157,12 +167,12 @@ export const runners = table({
 
 export const sessions = table({
   name: "sessions",
-  primaryKey: ["user_id", "id"],
+  primaryKey: ["workspace_id", "id"],
   columns: {
-    user_id: c
+    workspace_id: c
       .uuid()
       .notNull()
-      .references("users", "id", "sessions_user_fk")
+      .references("workspaces", "id", "sessions_workspace_fk")
       .onDelete("cascade"),
     id: c.uuid().notNull(),
     project_id: c.uuid().notNull(),
@@ -173,18 +183,19 @@ export const sessions = table({
 
 export const deletedSessions = table({
   name: "deleted_sessions",
-  primaryKey: ["user_id", "session_id"],
+  primaryKey: ["workspace_id", "session_id"],
   columns: {
-    user_id: c
+    workspace_id: c
       .uuid()
       .notNull()
-      .references("users", "id", "deleted_sessions_user_fk")
+      .references("workspaces", "id", "deleted_sessions_workspace_fk")
       .onDelete("cascade"),
     session_id: c.uuid().notNull(),
     deleted_at: c.text().notNull(),
   },
 });
 
+export type Workspace = TableRow<typeof workspaces>;
 export type User = TableRow<typeof users>;
 export type PasswordCredential = TableRow<typeof passwordCredentials>;
 export type EncryptedSecretRow = TableRow<typeof encryptedSecrets>;

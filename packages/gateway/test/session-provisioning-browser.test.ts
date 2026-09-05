@@ -14,8 +14,10 @@ import {
   SessionGitSnapshot,
   SessionModelRuntime,
   StopSessionAccepted,
+  type UserId,
   WakeSessionAccepted,
   type WatchSessionEvent,
+  type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema, Stream } from "effect";
 import type {
@@ -34,7 +36,7 @@ import { createAppServices } from "@/app/middleware/services.ts";
 import { createAppRouter } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
-import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
+import { createTestStore, createTestWorkspace } from "@/test/postgres-test.ts";
 
 const PASSWORD = "[REDACTED:password] horse battery staple";
 const GITHUB_TOKEN = "browser-provisioning-github-token";
@@ -54,7 +56,7 @@ const INITIAL_PROMPT = "  Inspect\nthis repository and explain the architecture.
 
 class BrowserTestRunnerConnections implements RunnerRegistryService {
   runnerId = "";
-  userId = "";
+  workspaceId: WorkspaceId | null = null;
   sessionId: string | null = null;
   snapshot: RunnerSessionSnapshot | null = null;
   provisions: ProvisionSessionInput[] = [];
@@ -76,8 +78,11 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     acknowledgement: new StopSessionAccepted({}),
   };
 
-  getRunnerLiveState(userId: string, runnerId: string): Effect.Effect<RunnerLiveState | null> {
-    if (userId !== this.userId || runnerId !== this.runnerId) return Effect.succeed(null);
+  getRunnerLiveState(
+    workspaceId: WorkspaceId,
+    runnerId: string,
+  ): Effect.Effect<RunnerLiveState | null> {
+    if (workspaceId !== this.workspaceId || runnerId !== this.runnerId) return Effect.succeed(null);
     return Effect.succeed({
       lastObservedAt: Date.now(),
       capacity: {
@@ -89,23 +94,23 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     });
   }
 
-  getSessionRunner(userId: string, sessionId: string): Effect.Effect<string | null> {
+  getSessionRunner(workspaceId: WorkspaceId, sessionId: string): Effect.Effect<string | null> {
     return Effect.succeed(
-      userId === this.userId && sessionId === this.sessionId ? this.runnerId : null,
+      workspaceId === this.workspaceId && sessionId === this.sessionId ? this.runnerId : null,
     );
   }
 
   getSessionSnapshot(
-    userId: string,
+    workspaceId: WorkspaceId,
     sessionId: string,
   ): Effect.Effect<RunnerSessionSnapshot | null> {
     return Effect.succeed(
-      userId === this.userId && sessionId === this.sessionId ? this.snapshot : null,
+      workspaceId === this.workspaceId && sessionId === this.sessionId ? this.snapshot : null,
     );
   }
 
-  getSessionGitSnapshot(userId: string, sessionId: string) {
-    if (userId !== this.userId || sessionId !== this.sessionId) {
+  getSessionGitSnapshot(workspaceId: WorkspaceId, sessionId: string) {
+    if (workspaceId !== this.workspaceId || sessionId !== this.sessionId) {
       return Effect.succeed({
         status: "unavailable" as const,
         message: "The pinned runner is offline.",
@@ -129,7 +134,7 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   }
 
   updateSessionGitFile(input: UpdateSessionGitFileInput) {
-    if (input.userId !== this.userId || input.sessionId !== this.sessionId) {
+    if (input.workspaceId !== this.workspaceId || input.sessionId !== this.sessionId) {
       return Effect.succeed({
         status: "unavailable" as const,
         message: "The pinned runner is offline.",
@@ -219,19 +224,19 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
 
   deleteSession(input: DeleteSessionInput): Effect.Effect<void> {
     return Effect.sync(() => {
-      if (input.userId === this.userId && input.sessionId === this.sessionId) {
+      if (input.workspaceId === this.workspaceId && input.sessionId === this.sessionId) {
         this.deletions.push(input);
       }
     });
   }
 
   watchSession(
-    userId: string,
+    workspaceId: WorkspaceId,
     sessionId: string,
     afterCursor: number,
   ): Stream.Stream<typeof WatchSessionEvent.Type, unknown> {
     this.afterCursors.push(afterCursor);
-    if (userId !== this.userId || sessionId !== this.sessionId) {
+    if (workspaceId !== this.workspaceId || sessionId !== this.sessionId) {
       return Stream.fail(new Error("The pinned runner is offline."));
     }
     const durableCursors = this.events.flatMap((event) => "cursor" in event ? [event.cursor] : []);
@@ -269,26 +274,28 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
   try {
     const client = await authenticate(server.baseUrl, store);
-    connections.userId = client.userId;
-    const projectResult = await store.saveProject(client.userId, {
+    connections.workspaceId = client.workspaceId;
+    const projectResult = await store.saveProject(client.workspaceId, {
       name: "OpenOrb",
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
     });
     assert(projectResult.status === "saved");
-    await store.saveGitHubCredential(client.userId, GITHUB_TOKEN);
+    await store.saveGitHubCredential(client.workspaceId, GITHUB_TOKEN);
     await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
-    await store.saveModelProviderCredential(client.userId, PROVIDER_ID, MODEL_PROVIDER_KEY);
-    const enrolled = await enrollRunner(store, client.userId);
+    await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+    const enrolled = await enrollRunner(store, client.workspaceId);
     connections.runnerId = enrolled.runnerId;
     connections.beforeAcceptance = async (input) => {
       const count = await store.pool.query<{ count: number }>(
-        "select count(*)::integer as count from sessions where user_id = $1 and id = $2",
-        [client.userId, input.sessionId],
+        "select count(*)::integer as count from sessions where workspace_id = $1 and id = $2",
+        [client.workspaceId, input.sessionId],
       );
       assertEquals(count.rows[0]?.count, 0);
     };
     connections.reconcileAcceptance = async (snapshot) => {
-      const [reconciled] = await store.reconcileSessionManifestEntries(client.userId, [snapshot]);
+      const [reconciled] = await store.reconcileSessionManifestEntries(client.workspaceId, [
+        snapshot,
+      ]);
       assert(reconciled);
       assertEquals(reconciled.acceptedSessionIds, [snapshot.id]);
     };
@@ -376,14 +383,14 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       }),
     );
     const catalog = await store.pool.query<{
-      user_id: string;
+      workspace_id: string;
       id: string;
       project_id: string;
       created_at: string;
       initial_prompt_preview: string;
-    }>("select * from sessions where user_id = $1", [client.userId]);
+    }>("select * from sessions where workspace_id = $1", [client.workspaceId]);
     assertEquals(catalog.rows, [{
-      user_id: client.userId,
+      workspace_id: client.workspaceId,
       id: provision.sessionId,
       project_id: projectResult.project.id,
       created_at: "2026-08-17T12:00:00Z",
@@ -406,7 +413,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
     const olderSessionId = crypto.randomUUID();
     const newerSessionId = crypto.randomUUID();
-    const [additionalCatalog] = await store.reconcileSessionManifestEntries(client.userId, [
+    const [additionalCatalog] = await store.reconcileSessionManifestEntries(client.workspaceId, [
       Schema.decodeUnknownSync(RunnerSessionSnapshot)({
         id: olderSessionId,
         projectId: projectResult.project.id,
@@ -433,7 +440,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assert(additionalCatalog);
     assertEquals(additionalCatalog.acceptedSessionIds, [olderSessionId, newerSessionId]);
     assertEquals(
-      (await store.listSessionCatalogEntries(client.userId)).map((session) => session.id),
+      (await store.listSessionCatalogEntries(client.workspaceId)).map((session) => session.id),
       [newerSessionId, provision.sessionId, olderSessionId],
     );
 
@@ -549,7 +556,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(woken.status, 202);
     assertEquals(await woken.json(), { status: "accepted" });
     assertEquals(connections.wakes, [{
-      userId: client.userId,
+      workspaceId: client.workspaceId,
       sessionId: provision.sessionId,
       payload: {
         modelRuntime: new SessionModelRuntime({
@@ -619,14 +626,14 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(await unstagedChange.text(), "");
     assertEquals(connections.gitFileUpdates, [
       {
-        userId: client.userId,
+        workspaceId: client.workspaceId,
         sessionId: provision.sessionId,
         action: "stage",
         path: exactPath,
         previousPath: exactPreviousPath,
       },
       {
-        userId: client.userId,
+        workspaceId: client.workspaceId,
         sessionId: provision.sessionId,
         action: "unstage",
         path: exactPath,
@@ -644,7 +651,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(connections.prompts, []);
 
     await store.saveModelProviderCredential(
-      client.userId,
+      client.workspaceId,
       PROVIDER_ID,
       CONTINUATION_MODEL_PROVIDER_KEY,
     );
@@ -660,7 +667,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(continued.status, 303);
     assertEquals(continued.headers.get("location"), location);
     assertEquals(connections.prompts, [{
-      userId: client.userId,
+      workspaceId: client.workspaceId,
       sessionId: provision.sessionId,
       payload: {
         prompt: "Commit the reviewed changes and push the session branch.",
@@ -690,7 +697,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(stopped.status, 202);
     assertEquals(await stopped.json(), { status: "accepted" });
     assertEquals(connections.stops, [{
-      userId: client.userId,
+      workspaceId: client.workspaceId,
       sessionId: provision.sessionId,
     }]);
 
@@ -712,7 +719,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(coldWake.status, 202);
     assertEquals(await coldWake.json(), { status: "accepted" });
     assertEquals(connections.wakes[1], {
-      userId: client.userId,
+      workspaceId: client.workspaceId,
       sessionId: provision.sessionId,
       payload: {
         modelRuntime: new SessionModelRuntime({
@@ -734,7 +741,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(coldContinuation.status, 303);
     assertEquals(connections.prompts[1], {
-      userId: client.userId,
+      workspaceId: client.workspaceId,
       sessionId: provision.sessionId,
       payload: {
         prompt: "Resume this stopped session",
@@ -816,7 +823,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(aborted.status, 202);
     assertEquals(await aborted.json(), { status: "accepted" });
     assertEquals(connections.aborts, [{
-      userId: client.userId,
+      workspaceId: client.workspaceId,
       sessionId: provision.sessionId,
     }]);
 
@@ -935,7 +942,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertStringIncludes(failedHtml, "qemu exited safely");
     assertMatch(failedHtml, /name="recovery" value="retry-provisioning"/);
     await store.saveModelProviderCredential(
-      client.userId,
+      client.workspaceId,
       PROVIDER_ID,
       RETRY_MODEL_PROVIDER_KEY,
     );
@@ -1047,25 +1054,25 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
 
   try {
     const client = await authenticate(server.baseUrl, store);
-    connections.userId = client.userId;
-    const project = await store.saveProject(client.userId, {
+    connections.workspaceId = client.workspaceId;
+    const project = await store.saveProject(client.workspaceId, {
       name: "Owner project",
       repositoryUrl: "https://github.com/openorb/owner.git",
     });
     assert(project.status === "saved");
-    await store.saveModelProviderCredential(client.userId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+    await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
     await store.saveModelProviderCredential(
-      client.userId,
+      client.workspaceId,
       OPENAI_PROVIDER_ID,
       OPENAI_PROVIDER_KEY,
     );
-    const otherUserId = await createTestUser(store);
-    const foreignProject = await store.saveProject(otherUserId, {
+    const otherWorkspaceId = await createTestWorkspace(store);
+    const foreignProject = await store.saveProject(otherWorkspaceId, {
       name: "Foreign project",
       repositoryUrl: "https://github.com/openorb/foreign.git",
     });
     assert(foreignProject.status === "saved");
-    connections.runnerId = (await enrollRunner(store, client.userId)).runnerId;
+    connections.runnerId = (await enrollRunner(store, client.workspaceId)).runnerId;
 
     const anonymous = await fetch(new URL(routes.app.index.href(), server.baseUrl));
     assertEquals(anonymous.status, 401);
@@ -1199,7 +1206,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     );
     connections.provisions = [];
 
-    assertEquals(await store.deleteModelProviderCredential(client.userId, PROVIDER_ID), {
+    assertEquals(await store.deleteModelProviderCredential(client.workspaceId, PROVIDER_ID), {
       status: "deleted",
     });
     const unconfiguredProvider = await submitSession(server.baseUrl, client.cookie, {
@@ -1228,15 +1235,15 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
 
   try {
     const client = await authenticate(server.baseUrl, store);
-    connections.userId = client.userId;
-    const projectResult = await store.saveProject(client.userId, {
+    connections.workspaceId = client.workspaceId;
+    const projectResult = await store.saveProject(client.workspaceId, {
       name: "OpenOrb",
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
     });
     assert(projectResult.status === "saved");
     await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
-    await store.saveModelProviderCredential(client.userId, PROVIDER_ID, MODEL_PROVIDER_KEY);
-    const enrolled = await enrollRunner(store, client.userId);
+    await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+    const enrolled = await enrollRunner(store, client.workspaceId);
     connections.runnerId = enrolled.runnerId;
 
     const onlineSession = deletionSnapshot(
@@ -1244,7 +1251,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       projectResult.project.id,
       "Delete this online session",
     );
-    const [onlineReconciled] = await store.reconcileSessionManifestEntries(client.userId, [
+    const [onlineReconciled] = await store.reconcileSessionManifestEntries(client.workspaceId, [
       onlineSession,
     ]);
     assert(onlineReconciled);
@@ -1272,7 +1279,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       headers: { Cookie: client.cookie },
     });
     assertEquals(missingCsrf.status, 403);
-    assert(await store.getSessionCatalogEntry(client.userId, onlineSession.id));
+    assert(await store.getSessionCatalogEntry(client.workspaceId, onlineSession.id));
     assertEquals(connections.deletions, []);
 
     const deleted = await submitDeletion(
@@ -1283,9 +1290,9 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     );
     assertEquals(deleted.status, 303);
     assertEquals(deleted.headers.get("location"), routes.app.index.href());
-    assertEquals(await store.getSessionCatalogEntry(client.userId, onlineSession.id), null);
+    assertEquals(await store.getSessionCatalogEntry(client.workspaceId, onlineSession.id), null);
     assertEquals(connections.deletions, [
-      { userId: client.userId, sessionId: onlineSession.id },
+      { workspaceId: client.workspaceId, sessionId: onlineSession.id },
     ]);
 
     const offlineSession = deletionSnapshot(
@@ -1293,11 +1300,11 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       projectResult.project.id,
       "Delete this lost runner session",
     );
-    const [offlineReconciled] = await store.reconcileSessionManifestEntries(client.userId, [
+    const [offlineReconciled] = await store.reconcileSessionManifestEntries(client.workspaceId, [
       offlineSession,
     ]);
     assert(offlineReconciled);
-    assertEquals(await store.revokeRunner(client.userId, enrolled.runnerId), "revoked");
+    assertEquals(await store.revokeRunner(client.workspaceId, enrolled.runnerId), "revoked");
     connections.sessionId = null;
     connections.snapshot = null;
     const offlineDeleted = await submitDeletion(
@@ -1307,13 +1314,13 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       csrfToken,
     );
     assertEquals(offlineDeleted.status, 303);
-    assertEquals(await store.getSessionCatalogEntry(client.userId, offlineSession.id), null);
+    assertEquals(await store.getSessionCatalogEntry(client.workspaceId, offlineSession.id), null);
     assertEquals(connections.deletions.length, 1);
 
-    const otherUserId = await createTestUser(store);
-    const otherProject = await store.saveProject(otherUserId, {
-      name: "Other user project",
-      repositoryUrl: "https://github.com/meln1k/other-user-project.git",
+    const otherWorkspaceId = await createTestWorkspace(store);
+    const otherProject = await store.saveProject(otherWorkspaceId, {
+      name: "Other Workspace project",
+      repositoryUrl: "https://github.com/meln1k/other-project.git",
     });
     assert(otherProject.status === "saved");
     const foreignSession = deletionSnapshot(
@@ -1321,7 +1328,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       otherProject.project.id,
       "Foreign session",
     );
-    const [foreignReconciled] = await store.reconcileSessionManifestEntries(otherUserId, [
+    const [foreignReconciled] = await store.reconcileSessionManifestEntries(otherWorkspaceId, [
       foreignSession,
     ]);
     assert(foreignReconciled);
@@ -1333,27 +1340,27 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       csrfToken,
     );
     assertEquals(foreignDelete.status, 404);
-    assert(await store.getSessionCatalogEntry(otherUserId, foreignSession.id));
+    assert(await store.getSessionCatalogEntry(otherWorkspaceId, foreignSession.id));
     assertEquals(connections.deletions.length, deletionCount);
 
-    const sameIdForOtherUser = deletionSnapshot(
+    const sameIdForOtherWorkspace = deletionSnapshot(
       onlineSession.id,
       otherProject.project.id,
-      "Same ID in another tenant",
+      "Same ID in another Workspace",
     );
-    const [sameIdReconciled] = await store.reconcileSessionManifestEntries(otherUserId, [
-      sameIdForOtherUser,
+    const [sameIdReconciled] = await store.reconcileSessionManifestEntries(otherWorkspaceId, [
+      sameIdForOtherWorkspace,
     ]);
     assert(sameIdReconciled);
     assertEquals(sameIdReconciled.acceptedSessionIds, [onlineSession.id]);
-    assert(await store.getSessionCatalogEntry(otherUserId, onlineSession.id));
-    const [staleOwnerSnapshot] = await store.reconcileSessionManifestEntries(client.userId, [
+    assert(await store.getSessionCatalogEntry(otherWorkspaceId, onlineSession.id));
+    const [staleOwnerSnapshot] = await store.reconcileSessionManifestEntries(client.workspaceId, [
       onlineSession,
     ]);
     assert(staleOwnerSnapshot);
     assertEquals(staleOwnerSnapshot.acceptedSessionIds, []);
     assertEquals(staleOwnerSnapshot.tombstonedSessionIds, [onlineSession.id]);
-    assertEquals(await store.getSessionCatalogEntry(client.userId, onlineSession.id), null);
+    assertEquals(await store.getSessionCatalogEntry(client.workspaceId, onlineSession.id), null);
 
     const markerColumns = await store.pool.query<{ column_name: string }>(
       `select column_name
@@ -1363,7 +1370,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
         order by ordinal_position`,
     );
     assertEquals(markerColumns.rows.map((row: { column_name: string }) => row.column_name), [
-      "user_id",
+      "workspace_id",
       "session_id",
       "deleted_at",
     ]);
@@ -1375,7 +1382,8 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
 
 interface BrowserClient {
   cookie: string;
-  userId: string;
+  userId: UserId;
+  workspaceId: WorkspaceId;
 }
 
 async function authenticate(
@@ -1410,14 +1418,15 @@ async function authenticate(
   assertEquals(loginResponse.status, 303);
   const user = await store.verifyAdministratorPassword(PASSWORD);
   assert(user);
-  return { cookie: cookieFrom(loginResponse), userId: user.id };
+  assert(String(user.userId) !== String(user.workspaceId));
+  return { cookie: cookieFrom(loginResponse), userId: user.userId, workspaceId: user.workspaceId };
 }
 
 async function enrollRunner(
   store: Awaited<ReturnType<typeof createTestStore>>,
-  userId: string,
+  workspaceId: WorkspaceId,
 ) {
-  const enrollment = await store.getRunnerEnrollmentToken(userId);
+  const enrollment = await store.getRunnerEnrollmentToken(workspaceId);
   const runner = await store.enrollRunner({
     enrollmentPsk: enrollment.token,
     name: "Browser runner",

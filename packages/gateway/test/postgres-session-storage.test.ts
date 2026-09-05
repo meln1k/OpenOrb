@@ -1,7 +1,12 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { object, parse, string } from "remix/data-schema";
 
-import { createTestStore, createTestUser } from "@/test/postgres-test.ts";
+import {
+  createTestStore,
+  createTestUser,
+  createTestWorkspace,
+  getTestUserWorkspaceId,
+} from "@/test/postgres-test.ts";
 
 const REJECT_REPLACEMENT_CONSTRAINT = "browser_sessions_reject_test_replacement";
 const postgresConstraintErrorSchema = object({
@@ -54,8 +59,9 @@ Deno.test("does not recreate a session deleted by a concurrent request", async (
 
   try {
     const userId = await createTestUser(store);
+    const workspaceId = await getTestUserWorkspaceId(store, userId);
     const original = await store.sessionStorage.read(null);
-    original.set("auth", { userId });
+    original.set("auth", { userId, workspaceId });
     const originalId = await store.sessionStorage.save(original);
     assert(originalId);
 
@@ -81,24 +87,27 @@ Deno.test("does not recreate a session deleted by a concurrent request", async (
   }
 });
 
-Deno.test("binds authenticated session data to its persisted user owner", async () => {
+Deno.test("binds authenticated session data to its persisted user and workspace", async () => {
   const store = await createTestStore();
 
   try {
     const userId = await createTestUser(store);
+    const workspaceId = await getTestUserWorkspaceId(store, userId);
+    assertNotEquals<string>(userId, workspaceId);
     const currentSession = await store.sessionStorage.read(null);
-    currentSession.set("auth", { userId });
+    currentSession.set("auth", { userId, workspaceId });
     const sessionId = await store.sessionStorage.save(currentSession);
     assert(sessionId);
 
-    const persisted = await store.pool.query<{ user_id: string }>(
-      "select user_id from browser_sessions where id = $1",
+    const persisted = await store.pool.query<{ user_id: string; workspace_id: string }>(
+      "select user_id, workspace_id from browser_sessions where id = $1",
       [sessionId],
     );
-    assertEquals(persisted.rows, [{ user_id: userId }]);
+    assertEquals(persisted.rows, [{ user_id: userId, workspace_id: workspaceId }]);
+    assertEquals((await store.sessionStorage.read(sessionId)).get("auth"), { userId, workspaceId });
 
     await store.pool.query(
-      "update browser_sessions set user_id = null where id = $1",
+      "update browser_sessions set user_id = null, workspace_id = null where id = $1",
       [sessionId],
     );
     const rejected = await store.sessionStorage.read(sessionId);
@@ -154,14 +163,15 @@ Deno.test("does not reassign an existing browser session to another user", async
 
   try {
     const firstUserId = await createTestUser(store);
-    const secondUserId = await createTestUser(store);
+    const workspaceId = await getTestUserWorkspaceId(store, firstUserId);
+    const secondUserId = await createTestUser(store, workspaceId);
     const currentSession = await store.sessionStorage.read(null);
-    currentSession.set("auth", { userId: firstUserId });
+    currentSession.set("auth", { userId: firstUserId, workspaceId });
     const sessionId = await store.sessionStorage.save(currentSession);
     assert(sessionId);
 
     const loaded = await store.sessionStorage.read(sessionId);
-    loaded.set("auth", { userId: secondUserId });
+    loaded.set("auth", { userId: secondUserId, workspaceId });
     assertEquals(await store.sessionStorage.save(loaded), "");
 
     const persisted = await store.pool.query<{ user_id: string; data: unknown }>(
@@ -169,7 +179,7 @@ Deno.test("does not reassign an existing browser session to another user", async
       [sessionId],
     );
     assertEquals(persisted.rows[0]?.user_id, firstUserId);
-    assertEquals(persisted.rows[0]?.data, [{ auth: { userId: firstUserId } }, {}]);
+    assertEquals(persisted.rows[0]?.data, [{ auth: { userId: firstUserId, workspaceId } }, {}]);
   } finally {
     await store.close();
   }
@@ -192,6 +202,110 @@ Deno.test("removes abandoned expired sessions during the next session write", as
       "select id from browser_sessions where id = 'abandoned-expired-session'",
     );
     assertEquals(expired.rowCount, 0);
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("anonymous sessions persist both identity columns as null", async () => {
+  const store = await createTestStore();
+  try {
+    const session = await store.sessionStorage.read(null);
+    session.set("state", "anonymous");
+    const id = await store.sessionStorage.save(session);
+    assert(id);
+    assertEquals(
+      (await store.pool.query("select user_id, workspace_id from browser_sessions where id = $1", [
+        id,
+      ]))
+        .rows,
+      [{ user_id: null, workspace_id: null }],
+    );
+    assertEquals((await store.sessionStorage.read(id)).get("state"), "anonymous");
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("rejects missing workspace identity and mismatched persisted user/workspace pairs", async () => {
+  const store = await createTestStore();
+  try {
+    const userId = await createTestUser(store);
+    const workspaceId = await getTestUserWorkspaceId(store, userId);
+    const foreignWorkspaceId = await createTestWorkspace(store);
+    const session = await store.sessionStorage.read(null);
+    session.set("auth", { userId });
+    await assertRejects(() => store.sessionStorage.save(session), TypeError);
+    session.set("auth", { userId, workspaceId: foreignWorkspaceId });
+    const error = parse(
+      postgresConstraintErrorSchema,
+      await assertRejects(() => store.sessionStorage.save(session)),
+    );
+    assertEquals(error.code, "23503");
+    assertEquals(error.constraint, "browser_sessions_identity_fk");
+
+    session.set("auth", { userId, workspaceId });
+    const id = await store.sessionStorage.save(session);
+    assert(id);
+    for (const column of ["user_id", "workspace_id"]) {
+      await assertRejects(() =>
+        store.pool.query(
+          `update browser_sessions set ${column} = null where id = $1`,
+          [id],
+        )
+      );
+    }
+    const loaded = await store.sessionStorage.read(id);
+    loaded.set("auth", { userId, workspaceId: foreignWorkspaceId });
+    assertEquals(await store.sessionStorage.save(loaded), "");
+    assertEquals((await store.sessionStorage.read(id)).get("auth"), { userId, workspaceId });
+
+    await store.pool.query("update browser_sessions set data = $2::jsonb where id = $1", [
+      id,
+      JSON.stringify([{ auth: { userId, workspaceId: foreignWorkspaceId } }, {}]),
+    ]);
+    assertEquals((await store.sessionStorage.read(id)).get("auth"), undefined);
+    assertEquals(
+      (await store.pool.query("select id from browser_sessions where id = $1", [id])).rowCount,
+      0,
+    );
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("rotation binds both identity columns and prevents stale writes and expired rotation", async () => {
+  const store = await createTestStore();
+  try {
+    const userId = await createTestUser(store);
+    const workspaceId = await getTestUserWorkspaceId(store, userId);
+    const original = await store.sessionStorage.read(null);
+    original.set("state", "before login");
+    const originalId = await store.sessionStorage.save(original);
+    assert(originalId);
+    const stale = await store.sessionStorage.read(originalId);
+    const login = await store.sessionStorage.read(originalId);
+    login.regenerateId(true);
+    login.set("auth", { userId, workspaceId });
+    const loginId = await store.sessionStorage.save(login);
+    assert(loginId);
+    assertNotEquals(loginId, originalId);
+    assertEquals((await store.sessionStorage.read(loginId)).get("auth"), { userId, workspaceId });
+    stale.set("state", "stale");
+    assertEquals(await store.sessionStorage.save(stale), "");
+    stale.regenerateId(true);
+    assertEquals(await store.sessionStorage.save(stale), "");
+
+    const expired = await store.sessionStorage.read(loginId);
+    await store.pool.query(
+      "update browser_sessions set expires_at = now() - interval '1 second' where id = $1",
+      [loginId],
+    );
+    expired.regenerateId(true);
+    expired.set("state", "expired");
+    assertEquals(await store.sessionStorage.save(expired), "");
+    assertEquals((await store.sessionStorage.read(loginId)).get("auth"), undefined);
+    assertEquals((await store.pool.query("select id from browser_sessions")).rowCount, 0);
   } finally {
     await store.close();
   }

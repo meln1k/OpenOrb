@@ -51,7 +51,7 @@ export default createController(routes.app.settings.gitAuthor, {
           400,
         );
       }
-      await context.services.store.saveGitAuthorConfiguration(context.auth.identity.id, {
+      await context.services.store.saveGitAuthorConfiguration(context.auth.identity.userId, {
         authorName: parsed.value.authorName.trim(),
         authorEmail: parsed.value.authorEmail.trim(),
       });
@@ -66,7 +66,7 @@ async function renderGitAuthor(
   status = 200,
 ): Promise<Response> {
   const gitAuthor = await context.services.store.getGitAuthorConfiguration(
-    context.auth.identity.id,
+    context.auth.identity.userId,
   );
   return context.render(
     <GitAuthorSettingsPage

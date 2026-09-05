@@ -25,10 +25,10 @@ import {
   StopRejected,
   type StopSessionAccepted,
   UpdateSessionGitFilePayload,
-  UserId,
   WakeRejected,
   type WakeSessionAccepted,
   type WatchSessionEvent,
+  type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { orbSizeResources } from "@openorb/protocol";
 import { sessionWakeKind } from "@/app/utils/session-recovery.ts";
@@ -79,35 +79,35 @@ export type OperationResult<A> =
   | { status: "delivery-uncertain"; message: string };
 
 export interface ProvisionSessionInput {
-  userId: string;
+  workspaceId: WorkspaceId;
   runnerId: string;
   sessionId: string;
-  payload: OmitUnion<Parameters<Client["session.provision"]>[0], "sessionId" | "userId">;
+  payload: OmitUnion<Parameters<Client["session.provision"]>[0], "sessionId" | "workspaceId">;
 }
 export interface PromptSessionInput {
-  userId: string;
+  workspaceId: WorkspaceId;
   sessionId: string;
   payload: Omit<Parameters<Client["session.prompt"]>[0], "sessionId" | "clientRequestId">;
 }
 export interface WakeSessionInput {
-  userId: string;
+  workspaceId: WorkspaceId;
   sessionId: string;
   payload: Omit<Parameters<Client["session.wake"]>[0], "sessionId">;
 }
 export interface AbortSessionInput {
-  userId: string;
+  workspaceId: WorkspaceId;
   sessionId: string;
 }
 export interface StopSessionInput {
-  userId: string;
+  workspaceId: WorkspaceId;
   sessionId: string;
 }
 export interface DeleteSessionInput {
-  userId: string;
+  workspaceId: WorkspaceId;
   sessionId: string;
 }
 export interface UpdateSessionGitFileInput {
-  userId: string;
+  workspaceId: WorkspaceId;
   sessionId: string;
   action: "stage" | "unstage";
   path: string;
@@ -116,16 +116,19 @@ export interface UpdateSessionGitFileInput {
 
 export interface RunnerRegistryService {
   readonly getRunnerLiveState: (
-    userId: string,
+    workspaceId: WorkspaceId,
     runnerId: string,
   ) => Effect.Effect<RunnerLiveState | null>;
-  readonly getSessionRunner: (userId: string, sessionId: string) => Effect.Effect<string | null>;
+  readonly getSessionRunner: (
+    workspaceId: WorkspaceId,
+    sessionId: string,
+  ) => Effect.Effect<string | null>;
   readonly getSessionSnapshot: (
-    userId: string,
+    workspaceId: WorkspaceId,
     sessionId: string,
   ) => Effect.Effect<RunnerSessionSnapshot | null>;
   readonly getSessionGitSnapshot: (
-    userId: string,
+    workspaceId: WorkspaceId,
     sessionId: string,
   ) => Effect.Effect<OperationResult<SessionGitSnapshot>>;
   readonly updateSessionGitFile: (
@@ -144,11 +147,11 @@ export interface RunnerRegistryService {
   ) => Effect.Effect<OperationResult<StopSessionAccepted>>;
   readonly deleteSession: (input: DeleteSessionInput) => Effect.Effect<void>;
   readonly watchSession: (
-    userId: string,
+    workspaceId: WorkspaceId,
     sessionId: string,
     afterCursor: number,
   ) => Stream.Stream<typeof WatchSessionEvent.Type, unknown>;
-  readonly disconnectRunner: (userId: string, runnerId: string) => Effect.Effect<boolean>;
+  readonly disconnectRunner: (workspaceId: WorkspaceId, runnerId: string) => Effect.Effect<boolean>;
 }
 
 export interface RunnerRegistry extends RunnerRegistryService {
@@ -229,11 +232,14 @@ export function makeRunnerRegistry(
     const runtime: RegistryRuntime = { repository, state };
     return RunnerRegistry.of({
       accept: (socket) => Effect.scoped(accept(runtime, socket)),
-      getRunnerLiveState: (userId, runnerId) => getRunnerLiveState(runtime, userId, runnerId),
-      getSessionRunner: (userId, sessionId) => getSessionRunner(runtime, userId, sessionId),
-      getSessionSnapshot: (userId, sessionId) => getSessionSnapshot(runtime, userId, sessionId),
-      getSessionGitSnapshot: (userId, sessionId) =>
-        getSessionGitSnapshot(runtime, userId, sessionId),
+      getRunnerLiveState: (workspaceId, runnerId) =>
+        getRunnerLiveState(runtime, workspaceId, runnerId),
+      getSessionRunner: (workspaceId, sessionId) =>
+        getSessionRunner(runtime, workspaceId, sessionId),
+      getSessionSnapshot: (workspaceId, sessionId) =>
+        getSessionSnapshot(runtime, workspaceId, sessionId),
+      getSessionGitSnapshot: (workspaceId, sessionId) =>
+        getSessionGitSnapshot(runtime, workspaceId, sessionId),
       updateSessionGitFile: (input) => updateSessionGitFile(runtime, input),
       provisionSession: (input) => provisionSession(runtime, input),
       wakeSession: (input) => wakeSession(runtime, input),
@@ -241,9 +247,9 @@ export function makeRunnerRegistry(
       abortSession: (input) => abortSession(runtime, input),
       stopSession: (input) => stopSession(runtime, input),
       deleteSession: (input) => deleteSession(runtime, input),
-      watchSession: (userId, sessionId, afterCursor) =>
-        watchSession(runtime, userId, sessionId, afterCursor),
-      disconnectRunner: (userId, runnerId) => disconnectRunner(runtime, userId, runnerId),
+      watchSession: (workspaceId, sessionId, afterCursor) =>
+        watchSession(runtime, workspaceId, sessionId, afterCursor),
+      disconnectRunner: (workspaceId, runnerId) => disconnectRunner(runtime, workspaceId, runnerId),
     });
   });
 }
@@ -283,7 +289,7 @@ const accept = Effect.fn("RunnerRegistry.accept")(
     if (
       !authenticated || authenticated.id !== identity.value.runnerId ||
       identity.value.protocolVersion !== RUNNER_PROTOCOL_VERSION ||
-      state.revoked.has(runnerKey(authenticated.userId, authenticated.id))
+      state.revoked.has(runnerKey(authenticated.workspaceId, authenticated.id))
     ) {
       yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
       yield* Scope.close(scope, Exit.void);
@@ -326,7 +332,7 @@ const accept = Effect.fn("RunnerRegistry.accept")(
             yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
             return yield* Effect.fail(new CandidateRejected());
           }
-          const reconciled = yield* reconcile(registry, authenticated.userId, initial).pipe(
+          const reconciled = yield* reconcile(registry, authenticated.workspaceId, initial).pipe(
             Effect.catch(() => Effect.fail(new CandidateRejected())),
           );
           if (reconciled.rejected.length > 0) {
@@ -344,13 +350,13 @@ const accept = Effect.fn("RunnerRegistry.accept")(
               const sessions = new Map(reconciledSessions);
               const tombstones = new Set(reconciled.tombstonedSessionIds);
               for (const sessionId of sessions.keys()) {
-                if (current.deletions.has(routeKey(authenticated.userId, sessionId))) {
+                if (current.deletions.has(routeKey(authenticated.workspaceId, sessionId))) {
                   sessions.delete(sessionId);
                   tombstones.add(sessionId);
                 }
               }
               for (const sessionId of sessions.keys()) {
-                const routed = current.routes.get(routeKey(authenticated.userId, sessionId));
+                const routed = current.routes.get(routeKey(authenticated.workspaceId, sessionId));
                 if (routed && routed.runner.id !== authenticated.id) {
                   return Effect.fail(new CandidateRejected());
                 }
@@ -375,7 +381,7 @@ const accept = Effect.fn("RunnerRegistry.accept")(
                 for (const [id, route] of routes) if (route === previous) routes.delete(id);
               }
               for (const id of sessions.keys()) {
-                routes.set(routeKey(authenticated.userId, id), connection);
+                routes.set(routeKey(authenticated.workspaceId, id), connection);
               }
               return Effect.succeed(
                 [[connection, previous] as const, {
@@ -426,7 +432,9 @@ function applyEvent(
         current?.generation === connection.generation && event.revision > current.revision &&
         !current.sessions.has(event.session.id) && !current.tombstones.has(event.session.id)
       ) {
-        const reconciled = yield* reconcile(registry, connection.runner.userId, [event.session]);
+        const reconciled = yield* reconcile(registry, connection.runner.workspaceId, [
+          event.session,
+        ]);
         unknownSessionDisposition = reconciled.tombstonedSessionIds.includes(event.session.id)
           ? "tombstoned"
           : reconciled.acceptedSessionIds.includes(event.session.id)
@@ -445,7 +453,7 @@ function applyEvent(
       if (event.type === "session.updated") {
         if (
           unknownSessionDisposition === "tombstoned" ||
-          state.deletions.has(routeKey(connection.runner.userId, event.session.id))
+          state.deletions.has(routeKey(connection.runner.workspaceId, event.session.id))
         ) {
           tombstones.add(event.session.id);
         }
@@ -453,14 +461,14 @@ function applyEvent(
       if (event.type === "session.updated" && event.revision > current.revision) {
         if (tombstones.has(event.session.id)) {
           sessions.delete(event.session.id);
-          routes.delete(routeKey(connection.runner.userId, event.session.id));
+          routes.delete(routeKey(connection.runner.workspaceId, event.session.id));
           cleanupSessionId = event.session.id;
         } else if (unknownSessionDisposition !== "rejected") {
           sessions.set(event.session.id, event.session);
         }
       } else if (event.type === "session.removed" && event.revision > current.revision) {
         sessions.delete(event.sessionId);
-        routes.delete(routeKey(connection.runner.userId, event.sessionId));
+        routes.delete(routeKey(connection.runner.workspaceId, event.sessionId));
       }
       let updated = current;
       if (event.type === "runner.observed" && event.revision > current.revision) {
@@ -483,7 +491,7 @@ function applyEvent(
         event.type === "session.updated" && !tombstones.has(event.session.id) &&
         unknownSessionDisposition !== "rejected"
       ) {
-        routes.set(routeKey(current.runner.userId, event.session.id), updated);
+        routes.set(routeKey(current.runner.workspaceId, event.session.id), updated);
       }
       const connections = new Map(state.connections).set(connection.runner.id, updated);
       for (const [id, route] of routes) {
@@ -512,11 +520,15 @@ function removeConnection(registry: RegistryRuntime, connection: Connection) {
   });
 }
 
-function reconcile(registry: RegistryRuntime, userId: string, entries: RunnerSessionSnapshot[]) {
+function reconcile(
+  registry: RegistryRuntime,
+  workspaceId: WorkspaceId,
+  entries: RunnerSessionSnapshot[],
+) {
   return Effect.tryPromise({
     try: async () => {
       const [reconciled, reconciliationError] = await registry.repository
-        .reconcileSessionManifestEntries(userId, entries);
+        .reconcileSessionManifestEntries(workspaceId, entries);
       if (reconciliationError !== undefined) throw reconciliationError;
       return reconciled;
     },
@@ -524,10 +536,10 @@ function reconcile(registry: RegistryRuntime, userId: string, entries: RunnerSes
   });
 }
 
-function getRunnerLiveState(registry: RegistryRuntime, userId: string, runnerId: string) {
+function getRunnerLiveState(registry: RegistryRuntime, workspaceId: WorkspaceId, runnerId: string) {
   return SynchronizedRef.get(registry.state).pipe(Effect.map((state) => {
     const connection = state.connections.get(runnerId);
-    if (!connection || connection.runner.userId !== userId) return null;
+    if (!connection || connection.runner.workspaceId !== workspaceId) return null;
     return {
       capacity: {
         ...connection.capacity,
@@ -538,23 +550,27 @@ function getRunnerLiveState(registry: RegistryRuntime, userId: string, runnerId:
   }));
 }
 
-function getSessionRunner(registry: RegistryRuntime, userId: string, sessionId: string) {
+function getSessionRunner(registry: RegistryRuntime, workspaceId: WorkspaceId, sessionId: string) {
   return SynchronizedRef.get(registry.state).pipe(
-    Effect.map((state) => state.routes.get(routeKey(userId, sessionId))?.runner.id ?? null),
+    Effect.map((state) => state.routes.get(routeKey(workspaceId, sessionId))?.runner.id ?? null),
   );
 }
 
-function getSessionSnapshot(registry: RegistryRuntime, userId: string, sessionId: string) {
+function getSessionSnapshot(
+  registry: RegistryRuntime,
+  workspaceId: WorkspaceId,
+  sessionId: string,
+) {
   return SynchronizedRef.get(registry.state).pipe(
     Effect.map((state) =>
-      state.routes.get(routeKey(userId, sessionId))?.sessions.get(sessionId) ?? null
+      state.routes.get(routeKey(workspaceId, sessionId))?.sessions.get(sessionId) ?? null
     ),
   );
 }
 
 const getSessionGitSnapshot = Effect.fn("RunnerRegistry.getSessionGitSnapshot")(
-  function* (registry: RegistryRuntime, userId: string, sessionId: string) {
-    const routed = yield* routeSession(registry, userId, sessionId, () => undefined);
+  function* (registry: RegistryRuntime, workspaceId: WorkspaceId, sessionId: string) {
+    const routed = yield* routeSession(registry, workspaceId, sessionId, () => undefined);
     if (routed.status === "unavailable") return unavailable(routed.message);
     if (routed.status === "rejected") {
       return { status: "rejected" as const, message: routed.message };
@@ -577,7 +593,7 @@ const updateSessionGitFile = Effect.fn("RunnerRegistry.updateSessionGitFile")(
   function* (registry: RegistryRuntime, input: UpdateSessionGitFileInput) {
     const routed = yield* routeSession(
       registry,
-      input.userId,
+      input.workspaceId,
       input.sessionId,
       () => undefined,
     );
@@ -607,7 +623,7 @@ const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
       (state): Effect.Effect<readonly [ReservationResult, RegistryState]> => {
         const connection = state.connections.get(input.runnerId);
         let rejection: string | undefined;
-        if (!connection || connection.runner.userId !== input.userId) {
+        if (!connection || connection.runner.workspaceId !== input.workspaceId) {
           rejection = "Runner is unavailable.";
         } else if (connection.reservations.has(input.sessionId)) {
           rejection = "This session already has a provisioning request in flight.";
@@ -615,7 +631,7 @@ const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
           if (!runnerSupportsOrbSize(connection.capacity, input.payload.orbSize)) {
             rejection = `Runner cannot provision the ${input.payload.orbSize} orb size.`;
           } else {
-            const existing = state.routes.get(routeKey(input.userId, input.sessionId));
+            const existing = state.routes.get(routeKey(input.workspaceId, input.sessionId));
             if (existing && existing.generation !== connection.generation) {
               rejection = "This session is pinned to another runner.";
             }
@@ -648,9 +664,7 @@ const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
     const request = Schema.decodeUnknownSync(ProvisionSessionPayload)({
       ...input.payload,
       sessionId,
-      ...(input.payload.mode === "create"
-        ? { userId: Schema.decodeUnknownSync(UserId)(input.userId) }
-        : {}),
+      ...(input.payload.mode === "create" ? { workspaceId: input.workspaceId } : {}),
     });
     return yield* reserved.connection.runtime.client["session.provision"](request).pipe(
       Effect.timeout(OPERATION_TIMEOUT_MS),
@@ -675,7 +689,7 @@ const promptSession = Effect.fn("RunnerRegistry.promptSession")(
   function* (registry: RegistryRuntime, input: PromptSessionInput) {
     const routed = yield* routeSession(
       registry,
-      input.userId,
+      input.workspaceId,
       input.sessionId,
       (snapshot) => {
         if (
@@ -712,7 +726,7 @@ const wakeSession = Effect.fn("RunnerRegistry.wakeSession")(
   function* (registry: RegistryRuntime, input: WakeSessionInput) {
     const routed = yield* routeSession(
       registry,
-      input.userId,
+      input.workspaceId,
       input.sessionId,
       (snapshot) =>
         snapshot.model === input.payload.modelRuntime.model
@@ -747,7 +761,7 @@ const abortSession = Effect.fn("RunnerRegistry.abortSession")(
   function* (registry: RegistryRuntime, input: AbortSessionInput) {
     const routed = yield* routeSession(
       registry,
-      input.userId,
+      input.workspaceId,
       input.sessionId,
       (snapshot) => snapshot.activeRunId ? undefined : "There is no active Pi run to abort.",
     );
@@ -771,7 +785,7 @@ const stopSession = Effect.fn("RunnerRegistry.stopSession")(
   function* (registry: RegistryRuntime, input: StopSessionInput) {
     const routed = yield* routeSession(
       registry,
-      input.userId,
+      input.workspaceId,
       input.sessionId,
       (snapshot) => snapshot.state === "ready" ? undefined : "The session is not ready and idle.",
     );
@@ -790,13 +804,13 @@ const stopSession = Effect.fn("RunnerRegistry.stopSession")(
 const deleteSession = Effect.fn("RunnerRegistry.deleteSession")(
   function* (registry: RegistryRuntime, input: DeleteSessionInput) {
     const connection = yield* SynchronizedRef.modify(registry.state, (state) => {
-      const key = routeKey(input.userId, input.sessionId);
+      const key = routeKey(input.workspaceId, input.sessionId);
       const deletions = new Set(state.deletions).add(key);
       const routed = state.routes.get(key);
       const current = routed && state.connections.get(routed.runner.id);
       if (
         !routed || !current || current.generation !== routed.generation ||
-        current.runner.userId !== input.userId
+        current.runner.workspaceId !== input.workspaceId
       ) return [null, { ...state, deletions }] as const;
 
       const sessions = new Map(current.sessions);
@@ -825,7 +839,7 @@ const deleteSession = Effect.fn("RunnerRegistry.deleteSession")(
 
 function watchSession(
   registry: RegistryRuntime,
-  userId: string,
+  workspaceId: WorkspaceId,
   sessionId: string,
   afterCursor: number,
 ) {
@@ -833,11 +847,11 @@ function watchSession(
     const decoded = Schema.decodeUnknownOption(SessionId)(sessionId);
     if (Option.isNone(decoded)) return Stream.fail(new Error("The session identifier is invalid."));
     const connection = (yield* SynchronizedRef.get(registry.state)).routes.get(
-      routeKey(userId, sessionId),
+      routeKey(workspaceId, sessionId),
     );
     if (!connection) return Stream.fail(new Error("The pinned runner is offline."));
     const routed = (yield* SynchronizedRef.get(registry.state)).routes.get(
-      routeKey(userId, sessionId),
+      routeKey(workspaceId, sessionId),
     );
     if (!routed || routed.generation !== connection.generation) {
       return Stream.fail(new Error("The pinned runner is offline."));
@@ -850,12 +864,12 @@ function watchSession(
 }
 
 const disconnectRunner = Effect.fn("RunnerRegistry.disconnectRunner")(
-  function* (registry: RegistryRuntime, userId: string, runnerId: string) {
+  function* (registry: RegistryRuntime, workspaceId: WorkspaceId, runnerId: string) {
     const connection = (yield* SynchronizedRef.get(registry.state)).connections.get(runnerId);
-    if (!connection || connection.runner.userId !== userId) return false;
+    if (!connection || connection.runner.workspaceId !== workspaceId) return false;
     yield* SynchronizedRef.update(
       registry.state,
-      (s) => ({ ...s, revoked: new Set(s.revoked).add(runnerKey(userId, runnerId)) }),
+      (s) => ({ ...s, revoked: new Set(s.revoked).add(runnerKey(workspaceId, runnerId)) }),
     );
     yield* Scope.close(connection.runtime.scope, Exit.void);
     return true;
@@ -963,13 +977,13 @@ function clearCleanupInFlight(
 
 function routeSession(
   registry: RegistryRuntime,
-  userId: string,
+  workspaceId: WorkspaceId,
   sessionId: string,
   validate: (snapshot: RunnerSessionSnapshot) => string | undefined,
 ): Effect.Effect<RoutedSessionResult> {
   return SynchronizedRef.get(registry.state).pipe(
     Effect.map((state): RoutedSessionResult => {
-      const connection = state.routes.get(routeKey(userId, sessionId));
+      const connection = state.routes.get(routeKey(workspaceId, sessionId));
       const snapshot = connection?.sessions.get(sessionId);
       if (!connection || !snapshot) {
         return { status: "unavailable", message: "The pinned runner is offline." };
@@ -1005,11 +1019,12 @@ function acceptProvisioned(
           ),
         );
       }
-      const reconciled = yield* reconcile(registry, input.userId, [acknowledgement.session]).pipe(
-        Effect.mapError(() =>
-          new ProvisionAcceptanceError("Session catalog reconciliation failed.")
-        ),
-      );
+      const reconciled = yield* reconcile(registry, input.workspaceId, [acknowledgement.session])
+        .pipe(
+          Effect.mapError(() =>
+            new ProvisionAcceptanceError("Session catalog reconciliation failed.")
+          ),
+        );
       if (
         reconciled.rejected.length > 0 ||
         !reconciled.acceptedSessionIds.includes(input.sessionId)
@@ -1026,7 +1041,7 @@ function acceptProvisioned(
       }
       if (
         current.tombstones.has(input.sessionId) ||
-        state.deletions.has(routeKey(input.userId, input.sessionId))
+        state.deletions.has(routeKey(input.workspaceId, input.sessionId))
       ) {
         const sessions = new Map(current.sessions);
         sessions.delete(input.sessionId);
@@ -1037,7 +1052,7 @@ function acceptProvisioned(
         };
         const replaced = replaceConnection(state, current, updated);
         const routes = new Map(replaced.routes);
-        routes.delete(routeKey(input.userId, input.sessionId));
+        routes.delete(routeKey(input.workspaceId, input.sessionId));
         return [updated, { ...replaced, routes }] as const;
       }
       const sessions = new Map(current.sessions).set(
@@ -1047,7 +1062,7 @@ function acceptProvisioned(
       const updated = { ...current, sessions };
       const replaced = replaceConnection(state, current, updated);
       const routes = new Map(replaced.routes).set(
-        routeKey(input.userId, input.sessionId),
+        routeKey(input.workspaceId, input.sessionId),
         updated,
       );
       return [null, { ...replaced, routes }] as const;
@@ -1094,9 +1109,9 @@ function runnerSupportsOrbSize(
 
 class CandidateRejected extends Error {}
 class ProvisionAcceptanceError extends Error {}
-function runnerKey(userId: string, runnerId: string) {
-  return `${userId}:${runnerId}`;
+function runnerKey(workspaceId: WorkspaceId, runnerId: string) {
+  return `${workspaceId}:${runnerId}`;
 }
-function routeKey(userId: string, sessionId: string) {
-  return `${userId}:${sessionId}`;
+function routeKey(workspaceId: WorkspaceId, sessionId: string) {
+  return `${workspaceId}:${sessionId}`;
 }

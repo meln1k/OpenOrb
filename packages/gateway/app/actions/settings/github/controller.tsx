@@ -49,7 +49,7 @@ export default createController(routes.app.settings.github, {
             );
           }
           await context.services.store.saveGitHubCredential(
-            context.auth.identity.id,
+            context.auth.identity.workspaceId,
             parsed.value.token.trim(),
           );
           return redirect(routes.app.settings.github.index.href(), 303);
@@ -60,7 +60,7 @@ export default createController(routes.app.settings.github, {
             return await renderGitHub(context, "Invalid GitHub credential deletion.", 400);
           }
           const result = await context.services.store.deleteGitHubCredential(
-            context.auth.identity.id,
+            context.auth.identity.workspaceId,
           );
           if (result.status === "not-found") {
             return await renderGitHub(
@@ -87,7 +87,9 @@ async function renderGitHub(
   error?: string,
   status = 200,
 ): Promise<Response> {
-  const credential = await context.services.store.getGitHubCredential(context.auth.identity.id);
+  const credential = await context.services.store.getGitHubCredential(
+    context.auth.identity.workspaceId,
+  );
   return context.render(
     <GitHubSettingsPage
       csrfToken={getCsrfToken(context)}

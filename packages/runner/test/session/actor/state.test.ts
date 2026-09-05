@@ -6,7 +6,7 @@ import {
   RunId,
   RunnerId,
   SessionId,
-  UserId,
+  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
@@ -31,7 +31,7 @@ const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c09",
 );
 const definition = new RunnerSessionDefinition({
-  userId: Schema.decodeUnknownSync(UserId)("01989d78-65ee-7f6a-a97e-0f16ad134c12"),
+  workspaceId: Schema.decodeUnknownSync(WorkspaceId)("01989d78-65ee-7f6a-a97e-0f16ad134c12"),
   projectId: Schema.decodeUnknownSync(ProjectId)("01989d78-65ee-7f6a-a97e-0f16ad134c11"),
   repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
   ref: "main",

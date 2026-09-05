@@ -61,7 +61,7 @@ export default createController(routes.app.settings.secrets, {
             );
           }
           await context.services.store.saveSecret(
-            context.auth.identity.id,
+            context.auth.identity.workspaceId,
             parsed.value.key.trim(),
             parsed.value.value.trim(),
           );
@@ -77,7 +77,7 @@ export default createController(routes.app.settings.secrets, {
             );
           }
           await context.services.store.deleteSecret(
-            context.auth.identity.id,
+            context.auth.identity.workspaceId,
             parsed.value.key.trim(),
           );
           return redirect(routes.app.settings.secrets.index.href(), 303);
@@ -94,7 +94,7 @@ async function renderSecrets(
   error?: string,
   status = 200,
 ): Promise<Response> {
-  const secrets = await context.services.store.listSecrets(context.auth.identity.id);
+  const secrets = await context.services.store.listSecrets(context.auth.identity.workspaceId);
   return context.render(
     <SecretsSettingsPage csrfToken={getCsrfToken(context)} error={error} secrets={secrets} />,
     { status, headers: { "cache-control": "no-store" } },

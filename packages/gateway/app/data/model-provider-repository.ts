@@ -1,5 +1,6 @@
 import type { Database } from "remix/data-table";
 import { err, ok, type Result, trySync } from "@openorb/result";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
 
 import type { MasterKey } from "@/app/utils/master-key.ts";
 import { decryptSecret, encryptSecret, type SecretMetadata } from "@/app/utils/secret-cipher.ts";
@@ -30,22 +31,22 @@ export type DeleteModelProviderCredentialResult =
   | { status: "not-found" };
 
 export interface ModelProviderRepository {
-  listModelProviderCredentials(userId: string): Promise<ModelProviderCredential[]>;
+  listModelProviderCredentials(workspaceId: WorkspaceId): Promise<ModelProviderCredential[]>;
   getModelProviderCredential(
-    userId: string,
+    workspaceId: WorkspaceId,
     providerId: string,
   ): Promise<ModelProviderCredential | null>;
   getModelProviderApiKey(
-    userId: string,
+    workspaceId: WorkspaceId,
     providerId: string,
   ): Promise<Result<string | null, ModelProviderCredentialReadError>>;
   saveModelProviderCredential(
-    userId: string,
+    workspaceId: WorkspaceId,
     providerId: string,
     apiKey: string,
   ): Promise<ModelProviderCredential>;
   deleteModelProviderCredential(
-    userId: string,
+    workspaceId: WorkspaceId,
     providerId: string,
   ): Promise<DeleteModelProviderCredentialResult>;
 }
@@ -55,30 +56,30 @@ export function createModelProviderRepository(
   masterKey: MasterKey,
 ): ModelProviderRepository {
   return {
-    async listModelProviderCredentials(userId) {
+    async listModelProviderCredentials(workspaceId) {
       const rows = await database.findMany(modelProviderCredentials, {
-        where: { user_id: userId },
+        where: { workspace_id: workspaceId },
         orderBy: ["provider_id", "asc"],
       });
       return rows.map(mapCredential);
     },
 
-    async getModelProviderCredential(userId, providerId) {
+    async getModelProviderCredential(workspaceId, providerId) {
       const row = await database.findOne(modelProviderCredentials, {
-        where: { user_id: userId, provider_id: providerId },
+        where: { workspace_id: workspaceId, provider_id: providerId },
       });
       return row ? mapCredential(row) : null;
     },
 
-    async getModelProviderApiKey(userId, providerId) {
+    async getModelProviderApiKey(workspaceId, providerId) {
       const credential = await database.findOne(modelProviderCredentials, {
-        where: { user_id: userId, provider_id: providerId },
+        where: { workspace_id: workspaceId, provider_id: providerId },
       });
       if (!credential) return ok(null);
       const secret = await database.findOne(encryptedSecrets, {
         where: {
           id: credential.encrypted_secret_id,
-          user_id: userId,
+          workspace_id: workspaceId,
           purpose: encryptedSecretPurposes.providerApiKey,
         },
       });
@@ -91,7 +92,7 @@ export function createModelProviderRepository(
       const [apiKey, decryptionError] = await decryptSecret(
         masterKey,
         { keyVersion: secret.key_version, ciphertext },
-        { userId, key: secret.key },
+        { workspaceId, key: secret.key },
       );
       if (decryptionError !== undefined) {
         return err(new ModelProviderCredentialReadError(decryptionError));
@@ -99,17 +100,17 @@ export function createModelProviderRepository(
       return ok(apiKey);
     },
 
-    saveModelProviderCredential(userId, providerId, apiKey) {
+    saveModelProviderCredential(workspaceId, providerId, apiKey) {
       const now = new Date().toISOString();
       return database.transaction(async (transaction) => {
         const existing = await transaction.findOne(modelProviderCredentials, {
-          where: { user_id: userId, provider_id: providerId },
+          where: { workspace_id: workspaceId, provider_id: providerId },
         });
         if (existing) {
           const secret = await transaction.find(encryptedSecrets, existing.encrypted_secret_id);
-          assertCredentialSecret(secret, userId);
+          assertCredentialSecret(secret, workspaceId);
           const encrypted = await encryptSecret(masterKey, apiKey, {
-            userId,
+            workspaceId,
             key: secret.key,
           });
           await transaction.update(encryptedSecrets, secret.id, {
@@ -125,11 +126,11 @@ export function createModelProviderRepository(
 
         const credentialId = crypto.randomUUID();
         const secretKey = crypto.randomUUID();
-        const metadata: SecretMetadata = { userId, key: secretKey };
+        const metadata: SecretMetadata = { workspaceId, key: secretKey };
         const encrypted = await encryptSecret(masterKey, apiKey, metadata);
         const secret: EncryptedSecretRow = {
           id: crypto.randomUUID(),
-          user_id: userId,
+          workspace_id: workspaceId,
           key: secretKey,
           purpose: encryptedSecretPurposes.providerApiKey,
           key_version: encrypted.keyVersion,
@@ -139,7 +140,7 @@ export function createModelProviderRepository(
         };
         const credential: ModelProviderCredentialRow = {
           id: credentialId,
-          user_id: userId,
+          workspace_id: workspaceId,
           provider_id: providerId,
           encrypted_secret_id: secret.id,
           created_at: now,
@@ -151,10 +152,10 @@ export function createModelProviderRepository(
       });
     },
 
-    async deleteModelProviderCredential(userId, providerId) {
+    async deleteModelProviderCredential(workspaceId, providerId) {
       return await database.transaction(async (transaction) => {
         const credential = await transaction.findOne(modelProviderCredentials, {
-          where: { user_id: userId, provider_id: providerId },
+          where: { workspace_id: workspaceId, provider_id: providerId },
         });
         if (!credential) return { status: "not-found" } as const;
         await transaction.delete(modelProviderCredentials, credential.id);
@@ -167,12 +168,12 @@ export function createModelProviderRepository(
 
 function assertCredentialSecret(
   secret: EncryptedSecretRow | null,
-  userId: string,
+  workspaceId: WorkspaceId,
 ): asserts secret is EncryptedSecretRow {
   if (!secret) {
     throw new ModelProviderCredentialIntegrityError("The provider credential secret is missing.");
   }
-  if (secret.user_id !== userId) {
+  if (secret.workspace_id !== workspaceId) {
     throw new ModelProviderCredentialIntegrityError(
       "The provider credential secret has an invalid owner.",
     );

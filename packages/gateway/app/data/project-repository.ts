@@ -1,5 +1,6 @@
 import { type Database, DataTableDatabaseError } from "remix/data-table";
 import { err, ok, type Result, tryAsync } from "@openorb/result";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
 
 import { hasPostgresErrorCode } from "@/app/data/postgres-error.ts";
 import { type ProjectRow, projects } from "@/app/data/schema.ts";
@@ -38,39 +39,41 @@ export class ProjectPersistenceError extends Error {
 }
 
 export interface ProjectRepository {
-  listProjects(userId: string): Promise<Project[]>;
-  getProject(userId: string, id: string): Promise<Project | null>;
-  saveProject(userId: string, input: SaveProjectInput): Promise<SaveProjectResult>;
+  listProjects(workspaceId: WorkspaceId): Promise<Project[]>;
+  getProject(workspaceId: WorkspaceId, id: string): Promise<Project | null>;
+  saveProject(workspaceId: WorkspaceId, input: SaveProjectInput): Promise<SaveProjectResult>;
   deleteProject(
-    userId: string,
+    workspaceId: WorkspaceId,
     id: string,
   ): Promise<Result<DeleteProjectResult, ProjectPersistenceError>>;
 }
 
 export function createProjectRepository(database: Database): ProjectRepository {
   return {
-    async listProjects(userId) {
+    async listProjects(workspaceId) {
       const rows = await database.findMany(projects, {
-        where: { user_id: userId },
+        where: { workspace_id: workspaceId },
         orderBy: ["name", "asc"],
       });
       return rows.map(mapProject);
     },
 
-    async getProject(userId, id) {
-      const row = await database.findOne(projects, { where: { id, user_id: userId } });
+    async getProject(workspaceId, id) {
+      const row = await database.findOne(projects, { where: { id, workspace_id: workspaceId } });
       return row ? mapProject(row) : null;
     },
 
-    saveProject(userId, input) {
+    saveProject(workspaceId, input) {
       return database.transaction(async (transaction) => {
         const existing = input.id
-          ? await transaction.findOne(projects, { where: { id: input.id, user_id: userId } })
+          ? await transaction.findOne(projects, {
+            where: { id: input.id, workspace_id: workspaceId },
+          })
           : null;
         if (input.id && !existing) return { status: "not-found" } as const;
 
         const duplicate = await transaction.findOne(projects, {
-          where: { user_id: userId, name: input.name },
+          where: { workspace_id: workspaceId, name: input.name },
         });
         if (duplicate && duplicate.id !== input.id) return { status: "name-conflict" } as const;
 
@@ -88,7 +91,7 @@ export function createProjectRepository(database: Database): ProjectRepository {
 
         const row: ProjectRow = {
           id: crypto.randomUUID(),
-          user_id: userId,
+          workspace_id: workspaceId,
           name: input.name,
           repository_url: input.repositoryUrl,
           default_ref: DEFAULT_PROJECT_REF,
@@ -101,10 +104,12 @@ export function createProjectRepository(database: Database): ProjectRepository {
       });
     },
 
-    async deleteProject(userId, id) {
+    async deleteProject(workspaceId, id) {
       const [result, persistenceError] = await tryAsync(
         (async () => {
-          const row = await database.findOne(projects, { where: { id, user_id: userId } });
+          const row = await database.findOne(projects, {
+            where: { id, workspace_id: workspaceId },
+          });
           if (!row) return "not-found";
           return (await database.delete(projects, row.id)) ? "deleted" : "not-found";
         })(),

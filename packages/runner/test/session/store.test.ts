@@ -9,7 +9,7 @@ import {
   RunnerSessionSnapshot,
   SessionGitSnapshot,
   SessionId,
-  UserId,
+  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Context, Effect, FileSystem, Layer, Schema } from "effect";
 import { join } from "node:path";
@@ -34,7 +34,7 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c11",
 );
-const USER_ID = Schema.decodeUnknownSync(UserId)(
+const WORKSPACE_ID = Schema.decodeUnknownSync(WorkspaceId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c12",
 );
 const CREATED_AT = "2026-08-17T12:00:00Z";
@@ -51,7 +51,7 @@ function sessionDefinition(
   orbSize: "small" | "medium" = "small",
 ): RunnerSessionDefinition {
   return new RunnerSessionDefinition({
-    userId: USER_ID,
+    workspaceId: WORKSPACE_ID,
     projectId: PROJECT_ID,
     repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
     ref: "main",

@@ -36,23 +36,23 @@ export default createController(routes.api.sessions, {
     async wake(context) {
       const parsed = s.parseSafe(wakeSessionSchema, context.formData);
       if (!parsed.success) return apiError("Invalid recovery action.", 400);
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return apiError("Session not found.", 404);
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return apiError("Session not found.", 404);
       const snapshot = await Effect.runPromise(
-        context.services.runnerConnections.getSessionSnapshot(userId, sessionId),
+        context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
       );
       if (!snapshot) return apiError("The pinned runner is offline.", 503);
 
       const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] = await Promise
         .all([
           context.services.store.getModelProviderApiKey(
-            userId,
+            workspaceId,
             parseModelReference(snapshot.model).providerId,
           ),
-          context.services.store.getGitHubToken(userId),
+          context.services.store.getGitHubToken(workspaceId),
         ]);
       if (modelCredentialError !== undefined) {
         return apiError("The saved model provider credential could not be read.", 500);
@@ -66,7 +66,7 @@ export default createController(routes.api.sessions, {
 
       const woken = await Effect.runPromise(
         context.services.runnerConnections.wakeSession({
-          userId,
+          workspaceId,
           sessionId,
           payload: {
             modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
@@ -85,18 +85,18 @@ export default createController(routes.api.sessions, {
       );
     },
     async changes(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return apiError("Session not found.", 404);
       const parsed = s.parseSafe(updateGitFileSchema, context.formData);
       if (!parsed.success) {
         return apiError(parsed.issues[0]?.message ?? "Invalid Git file update.", 400);
       }
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return apiError("Session not found.", 404);
       const updated = await Effect.runPromise(
         context.services.runnerConnections.updateSessionGitFile({
-          userId,
+          workspaceId,
           sessionId,
           action: parsed.value.action,
           path: parsed.value.path,
@@ -115,16 +115,16 @@ export default createController(routes.api.sessions, {
       });
     },
     async gitSnapshot(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = context.params.sessionId;
       if (!s.parseSafe(sessionIdSchema, sessionId).success) {
         return new Response("Session not found.", { status: 404 });
       }
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return new Response("Session not found.", { status: 404 });
 
       const result = await Effect.runPromise(
-        context.services.runnerConnections.getSessionGitSnapshot(userId, sessionId),
+        context.services.runnerConnections.getSessionGitSnapshot(workspaceId, sessionId),
       );
       if (result.status !== "accepted") {
         return Response.json(
@@ -137,12 +137,12 @@ export default createController(routes.api.sessions, {
       });
     },
     async events(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = context.params.sessionId;
       if (!s.parseSafe(sessionIdSchema, sessionId).success) {
         return new Response("Session not found.", { status: 404 });
       }
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return new Response("Session not found.", { status: 404 });
 
       const afterCursor = parseCursor(context.request);
@@ -150,7 +150,7 @@ export default createController(routes.api.sessions, {
 
       const stream = await Effect.runPromise(
         createSessionEventStream(
-          context.services.runnerConnections.watchSession(userId, sessionId, afterCursor),
+          context.services.runnerConnections.watchSession(workspaceId, sessionId, afterCursor),
         ),
         { signal: context.request.signal },
       );

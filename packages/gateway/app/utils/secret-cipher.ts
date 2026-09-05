@@ -1,12 +1,13 @@
 import { decryptAesGcm, encryptAesGcm } from "@std/crypto/aes-gcm";
 import { err, ok, type Result, tryAsync } from "@openorb/result";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
 
 import type { MasterKey } from "@/app/utils/master-key.ts";
 
 /** Immutable metadata authenticated (but not encrypted) with each secret. */
 export interface SecretMetadata {
   /** The immutable owner of the credential. */
-  userId: string;
+  workspaceId: WorkspaceId;
   /** The internal immutable identity of the encrypted credential. */
   key: string;
 }
@@ -66,6 +67,6 @@ export async function decryptSecret(
 
 function secretAad(metadata: SecretMetadata, keyVersion: number): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(
-    JSON.stringify({ userId: metadata.userId, key: metadata.key, keyVersion }),
+    JSON.stringify({ workspaceId: metadata.workspaceId, key: metadata.key, keyVersion }),
   );
 }

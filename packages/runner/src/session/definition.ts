@@ -6,7 +6,7 @@ import {
   ProjectId,
   SessionGitReference,
   SessionRepositoryUrl,
-  UserId,
+  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Schema } from "effect";
 
@@ -21,7 +21,7 @@ const StoredInitialPrompt = Schema.String.check(
 export class RunnerSessionDefinition extends Schema.Class<RunnerSessionDefinition>(
   "RunnerSessionDefinition",
 )({
-  userId: UserId,
+  workspaceId: WorkspaceId,
   projectId: ProjectId,
   repositoryUrl: SessionRepositoryUrl,
   ref: SessionGitReference,

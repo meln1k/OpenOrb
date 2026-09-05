@@ -1,4 +1,4 @@
-import type { RunnerSessionSnapshot } from "@openorb/protocol/runner-api";
+import type { RunnerSessionSnapshot, WorkspaceId } from "@openorb/protocol/runner-api";
 import { err, ok, type Result, tryAsync } from "@openorb/result";
 import type { Database } from "remix/data-table";
 
@@ -34,15 +34,18 @@ export interface SessionCatalogEntry {
 export type DeleteSessionCatalogResult = "deleted" | "not-found";
 
 export interface SessionCatalogRepository {
-  listSessionCatalogEntries(userId: string): Promise<SessionCatalogEntry[]>;
-  getSessionCatalogEntry(userId: string, sessionId: string): Promise<SessionCatalogEntry | null>;
+  listSessionCatalogEntries(workspaceId: WorkspaceId): Promise<SessionCatalogEntry[]>;
+  getSessionCatalogEntry(
+    workspaceId: WorkspaceId,
+    sessionId: string,
+  ): Promise<SessionCatalogEntry | null>;
   deleteSessionCatalogEntry(
-    userId: string,
+    workspaceId: WorkspaceId,
     sessionId: string,
     deletedAt: string,
   ): Promise<Result<DeleteSessionCatalogResult, SessionCatalogPersistenceError>>;
   reconcileSessionManifestEntries(
-    userId: string,
+    workspaceId: WorkspaceId,
     entries: RunnerSessionSnapshot[],
   ): Promise<Result<ReconciledSessionManifest, SessionCatalogPersistenceError>>;
 }
@@ -55,44 +58,44 @@ class SessionManifestReconciliationRejected extends Error {
 
 export function createSessionCatalogRepository(database: Database): SessionCatalogRepository {
   return {
-    async listSessionCatalogEntries(userId) {
+    async listSessionCatalogEntries(workspaceId) {
       const rows = await database.findMany(sessions, {
-        where: { user_id: userId },
+        where: { workspace_id: workspaceId },
         orderBy: ["created_at", "desc"],
       });
       return rows.map(mapSessionCatalogEntry);
     },
 
-    async getSessionCatalogEntry(userId, sessionId) {
+    async getSessionCatalogEntry(workspaceId, sessionId) {
       const row = await database.findOne(sessions, {
-        where: { user_id: userId, id: sessionId },
+        where: { workspace_id: workspaceId, id: sessionId },
       });
       return row ? mapSessionCatalogEntry(row) : null;
     },
 
-    async deleteSessionCatalogEntry(userId, sessionId, deletedAt) {
+    async deleteSessionCatalogEntry(workspaceId, sessionId, deletedAt) {
       return await tryAsync(
         database.transaction(async (transaction) => {
-          // Reconciliation takes the same user-row lock. Exactly one transaction can decide
+          // Reconciliation takes the same workspace-row lock. Exactly one transaction can decide
           // whether this session is live or tombstoned at a time.
           await transaction.exec(
-            "select id from users where id = $1 for update",
-            [userId],
+            "select id from workspaces where id = $1 for update",
+            [workspaceId],
           );
           const row = await transaction.findOne(sessions, {
-            where: { user_id: userId, id: sessionId },
+            where: { workspace_id: workspaceId, id: sessionId },
           });
           if (!row) return "not-found" as const;
 
           await transaction.exec(
-            `insert into deleted_sessions (user_id, session_id, deleted_at)
+            `insert into deleted_sessions (workspace_id, session_id, deleted_at)
              values ($1, $2, $3)
-             on conflict (user_id, session_id) do nothing`,
-            [userId, sessionId, deletedAt],
+             on conflict (workspace_id, session_id) do nothing`,
+            [workspaceId, sessionId, deletedAt],
           );
           await transaction.exec(
-            "delete from sessions where user_id = $1 and id = $2",
-            [userId, sessionId],
+            "delete from sessions where workspace_id = $1 and id = $2",
+            [workspaceId, sessionId],
           );
           return "deleted" as const;
         }),
@@ -100,15 +103,15 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
       );
     },
 
-    async reconcileSessionManifestEntries(userId, entries) {
+    async reconcileSessionManifestEntries(workspaceId, entries) {
       const [result, transactionError] = await tryAsync(
         database.transaction(async (transaction) => {
-          // Tombstone inserts take a key-share lock on this referenced user row. Holding the
+          // Tombstone inserts take a key-share lock on this referenced workspace row. Holding the
           // conflicting update lock through reconciliation makes either the tombstone or the
           // catalog snapshot win first, so a deletion can never miss an uncommitted catalog row.
           await transaction.exec(
-            "select id from users where id = $1 for update",
-            [userId],
+            "select id from workspaces where id = $1 for update",
+            [workspaceId],
           );
 
           const result: ReconciledSessionManifest = {
@@ -119,7 +122,7 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
 
           for (const entry of entries) {
             const tombstone = await transaction.findOne(deletedSessions, {
-              where: { user_id: userId, session_id: entry.id },
+              where: { workspace_id: workspaceId, session_id: entry.id },
             });
             if (tombstone) {
               result.tombstonedSessionIds.push(entry.id);
@@ -128,31 +131,31 @@ export function createSessionCatalogRepository(database: Database): SessionCatal
 
             await transaction.exec(
               `insert into sessions (
-               user_id, id, project_id, created_at, initial_prompt_preview
+               workspace_id, id, project_id, created_at, initial_prompt_preview
              )
              select $1, $2, $3, $4, $5
               where exists (
                 select 1
                   from projects
-                 where user_id = $1
+                 where workspace_id = $1
                    and id = $3
               )
                 and not exists (
                   select 1
                     from deleted_sessions
-                   where user_id = $1
+                   where workspace_id = $1
                      and session_id = $2
                 )
-             on conflict (user_id, id) do nothing`,
-              [userId, entry.id, entry.projectId, entry.createdAt, entry.initialPromptPreview],
+             on conflict (workspace_id, id) do nothing`,
+              [workspaceId, entry.id, entry.projectId, entry.createdAt, entry.initialPromptPreview],
             );
 
             const row = await transaction.findOne(sessions, {
-              where: { user_id: userId, id: entry.id },
+              where: { workspace_id: workspaceId, id: entry.id },
             });
             if (!row) {
               const deleted = await transaction.findOne(deletedSessions, {
-                where: { user_id: userId, session_id: entry.id },
+                where: { workspace_id: workspaceId, session_id: entry.id },
               });
               if (deleted) result.tombstonedSessionIds.push(entry.id);
               else result.rejected.push({ sessionId: entry.id, reason: "project-not-found" });

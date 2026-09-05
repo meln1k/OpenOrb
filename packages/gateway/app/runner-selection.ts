@@ -1,4 +1,5 @@
 import { type OrbSize, orbSizeResources } from "@openorb/protocol";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
 import { Effect } from "effect";
 
 import type { RunnerRecord, RunnerRepository } from "@/app/data/runner-repository.ts";
@@ -17,24 +18,24 @@ export type RunnerSelectionResult =
     message: string;
   };
 
-export async function selectRunnerForUser(
-  userId: string,
+export async function selectRunnerForWorkspace(
+  workspaceId: WorkspaceId,
   manualRunnerId: string | undefined,
   orbSize: OrbSize,
   repository: Pick<RunnerRepository, "listRunners">,
   connections: Pick<RunnerRegistryService, "getRunnerLiveState">,
 ): Promise<RunnerSelectionResult> {
-  const runners = await repository.listRunners(userId);
+  const runners = await repository.listRunners(workspaceId);
 
   if (manualRunnerId !== undefined) {
     const runner = runners.find((candidate) => candidate.id === manualRunnerId);
     if (!runner) return rejected("Runner is unavailable or does not exist.");
-    return await assessRunner(userId, runner, orbSize, connections);
+    return await assessRunner(workspaceId, runner, orbSize, connections);
   }
 
   const available: Array<Extract<RunnerSelectionResult, { status: "selected" }>> = [];
   for (const runner of runners) {
-    const assessed = await assessRunner(userId, runner, orbSize, connections);
+    const assessed = await assessRunner(workspaceId, runner, orbSize, connections);
     if (assessed.status === "selected") available.push(assessed);
   }
   available.sort((left, right) =>
@@ -48,13 +49,13 @@ export async function selectRunnerForUser(
 }
 
 async function assessRunner(
-  userId: string,
+  workspaceId: WorkspaceId,
   runner: RunnerRecord,
   orbSize: OrbSize,
   connections: Pick<RunnerRegistryService, "getRunnerLiveState">,
 ): Promise<RunnerSelectionResult> {
   if (runner.revokedAt !== null) return rejected("Runner has been revoked.");
-  const liveState = await Effect.runPromise(connections.getRunnerLiveState(userId, runner.id));
+  const liveState = await Effect.runPromise(connections.getRunnerLiveState(workspaceId, runner.id));
   if (!liveState) return rejected("Runner is offline.");
 
   const { diskFreeMiB } = liveState.capacity;

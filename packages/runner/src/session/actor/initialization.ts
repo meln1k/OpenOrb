@@ -215,7 +215,7 @@ export function makeSessionInitialization(options: SessionInitializationOptions)
               category: "checkpoint-resume",
               severity: "failure",
               message:
-                "The published checkpoint is unavailable. Start a clean VM explicitly; the Project Workspace and Pi conversation are preserved.",
+                "The published checkpoint is unavailable. Start a clean VM explicitly; the Project Checkout and Pi conversation are preserved.",
               recovery: "start-clean-vm",
             }),
           },
@@ -519,8 +519,8 @@ function lostEnvironmentIssue(state: SessionState, message: string): SessionIssu
     category: "operation-uncertain",
     severity: "failure",
     message: hasCheckpoint
-      ? `${message} Resume the prior checkpoint explicitly. Newer guest root-disk changes may not have been captured; the Project Workspace and Pi conversation remain preserved.`
-      : `${message} Start a clean VM explicitly; the Project Workspace and Pi conversation remain preserved.`,
+      ? `${message} Resume the prior checkpoint explicitly. Newer guest root-disk changes may not have been captured; the Project Checkout and Pi conversation remain preserved.`
+      : `${message} Start a clean VM explicitly; the Project Checkout and Pi conversation remain preserved.`,
     recovery: hasCheckpoint ? "resume-prior-checkpoint" : "start-clean-vm",
   });
 }
@@ -549,8 +549,8 @@ function actorCrashIssue(state: SessionState): SessionIssue {
     category: "actor-crash",
     severity: "failure",
     message: hasCheckpoint
-      ? "The session actor crashed. Its scoped environment was closed and no command was replayed. Resume the prior checkpoint explicitly; newer guest root-disk changes may roll back, while the Project Workspace and Pi conversation remain preserved."
-      : "The session actor crashed. Its scoped environment was closed and no command was replayed. Start a clean VM explicitly; the Project Workspace and Pi conversation remain preserved.",
+      ? "The session actor crashed. Its scoped environment was closed and no command was replayed. Resume the prior checkpoint explicitly; newer guest root-disk changes may roll back, while the Project Checkout and Pi conversation remain preserved."
+      : "The session actor crashed. Its scoped environment was closed and no command was replayed. Start a clean VM explicitly; the Project Checkout and Pi conversation remain preserved.",
     recovery: hasCheckpoint ? "resume-prior-checkpoint" : "start-clean-vm",
   });
 }

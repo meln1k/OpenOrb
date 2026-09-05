@@ -15,8 +15,8 @@ import {
   type SessionIssueCategory,
   StopSessionPayload,
   UpdateSessionGitFilePayload,
-  UserId,
   WakeSessionPayload,
+  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Fiber, Layer, Schema, Stream } from "effect";
 import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -67,7 +67,7 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c11",
 );
-const USER_ID = Schema.decodeUnknownSync(UserId)(
+const WORKSPACE_ID = Schema.decodeUnknownSync(WorkspaceId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c12",
 );
 const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
@@ -85,7 +85,7 @@ interface TestStore extends RunnerSessionStoreService {
 
 function sessionDefinition(branchName: string): RunnerSessionDefinition {
   return new RunnerSessionDefinition({
-    userId: USER_ID,
+    workspaceId: WORKSPACE_ID,
     projectId: PROJECT_ID,
     repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
     ref: "main",
@@ -206,7 +206,7 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
     const payload = Schema.decodeUnknownSync(ProvisionSessionPayload)({
       mode: "create",
       sessionId: SESSION_ID,
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       projectId: PROJECT_ID,
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
       ref: "main",
@@ -764,11 +764,11 @@ Deno.test("session owners retain separate immutable Git identities in guest envi
   const directory = await Deno.makeTempDir();
   const identities = [
     {
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       gitAuthor: GIT_AUTHOR,
     },
     {
-      userId: Schema.decodeUnknownSync(UserId)(
+      workspaceId: Schema.decodeUnknownSync(WorkspaceId)(
         "01989d78-65ee-7f6a-a97e-0f16ad134c13",
       ),
       gitAuthor: new GitAuthor({ name: "Second User", email: "second@example.com" }),
@@ -793,7 +793,7 @@ Deno.test("session owners retain separate immutable Git identities in guest envi
       };
       const payload = Schema.decodeUnknownSync(ProvisionSessionPayload)({
         ...createProvisionPayload(`openorb/identity-${index}`),
-        userId: identity.userId,
+        workspaceId: identity.workspaceId,
         gitAuthor: identity.gitAuthor,
       });
       if (payload.mode !== "create") throw new Error("Expected a create payload.");
@@ -810,7 +810,7 @@ Deno.test("session owners retain separate immutable Git identities in guest envi
           await Effect.runPromise(supervisor.provision(payload));
           await waitForState(store, "ready");
           const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
-          assertEquals(metadata.definition.userId, identity.userId);
+          assertEquals(metadata.definition.workspaceId, identity.workspaceId);
           assertEquals(metadata.definition.gitAuthor, identity.gitAuthor);
         },
       );
@@ -930,7 +930,7 @@ Deno.test("SessionSupervisor records failed follow-ups and aborts only the activ
     const provision = Schema.decodeUnknownSync(ProvisionSessionPayload)({
       mode: "create",
       sessionId: SESSION_ID,
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       projectId: PROJECT_ID,
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
       ref: "main",
@@ -1986,7 +1986,7 @@ function createProvisionPayload(
   const payload = Schema.decodeUnknownSync(ProvisionSessionPayload)({
     mode: "create",
     sessionId: SESSION_ID,
-    userId: USER_ID,
+    workspaceId: WORKSPACE_ID,
     projectId: PROJECT_ID,
     repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
     ref: "main",

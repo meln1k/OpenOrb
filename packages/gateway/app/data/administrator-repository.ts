@@ -1,6 +1,7 @@
 import type { Database } from "remix/data-table";
 import { v7 } from "@std/uuid";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
+import { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
 
 import {
   hashPassword,
@@ -12,11 +13,17 @@ import {
   type PasswordHash,
   verifyPassword,
 } from "@/app/utils/password.ts";
-import { type PasswordCredential, passwordCredentials, users } from "@/app/data/schema.ts";
+import {
+  type PasswordCredential,
+  passwordCredentials,
+  users,
+  workspaces,
+} from "@/app/data/schema.ts";
 import { hasPostgresErrorCode } from "@/app/data/postgres-error.ts";
 
 export interface Administrator {
-  id: string;
+  userId: UserId;
+  workspaceId: WorkspaceId;
 }
 
 export class AdministratorPersistenceError extends Error {
@@ -28,7 +35,7 @@ export class AdministratorPersistenceError extends Error {
 
 export interface AdministratorRepository {
   hasAdministrator(): Promise<boolean>;
-  getAdministrator(id: string): Promise<Administrator | null>;
+  getAdministrator(userId: UserId): Promise<Administrator | null>;
   createAdministrator(password: string): Promise<Result<boolean, AdministratorPersistenceError>>;
   verifyAdministratorPassword(password: string): Promise<Administrator | null>;
 }
@@ -38,21 +45,29 @@ export function createAdministratorRepository(database: Database): Administrator
     async hasAdministrator() {
       return (await database.findOne(users, { where: { is_administrator: true } })) !== null;
     },
-    async getAdministrator(id) {
+    async getAdministrator(userId) {
       const user = await database.findOne(users, {
-        where: { id, is_administrator: true },
+        where: { id: userId, is_administrator: true },
       });
-      return user ? { id: user.id } : null;
+      return user
+        ? { userId: UserId.make(user.id), workspaceId: WorkspaceId.make(user.workspace_id) }
+        : null;
     },
     async createAdministrator(password) {
       const passwordHash = await hashPassword(password);
 
       const [, persistenceError] = await tryAsync(
         database.transaction(async (transaction) => {
+          const workspaceId = WorkspaceId.make(v7.generate());
+          await transaction.create(workspaces, {
+            id: workspaceId,
+            created_at: new Date().toISOString(),
+          });
           const user = await transaction.create(
             users,
             {
-              id: v7.generate(),
+              id: UserId.make(v7.generate()),
+              workspace_id: workspaceId,
               is_administrator: true,
               created_at: new Date().toISOString(),
             },
@@ -93,7 +108,12 @@ export function createAdministratorRepository(database: Database): Administrator
       if (!passwordHash) return null;
 
       const valid = await verifyPassword(password, passwordHash);
-      return valid ? { id: administrator.id } : null;
+      return valid
+        ? {
+          userId: UserId.make(administrator.id),
+          workspaceId: WorkspaceId.make(administrator.workspace_id),
+        }
+        : null;
     },
   };
 }

@@ -1,5 +1,6 @@
 import type { Database } from "remix/data-table";
 import { err, ok, type Result, trySync } from "@openorb/result";
+import type { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
 
 import type { MasterKey } from "@/app/utils/master-key.ts";
 import { decryptSecret, encryptSecret, type SecretMetadata } from "@/app/utils/secret-cipher.ts";
@@ -41,15 +42,15 @@ export class GitCredentialReadError extends Error {
 }
 
 export interface GitConfigurationRepository {
-  getGitAuthorConfiguration(userId: string): Promise<GitAuthorConfiguration | null>;
-  saveGitAuthorConfiguration(userId: string, input: {
+  getGitAuthorConfiguration(userId: UserId): Promise<GitAuthorConfiguration | null>;
+  saveGitAuthorConfiguration(userId: UserId, input: {
     authorName: string;
     authorEmail: string;
   }): Promise<GitAuthorConfiguration>;
-  getGitHubCredential(userId: string): Promise<GitCredential | null>;
-  getGitHubToken(userId: string): Promise<Result<string | null, GitCredentialReadError>>;
-  saveGitHubCredential(userId: string, token: string): Promise<GitCredential>;
-  deleteGitHubCredential(userId: string): Promise<DeleteGitCredentialResult>;
+  getGitHubCredential(workspaceId: WorkspaceId): Promise<GitCredential | null>;
+  getGitHubToken(workspaceId: WorkspaceId): Promise<Result<string | null, GitCredentialReadError>>;
+  saveGitHubCredential(workspaceId: WorkspaceId, token: string): Promise<GitCredential>;
+  deleteGitHubCredential(workspaceId: WorkspaceId): Promise<DeleteGitCredentialResult>;
 }
 
 export function createGitConfigurationRepository(
@@ -85,22 +86,22 @@ export function createGitConfigurationRepository(
       return mapGitAuthorConfiguration(row);
     },
 
-    async getGitHubCredential(userId) {
+    async getGitHubCredential(workspaceId) {
       const row = await database.findOne(gitCredentials, {
-        where: { user_id: userId, host: GITHUB_HOST },
+        where: { workspace_id: workspaceId, host: GITHUB_HOST },
       });
       return row ? mapGitCredential(row) : null;
     },
 
-    async getGitHubToken(userId) {
+    async getGitHubToken(workspaceId) {
       const credential = await database.findOne(gitCredentials, {
-        where: { user_id: userId, host: GITHUB_HOST },
+        where: { workspace_id: workspaceId, host: GITHUB_HOST },
       });
       if (!credential) return ok(null);
       const secret = await database.findOne(encryptedSecrets, {
         where: {
           id: credential.encrypted_secret_id,
-          user_id: userId,
+          workspace_id: workspaceId,
           purpose: encryptedSecretPurposes.gitCredential,
         },
       });
@@ -116,17 +117,17 @@ export function createGitConfigurationRepository(
           keyVersion: secret.key_version,
           ciphertext,
         },
-        { userId, key: secret.key },
+        { workspaceId, key: secret.key },
       );
       if (decryptionError !== undefined) return err(new GitCredentialReadError(decryptionError));
       return ok(token);
     },
 
-    saveGitHubCredential(userId, token) {
+    saveGitHubCredential(workspaceId, token) {
       const now = new Date().toISOString();
       return database.transaction(async (transaction) => {
         const existing = await transaction.findOne(gitCredentials, {
-          where: { user_id: userId, host: GITHUB_HOST },
+          where: { workspace_id: workspaceId, host: GITHUB_HOST },
         });
 
         if (existing) {
@@ -139,12 +140,12 @@ export function createGitConfigurationRepository(
               "The GitHub credential secret has an invalid purpose.",
             );
           }
-          if (secret.user_id !== userId) {
+          if (secret.workspace_id !== workspaceId) {
             throw new GitCredentialIntegrityError(
               "The GitHub credential secret has an invalid owner.",
             );
           }
-          const encrypted = await encryptSecret(masterKey, token, { userId, key: secret.key });
+          const encrypted = await encryptSecret(masterKey, token, { workspaceId, key: secret.key });
           await transaction.update(encryptedSecrets, secret.id, {
             key_version: encrypted.keyVersion,
             ciphertext: encrypted.ciphertext.toBase64(),
@@ -160,11 +161,11 @@ export function createGitConfigurationRepository(
         const secretKey = `${GITHUB_SECRET_KEY_PREFIX}${
           credentialId.replaceAll("-", "").toUpperCase()
         }`;
-        const metadata: SecretMetadata = { userId, key: secretKey };
+        const metadata: SecretMetadata = { workspaceId, key: secretKey };
         const encrypted = await encryptSecret(masterKey, token, metadata);
         const secret: EncryptedSecretRow = {
           id: crypto.randomUUID(),
-          user_id: userId,
+          workspace_id: workspaceId,
           key: secretKey,
           purpose: encryptedSecretPurposes.gitCredential,
           key_version: encrypted.keyVersion,
@@ -174,7 +175,7 @@ export function createGitConfigurationRepository(
         };
         const credential: GitCredentialRow = {
           id: credentialId,
-          user_id: userId,
+          workspace_id: workspaceId,
           host: GITHUB_HOST,
           encrypted_secret_id: secret.id,
           created_at: now,
@@ -187,10 +188,10 @@ export function createGitConfigurationRepository(
       });
     },
 
-    async deleteGitHubCredential(userId) {
+    async deleteGitHubCredential(workspaceId) {
       return await database.transaction(async (transaction) => {
         const credential = await transaction.findOne(gitCredentials, {
-          where: { user_id: userId, host: GITHUB_HOST },
+          where: { workspace_id: workspaceId, host: GITHUB_HOST },
         });
         if (!credential) return { status: "not-found" } as const;
 

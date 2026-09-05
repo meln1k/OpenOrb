@@ -28,6 +28,7 @@ import {
   WakeSessionPayload,
   WatchSessionEvent,
   WatchSessionPayload,
+  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Context, Deferred, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
@@ -41,7 +42,7 @@ import * as SocketServer from "effect/unstable/socket/SocketServer";
 import { makeRunnerRegistry, PERMANENT_REJECTION_CLOSE_CODE } from "@/app/runner-registry.ts";
 import type { RejectedSessionManifestEntry } from "@/app/data/session-catalog-repository.ts";
 
-const USER_ID = "018f47f2-39b1-7b30-8000-000000000000";
+const WORKSPACE_ID = WorkspaceId.make("018f47f2-39b1-7b30-8000-000000000000");
 const RUNNER_ID = "018f47f2-39b1-7b30-8000-000000000001";
 const SESSION_1 = "018f47f2-39b1-7b30-8000-000000000011";
 const SESSION_2 = "018f47f2-39b1-7b30-8000-000000000012";
@@ -145,8 +146,12 @@ function fakeRepository(
 ) {
   return {
     authenticateRunner: (token: string) =>
-      Promise.resolve(token === TOKEN ? { id: RUNNER_ID, userId: USER_ID } : null),
-    reconcileSessionManifestEntries: (_userId: string, entries: RunnerSessionSnapshot[]) => {
+      Promise.resolve(token === TOKEN ? { id: RUNNER_ID, workspaceId: WORKSPACE_ID } : null),
+    reconcileSessionManifestEntries: (
+      workspaceId: WorkspaceId,
+      entries: RunnerSessionSnapshot[],
+    ) => {
+      assertEquals(workspaceId, WORKSPACE_ID);
       return Effect.runPromise(Effect.gen(function* () {
         const block = probe?.block;
         if (block) {
@@ -382,13 +387,19 @@ Deno.test("valid identity and complete snapshot admit; invalid token closes 4401
     yield* publishSnapshot(valid, [snapshot(SESSION_1)]);
     yield* waitUntil(
       () =>
-        harness.gateway.getSessionRunner(USER_ID, SESSION_1).pipe(
+        harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(
           Effect.map((runnerId) => runnerId === RUNNER_ID),
         ),
       "route not admitted",
     );
     assertEquals(valid.identifyCalls, 1);
     assertEquals(valid.watchCalls, 1);
+    const foreignWorkspaceId = WorkspaceId.make("018f47f2-39b1-7b30-8000-000000000099");
+    assertEquals(yield* harness.gateway.getSessionRunner(foreignWorkspaceId, SESSION_1), null);
+    assertEquals(yield* harness.gateway.getSessionSnapshot(foreignWorkspaceId, SESSION_1), null);
+    assertEquals(yield* harness.gateway.getRunnerLiveState(foreignWorkspaceId, RUNNER_ID), null);
+    assertEquals(yield* harness.gateway.disconnectRunner(foreignWorkspaceId, RUNNER_ID), false);
+    assertEquals(yield* harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), RUNNER_ID);
 
     const invalid = yield* makeProbe("openorb_runner_invalid");
     yield* connectRunner(harness.url, invalid);
@@ -404,7 +415,7 @@ Deno.test("partial replacement stays hidden until make-before-break admission co
     yield* publishSnapshot(first, [snapshot(SESSION_1)], 1);
     yield* waitUntil(
       () =>
-        gateway.getSessionRunner(USER_ID, SESSION_1).pipe(
+        gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(
           Effect.map((runnerId) => runnerId === RUNNER_ID),
         ),
       "first route missing",
@@ -416,11 +427,11 @@ Deno.test("partial replacement stays hidden until make-before-break admission co
       () => Effect.sync(() => second.watchCalls === 1),
       "replacement did not begin watching",
     );
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), RUNNER_ID);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), RUNNER_ID);
     yield* publishSnapshot(second, [snapshot(SESSION_2)], 10);
     yield* Deferred.await(first.connectionFinalized);
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_2), RUNNER_ID);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_2), RUNNER_ID);
 
     yield* Queue.offer(
       first.runnerEvents,
@@ -431,8 +442,8 @@ Deno.test("partial replacement stays hidden until make-before-break admission co
       }),
     );
     yield* Effect.sleep(30);
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals((yield* gateway.getSessionSnapshot(USER_ID, SESSION_2))?.id, SESSION_2);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals((yield* gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_2))?.id, SESSION_2);
   }))));
 
 Deno.test("WatchSession stream cancellation reaches the runner handler finalizer", () =>
@@ -442,10 +453,10 @@ Deno.test("WatchSession stream cancellation reaches the runner handler finalizer
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
-    yield* gateway.watchSession(USER_ID, SESSION_1, 0).pipe(Stream.take(1), Stream.runDrain);
+    yield* gateway.watchSession(WORKSPACE_ID, SESSION_1, 0).pipe(Stream.take(1), Stream.runDrain);
     assertEquals(probe.sessionWatches.length, 1);
     yield* Deferred.await(probe.sessionWatches[0]!.finalized);
     assertEquals(
@@ -461,19 +472,19 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
 
     const firstReceived = yield* Deferred.make<void>();
     const secondContinued = yield* Deferred.make<void>();
-    const first = yield* gateway.watchSession(USER_ID, SESSION_1, 3).pipe(
+    const first = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1, 3).pipe(
       Stream.tap(() => Deferred.succeed(firstReceived, undefined)),
       Stream.runDrain,
       Effect.forkChild({ startImmediately: true }),
     );
     yield* Deferred.await(firstReceived);
-    const second = yield* gateway.watchSession(USER_ID, SESSION_1, 3).pipe(
+    const second = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1, 3).pipe(
       Stream.tap((item) =>
         item.event.type === "assistant.text.delta" && item.event.delta === "second-continues"
           ? Deferred.succeed(secondContinued, undefined)
@@ -486,7 +497,7 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
       () => Effect.sync(() => probe.sessionWatches.length === 2),
       "second watch did not start",
     );
-    const third = yield* gateway.watchSession(USER_ID, SESSION_1, 4).pipe(
+    const third = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1, 4).pipe(
       Stream.runDrain,
       Effect.forkChild({ startImmediately: true }),
     );
@@ -519,10 +530,10 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
       }),
     );
     yield* Deferred.await(secondContinued);
-    assert(yield* gateway.disconnectRunner(USER_ID, RUNNER_ID));
+    assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
     yield* Deferred.await(probe.sessionWatches[1]!.finalized);
     yield* Deferred.await(probe.sessionWatches[2]!.finalized);
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
     yield* Fiber.interrupt(second);
     yield* Fiber.interrupt(third);
   }))));
@@ -534,7 +545,7 @@ Deno.test("Wake routes model and GitHub credentials to a stopped session's runne
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1, undefined, "stopped")]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
 
@@ -544,7 +555,7 @@ Deno.test("Wake routes model and GitHub credentials to a stopped session's runne
       credential: { type: "api_key" as const, value: "secret" },
     };
     const result = yield* gateway.wakeSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_1,
       payload: { modelRuntime, githubToken: "github-token" },
     });
@@ -574,7 +585,7 @@ Deno.test("Wake routes only the recovery offered by the runner snapshot", () =>
       recovery: "start-clean-vm",
     }])]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
 
@@ -584,14 +595,14 @@ Deno.test("Wake routes only the recovery offered by the runner snapshot", () =>
       credential: { type: "api_key" as const, value: "secret" },
     };
     const missingRecovery = yield* gateway.wakeSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_1,
       payload: { modelRuntime },
     });
     assertEquals(missingRecovery.status, "rejected");
 
     const accepted = yield* gateway.wakeSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_1,
       payload: { modelRuntime, recovery: "start-clean-vm" },
     });
@@ -612,11 +623,11 @@ Deno.test("Stop routes only ready sessions to the pinned runner", () =>
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
 
-    const stopped = yield* gateway.stopSession({ userId: USER_ID, sessionId: SESSION_1 });
+    const stopped = yield* gateway.stopSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
     assertEquals(stopped.status, "accepted");
     assertEquals(probe.stopRequests, [decode(StopSessionPayload)({ sessionId: SESSION_1 })]);
 
@@ -630,12 +641,12 @@ Deno.test("Stop routes only ready sessions to the pinned runner", () =>
     );
     yield* waitUntil(
       () =>
-        gateway.getSessionSnapshot(USER_ID, SESSION_1).pipe(
+        gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_1).pipe(
           Effect.map((current) => current?.state === "running"),
         ),
       "running snapshot missing",
     );
-    const busy = yield* gateway.stopSession({ userId: USER_ID, sessionId: SESSION_1 });
+    const busy = yield* gateway.stopSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
     assertEquals(busy.status, "rejected");
     assertEquals(probe.stopRequests.length, 1);
   }))));
@@ -647,12 +658,12 @@ Deno.test("session deletion removes routes and cleans stale updates", () =>
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
 
     yield* gateway.deleteSession({
-      userId: "018f47f2-39b1-7b30-8000-000000000099",
+      workspaceId: WorkspaceId.make("018f47f2-39b1-7b30-8000-000000000099"),
       sessionId: SESSION_1,
     });
     assertEquals(probe.deleteRequests, []);
@@ -663,7 +674,7 @@ Deno.test("session deletion removes routes and cleans stale updates", () =>
     };
     probe.provisionBlock = provisionBlock;
     const retry = yield* gateway.provisionSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       runnerId: RUNNER_ID,
       sessionId: SESSION_1,
       payload: {
@@ -677,13 +688,13 @@ Deno.test("session deletion removes routes and cleans stale updates", () =>
     }).pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(provisionBlock.started);
     yield* gateway.deleteSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_1,
     });
     yield* Deferred.succeed(provisionBlock.release, undefined);
     assertEquals((yield* Fiber.join(retry)).status, "accepted");
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_1), null);
     yield* waitUntil(
       () => Effect.sync(() => probe.deleteRequests.length === 1),
       "runner cleanup was not requested",
@@ -702,7 +713,7 @@ Deno.test("session deletion removes routes and cleans stale updates", () =>
       () => Effect.sync(() => probe.deleteRequests.length === 2),
       "stale tombstoned update did not request cleanup",
     );
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
     assertEquals(probe.deleteRequests, [
       decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
       decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
@@ -722,16 +733,16 @@ Deno.test("deletion during reconnect reconciliation blocks stale route publicati
     yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
     yield* Deferred.await(block.started);
 
-    yield* gateway.deleteSession({ userId: USER_ID, sessionId: SESSION_1 });
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
+    yield* gateway.deleteSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
     yield* Deferred.succeed(block.release, undefined);
 
     yield* waitUntil(
       () => Effect.sync(() => probe.deleteRequests.length === 1),
       "reconciled deleted session was not cleaned up",
     );
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_1), null);
     assertEquals(probe.deleteRequests, [
       decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
     ]);
@@ -745,7 +756,7 @@ Deno.test("deletion during unknown-session reconciliation blocks stale update pu
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_2)]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
       "initial route missing",
     );
 
@@ -764,16 +775,16 @@ Deno.test("deletion during unknown-session reconciliation blocks stale update pu
     );
     yield* Deferred.await(block.started);
 
-    yield* gateway.deleteSession({ userId: USER_ID, sessionId: SESSION_1 });
+    yield* gateway.deleteSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
     yield* Deferred.succeed(block.release, undefined);
 
     yield* waitUntil(
       () => Effect.sync(() => probe.deleteRequests.length === 1),
       "deleted late session update was not cleaned up",
     );
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_2), RUNNER_ID);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_2), RUNNER_ID);
   }))));
 
 Deno.test("deletion during create reconciliation blocks late provisioning publication", () =>
@@ -785,7 +796,9 @@ Deno.test("deletion during create reconciliation blocks late provisioning public
     yield* publishSnapshot(probe, []);
     yield* waitUntil(
       () =>
-        gateway.getRunnerLiveState(USER_ID, RUNNER_ID).pipe(Effect.map((live) => live !== null)),
+        gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID).pipe(
+          Effect.map((live) => live !== null),
+        ),
       "runner not admitted",
     );
 
@@ -795,7 +808,7 @@ Deno.test("deletion during create reconciliation blocks late provisioning public
     };
     reconciliation.block = block;
     const provision = yield* gateway.provisionSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       runnerId: RUNNER_ID,
       sessionId: SESSION_1,
       payload: {
@@ -816,7 +829,7 @@ Deno.test("deletion during create reconciliation blocks late provisioning public
     }).pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(block.started);
 
-    yield* gateway.deleteSession({ userId: USER_ID, sessionId: SESSION_1 });
+    yield* gateway.deleteSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
     yield* Deferred.succeed(block.release, undefined);
 
     assertEquals((yield* Fiber.join(provision)).status, "accepted");
@@ -824,8 +837,8 @@ Deno.test("deletion during create reconciliation blocks late provisioning public
       () => Effect.sync(() => probe.deleteRequests.length === 1),
       "deleted provisioned session was not cleaned up",
     );
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_1), null);
   }))));
 
 Deno.test("tombstoned reconnect snapshots stay hidden while cleanup retries", () =>
@@ -836,12 +849,12 @@ Deno.test("tombstoned reconnect snapshots stay hidden while cleanup retries", ()
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1), snapshot(SESSION_2)]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
       "non-tombstoned route missing",
     );
 
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_1), null);
     yield* waitUntil(
       () => Effect.sync(() => probe.deleteRequests.length === 2),
       "failed runner cleanup was not retried",
@@ -850,7 +863,7 @@ Deno.test("tombstoned reconnect snapshots stay hidden while cleanup retries", ()
       decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
       decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
     ]);
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_2), RUNNER_ID);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_2), RUNNER_ID);
   }))));
 
 Deno.test("a tombstoned session first reported after connect is never routed", () =>
@@ -860,7 +873,7 @@ Deno.test("a tombstoned session first reported after connect is never routed", (
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_2)]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_2).pipe(Effect.map((id) => id !== null)),
       "initial route missing",
     );
 
@@ -876,8 +889,8 @@ Deno.test("a tombstoned session first reported after connect is never routed", (
       () => Effect.sync(() => probe.deleteRequests.length === 1),
       "late tombstoned session was not cleaned up",
     );
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getSessionSnapshot(USER_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getSessionSnapshot(WORKSPACE_ID, SESSION_1), null);
     assertEquals(probe.deleteRequests, [
       decode(DeleteSessionPayload)({ sessionId: SESSION_1 }),
     ]);
@@ -895,7 +908,7 @@ Deno.test("concurrent Prompt and Abort both reach the runner for serialized hand
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1, "run-active")]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
 
@@ -905,13 +918,13 @@ Deno.test("concurrent Prompt and Abort both reach the runner for serialized hand
       credential: { type: "api_key" as const, value: "secret" },
     };
     const prompt = yield* gateway.promptSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_1,
       payload: { prompt: "Continue", modelRuntime },
     }).pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(promptBlock.started);
 
-    const abort = yield* gateway.abortSession({ userId: USER_ID, sessionId: SESSION_1 });
+    const abort = yield* gateway.abortSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
     yield* Deferred.succeed(promptBlock.release, undefined);
     const promptResult = yield* Fiber.join(prompt);
 
@@ -933,12 +946,14 @@ Deno.test("disconnect after provisioning dispatch reports uncertain delivery", (
     yield* publishSnapshot(probe, []);
     yield* waitUntil(
       () =>
-        gateway.getRunnerLiveState(USER_ID, RUNNER_ID).pipe(Effect.map((live) => live !== null)),
+        gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID).pipe(
+          Effect.map((live) => live !== null),
+        ),
       "runner not admitted",
     );
 
     const provision = yield* gateway.provisionSession({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       runnerId: RUNNER_ID,
       sessionId: SESSION_2,
       payload: {
@@ -958,7 +973,7 @@ Deno.test("disconnect after provisioning dispatch reports uncertain delivery", (
       },
     }).pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(probe.provisionBlock.started);
-    assert(yield* gateway.disconnectRunner(USER_ID, RUNNER_ID));
+    assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
 
     assertEquals((yield* Fiber.join(provision)).status, "delivery-uncertain");
     assertEquals(probe.provisionRequests.length, 1);
@@ -971,12 +986,12 @@ Deno.test("ready sessions route typed Git file updates to the pinned runner", ()
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
 
     const result = yield* gateway.updateSessionGitFile({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_1,
       action: "stage",
       path: "src/main.ts",
@@ -1001,11 +1016,11 @@ Deno.test("typed commands reach handlers during a run and disconnect finalizes t
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1, "run-active")]);
     yield* waitUntil(
-      () => gateway.getSessionRunner(USER_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
     const gitUpdate = yield* gateway.updateSessionGitFile({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       sessionId: SESSION_1,
       action: "unstage",
       path: "src/main.ts",
@@ -1026,7 +1041,7 @@ Deno.test("typed commands reach handlers during a run and disconnect finalizes t
     };
     assertEquals(
       (yield* gateway.provisionSession({
-        userId: USER_ID,
+        workspaceId: WORKSPACE_ID,
         runnerId: RUNNER_ID,
         sessionId: SESSION_2,
         payload: {
@@ -1045,23 +1060,23 @@ Deno.test("typed commands reach handlers during a run and disconnect finalizes t
     );
     assertEquals(
       (yield* gateway.promptSession({
-        userId: USER_ID,
+        workspaceId: WORKSPACE_ID,
         sessionId: SESSION_1,
         payload: { prompt: "Continue", modelRuntime },
       })).status,
       "accepted",
     );
     assertEquals(
-      (yield* gateway.abortSession({ userId: USER_ID, sessionId: SESSION_1 })).status,
+      (yield* gateway.abortSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 })).status,
       "accepted",
     );
-    const gitSnapshot = yield* gateway.getSessionGitSnapshot(USER_ID, SESSION_1);
+    const gitSnapshot = yield* gateway.getSessionGitSnapshot(WORKSPACE_ID, SESSION_1);
     assertEquals(gitSnapshot.status, "accepted");
     assertEquals(probe.provisionRequests.length, 1);
     const provisionRequest = decode(ProvisionSessionPayload)(probe.provisionRequests[0]);
     assertEquals(provisionRequest.mode, "create");
     if (provisionRequest.mode !== "create") throw new Error("Expected a create payload.");
-    assertEquals(provisionRequest.userId, USER_ID);
+    assertEquals(provisionRequest.workspaceId, WORKSPACE_ID);
     assertEquals(provisionRequest.gitAuthor, GIT_AUTHOR);
     assertEquals(probe.promptRequests.length, 1);
     assertEquals(probe.abortRequests, [
@@ -1073,8 +1088,8 @@ Deno.test("typed commands reach handlers during a run and disconnect finalizes t
       ),
       [SESSION_1],
     );
-    assert(yield* gateway.disconnectRunner(USER_ID, RUNNER_ID));
+    assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
     yield* Deferred.await(probe.connectionFinalized);
-    assertEquals(yield* gateway.getSessionRunner(USER_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getRunnerLiveState(USER_ID, RUNNER_ID), null);
+    assertEquals(yield* gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+    assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
   }))));

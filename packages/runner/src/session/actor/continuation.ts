@@ -467,7 +467,7 @@ function cleanRecoveryIssue(error: unknown, secrets: readonly string[]): Session
     category: "vm-start",
     severity: "failure",
     message:
-      "A clean Gondolin VM could not be started. The Project Workspace and Pi conversation remain preserved; retry clean VM recovery explicitly.",
+      "A clean Gondolin VM could not be started. The Project Checkout and Pi conversation remain preserved; retry clean VM recovery explicitly.",
     diagnostics: redactedErrorMessage(error, secrets),
     recovery: "start-clean-vm",
   });

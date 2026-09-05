@@ -235,7 +235,7 @@ export function makeSessionSupervisor(
       payload: Extract<typeof ProvisionSessionPayload.Type, { mode: "create" }>,
     ) =>
       new RunnerSessionDefinition({
-        userId: payload.userId,
+        workspaceId: payload.workspaceId,
         projectId: payload.projectId,
         repositoryUrl: payload.repositoryUrl,
         ref: payload.ref,

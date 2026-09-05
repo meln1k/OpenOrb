@@ -29,9 +29,9 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 6. **No Pi workspace discovery.** Pi uses an explicit empty `ResourceLoader` and in-memory settings.
 7. **One prompt at a time.** Do not implement durable follow-up queues or editable pending Pi messages.
 8. **Cold VM lifecycle.** Preserve the workspace and Pi JSONL, not guest root/process state.
-9. **Runner-owned session data.** Complete live-session state lives on the assigned runner. The gateway keeps only a minimal user-owned catalog row—user ID, session ID, project, creation time, and a trimmed initial-prompt preview—plus user/session/time deletion markers that prevent stale runner resurrection.
+9. **Runner-owned session data.** Complete live-session state lives on the assigned runner. The gateway keeps only a minimal Workspace-owned catalog row—Workspace ID, session ID, project, creation time, and a trimmed initial-prompt preview—plus Workspace/session/time deletion markers that prevent stale runner resurrection.
 10. **Prefer explicit failure.** If a runner disconnects or an operation becomes ambiguous, show an error and let the user retry.
-11. **Tenant ownership from the start.** The MVP creates only one administrator, but every user-owned control-plane row and persistence operation is scoped by immutable `user_id`; uniqueness and foreign keys must not cross users.
+11. **Workspace tenancy from the start.** Each user belongs directly to exactly one Workspace. First setup atomically creates one Workspace and the single administrator. Projects, secrets, provider/Git credentials, runners, enrollment credentials, session catalog rows, and deletion markers use immutable `workspace_id`; uniqueness and composite foreign keys must not cross Workspaces. Passwords and Git author identity remain user-owned. Browser auth resolves `{userId, workspaceId}` from persistence, never request input. Memberships, roles, and Workspace-selection UI are out of scope.
 
 ## 3. Included features
 
@@ -45,8 +45,8 @@ The MVP is successful if a user can safely use spare Linux compute behind NAT as
 - Per-user Git author name and email configuration
 - Runner enrollment and revocation
 - Runner online/offline status
-- Minimal live-session catalog containing only user owner, project, creation time, and trimmed initial prompt
-- Minimal user/session/time deletion markers
+- Minimal live-session catalog containing only Workspace owner, session ID, project, creation time, and trimmed initial prompt
+- Minimal Workspace/session/time deletion markers
 - Session creation, stop, continuation, and online/offline deletion
 - Responsive chat UI
 - Streaming assistant text, thinking, tool calls, and results
@@ -223,18 +223,18 @@ The gateway encrypts:
 - Provider API keys, stored as one separately encrypted credential per Pi provider
 - The GitHub token
 
-Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The gateway never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Import the 256-bit key with Web Crypto and use `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()` directly. Persist their returned bytes unchanged as one opaque value, store key version separately, and authenticate immutable user ID, credential key, and key version as AAD. Secret values are never returned to the browser after creation.
+Require the application master key through `OPENORB_MASTER_KEY` or an equivalent deployment-time secret injection. The gateway never generates or persists the master key to local disk or PostgreSQL. It fails startup if the key is missing or invalid. Import the 256-bit key with Web Crypto and use `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()` directly. Persist their returned bytes unchanged as one opaque value, store key version separately, and authenticate immutable `workspaceId`, credential key, and key version as AAD. Secret values are never returned to the browser after creation.
 
-Every `encrypted_secrets` row has an immutable `user_id` and explicit required purpose. Provider keys use `provider-api-key` and are referenced by provider ID through `model_provider_credentials`; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Secret repositories select rows by user and purpose, not key-prefix conventions. Provider credential records use opaque secret keys and do not derive identity from environment-variable names.
+Every `encrypted_secrets` row has an immutable `workspace_id` and explicit required purpose. Provider keys use `provider-api-key` and are referenced by provider ID through `model_provider_credentials`; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Secret repositories select rows by Workspace and purpose, not key-prefix conventions. Provider credential records use opaque secret keys and do not derive identity from environment-variable names.
 
 ### Runner enrollment
 
 Use a simple bearer-token design:
 
-1. The gateway always provides the administrator's reusable enrollment PSK under **Settings → Runners**. It remains valid for additional enrollments until the administrator regenerates it. Regeneration atomically revokes the previous PSK and creates its replacement, and PostgreSQL enforces at most one active PSK per user. The current PSK is embedded in a visible, copyable runner-enrollment command with a regenerate action and no revoke or delete action.
+1. The gateway always provides the Workspace's reusable enrollment PSK under **Settings → Runners**. It remains valid for additional enrollments until the administrator regenerates it. Regeneration atomically revokes the previous PSK and creates its replacement, and PostgreSQL enforces at most one active PSK per Workspace. The current PSK is embedded in a visible, copyable runner-enrollment command with a regenerate action and no revoke or delete action.
    The gateway stores each PSK unencrypted in PostgreSQL. PostgreSQL read access therefore grants access to active enrollment PSKs.
 2. Runner submits the PSK, name, and architecture.
-3. Gateway derives immutable runner ownership from the enrollment PSK's authenticated user, stores `user_id` on both enrollment and runner rows, and returns a random revocable runner token. Runner input cannot choose a tenant.
+3. Gateway derives immutable runner ownership from the enrollment PSK's persisted Workspace, stores `workspace_id` on both enrollment and runner rows, and returns a random revocable runner token. Subsequent authentication resolves Workspace ownership from the trusted token/runner record. Runner input cannot choose a tenant.
 4. Runner stores the token with filesystem mode `0600`.
 5. Runner authenticates its outbound WebSocket with that token.
 6. Revocation immediately prevents reconnect.
@@ -342,7 +342,7 @@ The gateway stores only this minimal session catalog record:
 
 ```ts
 interface SessionCatalogEntry {
-  userId: string
+  workspaceId: string
   id: string
   projectId: string
   createdAt: string
@@ -361,7 +361,7 @@ only after the snapshot completion boundary. This recovers a runner-local sessio
 gateway crash could commit its catalog row without exposing a partial snapshot. Existing catalog
 entries remain visible while their runner is offline. Snapshot absence alone does not delete a
 catalog row because the gateway does not persist runner assignment. A snapshot entry whose
-`(user_id, session_id)` has a gateway deletion marker is never reinserted or routed; the runner is
+`(workspace_id, session_id)` has a gateway deletion marker is never reinserted or routed; the runner is
 instructed to remove it once any active work settles.
 
 Do not persist:
@@ -377,7 +377,7 @@ Do not persist:
 
 1. Select and pin an online runner.
 2. Runner creates the session locally and stores the full initial prompt.
-3. After runner confirmation, gateway stores the immutable user owner and four catalog data fields with the trimmed prompt preview.
+3. After runner confirmation, gateway stores the immutable Workspace owner and four catalog data fields with the trimmed prompt preview.
 4. Create an empty session workspace.
 5. Resolve the session's selected predefined size and start a fresh Gondolin VM with its CPU/memory values.
 6. Mount the workspace at `/workspace` with `RealFSProvider`.
@@ -422,7 +422,7 @@ No checkpoint creation, compatibility management, `.agents/resume`, service rest
 
 ### Delete
 
-Deletion requires explicit confirmation. In one PostgreSQL transaction, the gateway writes a durable deleted-session marker containing only user ID, session ID, and deletion time and removes the five-column catalog row. It then removes the user-scoped live route before requesting runner cleanup. The marker is committed first so a gateway crash cannot resurrect a session after runner-side deletion.
+Deletion requires explicit confirmation. In one PostgreSQL transaction, the gateway writes a durable deleted-session marker containing only Workspace ID, session ID, and deletion time and removes the five-column catalog row. It then removes the Workspace-scoped live route before requesting runner cleanup. The marker is committed first so a gateway crash cannot resurrect a session after runner-side deletion.
 
 - If the runner is online and idle, it removes the workspace, Pi JSONL, metadata, events, snapshots, and logs.
 - If the runner is online but active, deletion is rejected; the user must wait for the work to settle. An offline deletion cannot determine live state, so if the runner later reconnects with active work, cleanup waits until that work settles rather than interrupting it.
@@ -536,7 +536,7 @@ All of these run inside Gondolin:
 3. The real GitHub token remains in runner memory and never enters guest files, environment values, process arguments, logs, or tool output.
 4. Non-GitHub hosts receive no substitution; GitHub enforces the token's repository permissions.
 5. Public repositories work without a credential; private clone/fetch/push use the same mediated token path.
-6. Projects use their owning user's singleton GitHub credential when one is configured; credentials are not selected or persisted per project.
+6. Projects use their owning Workspace's singleton GitHub credential when one is configured; credentials are not selected or persisted per project.
 
 SSH repositories, private keys, and non-GitHub Git hosts are deferred.
 
@@ -544,7 +544,7 @@ SSH repositories, private keys, and non-GitHub Git hosts are deferred.
 
 There is no separate Commit & Push gateway workflow. The user asks the agent to commit and push.
 
-The gateway requires a per-user Git author name and email. The runner supplies the owning user's identity to guest Git for OpenOrb session commits.
+The gateway requires a per-user Git author name and email. It resolves the authenticated user's identity from persistence and supplies it to guest Git for OpenOrb session commits, separately from Workspace-owned credentials and catalog authorization. The five-column catalog does not store a user owner.
 
 The trusted OpenOrb system prompt instructs the agent:
 
@@ -681,26 +681,27 @@ If the runner is offline, session history and SSE replay are unavailable.
 
 Gateway PostgreSQL is the gateway's only durable persistence. It stores configuration plus the minimal session catalog:
 
-- `users`
+- `workspaces`
+- `users`, each with a required direct `workspace_id` foreign key
 - `password_credentials`
-- `browser_sessions` (the PostgreSQL backing store for Remix sessions, with nullable `user_id` for anonymous pre-login sessions and required owner consistency once authenticated)
-- `encrypted_secrets` (uuid id primary key, immutable user owner, per-user unique credential key, required purpose, encrypted value)
+- `browser_sessions` (the PostgreSQL backing store for Remix sessions; anonymous sessions have no auth owner, and authenticated `{userId, workspaceId}` must match the persisted user and session ownership)
+- `encrypted_secrets` (uuid id primary key, immutable Workspace owner, per-Workspace unique credential key, required purpose, encrypted value)
 - `model_provider_credentials`
 - `git_credentials`
 - Per-user Git author configuration
 - `projects`
 - `runners`
 - `runner_enrollment_tokens`
-- `sessions`, restricted to `user_id`, `id`, `project_id`, `created_at`, and `initial_prompt_preview`
-- `deleted_sessions`, restricted to `user_id`, `session_id`, and `deleted_at`
+- `sessions`, restricted to `workspace_id`, `id`, `project_id`, `created_at`, and `initial_prompt_preview`
+- `deleted_sessions`, restricted to `workspace_id`, `session_id`, and `deleted_at`
 
-It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only user ownership, session identity, and deletion time. Session routing is a user-scoped in-memory index rebuilt from complete, reconciled `WatchRunner` snapshots. Do not add Redis, another database/KV service, or application-owned durable gateway files.
+Tenant-owned configuration uses `workspace_id`; password credentials and Git author configuration remain keyed by `user_id`. It must not add any other session columns or contain message, tool-call, event, diff, file, log, preview, status, branch, model-selection, usage, or runner-assignment records. The separate deleted-session markers contain only Workspace ownership, session identity, and deletion time. Session routing is a Workspace-scoped in-memory index rebuilt from complete, reconciled `WatchRunner` snapshots. Do not add Redis, another database/KV service, or application-owned durable gateway files.
 
 Runner-local storage contains the complete session data, including the full metadata duplicated only in trimmed form by the catalog. Use Pi's JSONL as the sole durable conversation transcript, atomic JSON for session metadata, ordinary log files, and JSON Git Snapshots containing bounded patches. Derive bounded replay/wire events from Pi JSONL instead of adding an OpenOrb event file. Do not add a runner-local database for the MVP.
 
 Do not add gateway tables for:
 
-- Session routes or additional session fields beyond `user_id` and the four catalog data columns
+- Session routes or additional session fields beyond `workspace_id` and the four catalog data columns
 - Messages, tool calls, or events
 - Diffs, files, or logs
 - Preview capabilities
@@ -744,7 +745,7 @@ Do not add gateway tables for:
 ### Gateway restart
 
 - Minimal catalog rows remain available.
-- Runners reconnect automatically; the gateway authenticates them with `IdentifyRunner`, reconciles each complete `WatchRunner` snapshot, rejects user-scoped tombstoned entries, and atomically rebuilds user-scoped live routes.
+- Runners reconnect automatically; the gateway authenticates them with `IdentifyRunner`, reconciles each complete `WatchRunner` snapshot, rejects Workspace-scoped tombstoned entries, and atomically rebuilds Workspace-scoped live routes.
 - Browsers reload full history/state through the reconnected runner.
 - No full session reconstruction occurs from gateway storage.
 - In-flight operations may be marked failed and manually retried.
@@ -762,7 +763,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 - All Pi file/shell tools execute through Gondolin.
 - Real Git and model credentials never appear in guest files, environment variables, logs, process arguments, or tool output.
 - `GH_TOKEN` placeholder substitution is restricted to `github.com` and `api.github.com`; GitHub enforces repository permissions.
-- Workspace path traversal and escaping symlinks are rejected.
+- Project Checkout path traversal and escaping symlinks are rejected.
 
 ### End-to-end path
 
@@ -802,7 +803,7 @@ The MVP favors visible manual recovery over distributed exactly-once machinery.
 - Deno 2.9.5 TypeScript workspace and lockfile
 - Remix 3 resolved from current `preview/main` and pinned exactly
 - Shared Effect Schema/RPC runner API and browser-boundary schemas
-- PostgreSQL user-owned gateway configuration, five-column live-session catalog, and minimal user/session/time deletion markers
+- PostgreSQL Workspace-owned gateway configuration, five-column live-session catalog, and minimal Workspace/session/time deletion markers
 - Explicit empty Pi `ResourceLoader`
 - In-memory Pi settings
 - Gondolin-backed tools
@@ -877,7 +878,7 @@ The lean MVP is complete when:
 9. Pi tools read, write, edit, and execute commands through Gondolin.
 10. Chat text, thinking, tool calls, results, and status stream to the browser.
 11. The UI permits one normal prompt at a time and supports Abort.
-12. The gateway stores only immutable user ownership, session ID, project, creation time, and a 200-code-point initial-prompt preview for live sessions, plus minimal user/session/time deletion markers; completed transcript data is replayed from the runner after reconnect.
+12. The gateway stores only immutable Workspace ownership, session ID, project, creation time, and a 200-code-point initial-prompt preview for live sessions, plus minimal Workspace/session/time deletion markers; completed transcript data is replayed from the runner after reconnect.
 13. The user can view the last guest-generated Git diff while the runner is connected.
 14. The agent can clone, commit, and push a private GitHub repository without obtaining the real GitHub token.
 15. Idle VMs are destroyed while workspace and Pi JSONL remain.

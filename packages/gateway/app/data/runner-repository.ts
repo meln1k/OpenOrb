@@ -1,5 +1,6 @@
 import { ENROLLMENT_PSK_PREFIX, RUNNER_TOKEN_PREFIX } from "@openorb/protocol";
 import type { RunnerArchitecture, RunnerEnrollmentRequest } from "@openorb/protocol";
+import { WorkspaceId } from "@openorb/protocol/runner-api";
 import type { Database } from "remix/data-table";
 import { v7 } from "@std/uuid";
 
@@ -27,7 +28,7 @@ export interface RunnerRecord {
 
 export interface AuthenticatedRunner {
   id: string;
-  userId: string;
+  workspaceId: WorkspaceId;
 }
 
 export interface EnrolledRunner {
@@ -39,34 +40,32 @@ export type RevokeResult = "revoked" | "not-found";
 export type DeleteRunnerResult = "deleted" | "not-found" | "not-revoked";
 
 export interface RunnerRepository {
-  getRunnerEnrollmentToken(userId: string): Promise<RunnerEnrollmentToken>;
-  regenerateRunnerEnrollmentToken(userId: string): Promise<RunnerEnrollmentToken>;
+  getRunnerEnrollmentToken(workspaceId: WorkspaceId): Promise<RunnerEnrollmentToken>;
+  regenerateRunnerEnrollmentToken(workspaceId: WorkspaceId): Promise<RunnerEnrollmentToken>;
   enrollRunner(input: RunnerEnrollmentRequest): Promise<EnrolledRunner | null>;
   authenticateRunner(token: string): Promise<AuthenticatedRunner | null>;
-  listRunners(userId: string): Promise<RunnerRecord[]>;
-  revokeRunner(userId: string, id: string): Promise<RevokeResult>;
-  deleteRunner(userId: string, id: string): Promise<DeleteRunnerResult>;
+  listRunners(workspaceId: WorkspaceId): Promise<RunnerRecord[]>;
+  revokeRunner(workspaceId: WorkspaceId, id: string): Promise<RevokeResult>;
+  deleteRunner(workspaceId: WorkspaceId, id: string): Promise<DeleteRunnerResult>;
 }
 
 export function createRunnerRepository(database: Database): RunnerRepository {
   return {
-    async getRunnerEnrollmentToken(userId) {
+    async getRunnerEnrollmentToken(workspaceId) {
       return await database.transaction(async (transaction) => {
-        await lockEnrollmentTokenOwner(transaction, userId);
-        const active = await findActiveEnrollmentToken(transaction, userId);
-        if (active?.token) return mapEnrollmentToken(active);
-
-        if (active) await revokeEnrollmentToken(transaction, active);
-        return await createEnrollmentToken(transaction, userId);
+        await lockEnrollmentTokenOwner(transaction, workspaceId);
+        const active = await findActiveEnrollmentToken(transaction, workspaceId);
+        if (active) return mapEnrollmentToken(active);
+        return await createEnrollmentToken(transaction, workspaceId);
       });
     },
 
-    async regenerateRunnerEnrollmentToken(userId) {
+    async regenerateRunnerEnrollmentToken(workspaceId) {
       return await database.transaction(async (transaction) => {
-        await lockEnrollmentTokenOwner(transaction, userId);
-        const active = await findActiveEnrollmentToken(transaction, userId);
+        await lockEnrollmentTokenOwner(transaction, workspaceId);
+        const active = await findActiveEnrollmentToken(transaction, workspaceId);
         if (active) await revokeEnrollmentToken(transaction, active);
-        return await createEnrollmentToken(transaction, userId);
+        return await createEnrollmentToken(transaction, workspaceId);
       });
     },
 
@@ -76,18 +75,19 @@ export function createRunnerRepository(database: Database): RunnerRepository {
         where: { token_hash: tokenHash },
       });
       if (!candidate || candidate.revoked_at !== null) return null;
+      const workspaceId = WorkspaceId.make(candidate.workspace_id);
 
       return await database.transaction(async (transaction) => {
-        await lockEnrollmentTokenOwner(transaction, candidate.user_id);
+        await lockEnrollmentTokenOwner(transaction, workspaceId);
         const enrollmentToken = await transaction.findOne(runnerEnrollmentTokens, {
-          where: { id: candidate.id, user_id: candidate.user_id, token_hash: tokenHash },
+          where: { id: candidate.id, workspace_id: workspaceId, token_hash: tokenHash },
         });
         if (!enrollmentToken || enrollmentToken.revoked_at !== null) return null;
 
         const runnerToken = generateRunnerSecret(RUNNER_TOKEN_PREFIX);
         const row: RunnerRow = {
           id: v7.generate(),
-          user_id: enrollmentToken.user_id,
+          workspace_id: enrollmentToken.workspace_id,
           enrollment_token_id: enrollmentToken.id,
           name: input.name.trim(),
           architecture: input.architecture,
@@ -107,16 +107,16 @@ export function createRunnerRepository(database: Database): RunnerRepository {
       return row && row.revoked_at === null ? mapAuthenticatedRunner(row) : null;
     },
 
-    async listRunners(userId) {
+    async listRunners(workspaceId) {
       const rows = await database.findMany(runners, {
-        where: { user_id: userId },
+        where: { workspace_id: workspaceId },
         orderBy: ["created_at", "desc"],
       });
       return rows.map(mapRunner);
     },
 
-    async revokeRunner(userId, id) {
-      const row = await database.findOne(runners, { where: { id, user_id: userId } });
+    async revokeRunner(workspaceId, id) {
+      const row = await database.findOne(runners, { where: { id, workspace_id: workspaceId } });
       if (!row) return "not-found";
       if (row.revoked_at === null) {
         await database.update(runners, row.id, {
@@ -126,8 +126,8 @@ export function createRunnerRepository(database: Database): RunnerRepository {
       return "revoked";
     },
 
-    async deleteRunner(userId, id) {
-      const row = await database.findOne(runners, { where: { id, user_id: userId } });
+    async deleteRunner(workspaceId, id) {
+      const row = await database.findOne(runners, { where: { id, workspace_id: workspaceId } });
       if (!row) return "not-found";
       if (row.revoked_at === null) return "not-revoked";
       return (await database.delete(runners, row.id)) ? "deleted" : "not-found";
@@ -135,26 +135,31 @@ export function createRunnerRepository(database: Database): RunnerRepository {
   };
 }
 
-async function lockEnrollmentTokenOwner(database: Database, userId: string): Promise<void> {
-  await database.exec("select id from users where id = $1 for update", [userId]);
+async function lockEnrollmentTokenOwner(
+  database: Database,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  await database.exec("select id from workspaces where id = $1 for update", [workspaceId]);
 }
 
 async function findActiveEnrollmentToken(
   database: Database,
-  userId: string,
+  workspaceId: WorkspaceId,
 ): Promise<RunnerEnrollmentTokenRow | undefined> {
-  const rows = await database.findMany(runnerEnrollmentTokens, { where: { user_id: userId } });
+  const rows = await database.findMany(runnerEnrollmentTokens, {
+    where: { workspace_id: workspaceId },
+  });
   return rows.find((row) => row.revoked_at === null);
 }
 
 async function createEnrollmentToken(
   database: Database,
-  userId: string,
+  workspaceId: WorkspaceId,
 ): Promise<RunnerEnrollmentToken> {
   const token = generateRunnerSecret(ENROLLMENT_PSK_PREFIX);
   const row: RunnerEnrollmentTokenRow = {
     id: v7.generate(),
-    user_id: userId,
+    workspace_id: workspaceId,
     token,
     token_hash: await hashRunnerSecret(token),
     created_at: Temporal.Now.instant().toString(),
@@ -174,11 +179,6 @@ async function revokeEnrollmentToken(
 }
 
 function mapEnrollmentToken(row: RunnerEnrollmentTokenRow): RunnerEnrollmentToken {
-  if (!row.token) {
-    throw new RunnerPersistenceIntegrityError(
-      `Enrollment token ${row.id} does not have a stored PSK.`,
-    );
-  }
   return {
     id: row.id,
     token: row.token,
@@ -202,7 +202,7 @@ function mapRunner(row: RunnerRow): RunnerRecord {
 }
 
 function mapAuthenticatedRunner(row: RunnerRow): AuthenticatedRunner {
-  return { id: row.id, userId: row.user_id };
+  return { id: row.id, workspaceId: WorkspaceId.make(row.workspace_id) };
 }
 
 class RunnerPersistenceIntegrityError extends Error {

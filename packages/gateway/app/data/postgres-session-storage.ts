@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { any, array, parseSafe, record, string } from "remix/data-schema";
 import { createSession, type Session, type SessionStorage } from "remix/session";
+import type { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
 
 import { parseBrowserSessionAuth } from "@/app/utils/session-policy.ts";
 
@@ -8,7 +9,7 @@ type BrowserSessionData = Session["data"];
 type SessionOrigin = { readonly kind: "new" } | { readonly kind: "persisted"; readonly id: string };
 type SessionIdentity =
   | { readonly kind: "anonymous" }
-  | { readonly kind: "authenticated"; readonly userId: string }
+  | { readonly kind: "authenticated"; readonly userId: UserId; readonly workspaceId: WorkspaceId }
   | { readonly kind: "invalid" };
 const sessionDataMapSchema = record(string(), any());
 const browserSessionDataSchema = array(sessionDataMapSchema);
@@ -34,10 +35,11 @@ export class PostgresSessionStorage implements SessionStorage {
 
     const result = await this.pool.query<{
       user_id: string | null;
+      workspace_id: string | null;
       data: unknown;
       expires_at: Date | string;
     }>(
-      `select user_id, data, expires_at
+      `select user_id, workspace_id, data, expires_at
          from browser_sessions
         where id = $1`,
       [cookie],
@@ -60,7 +62,10 @@ export class PostgresSessionStorage implements SessionStorage {
 
     const identity = parseSessionIdentity(data);
     const userId = identity.kind === "authenticated" ? identity.userId : null;
-    if (identity.kind === "invalid" || userId !== row.user_id) {
+    const workspaceId = identity.kind === "authenticated" ? identity.workspaceId : null;
+    if (
+      identity.kind === "invalid" || userId !== row.user_id || workspaceId !== row.workspace_id
+    ) {
       await this.deleteSessions([cookie]);
       return this.createNewSession();
     }
@@ -119,16 +124,22 @@ export class PostgresSessionStorage implements SessionStorage {
   }
 
   private async insert(currentSession: Session): Promise<void> {
-    const userId = sessionUserId(currentSession.data);
+    const { userId, workspaceId } = sessionIdentityColumns(currentSession.data);
     await this.pool.query(
-      `insert into browser_sessions (id, user_id, data, expires_at, created_at, updated_at)
-       values ($1, $2, $3::jsonb, now() + ($4 * interval '1 second'), now(), now())`,
-      [currentSession.id, userId, JSON.stringify(currentSession.data), this.maxAgeSeconds],
+      `insert into browser_sessions (id, user_id, workspace_id, data, expires_at, created_at, updated_at)
+       values ($1, $2, $5, $3::jsonb, now() + ($4 * interval '1 second'), now(), now())`,
+      [
+        currentSession.id,
+        userId,
+        JSON.stringify(currentSession.data),
+        this.maxAgeSeconds,
+        workspaceId,
+      ],
     );
   }
 
   private async update(currentSession: Session): Promise<boolean> {
-    const userId = sessionUserId(currentSession.data);
+    const { userId, workspaceId } = sessionIdentityColumns(currentSession.data);
     const result = await this.pool.query(
       `update browser_sessions
           set data = $2::jsonb,
@@ -136,14 +147,21 @@ export class PostgresSessionStorage implements SessionStorage {
               updated_at = now()
         where id = $1
           and user_id is not distinct from $4
+          and workspace_id is not distinct from $5
           and expires_at > now()`,
-      [currentSession.id, JSON.stringify(currentSession.data), this.maxAgeSeconds, userId],
+      [
+        currentSession.id,
+        JSON.stringify(currentSession.data),
+        this.maxAgeSeconds,
+        userId,
+        workspaceId,
+      ],
     );
     return result.rowCount === 1;
   }
 
   private async rotate(previousId: string, currentSession: Session): Promise<boolean> {
-    const userId = sessionUserId(currentSession.data);
+    const { userId, workspaceId } = sessionIdentityColumns(currentSession.data);
     const result = await this.pool.query<{ id: string }>(
       `with deleted_session as (
          delete from browser_sessions
@@ -151,8 +169,8 @@ export class PostgresSessionStorage implements SessionStorage {
             and expires_at > now()
          returning id
        ), inserted_session as (
-         insert into browser_sessions (id, user_id, data, expires_at, created_at, updated_at)
-         select $1, $2, $3::jsonb, now() + ($4 * interval '1 second'), now(), now()
+         insert into browser_sessions (id, user_id, workspace_id, data, expires_at, created_at, updated_at)
+         select $1, $2, $6, $3::jsonb, now() + ($4 * interval '1 second'), now(), now()
            from deleted_session
          returning id
        )
@@ -163,6 +181,7 @@ export class PostgresSessionStorage implements SessionStorage {
         JSON.stringify(currentSession.data),
         this.maxAgeSeconds,
         previousId,
+        workspaceId,
       ],
     );
     return result.rowCount === 1;
@@ -185,7 +204,9 @@ function parseSessionData(value: unknown): BrowserSessionData | null {
   return values === undefined || flashes === undefined ? null : [values, flashes];
 }
 
-function sessionUserId(data: unknown): string | null {
+function sessionIdentityColumns(
+  data: unknown,
+): { userId: UserId | null; workspaceId: WorkspaceId | null } {
   const parsed = parseSessionData(data);
   if (!parsed) {
     throw new TypeError("Cannot persist malformed browser session data.");
@@ -195,7 +216,9 @@ function sessionUserId(data: unknown): string | null {
   if (identity.kind === "invalid") {
     throw new TypeError("Cannot persist malformed browser session authentication.");
   }
-  return identity.kind === "authenticated" ? identity.userId : null;
+  return identity.kind === "authenticated"
+    ? { userId: identity.userId, workspaceId: identity.workspaceId }
+    : { userId: null, workspaceId: null };
 }
 
 function parseSessionIdentity(data: BrowserSessionData): SessionIdentity {
@@ -205,5 +228,5 @@ function parseSessionIdentity(data: BrowserSessionData): SessionIdentity {
   }
 
   const auth = parseBrowserSessionAuth(values.auth);
-  return auth ? { kind: "authenticated", userId: auth.userId } : { kind: "invalid" };
+  return auth ? { kind: "authenticated", ...auth } : { kind: "invalid" };
 }

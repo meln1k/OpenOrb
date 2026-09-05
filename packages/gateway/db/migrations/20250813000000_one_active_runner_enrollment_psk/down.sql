@@ -1,1 +1,1 @@
-drop index runner_enrollment_tokens_one_active_per_user_idx;
+drop index runner_enrollment_tokens_one_active_per_workspace_idx;

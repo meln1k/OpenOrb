@@ -8,6 +8,10 @@ conversations, and presents Git changes. Each runner executes untrusted session 
 Gondolin QEMU/KVM virtual machine and connects outbound to the gateway; runners need no inbound
 port.
 
+Each user belongs to a **Workspace**, which owns projects, credentials, runners, and sessions.
+Passwords and Git author identity belong to the user. The session's project filesystem is a
+**Project Checkout**.
+
 ## How OpenOrb runs
 
 A complete installation has two processes:
@@ -204,8 +208,7 @@ Unit tests use `postgres://localhost/openorb-test` by default and do not start a
 
 ### Development database reset
 
-The unreleased PBKDF2 and UUIDv7 schema is intentionally incompatible with older development data.
-If upgrading from the pre-OO-001A schema, reset both databases once:
+If a schema change requires a development database reset, recreate both databases:
 
 ```sh
 dropdb --if-exists openorb && createdb openorb

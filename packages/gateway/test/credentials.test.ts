@@ -6,6 +6,7 @@ import {
   assertNotEquals,
   assertNotMatch,
 } from "@std/assert";
+import type { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
 import { array, number, object, parse, string } from "remix/data-schema";
 
 import { ModelProviderCredentialReadError } from "@/app/data/model-provider-repository.ts";
@@ -59,7 +60,8 @@ interface AuthenticatedClient {
   store: Awaited<ReturnType<typeof createTestStore>>;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
-  userId: string;
+  userId: UserId;
+  workspaceId: WorkspaceId;
 }
 
 async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
@@ -84,7 +86,7 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
 
     const loginUrl = new URL("/auth/login", server.baseUrl);
     const loginPage = await fetch(loginUrl);
-    const loginResponse = await fetch(loginUrl, {
+    const loginRequest = new Request(loginUrl, {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: cookieFrom(loginPage) },
@@ -93,16 +95,20 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
         password: "[REDACTED:password] horse battery staple",
       }),
     });
+    const loginForm = await loginRequest.clone().formData();
+    const loginResponse = await fetch(loginRequest);
     assertEquals(loginResponse.status, 303);
-    const user = await store.pool.query<{ id: string }>(
-      "select id from users where is_administrator",
+    const user = await store.verifyAdministratorPassword(
+      String(loginForm.get("password")),
     );
-    assertEquals(user.rows.length, 1);
+    assert(user);
+    assertNotEquals<string>(user.userId, user.workspaceId);
     return {
       store,
       server,
       cookie: cookieFrom(loginResponse),
-      userId: user.rows[0]!.id,
+      userId: user.userId,
+      workspaceId: user.workspaceId,
     };
   } catch (error) {
     await server.close();
@@ -229,7 +235,7 @@ Deno.test("configures Pi providers without exposing or keying records by API key
             ciphertext: Uint8Array.fromBase64(row.ciphertext),
             keyVersion: row.key_version,
           },
-          { userId: client.userId, key: row.key },
+          { workspaceId: client.workspaceId, key: row.key },
         ),
         [apiKey, undefined],
       );
@@ -261,7 +267,7 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     assertEquals(replaced.id, opencode.id);
     assertEquals(replaced.encrypted_secret_id, opencode.encrypted_secret_id);
     assertNotEquals(replaced.ciphertext, opencode.ciphertext);
-    assertEquals(await client.store.getModelProviderApiKey(client.userId, OPENCODE_PROVIDER), [
+    assertEquals(await client.store.getModelProviderApiKey(client.workspaceId, OPENCODE_PROVIDER), [
       replacement,
       undefined,
     ]);
@@ -276,7 +282,7 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     );
     assertEquals(deleteResponse.status, 303);
     assertEquals(
-      await client.store.getModelProviderCredential(client.userId, OPENAI_PROVIDER),
+      await client.store.getModelProviderCredential(client.workspaceId, OPENAI_PROVIDER),
       null,
     );
     assertEquals(
@@ -294,7 +300,7 @@ Deno.test("generic secrets remain independent from model provider credentials", 
   const client = await createAuthenticatedClient();
   try {
     await client.store.saveModelProviderCredential(
-      client.userId,
+      client.workspaceId,
       OPENCODE_PROVIDER,
       OPENCODE_VALUE,
     );
@@ -310,11 +316,11 @@ Deno.test("generic secrets remain independent from model provider credentials", 
     assertEquals(saveResponse.status, 303);
     assertEquals(saveResponse.headers.get("location"), SECRETS_SETTINGS_PATH);
 
-    assertEquals((await client.store.listSecrets(client.userId)).map((secret) => secret.key), [
+    assertEquals((await client.store.listSecrets(client.workspaceId)).map((secret) => secret.key), [
       GENERIC_SECRET_KEY,
     ]);
     assertEquals(
-      (await client.store.listModelProviderCredentials(client.userId)).map((credential) =>
+      (await client.store.listModelProviderCredentials(client.workspaceId)).map((credential) =>
         credential.providerId
       ),
       [OPENCODE_PROVIDER],
@@ -338,12 +344,12 @@ Deno.test("generic secrets remain independent from model provider credentials", 
     assertNotMatch(page, new RegExp(OPENCODE_VALUE));
 
     assertEquals(
-      await client.store.deleteModelProviderCredential(client.userId, OPENCODE_PROVIDER),
+      await client.store.deleteModelProviderCredential(client.workspaceId, OPENCODE_PROVIDER),
       {
         status: "deleted",
       },
     );
-    assert(await client.store.getSecret(client.userId, GENERIC_SECRET_KEY));
+    assert(await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY));
 
     const deleteResponse = await submitCredentialsForm(
       client,
@@ -354,7 +360,7 @@ Deno.test("generic secrets remain independent from model provider credentials", 
       },
     );
     assertEquals(deleteResponse.status, 303);
-    assertEquals(await client.store.listSecrets(client.userId), []);
+    assertEquals(await client.store.listSecrets(client.workspaceId), []);
   } finally {
     await client.server.close();
     await client.store.close();
@@ -366,23 +372,23 @@ Deno.test("provider credentials remain decryptable across a gateway restart", as
   assert(await first.createAdministrator("restart test password"));
   const user = await first.verifyAdministratorPassword("restart test password");
   assert(user);
-  await first.saveModelProviderCredential(user.id, OPENCODE_PROVIDER, OPENCODE_VALUE);
-  await first.saveModelProviderCredential(user.id, OPENAI_PROVIDER, OPENAI_VALUE);
+  await first.saveModelProviderCredential(user.workspaceId, OPENCODE_PROVIDER, OPENCODE_VALUE);
+  await first.saveModelProviderCredential(user.workspaceId, OPENAI_PROVIDER, OPENAI_VALUE);
   await first.close();
 
   const restarted = await createTestStore(undefined, false);
   try {
     assertEquals(
-      (await restarted.listModelProviderCredentials(user.id)).map((credential) =>
+      (await restarted.listModelProviderCredentials(user.workspaceId)).map((credential) =>
         credential.providerId
       ),
       [OPENAI_PROVIDER, OPENCODE_PROVIDER],
     );
-    assertEquals(await restarted.getModelProviderApiKey(user.id, OPENCODE_PROVIDER), [
+    assertEquals(await restarted.getModelProviderApiKey(user.workspaceId, OPENCODE_PROVIDER), [
       OPENCODE_VALUE,
       undefined,
     ]);
-    assertEquals(await restarted.getModelProviderApiKey(user.id, OPENAI_PROVIDER), [
+    assertEquals(await restarted.getModelProviderApiKey(user.workspaceId, OPENAI_PROVIDER), [
       OPENAI_VALUE,
       undefined,
     ]);
@@ -396,7 +402,7 @@ Deno.test("a wrong master key fails provider resolution without destroying store
   assert(await first.createAdministrator("wrong key test password"));
   const user = await first.verifyAdministratorPassword("wrong key test password");
   assert(user);
-  await first.saveModelProviderCredential(user.id, OPENCODE_PROVIDER, OPENCODE_VALUE);
+  await first.saveModelProviderCredential(user.workspaceId, OPENCODE_PROVIDER, OPENCODE_VALUE);
   await first.close();
 
   const wrongKeyStore = await createTestStore(
@@ -405,7 +411,7 @@ Deno.test("a wrong master key fails provider resolution without destroying store
   );
   try {
     const [value, error] = await wrongKeyStore.getModelProviderApiKey(
-      user.id,
+      user.workspaceId,
       OPENCODE_PROVIDER,
     );
     assertEquals(value, undefined);
@@ -423,7 +429,7 @@ Deno.test("a wrong master key fails provider resolution without destroying store
 
   const restored = await createTestStore(undefined, false);
   try {
-    assertEquals(await restored.getModelProviderApiKey(user.id, OPENCODE_PROVIDER), [
+    assertEquals(await restored.getModelProviderApiKey(user.workspaceId, OPENCODE_PROVIDER), [
       OPENCODE_VALUE,
       undefined,
     ]);
@@ -436,7 +442,7 @@ Deno.test("provider plaintext and master key never enter gateway rows", async ()
   const client = await createAuthenticatedClient();
   try {
     await client.store.saveModelProviderCredential(
-      client.userId,
+      client.workspaceId,
       OPENCODE_PROVIDER,
       OPENCODE_VALUE,
     );
@@ -475,7 +481,7 @@ Deno.test("rejects unknown providers, unauthenticated access, and missing CSRF",
       },
     );
     assertEquals(invalidProvider.status, 400);
-    assertEquals(await client.store.listModelProviderCredentials(client.userId), []);
+    assertEquals(await client.store.listModelProviderCredentials(client.workspaceId), []);
 
     const anonymous = await fetch(new URL(PROVIDERS_SETTINGS_PATH, client.server.baseUrl), {
       redirect: "manual",
@@ -493,7 +499,7 @@ Deno.test("rejects unknown providers, unauthenticated access, and missing CSRF",
       }),
     });
     assertEquals(missingCsrf.status, 403);
-    assertEquals(await client.store.listModelProviderCredentials(client.userId), []);
+    assertEquals(await client.store.listModelProviderCredentials(client.workspaceId), []);
   } finally {
     await client.server.close();
     await client.store.close();

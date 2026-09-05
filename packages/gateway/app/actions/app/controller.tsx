@@ -12,12 +12,12 @@ export default createController(routes.app, {
   middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
     async index(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const [composer, sidebarSessions, githubCredential, gitAuthor] = await Promise.all([
-        loadSessionComposerData(userId, context.services),
-        context.services.store.listSessionCatalogEntries(userId),
-        context.services.store.getGitHubCredential(userId),
-        context.services.store.getGitAuthorConfiguration(userId),
+        loadSessionComposerData(workspaceId, context.services),
+        context.services.store.listSessionCatalogEntries(workspaceId),
+        context.services.store.getGitHubCredential(workspaceId),
+        context.services.store.getGitAuthorConfiguration(context.auth.identity.userId),
       ]);
       return context.render(
         <AppPage

@@ -20,7 +20,7 @@ import { SessionDetailPage } from "@/app/actions/sessions/page.tsx";
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import type { AppContext } from "@/app/router.ts";
-import { selectRunnerForUser } from "@/app/runner-selection.ts";
+import { selectRunnerForWorkspace } from "@/app/runner-selection.ts";
 import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
 import { isModelReference, sessionModelRuntime } from "@/app/model-provider-catalog.ts";
@@ -94,8 +94,8 @@ export default createController(routes.app.sessions, {
       }
 
       const { store } = context.services;
-      const userId = context.auth.identity.id;
-      const project = await store.getProject(userId, parsed.value.projectId);
+      const workspaceId = context.auth.identity.workspaceId;
+      const project = await store.getProject(workspaceId, parsed.value.projectId);
       if (!project) {
         return await renderCreateError(
           context,
@@ -115,8 +115,8 @@ export default createController(routes.app.sessions, {
       const { providerId } = parseModelReference(parsed.value.model);
 
       const runnerId = parsed.value.runnerId.trim() || undefined;
-      const selected = await selectRunnerForUser(
-        userId,
+      const selected = await selectRunnerForWorkspace(
+        workspaceId,
         runnerId,
         parsed.value.orbSize,
         store,
@@ -131,9 +131,9 @@ export default createController(routes.app.sessions, {
         [modelApiKey, modelCredentialError],
         gitAuthor,
       ] = await Promise.all([
-        store.getGitHubToken(userId),
-        store.getModelProviderApiKey(userId, providerId),
-        store.getGitAuthorConfiguration(userId),
+        store.getGitHubToken(workspaceId),
+        store.getModelProviderApiKey(workspaceId, providerId),
+        store.getGitAuthorConfiguration(context.auth.identity.userId),
       ]);
       if (gitCredentialError !== undefined) {
         return await renderCreateError(
@@ -171,7 +171,7 @@ export default createController(routes.app.sessions, {
       const sessionId = parsed.value.sessionId;
       const provisioned = await Effect.runPromise(
         context.services.runnerConnections.provisionSession({
-          userId,
+          workspaceId,
           runnerId: selected.runner.id,
           sessionId,
           payload: {
@@ -204,7 +204,7 @@ export default createController(routes.app.sessions, {
     },
 
     async message(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
       const parsed = s.parseSafe(continueSessionSchema, context.formData);
@@ -215,11 +215,15 @@ export default createController(routes.app.sessions, {
           400,
         );
       }
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const [snapshot, runnerId] = await Promise.all([
-        Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
-        Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
+        Effect.runPromise(
+          context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
+        ),
+        Effect.runPromise(
+          context.services.runnerConnections.getSessionRunner(workspaceId, sessionId),
+        ),
       ]);
       if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
@@ -238,10 +242,10 @@ export default createController(routes.app.sessions, {
       const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] = await Promise
         .all([
           context.services.store.getModelProviderApiKey(
-            userId,
+            workspaceId,
             parseModelReference(snapshot.model).providerId,
           ),
-          context.services.store.getGitHubToken(userId),
+          context.services.store.getGitHubToken(workspaceId),
         ]);
       if (modelCredentialError !== undefined) {
         return await sessionCommandError(
@@ -267,7 +271,7 @@ export default createController(routes.app.sessions, {
 
       const prompted = await Effect.runPromise(
         context.services.runnerConnections.promptSession({
-          userId,
+          workspaceId,
           sessionId,
           payload: {
             prompt: parsed.value.prompt,
@@ -288,14 +292,18 @@ export default createController(routes.app.sessions, {
     },
 
     async abort(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const [snapshot, runnerId] = await Promise.all([
-        Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
-        Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
+        Effect.runPromise(
+          context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
+        ),
+        Effect.runPromise(
+          context.services.runnerConnections.getSessionRunner(workspaceId, sessionId),
+        ),
       ]);
       if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
@@ -305,7 +313,7 @@ export default createController(routes.app.sessions, {
       }
 
       const aborted = await Effect.runPromise(
-        context.services.runnerConnections.abortSession({ userId, sessionId }),
+        context.services.runnerConnections.abortSession({ workspaceId, sessionId }),
         { signal: context.request.signal },
       );
       if (aborted.status !== "accepted") {
@@ -319,14 +327,18 @@ export default createController(routes.app.sessions, {
     },
 
     async stop(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const [snapshot, runnerId] = await Promise.all([
-        Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
-        Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
+        Effect.runPromise(
+          context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
+        ),
+        Effect.runPromise(
+          context.services.runnerConnections.getSessionRunner(workspaceId, sessionId),
+        ),
       ]);
       if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
@@ -342,7 +354,7 @@ export default createController(routes.app.sessions, {
       }
 
       const stopped = await Effect.runPromise(
-        context.services.runnerConnections.stopSession({ userId, sessionId }),
+        context.services.runnerConnections.stopSession({ workspaceId, sessionId }),
         { signal: context.request.signal },
       );
       if (stopped.status !== "accepted") {
@@ -356,14 +368,14 @@ export default createController(routes.app.sessions, {
     },
 
     async delete(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
 
       const [deleted, deletionError] = await context.services.store.deleteSessionCatalogEntry(
-        userId,
+        workspaceId,
         sessionId,
         new Date().toISOString(),
       );
@@ -375,16 +387,16 @@ export default createController(routes.app.sessions, {
       }
 
       await Effect.runPromise(
-        context.services.runnerConnections.deleteSession({ userId, sessionId }),
+        context.services.runnerConnections.deleteSession({ workspaceId, sessionId }),
       );
       return redirect(routes.app.index.href(), 303);
     },
 
     async retry(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return new Response("Session not found.", { status: 404 });
-      const session = await context.services.store.getSessionCatalogEntry(userId, sessionId);
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
       if (!session) return new Response("Session not found.", { status: 404 });
       const parsed = s.parseSafe(retrySessionSchema, context.formData);
       if (!parsed.success) {
@@ -392,13 +404,13 @@ export default createController(routes.app.sessions, {
       }
 
       const runnerId = await Effect.runPromise(
-        context.services.runnerConnections.getSessionRunner(userId, sessionId),
+        context.services.runnerConnections.getSessionRunner(workspaceId, sessionId),
       );
       if (!runnerId) {
         return await renderDetailPage(context, "The pinned runner is offline.", 409);
       }
       const snapshot = await Effect.runPromise(
-        context.services.runnerConnections.getSessionSnapshot(userId, sessionId),
+        context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
       );
       if (!snapshot || snapshot.state !== "error") {
         return await renderDetailPage(
@@ -425,9 +437,9 @@ export default createController(routes.app.sessions, {
 
       const [[githubToken, gitCredentialError], [modelApiKey, modelCredentialError]] = await Promise
         .all([
-          context.services.store.getGitHubToken(userId),
+          context.services.store.getGitHubToken(workspaceId),
           context.services.store.getModelProviderApiKey(
-            userId,
+            workspaceId,
             parseModelReference(snapshot.model).providerId,
           ),
         ]);
@@ -456,7 +468,7 @@ export default createController(routes.app.sessions, {
       const recovered = recovery === "retry-provisioning"
         ? await Effect.runPromise(
           context.services.runnerConnections.provisionSession({
-            userId,
+            workspaceId,
             runnerId,
             sessionId,
             payload: {
@@ -469,7 +481,7 @@ export default createController(routes.app.sessions, {
         )
         : await Effect.runPromise(
           context.services.runnerConnections.wakeSession({
-            userId,
+            workspaceId,
             sessionId,
             payload: {
               modelRuntime,
@@ -493,10 +505,10 @@ async function renderCreateError(
   status: number,
   values: SessionComposerValues,
 ) {
-  const userId = context.auth.identity.id;
+  const workspaceId = context.auth.identity.workspaceId;
   const [composer, sidebarSessions] = await Promise.all([
-    loadSessionComposerData(userId, context.services),
-    context.services.store.listSessionCatalogEntries(userId),
+    loadSessionComposerData(workspaceId, context.services),
+    context.services.store.listSessionCatalogEntries(workspaceId),
   ]);
   return context.render(
     <AppPage
@@ -540,18 +552,20 @@ async function renderDetailPage(
   error?: string,
   status = 200,
 ) {
-  const userId = context.auth.identity.id;
+  const workspaceId = context.auth.identity.workspaceId;
   const sessionId = parseSessionId(context.params.sessionId);
   if (!sessionId) return new Response("Session not found.", { status: 404 });
   const [composer, session, sidebarSessions] = await Promise.all([
-    loadSessionComposerData(userId, context.services),
-    context.services.store.getSessionCatalogEntry(userId, sessionId),
-    context.services.store.listSessionCatalogEntries(userId),
+    loadSessionComposerData(workspaceId, context.services),
+    context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+    context.services.store.listSessionCatalogEntries(workspaceId),
   ]);
   if (!session) return new Response("Session not found.", { status: 404 });
   const [runnerId, snapshot] = await Promise.all([
-    Effect.runPromise(context.services.runnerConnections.getSessionRunner(userId, sessionId)),
-    Effect.runPromise(context.services.runnerConnections.getSessionSnapshot(userId, sessionId)),
+    Effect.runPromise(context.services.runnerConnections.getSessionRunner(workspaceId, sessionId)),
+    Effect.runPromise(
+      context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
+    ),
   ]);
   return context.render(
     <SessionDetailPage

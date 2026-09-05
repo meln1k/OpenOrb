@@ -427,8 +427,8 @@ function checkpointIssue(
     category: "checkpoint-publish",
     severity: "failure",
     message: hasPriorCheckpoint
-      ? "The VM stopped, but its new checkpoint could not be published. Resume the prior checkpoint explicitly; newer guest root-disk changes may roll back, while the Project Workspace and Pi conversation remain preserved."
-      : "The VM stopped, but its checkpoint could not be published. Start a clean VM explicitly; the Project Workspace and Pi conversation remain preserved.",
+      ? "The VM stopped, but its new checkpoint could not be published. Resume the prior checkpoint explicitly; newer guest root-disk changes may roll back, while the Project Checkout and Pi conversation remain preserved."
+      : "The VM stopped, but its checkpoint could not be published. Start a clean VM explicitly; the Project Checkout and Pi conversation remain preserved.",
     diagnostics: redactedErrorMessage(error, []),
     recovery: hasPriorCheckpoint ? "resume-prior-checkpoint" : "start-clean-vm",
   });

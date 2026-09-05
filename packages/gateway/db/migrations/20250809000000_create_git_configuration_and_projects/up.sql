@@ -11,19 +11,19 @@ create table git_author_configuration (
 
 create table git_credentials (
   id uuid primary key,
-  user_id uuid not null references users(id) on delete cascade,
+  workspace_id uuid not null references workspaces(id) on delete cascade,
   host text not null check (host = 'github.com'),
   encrypted_secret_id uuid not null unique,
   created_at text not null,
   updated_at text not null,
-  unique (user_id, host),
-  constraint git_credentials_secret_owner_fk foreign key (user_id, encrypted_secret_id)
-    references encrypted_secrets(user_id, id) on delete restrict
+  unique (workspace_id, host),
+  constraint git_credentials_secret_owner_fk foreign key (workspace_id, encrypted_secret_id)
+    references encrypted_secrets(workspace_id, id) on delete restrict
 );
 
 create table projects (
   id uuid primary key,
-  user_id uuid not null references users(id) on delete cascade,
+  workspace_id uuid not null references workspaces(id) on delete cascade,
   name text not null check (
     length(btrim(name)) between 1 and 100
   ),
@@ -38,6 +38,6 @@ create table projects (
   ),
   created_at text not null,
   updated_at text not null,
-  unique (user_id, name),
-  unique (user_id, id)
+  unique (workspace_id, name),
+  unique (workspace_id, id)
 );

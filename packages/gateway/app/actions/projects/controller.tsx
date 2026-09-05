@@ -46,11 +46,11 @@ export default createController(routes.app.projects, {
   middleware: [requireAuth<Administrator>(), csrf()],
   actions: {
     async index(context) {
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const [composer, projects, sidebarSessions] = await Promise.all([
-        loadSessionComposerData(userId, context.services),
-        context.services.store.listProjects(userId),
-        context.services.store.listSessionCatalogEntries(userId),
+        loadSessionComposerData(workspaceId, context.services),
+        context.services.store.listProjects(workspaceId),
+        context.services.store.listSessionCatalogEntries(workspaceId),
       ]);
       return context.render(
         <ProjectsPage
@@ -64,13 +64,13 @@ export default createController(routes.app.projects, {
 
     async action(context) {
       const { store } = context.services;
-      const userId = context.auth.identity.id;
+      const workspaceId = context.auth.identity.workspaceId;
       const intent = context.formData.get("intent");
       const renderError = async (error: string, status: number) => {
         const [composer, projects, sidebarSessions] = await Promise.all([
-          loadSessionComposerData(userId, context.services),
-          store.listProjects(userId),
-          store.listSessionCatalogEntries(userId),
+          loadSessionComposerData(workspaceId, context.services),
+          store.listProjects(workspaceId),
+          store.listSessionCatalogEntries(workspaceId),
         ]);
         return context.render(
           <ProjectsPage
@@ -91,7 +91,7 @@ export default createController(routes.app.projects, {
         if (!repositoryUrl) {
           return renderError("The GitHub repository is invalid.", 400);
         }
-        const result = await store.saveProject(userId, {
+        const result = await store.saveProject(workspaceId, {
           id: projectId,
           name: values.name.trim(),
           repositoryUrl,
@@ -127,7 +127,7 @@ export default createController(routes.app.projects, {
           return renderError(parsed.issues[0]?.message ?? "Invalid project deletion.", 400);
         }
         const [result, persistenceError] = await store.deleteProject(
-          userId,
+          workspaceId,
           parsed.value.projectId,
         );
         if (persistenceError !== undefined) {

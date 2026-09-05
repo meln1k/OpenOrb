@@ -1,7 +1,14 @@
+create table workspaces (
+  id uuid primary key,
+  created_at text not null
+);
+
 create table users (
   id uuid primary key,
+  workspace_id uuid not null references workspaces(id) on delete cascade,
   is_administrator boolean not null default false,
-  created_at text not null
+  created_at text not null,
+  unique (workspace_id, id)
 );
 
 create unique index users_single_administrator_idx
@@ -21,12 +28,15 @@ create table password_credentials (
 
 create table browser_sessions (
   id text primary key,
-  user_id uuid references users(id) on delete cascade,
+  workspace_id uuid,
+  user_id uuid,
   data jsonb not null,
   expires_at timestamptz not null,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint browser_sessions_identity_fk foreign key (workspace_id, user_id)
+    references users(workspace_id, id) match full on delete cascade
 );
 
 create index browser_sessions_expires_at_idx on browser_sessions (expires_at);
-create index browser_sessions_user_id_idx on browser_sessions (user_id);
+create index browser_sessions_identity_idx on browser_sessions (workspace_id, user_id);

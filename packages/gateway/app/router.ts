@@ -64,17 +64,18 @@ export function createAppRouter(
       provideAppServices(services),
       auth({
         schemes: [
-          createSessionAuthScheme<Administrator, { userId: string }>({
+          createSessionAuthScheme<Administrator, Administrator>({
             read(currentSession) {
               const value = currentSession.get("auth");
               return parseBrowserSessionAuth(value);
             },
-            verify(value, context) {
+            async verify(value, context) {
               const currentServices = context.get(AppServicesKey);
               if (!currentServices) {
                 throw new TypeError("App services middleware is missing.");
               }
-              return currentServices.store.getAdministrator(value.userId);
+              const identity = await currentServices.store.getAdministrator(value.userId);
+              return identity?.workspaceId === value.workspaceId ? identity : null;
             },
             invalidate(currentSession) {
               currentSession.unset("auth");

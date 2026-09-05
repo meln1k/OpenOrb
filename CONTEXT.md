@@ -5,8 +5,14 @@ agent activity.
 
 ## Language
 
-**Session**: A durable association between a conversation and its workspace that persists across
-agent activity and idle periods.
+**Workspace**: The tenant that owns projects, secrets, provider and Git credentials, runners,
+enrollment credentials, and the session catalog. _Avoid_: User tenant, Project Workspace
+
+**User**: A person who belongs directly to exactly one Workspace, with their own password and Git
+author identity. _Avoid_: Tenant, member
+
+**Session**: A durable association between a conversation and its Project Checkout that persists
+across agent activity and idle periods.
 
 **Agent Harness**: The provider-neutral agent capability used by the runner, independent of any
 particular agent implementation or version. _Avoid_: Pi interface, Pi runtime
@@ -34,20 +40,20 @@ cursor.
 **Ephemeral Session Event**: A Session Event observed during live activity without a replay
 guarantee. _Avoid_: Durable event, conversation event
 
-**Project Workspace**: The host-backed project filesystem mounted into an Agent Environment. It
+**Project Checkout**: The host-backed project filesystem mounted into an Agent Environment. It
 persists independently of the Agent Environment and its snapshots. _Avoid_: VM workspace
 
-**Git Snapshot**: A bounded point-in-time summary of a Project Workspace's Git state, including file
+**Git Snapshot**: A bounded point-in-time summary of a Project Checkout's Git state, including file
 status and staged and unstaged patches, cached by the runner independently of an Environment
 Snapshot. _Avoid_: Git report, Diff Snapshot
 
-**Agent Environment**: The live isolated compute capabilities and mounted Project Workspace
-available to an Agent Harness during an Agent Run, independent of how the underlying compute was
-created or restored. _Avoid_: Workspace Runtime, VM
+**Agent Environment**: The live isolated compute capabilities and mounted Project Checkout available
+to an Agent Harness during an Agent Run, independent of how the underlying compute was created or
+restored. _Avoid_: Workspace Runtime, VM
 
 **Agent Environment Provider**: The authority that supplies Agent Environments and makes a
 best-effort attempt to preserve their root-disk state between Agent Runs. _Avoid_: Workspace Runtime
 
 **Environment Snapshot**: A reusable copy of an Agent Environment's root disk, captured on a
-best-effort basis after an Agent Run. It excludes the host-backed Project Workspace and Harness
-State and is not required to continue a Session. _Avoid_: Workspace snapshot, session snapshot
+best-effort basis after an Agent Run. It excludes the host-backed Project Checkout and Harness State
+and is not required to continue a Session. _Avoid_: Workspace snapshot, session snapshot

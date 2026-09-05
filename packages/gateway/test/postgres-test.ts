@@ -1,4 +1,5 @@
 import { v7 } from "@std/uuid";
+import { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
 
 import { importMasterKey, type MasterKey } from "@/app/utils/master-key.ts";
 import { createPostgresStore, type PostgresStore } from "@/app/data/store.ts";
@@ -23,16 +24,43 @@ export async function createTestStore(
   await migrate(store.pool);
   if (reset) {
     await store.pool.query(
-      "truncate table deleted_sessions, sessions, runners, runner_enrollment_tokens, projects, model_provider_credentials, git_credentials, git_author_configuration, browser_sessions, password_credentials, users, encrypted_secrets restart identity",
+      "truncate table deleted_sessions, sessions, runners, runner_enrollment_tokens, projects, model_provider_credentials, git_credentials, git_author_configuration, browser_sessions, password_credentials, users, encrypted_secrets, workspaces restart identity",
     );
   }
   return store;
 }
 
-export async function createTestUser(store: PostgresStore): Promise<string> {
+export async function createTestWorkspace(store: PostgresStore): Promise<WorkspaceId> {
+  const id = WorkspaceId.make(v7.generate());
+  await store.pool.query("insert into workspaces (id, created_at) values ($1, $2)", [
+    id,
+    new Date().toISOString(),
+  ]);
+  return id;
+}
+
+/** Returns the user ID, never the workspace ID. */
+export async function createTestUser(
+  store: PostgresStore,
+  workspaceId?: WorkspaceId,
+): Promise<UserId> {
   const result = await store.pool.query<{ id: string }>(
-    "insert into users (id, is_administrator, created_at) values ($1, false, $2) returning id",
-    [v7.generate(), new Date().toISOString()],
+    "insert into users (id, workspace_id, is_administrator, created_at) values ($1, $2, false, $3) returning id",
+    [v7.generate(), workspaceId ?? await createTestWorkspace(store), new Date().toISOString()],
   );
-  return result.rows[0]!.id;
+  const row = result.rows[0];
+  if (!row) throw new Error("Test user was not created.");
+  return UserId.make(row.id);
+}
+
+export async function getTestUserWorkspaceId(
+  store: PostgresStore,
+  userId: UserId,
+): Promise<WorkspaceId> {
+  const result = await store.pool.query<{ workspace_id: string }>(
+    "select workspace_id from users where id = $1",
+    [userId],
+  );
+  if (!result.rows[0]) throw new Error("Test user not found.");
+  return WorkspaceId.make(result.rows[0].workspace_id);
 }

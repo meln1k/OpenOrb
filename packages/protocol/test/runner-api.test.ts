@@ -51,12 +51,12 @@ import {
   StopSessionAccepted,
   StopSessionPayload,
   UpdateSessionGitFilePayload,
-  UserId,
   type WakeRejected,
   WakeSessionAccepted,
   WakeSessionPayload,
   WatchSessionEvent,
   WatchSessionPayload,
+  WorkspaceId,
 } from "@/src/runner-api.ts";
 import {
   MAX_RUNNER_RPC_FRAME_BYTES,
@@ -85,7 +85,7 @@ type RunnerApiError =
   | WakeRejected;
 
 const SESSION_ID = SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
-const USER_ID = UserId.make("01989d78-65ee-7f6a-a97e-0f16ad134c12");
+const WORKSPACE_ID = WorkspaceId.make("01989d78-65ee-7f6a-a97e-0f16ad134c12");
 const PROJECT_ID = ProjectId.make("01989d78-65ee-7f6a-a97e-0f16ad134c10");
 const RUNNER_ID = RunnerId.make("01989d78-65ee-7f6a-a97e-0f16ad134c11");
 const RUN_ID = RunId.make("run-1");
@@ -114,7 +114,7 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
   const provision = Schema.decodeUnknownSync(ProvisionSessionPayload)({
     mode: "create",
     sessionId: SESSION_ID,
-    userId: USER_ID,
+    workspaceId: WORKSPACE_ID,
     projectId: PROJECT_ID,
     repositoryUrl: "https://github.com/openorb/example.git",
     ref: "main",
@@ -127,7 +127,7 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
   assertEquals(provision.sessionId, SESSION_ID);
   assertEquals(provision.mode, "create");
   if (provision.mode !== "create") throw new Error("Expected a create payload.");
-  assertEquals(provision.userId, USER_ID);
+  assertEquals(provision.workspaceId, WORKSPACE_ID);
   assertThrows(() =>
     Schema.decodeUnknownSync(ProvisionSessionPayload)({
       ...provision,

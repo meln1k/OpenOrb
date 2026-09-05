@@ -35,13 +35,13 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 9. **Mobile-capable.** The main workflows must be usable from a phone, not merely render on a narrow screen.
 10. **Web-standard interfaces.** Use HTTP, SSE, WebSockets, Fetch APIs, and versioned runtime-validated protocol types.
 11. **Single gateway persistence.** PostgreSQL is the gateway's only durable persistence, including for future control-plane growth. Never introduce Redis, another database/KV service, or application-owned durable local files. For the MVP, do not require an SDN, Kubernetes, or a multi-node control plane.
-12. **Tenant ownership from the start.** The MVP creates only one administrator, but every user-owned control-plane row and repository operation is scoped by immutable `user_id`. There are no global user resources, and foreign keys prevent cross-user references.
+12. **Workspace tenancy from the start.** Each user belongs directly to exactly one Workspace. Projects, secrets, provider/Git credentials, runners, enrollment credentials, session catalog rows, and deletion markers are owned by immutable `workspace_id`; composite foreign keys prevent cross-Workspace references. Passwords and Git author identity remain user-owned.
 
 ## 3. Scope
 
 ### 3.1 MVP scope
 
-- Single-administrator gateway with user-scoped persistence
+- Single-administrator gateway with Workspace-scoped tenant persistence
 - Local password authentication and WebAuthn/passkeys
 - Multiple outbound-only Linux runners
 - Reusable or one-time runner enrollment tokens
@@ -70,7 +70,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Batteries-included Gondolin guest image
 - Shared package download caches
 - Archive and explicit deletion
-- Minimal user-owned gateway live-session catalog (project, creation time, trimmed initial prompt) plus user-owned deleted-session ID/time markers; all full session data is runner-backed
+- Minimal Workspace-owned gateway live-session catalog (project, creation time, trimmed initial prompt) plus Workspace-owned deleted-session ID/time markers; all full session data is runner-backed
 
 ### 3.2 Explicit non-goals for MVP
 
@@ -84,7 +84,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - First-class macOS runner support
 - Containerized runner as the primary installation method
 - Full Pi session-tree/branch UI
-- Workspace rollback when editing a message
+- Project Checkout rollback when editing a message
 - Local checkout synchronization similar to `amp sync`
 - Patch-download workflow
 - Model-provider OAuth/subscription logins
@@ -102,7 +102,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - **Project:** Repository configuration, credentials, secrets, defaults, and policies shared by sessions.
 - **Session:** One linear user-visible Pi conversation, one checkout, one pinned runner, and one Gondolin VM/checkpoint.
 - **Draft session:** A session whose first prompt has not been sent. Its runner selection can still change.
-- **Workspace:** The session-specific host checkout mounted at `/workspace` in Gondolin.
+- **Workspace:** The tenant that owns projects, credentials, secrets, runners, enrollment credentials, and the session catalog. Each user belongs directly to one Workspace.
+- **Project Checkout:** The session-specific host checkout mounted at `/workspace` in Gondolin.
 - **Turn:** One Pi model response plus its tool calls. One user prompt may produce multiple turns.
 - **Run:** All work resulting from an accepted prompt, including retries, compaction, and Pi-native queued continuations, until Pi is fully settled.
 - **Pending delivery:** A normal user message durably held by the assigned runner before it is handed to Pi.
@@ -141,8 +142,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Preview lifecycle | Managed previews wake/restart; live-only previews expire on sleep |
 | Runner OS | Native Linux first |
 | Gateway UI | Remix 3, end-to-end TypeScript |
-| Gateway persistence | PostgreSQL only, for user-owned gateway configuration, a five-column live-session catalog (`user_id` plus four catalog fields), and three-column deletion markers (`user_id`, session ID, deletion time); no Redis, secondary database/KV store, or durable local gateway files |
-| Tenant ownership | Personal user tenancy only; every repository method receives authenticated `userId`, tenant uniqueness is composite with `user_id`, and foreign keys prevent cross-user references |
+| Gateway persistence | PostgreSQL only, for Workspace-owned gateway configuration, a five-column live-session catalog (`workspace_id` plus four catalog fields), and three-column deletion markers (`workspace_id`, session ID, deletion time); no Redis, secondary database/KV store, or durable local gateway files |
+| Tenant ownership | Direct `users.workspace_id`; tenant repository methods receive authenticated `workspaceId`, tenant uniqueness is composite with `workspace_id`, and foreign keys prevent cross-Workspace references. Passwords and Git author identity use `userId`. No memberships, new roles, tenant abstractions, or Workspace-selection UI |
 | Runner persistence | Ordinary files/directories only for metadata, JSONL, logs, workspaces, Git Snapshots, checkpoints, and journals; no runner database |
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | One outbound Effect RPC WebSocket for MVP; a separately scoped binary data plane is future work |
@@ -273,9 +274,9 @@ Guest preview content must never be served from the gateway’s origin.
 
 ### 8.3 Single-administrator authentication
 
-- First-run setup creates the single admin user.
+- First-run setup atomically creates one Workspace, the single admin user, and their password credential; concurrent attempts cannot create another administrator or an orphan Workspace.
 - User IDs are application-generated UUIDv7 values stored in PostgreSQL `uuid` columns.
-- The login and account-management UI remains single-administrator for MVP, but `users` supports multiple rows and every persisted resource is owned by one user.
+- The login and account-management UI remains single-administrator for MVP, but `workspaces` and `users` support multiple rows. Every user has a required direct `workspace_id` foreign key. Browser auth is `{userId, workspaceId}`, resolved from persisted user/session records and rejected on mismatch, never selected by request input.
 - Passwords use Web Crypto PBKDF2-HMAC-SHA-256 with exactly 600,000 iterations, a random 16-byte salt, and a 256-bit derived key. The fixed profile is runtime validated; there is no Argon2 compatibility path.
 - Passkeys use WebAuthn and require HTTPS except for local development.
 - Password remains a recovery method unless the user explicitly disables it in a later release.
@@ -299,8 +300,8 @@ Use envelope-style application encryption:
 
 - A gateway master key is supplied through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection.
 - The gateway never generates or persists the master key to local disk or PostgreSQL and fails startup if it is missing or invalid.
-- Import the 256-bit master key with Web Crypto and encrypt with `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()`. Persist the returned nonce/ciphertext/tag bytes unchanged as one opaque value, store key version separately, and authenticate immutable user ID, credential key, and key version as AAD.
-- Store each secret as an `encrypted_secrets` row with a UUID primary key, immutable `user_id`, a credential key unique within that user, an explicit required purpose, and the opaque ciphertext. Provider keys use purpose `provider-api-key` and are referenced by provider ID through separate provider-credential records; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Repositories select rows by both user and purpose rather than key-prefix conventions. Provider identity never derives from an environment-variable-style secret name.
+- Import the 256-bit master key with Web Crypto and encrypt with `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()`. Persist the returned nonce/ciphertext/tag bytes unchanged as one opaque value, store key version separately, and authenticate immutable `workspaceId`, credential key, and key version as AAD.
+- Store each secret as an `encrypted_secrets` row with a UUID primary key, immutable `workspace_id`, a credential key unique within that Workspace, an explicit required purpose, and the opaque ciphertext. Provider keys use purpose `provider-api-key` and are referenced by provider ID through separate provider-credential records; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Repositories select rows by both Workspace and purpose rather than key-prefix conventions. Provider identity never derives from an environment-variable-style secret name.
 - Never derive the server encryption key from the login password; the service must restart unattended.
 - Backups are incomplete without the PostgreSQL database and master key.
 - Secret values are never returned to the browser after creation; only metadata is returned.
@@ -338,16 +339,16 @@ The runner package must include a `doctor` command that checks:
 ### 9.2 Enrollment
 
 1. Runner calls the enrollment endpoint with the PSK and metadata.
-2. Gateway derives the immutable owner from the authenticated user's enrollment token, stores `user_id` with the runner identity, and returns a stable runner ID plus bearer token. Runner payloads cannot choose or change tenant ownership.
+2. Gateway derives the immutable Workspace owner from the persisted enrollment token, stores `workspace_id` with enrollment and runner identity, and returns a stable runner ID plus bearer token. Subsequent authentication resolves ownership from the trusted token/runner record. Runner payloads cannot choose or change tenant ownership. At most one active reusable enrollment PSK exists per Workspace.
 3. The runner stores the bearer token in its data directory with mode `0600`.
 4. On each outbound RPC connection, the gateway invokes `IdentifyRunner`; the runner returns the bearer token, claimed runner ID, runner version, and application protocol version.
 5. The gateway admits the connection only after the token, claimed identity, revocation state, and protocol version pass authentication.
 6. The shared enrollment PSK is not used as the runner’s ongoing identity.
 7. The gateway can revoke one runner without regenerating the enrollment PSK.
 
-The current reusable enrollment token is always available per user. Regeneration atomically revokes
+The current reusable enrollment token is always available per Workspace. Regeneration atomically revokes
 the previous token and creates its replacement, while PostgreSQL enforces at most one active token
-per user. Support reusable enrollment tokens for homelab convenience and one-time tokens for safer
+per Workspace. Support reusable enrollment tokens for homelab convenience and one-time tokens for safer
 automation.
 
 ### 9.3 Outbound connections
@@ -400,7 +401,7 @@ Recommended layout:
         git-snapshot.json
 ```
 
-The runner is authoritative for all complete live-session data; the gateway duplicates only the immutable user owner and four catalog fields described below and retains minimal user-owned deleted-session ID/time markers:
+The runner is authoritative for all complete live-session data; the gateway duplicates only the immutable Workspace owner and four catalog fields described below and retains minimal Workspace-owned deleted-session ID/time markers:
 
 - Session metadata and pinned-runner identity
 - Raw Pi JSONL
@@ -425,7 +426,7 @@ It also persists one deliberately minimal catalog row per session:
 
 ```ts
 interface SessionCatalogEntry {
-  userId: string
+  workspaceId: string
   id: string
   projectId: string
   createdAt: string
@@ -435,17 +436,18 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is derived from the initial textual prompt by collapsing whitespace and truncating to at most 200 Unicode code points. It excludes attachments and is display-only; it must never be used to reconstruct or replay a prompt.
 
-No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the gateway. The only session record outside the live five-column catalog is a deleted-session marker containing immutable user ID, session ID, and deletion time. After authentication, each runner streams a complete bounded initial `WatchRunner` snapshot containing the four catalog data fields plus live routing/state data. The gateway derives the owner from the authenticated runner record, never from runner-supplied tenant data; it upserts missing non-deleted catalog rows and atomically installs a user-scoped in-memory routing index only after the snapshot completion boundary. Snapshot absence alone does not delete a catalog row because runner assignment is not persisted. A tombstoned snapshot entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
+No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the gateway. The only session record outside the live five-column catalog is a deleted-session marker containing immutable Workspace ID, session ID, and deletion time. After authentication, each runner streams a complete bounded initial `WatchRunner` snapshot containing the four catalog data fields plus live routing/state data. The gateway derives the owner from the authenticated runner record, never from runner-supplied tenant data; it upserts missing non-deleted catalog rows and atomically installs a Workspace-scoped in-memory routing index only after the snapshot completion boundary. Snapshot absence alone does not delete a catalog row because runner assignment is not persisted. A tombstoned snapshot entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
 
 ## 11. Domain model
 
-User-owned project/configuration entities, the five-column `SessionCatalogEntry`, and minimal user/session/time deletion markers are persisted by the gateway. Complete session entities, pending messages, previews, events, and runtime state are persisted only by their owning runner and merely proxied by the gateway.
+Workspace-owned project/configuration entities, the five-column `SessionCatalogEntry`, and minimal Workspace/session/time deletion markers are persisted by the gateway. Passwords and Git author identity remain user-owned. Complete session entities, pending messages, previews, events, and runtime state are persisted only by their owning runner and merely proxied by the gateway.
 
 ### 11.1 Project
 
 ```ts
 interface Project {
   id: string
+  workspaceId: string
   name: string
   repository: {
     url: string
@@ -481,6 +483,7 @@ Per-user Git author defaults are required. Project values may override them late
 ```ts
 interface Runner {
   id: string
+  workspaceId: string
   name: string
   status: "online" | "offline" | "draining" | "revoked"
   platform: {
@@ -657,7 +660,7 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 3. User may override the runner while drafting.
 4. Sending the first prompt reserves an online runner.
 5. Runner creates the session locally, durably stores the full initial prompt, and becomes permanently assigned.
-6. After runner confirmation, gateway stores only the user owner and four catalog data fields with the trimmed prompt preview; the runner assignment remains in the live routing index, not the catalog row.
+6. After runner confirmation, gateway stores only the Workspace owner and four catalog data fields with the trimmed prompt preview; the runner assignment remains in the live routing index, not the catalog row.
 7. Runner creates an empty session workspace, boots Gondolin with requested resources, and mounts it.
 8. Git inside Gondolin clones the repository through mediated HTTPS/SSH credentials and reports the exact base commit.
 9. Git inside Gondolin creates the local working branch.
@@ -707,7 +710,7 @@ Allowed only when:
 
 Implementation uses Pi’s internal tree/session APIs to move the active conversation path before the last prompt and append the edited prompt. The abandoned response remains in raw Pi history but is hidden from the linear OpenOrb UI.
 
-**Workspace and VM changes are not reverted.** The UI must say that the retry runs on the current workspace.
+**Project Checkout and VM changes are not reverted.** The UI must say that the retry runs on the current checkout.
 
 ### 13.5 Idle and sleep
 
@@ -756,7 +759,7 @@ Delete:
 
 - Require explicit confirmation.
 - If the owning runner is online and any agent, provisioning, setup/resume, maintenance, terminal, or preview work is active, reject deletion until that work settles; do not interrupt it implicitly.
-- In one PostgreSQL transaction, write a durable deleted-session marker containing only user ID, session ID, and deletion time, remove the five-column catalog row, and remove any persisted gateway configuration that is scoped only to that session. Remove the ephemeral user-scoped route immediately afterward.
+- In one PostgreSQL transaction, write a durable deleted-session marker containing only Workspace ID, session ID, and deletion time, remove the five-column catalog row, and remove any persisted gateway configuration that is scoped only to that session. Remove the ephemeral Workspace-scoped route immediately afterward.
 - If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, checkpoint, logs, and snapshots.
 - If the runner is offline or permanently lost, deletion still succeeds at the control plane. The marker prevents a stale runner disk or backup from recreating the catalog entry.
 - If a runner later reports a tombstoned session, do not route or reinsert it. Repeatedly request runner cleanup; if the runner reports active work, wait for it to settle rather than interrupting it.
@@ -847,7 +850,7 @@ Repository files such as `AGENTS.md`, `CLAUDE.md`, `.agents/skills/**`, `.pi/ski
 
 Add restricted-import/lint rules that forbid `DefaultResourceLoader` in runner packages and forbid direct Pi session construction outside `OpenOrbPiSessionFactory`. A test must fail if session creation observes any workspace-discovered extension, package, setting, prompt, skill, theme, context file, or system-prompt fragment.
 
-A future centrally managed **Agent Profile** may add explicitly approved resources. Such resources must be selected by gateway configuration, copied into immutable runner-owned storage outside the workspace, and returned directly by the allowlist loader. Project workspace discovery must remain disabled, and scripts referenced by passive skill metadata must remain executable only through Gondolin-backed tools.
+A future centrally managed **Agent Profile** may add explicitly approved resources. Such resources must be selected by gateway configuration, copied into immutable runner-owned storage outside the checkout, and returned directly by the allowlist loader. Project Checkout discovery must remain disabled, and scripts referenced by passive skill metadata must remain executable only through Gondolin-backed tools.
 
 ### 14.4 Event normalization
 
@@ -1562,10 +1565,11 @@ data-plane details to be tested independently.
 
 Gateway PostgreSQL is the gateway's only durable persistence. It stores configuration plus the minimal session catalog:
 
-- `users`
+- `workspaces`
+- `users`, with required direct `workspace_id` ownership
 - `password_credentials`
 - `webauthn_credentials`
-- `browser_sessions`
+- `browser_sessions`, with persisted `{userId, workspaceId}` auth consistent with the user's Workspace; anonymous sessions have no authenticated owner
 - `encrypted_secrets`, with explicit purpose classification for each encrypted value
 - `model_providers`
 - `git_credentials`
@@ -1574,8 +1578,8 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 - `project_secrets`
 - `runners`
 - `runner_enrollment_tokens`
-- `sessions`, restricted to `user_id`, `id`, `project_id`, `created_at`, and `initial_prompt_preview`
-- `deleted_sessions`, restricted to `user_id`, `session_id`, and `deleted_at`
+- `sessions`, restricted to `workspace_id`, `id`, `project_id`, `created_at`, and `initial_prompt_preview`
+- `deleted_sessions`, restricted to `workspace_id`, `session_id`, and `deleted_at`
 - Control-plane audit events that contain no session content beyond the catalog identity
 
 It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, checkpoints, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
@@ -1588,15 +1592,15 @@ Each runner owns a file-backed local Session Journal in addition to the filesyst
 - Preview definitions/capability hashes
 - Git Snapshots and session state
 
-The gateway keeps a user-scoped in-memory session routing index populated by complete, reconciled `WatchRunner` snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot entry also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the user-owned control-plane marker without waiting for the runner.
+The gateway keeps a Workspace-scoped in-memory session routing index populated by complete, reconciled `WatchRunner` snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot entry also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the Workspace-owned control-plane marker without waiting for the runner.
 
 Gateway PostgreSQL guidelines:
 
 - Do not add Redis, another database/KV service, or application-owned durable local files
 - UUIDv7 or another time-sortable random identifier for configuration entities
 - Foreign keys enabled
-- Every user-owned table has immutable `user_id`; uniqueness is tenant-relative and composite foreign keys prevent cross-user references
-- Every persistence repository requires `userId` for list/read/write/delete operations and treats foreign-user identifiers as not found
+- Tenant-owned projects, secrets, provider/Git credentials, runners, enrollment credentials, catalog rows, and deletion markers use immutable `workspace_id`; uniqueness is tenant-relative and composite foreign keys prevent cross-Workspace references
+- Tenant persistence repositories require authenticated `workspaceId` for list/read/write/delete operations and treat foreign-Workspace identifiers as not found; passwords and Git author configuration remain user-owned and require `userId`
 - Explicit migrations committed to source
 - Secret ciphertext separate from searchable metadata
 - Store timestamps in UTC
@@ -1681,7 +1685,7 @@ Untrusted or constrained:
 - Pi uses `SettingsManager.inMemory(...)` and never loads workspace or global Pi settings/packages.
 - No project context, prompt, skill, theme, package, extension, or system-prompt resource is host-discovered in the MVP.
 - Pi/the model can access project files and skill-associated scripts only through Gondolin-backed tools.
-- Workspace path APIs reject traversal and symlink escape.
+- Project Checkout path APIs reject traversal and symlink escape.
 - Preview hosts are origin-isolated from gateway UI and one another.
 - Preview gateway strips OpenOrb auth material before guest forwarding.
 - Tunnel destinations are registered guest ports only.
@@ -1790,7 +1794,7 @@ Session-scoped audit records remain on the owning runner:
 ### Gateway restart
 
 - Runner reconnects automatically with exponential backoff and jitter, answers `IdentifyRunner`, and starts a fresh `WatchRunner` stream.
-- Gateway retains minimal user-owned catalog rows and deleted-session markers, upserts a missing five-column row under the authenticated runner's owner from a valid non-tombstoned snapshot entry, rejects tombstoned entries, and atomically rebuilds all user-scoped in-memory routes/live session state after the completion boundary; it recovers no full sessions or RPC operations from PostgreSQL.
+- Gateway retains minimal Workspace-owned catalog rows and deleted-session markers, upserts a missing five-column row under the authenticated runner's owner from a valid non-tombstoned snapshot entry, rejects tombstoned entries, and atomically rebuilds all Workspace-scoped in-memory routes/live session state after the completion boundary; it recovers no full sessions or RPC operations from PostgreSQL.
 - Browser SSE reconnects through the runner-owned cursor after the runner is available.
 - Stable domain IDs and runner-owned state support reconciliation; ambiguous prompt/Abort handoffs remain explicit.
 
@@ -1901,7 +1905,7 @@ Scenarios:
 - A hostile workspace containing `.pi/extensions`, `.pi/settings.json`, package resources, prompt/system-prompt files, context files, skills, and themes cannot execute host code or alter the resources/system prompt returned to Pi
 - Runner source/build checks forbid `DefaultResourceLoader` and session use of file-backed `SettingsManager.create(...)`
 - Pi/the model reaches workspace `AGENTS.md`, `CLAUDE.md`, and skill-associated scripts only through Gondolin-backed tools
-- Workspace traversal and escaping symlink denied
+- Project Checkout traversal and escaping symlink denied
 - Preview cannot target runner LAN/loopback arbitrarily
 - Gateway/preview cookies never reach guest
 - Capability token removed from URL and stored hashed only on the owning runner
@@ -1997,7 +2001,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Model/thinking controls
 - Edit-last conversation semantics
 
-**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with conversation state replayed from runner-owned Pi JSONL and only the user owner plus four live-session catalog fields and minimal user/session/time deletion markers stored by the gateway.
+**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with conversation state replayed from runner-owned Pi JSONL and only the Workspace owner plus four live-session catalog fields and minimal Workspace/session/time deletion markers stored by the gateway.
 
 ### Milestone 5 — Review surfaces
 
@@ -2086,7 +2090,7 @@ A release is MVP-complete when all of the following are true:
 16. Agent can publish a private managed preview that supports HTTP/WebSockets over the outbound tunnel.
 17. Managed preview wakes and restarts after sleep; live-only preview clearly expires.
 18. Capability preview links are revocable and do not expose gateway authentication to the guest.
-19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the five-column user-owned catalog row, stores only a user/session/time deletion marker, and causes any later stale runner snapshot entry to be cleaned up rather than resurrected.
+19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the five-column Workspace-owned catalog row, stores only a Workspace/session/time deletion marker, and causes any later stale runner snapshot entry to be cleaned up rather than resurrected.
 20. Pi never discovers project settings, packages, extensions, skills, prompts, themes, context files, or system-prompt fragments on the runner host; Pi/the model accesses project files and scripts only through Gondolin-backed tools.
 
 ## 33. Known risks and mitigations

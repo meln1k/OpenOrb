@@ -1,9 +1,13 @@
 import { assert, assertEquals, assertInstanceOf, assertNotEquals } from "@std/assert";
+import { WorkspaceId } from "@openorb/protocol/runner-api";
 
 import { importMasterKey } from "@/app/utils/master-key.ts";
 import { decryptSecret, encryptSecret, SecretDecryptionError } from "@/app/utils/secret-cipher.ts";
 
-const METADATA = { userId: "0198a5f8-3029-7000-8000-000000000011", key: "opencode-go" };
+const METADATA = {
+  workspaceId: WorkspaceId.make("0198a5f8-3029-7000-8000-000000000011"),
+  key: "opencode-go",
+};
 const SECRET = "oc-secret-api-key-7f3d9a";
 const KEY_BYTES = Uint8Array.from(Array.from({ length: 32 }, (_, index) => index));
 
@@ -39,7 +43,7 @@ Deno.test("tampered ciphertext, metadata, or key version fails authentication", 
   await assertDecryptionFails(
     decryptSecret(masterKey, encrypted, {
       ...METADATA,
-      userId: "0198a5f8-3029-7000-8000-000000000012",
+      workspaceId: WorkspaceId.make("0198a5f8-3029-7000-8000-000000000012"),
     }),
   );
   await assertDecryptionFails(

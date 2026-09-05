@@ -1,4 +1,5 @@
 import { runnerIdSchema } from "@openorb/protocol";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
 import { requireAuth } from "remix/middleware/auth";
@@ -48,7 +49,9 @@ export default createController(routes.app.settings.runners, {
           if (!parsed.success) {
             return await renderRunners(context, "Invalid enrollment token request.", 400);
           }
-          await context.services.store.regenerateRunnerEnrollmentToken(context.auth.identity.id);
+          await context.services.store.regenerateRunnerEnrollmentToken(
+            context.auth.identity.workspaceId,
+          );
           return redirect(routes.app.settings.runners.index.href(), 303);
         }
         case "revoke-runner": {
@@ -56,13 +59,16 @@ export default createController(routes.app.settings.runners, {
           if (!parsed.success) {
             return await renderRunners(context, "Invalid runner revocation request.", 400);
           }
-          const userId = context.auth.identity.id;
-          const result = await context.services.store.revokeRunner(userId, parsed.value.runnerId);
+          const workspaceId = context.auth.identity.workspaceId;
+          const result = await context.services.store.revokeRunner(
+            workspaceId,
+            parsed.value.runnerId,
+          );
           if (result === "not-found") {
             return await renderRunners(context, "Runner not found.", 404);
           }
           await Effect.runPromise(
-            context.services.runnerConnections.disconnectRunner(userId, parsed.value.runnerId),
+            context.services.runnerConnections.disconnectRunner(workspaceId, parsed.value.runnerId),
             { signal: context.request.signal },
           );
           return redirect(routes.app.settings.runners.index.href(), 303);
@@ -73,7 +79,7 @@ export default createController(routes.app.settings.runners, {
             return await renderRunners(context, "Invalid runner deletion request.", 400);
           }
           const result = await context.services.store.deleteRunner(
-            context.auth.identity.id,
+            context.auth.identity.workspaceId,
             parsed.value.runnerId,
           );
           if (result === "not-found") {
@@ -96,10 +102,10 @@ async function renderRunners(
   error?: string,
   status = 200,
 ): Promise<Response> {
-  const userId = context.auth.identity.id;
+  const workspaceId = context.auth.identity.workspaceId;
   const [enrollmentToken, runners] = await Promise.all([
-    context.services.store.getRunnerEnrollmentToken(userId),
-    context.services.store.listRunners(userId),
+    context.services.store.getRunnerEnrollmentToken(workspaceId),
+    context.services.store.listRunners(workspaceId),
   ]);
   return context.render(
     <RunnersSettingsPage
@@ -107,7 +113,7 @@ async function renderRunners(
       enrollmentToken={enrollmentToken}
       error={error}
       gatewayUrl={runnerGatewayUrl(context.request)}
-      runners={await settingsRunners(userId, runners, context.services.runnerConnections)}
+      runners={await settingsRunners(workspaceId, runners, context.services.runnerConnections)}
     />,
     { status, headers: { "cache-control": "no-store" } },
   );
@@ -119,13 +125,13 @@ function runnerGatewayUrl(request: Request): string {
 }
 
 async function settingsRunners(
-  userId: string,
+  workspaceId: WorkspaceId,
   runners: RunnerRecord[],
   connections: RunnerRegistryService,
 ): Promise<SettingsRunner[]> {
   return await Promise.all(runners.map(async (runner) => {
     const liveState = runner.revokedAt === null
-      ? await Effect.runPromise(connections.getRunnerLiveState(userId, runner.id))
+      ? await Effect.runPromise(connections.getRunnerLiveState(workspaceId, runner.id))
       : null;
     return {
       id: runner.id,

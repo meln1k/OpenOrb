@@ -18,7 +18,7 @@ import {
 } from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 14;
+export const RUNNER_PROTOCOL_VERSION = 15;
 
 export * from "./runner-api-limits.ts";
 
@@ -35,6 +35,8 @@ export type RunnerId = typeof RunnerId.Type;
 
 export const UserId = Uuid.pipe(Schema.brand("UserId"));
 export type UserId = typeof UserId.Type;
+export const WorkspaceId = Uuid.pipe(Schema.brand("WorkspaceId"));
+export type WorkspaceId = typeof WorkspaceId.Type;
 
 export const RunId = boundedString(1, 100, "Run identifiers").pipe(Schema.brand("RunId"));
 export type RunId = typeof RunId.Type;
@@ -256,7 +258,7 @@ const Prompt = Schema.String.check(
 const CreateSessionPayload = Schema.Struct({
   mode: Schema.Literal("create"),
   sessionId: SessionId,
-  userId: UserId,
+  workspaceId: WorkspaceId,
   projectId: ProjectId,
   repositoryUrl: SessionRepositoryUrl,
   ref: SessionGitReference,

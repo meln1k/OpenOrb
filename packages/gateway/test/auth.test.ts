@@ -1,11 +1,15 @@
 import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
+import { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
 import { v7 } from "@std/uuid";
 import { Effect } from "effect";
 
-import { createAppRouter } from "@/app/router.ts";
+import { createMemorySessionStorage } from "remix/session-storage/memory";
+
+import { createAppRouter, createSessionCookie } from "@/app/router.ts";
+import { routes } from "@/app/routes.ts";
 import { createAppServices } from "@/app/middleware/services.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
-import { createTestStore } from "@/test/postgres-test.ts";
+import { createTestStore, createTestWorkspace } from "@/test/postgres-test.ts";
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -25,7 +29,7 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
   const disconnectedServices = createAppServices(store);
   const router = createAppRouter(createAppServices(store, {
     ...disconnectedServices.runnerConnections,
-    getRunnerLiveState: (_userId, runnerId) =>
+    getRunnerLiveState: (_workspaceId, runnerId) =>
       Effect.succeed(
         runnerId === connectedRunnerId
           ? {
@@ -83,11 +87,14 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     assertEquals(setupResponse.status, 303);
     assertEquals(setupResponse.headers.get("location"), "/auth/login");
     assertEquals(await store.hasAdministrator(), true);
-    const administrators = await store.pool.query<{ id: string }>(
-      "select id from users where is_administrator",
+    const administrators = await store.pool.query<{ id: string; workspace_id: string }>(
+      "select id, workspace_id from users where is_administrator",
     );
     assertEquals(administrators.rows.length, 1);
     assert(v7.validate(administrators.rows[0]!.id));
+    const workspaceId = WorkspaceId.make(administrators.rows[0]!.workspace_id);
+    assert(v7.validate(workspaceId));
+    assertNotEquals<string>(workspaceId, administrators.rows[0]!.id);
 
     const setupAgain = await fetch(setupUrl, { redirect: "manual" });
     assertEquals(setupAgain.status, 303);
@@ -145,7 +152,7 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     );
     const logoutToken = csrfFrom(appHtml);
 
-    const enrollment = await store.getRunnerEnrollmentToken(administrators.rows[0]!.id);
+    const enrollment = await store.getRunnerEnrollmentToken(workspaceId);
     const runner = await store.enrollRunner({
       enrollmentPsk: enrollment.token,
       name: "Connected runner",
@@ -164,11 +171,11 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     connectedRunnerId = runner.runnerId;
 
     await store.saveModelProviderCredential(
-      administrators.rows[0]!.id,
+      workspaceId,
       "opencode-go",
       "opencode-test-key",
     );
-    await store.saveGitHubCredential(administrators.rows[0]!.id, "github-test-token");
+    await store.saveGitHubCredential(workspaceId, "github-test-token");
     const partlyConfiguredResponse = await fetch(appUrl, {
       headers: { Cookie: authenticatedCookie },
     });
@@ -181,7 +188,7 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     assertMatch(partlyConfiguredHtml, /data-setup-step="project" data-status="pending"/);
 
     assertEquals(
-      (await store.saveProject(administrators.rows[0]!.id, {
+      (await store.saveProject(workspaceId, {
         name: "OpenOrb",
         repositoryUrl: "https://github.com/meln1k/openorb.git",
       })).status,
@@ -247,7 +254,7 @@ Deno.test("rejects malformed persisted password material", async () => {
     assert(administrator);
     await store.pool.query(
       "update password_credentials set salt = 'AA==' where user_id = $1",
-      [administrator.id],
+      [administrator.userId],
     );
     assertEquals(
       await store.verifyAdministratorPassword("correct horse battery staple"),
@@ -274,6 +281,80 @@ Deno.test("rejects invalid setup input", async () => {
     );
 
     assertEquals(response.status, 403);
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("auth middleware checks Workspace identity against persistence independently of storage", async () => {
+  const store = await createTestStore();
+  try {
+    const password = "workspace identity verification password";
+    const [created, error] = await store.createAdministrator(password);
+    assertEquals(error, undefined);
+    assertEquals(created, true);
+    const administrator = await store.verifyAdministratorPassword(password);
+    assert(administrator);
+    const foreignWorkspaceId = await createTestWorkspace(store);
+    // Memory storage deliberately does not enforce PostgreSQL's identity binding.
+    const sessionStorage = createMemorySessionStorage();
+    const cookie = createSessionCookie();
+    const router = createAppRouter(createAppServices({ ...store, sessionStorage }), cookie);
+    for (
+      const identity of [
+        administrator,
+        { userId: administrator.userId, workspaceId: foreignWorkspaceId },
+        { userId: administrator.userId },
+        { userId: v7.generate(), workspaceId: administrator.workspaceId },
+      ]
+    ) {
+      const session = await sessionStorage.read(null);
+      session.set("auth", identity);
+      const sessionId = await sessionStorage.save(session);
+      assert(sessionId);
+      const response = await router.fetch(
+        new Request(new URL(routes.app.index.href(), "http://localhost"), {
+          headers: { Cookie: (await cookie.serialize(sessionId)).split(";", 1)[0]! },
+        }),
+      );
+      assertEquals(response.status, identity === administrator ? 200 : 401);
+      await response.body?.cancel();
+    }
+  } finally {
+    await store.close();
+  }
+});
+
+Deno.test("concurrent setup creates exactly one workspace and resolves persisted identity", async () => {
+  const store = await createTestStore();
+  try {
+    const password = "workspace setup race password";
+    const results = await Promise.all([
+      store.createAdministrator(password),
+      store.createAdministrator(password),
+    ]);
+    assertEquals(results.filter(([created]) => created === true).length, 1);
+    assertEquals(results.filter(([created]) => created === false).length, 1);
+    assertEquals(results.map(([, error]) => error), [undefined, undefined]);
+
+    const administrator = await store.verifyAdministratorPassword(password);
+    assert(administrator);
+    assert(v7.validate(administrator.userId));
+    assert(v7.validate(administrator.workspaceId));
+    assertNotEquals<string>(administrator.userId, administrator.workspaceId);
+    assertEquals(await store.getAdministrator(administrator.userId), administrator);
+    // An unknown User with the Workspace's UUID bytes must not resolve to its administrator.
+    const unknownUserId = UserId.make(administrator.workspaceId);
+    assertEquals(await store.getAdministrator(unknownUserId), null);
+    assertEquals(await store.verifyAdministratorPassword("wrong password"), null);
+    assertEquals(
+      (await store.pool.query("select id from workspaces")).rows,
+      [{ id: administrator.workspaceId }],
+    );
+    assertEquals((await store.pool.query("select id from users")).rowCount, 1);
+    assertEquals((await store.pool.query("select user_id from password_credentials")).rows, [
+      { user_id: administrator.userId },
+    ]);
   } finally {
     await store.close();
   }

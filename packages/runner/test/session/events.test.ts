@@ -9,7 +9,7 @@ import {
   RunnerId,
   type SessionId,
   SessionId as SessionIdSchema,
-  UserId,
+  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Context, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
 
@@ -35,7 +35,7 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionIdSchema)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
 const PROJECT_ID = Schema.decodeUnknownSync(ProjectId)("01989d78-65ee-7f6a-a97e-0f16ad134c11");
-const USER_ID = Schema.decodeUnknownSync(UserId)("01989d78-65ee-7f6a-a97e-0f16ad134c12");
+const WORKSPACE_ID = Schema.decodeUnknownSync(WorkspaceId)("01989d78-65ee-7f6a-a97e-0f16ad134c12");
 const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
 const SESSION_LIVE_TAIL_CAPACITY = 512;
 const MODEL_RUNTIME = {
@@ -537,7 +537,7 @@ async function withSession(
   await Effect.runPromise(session.create(
     sessionId,
     new RunnerSessionDefinition({
-      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
       projectId: PROJECT_ID,
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
       ref: "main",
