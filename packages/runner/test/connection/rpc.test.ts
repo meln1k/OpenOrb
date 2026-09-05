@@ -1,4 +1,5 @@
 // deno-lint-ignore-file openorb/no-chained-type-assertions -- boundary-only test doubles intentionally implement only methods reached by the composed RPC scenarios
+import { Socket as NetSocket } from "node:net";
 import { assert, assertEquals } from "@std/assert";
 import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
 import {
@@ -32,10 +33,10 @@ import {
   PERMANENT_REJECTION_CLOSE_CODE,
   type RunnerRpcStartupError,
   runRunnerRpc,
-} from "@/src/connection/rpc.ts";
-import { SessionEvents, type SessionStateChange } from "@/src/session/events.ts";
-import { RunnerSessionStore } from "@/src/session/store.ts";
-import { SessionSupervisor } from "@/src/session/supervisor.ts";
+} from "../../src/connection/rpc.ts";
+import { SessionEvents, type SessionStateChange } from "../../src/session/events.ts";
+import { RunnerSessionStore } from "../../src/session/store.ts";
+import { SessionSupervisor } from "../../src/session/supervisor.ts";
 
 const RUNNER_ID = "018f47f2-39b1-7b30-8000-000000000001";
 const SESSION_ID = "018f47f2-39b1-7b30-8000-000000000011";
@@ -73,6 +74,58 @@ function snapshot(
     ...(activeRunId === undefined ? {} : { activeRunId }),
   });
 }
+
+Deno.test("runner requests TCP_NODELAY and streams large Unicode deltas through gateway RPC", async () => {
+  using cleanup = new DisposableStack();
+  const original = NetSocket.prototype.setNoDelay;
+  const noDelayCalls: boolean[] = [];
+  NetSocket.prototype.setNoDelay = function (noDelay = true) {
+    noDelayCalls.push(noDelay);
+    return original.call(this, noDelay);
+  };
+  cleanup.defer(() => {
+    NetSocket.prototype.setNoDelay = original;
+  });
+
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const expected = Array.from({ length: 64 }, (_, index) =>
+      decode(WatchSessionEvent)({
+        runId: "01989d78-65ee-7f6a-a97e-0f16ad134c30",
+        cursor: index + 3,
+        event: {
+          type: "assistant.text.delta",
+          delta: `${index}: ${"🌍漢字 streaming\n".repeat(256)}`,
+        },
+      }));
+    // SAFETY: This watch-only RPC scenario reaches only manifest loading on the store.
+    const store = {
+      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("running")], errors: [] }),
+    } as unknown as RunnerSessionStore;
+    // SAFETY: The runner and session watches use only these two event service methods.
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: () => Stream.fromIterable(expected).pipe(Stream.rechunk(1)),
+    } as unknown as SessionEvents;
+    const harness = yield* makeGatewayHarness(TOKEN);
+    yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+      provideRunnerServices(store, events),
+      Effect.forkScoped,
+    );
+    yield* pollEventually(
+      harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+        Effect.map((id) => id !== null),
+      ),
+      "runner did not publish its session",
+    );
+    const received = yield* harness.gateway.watchSession(WORKSPACE_ID, SESSION_ID, 2).pipe(
+      Stream.runCollect,
+      Effect.timeout("10 seconds"),
+    );
+    assertEquals(Array.from(received), expected);
+    // The gateway uses native Deno sockets; this observes the outbound ws TCP socket only.
+    assert(noDelayCalls.includes(true), "runner must enable TCP_NODELAY, not use native WebSocket");
+  })));
+});
 
 Deno.test("outbound adapter propagates permanent gateway rejection", async () => {
   const program = Effect.gen(function* () {

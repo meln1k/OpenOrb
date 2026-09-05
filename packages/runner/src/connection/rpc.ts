@@ -1,4 +1,4 @@
-import * as DenoSocket from "@effect/platform-deno/DenoSocket";
+import { runnerWebSocketLayer } from "./websocket.ts";
 import { Deferred, Effect, Layer, Stream } from "effect";
 import {
   AbortRejected,
@@ -233,9 +233,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
   }));
   const socketUrl = new URL("/api/runners/connect", options.gatewayUrl);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
-  const socketLayer = DenoSocket.layerWebSocket(socketUrl.toString(), {
-    closeCodeIsError: () => true,
-  });
+  const socketLayer = runnerWebSocketLayer(socketUrl.toString());
   const serverLayer = Layer.effect(
     SocketServer.SocketServer,
     Effect.map(Socket.Socket, (socket) => makeOutboundSocketServer(socket, terminal)),
