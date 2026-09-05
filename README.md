@@ -23,7 +23,7 @@ The gateway currently runs from a source checkout. Choose either runner installa
 
 | Runner installation | Best for | Deno required on runner host? | Updates |
 | --- | --- | --- | --- |
-| [Source checkout](#linux-source-runner) | Simple self-hosting and MVP+ iteration | Deno 2.9.5 exactly | Pull the checkout, install the frozen graph, restart |
+| [Source checkout](#linux-source-runner) | Simple self-hosting and MVP+ iteration | Deno 2.9.5 or newer | Pull the checkout, install the frozen graph, restart |
 | [Standalone artifact](#linux-standalone-runner) | Minimal production host | No | Replace the verified executable, restart |
 
 Both Linux options use the same hardened systemd unit and the same persistent
@@ -31,7 +31,8 @@ Both Linux options use the same hardened systemd unit and the same persistent
 
 ## Requirements
 
-- Deno **2.9.5 exactly** for the gateway, development, and source runner installation
+- Deno **2.9.5 or newer** (stable releases) for the gateway, development, and source runners;
+  CI and release builds remain pinned to 2.9.5 for reproducibility
 - PostgreSQL for the gateway
 - QEMU/KVM and `/dev/kvm` for runners
 - glibc 2.27+ Linux on x86-64 or ARM64 for production runners
@@ -43,13 +44,13 @@ release target.
 
 ## Run the complete project from source
 
-This is the quickest local setup. Install Deno 2.9.5, PostgreSQL, and QEMU, then clone and prepare
+This is the quickest local setup. Install Deno 2.9.5 or newer, PostgreSQL, and QEMU, then clone and prepare
 the frozen dependency graph:
 
 ```sh
 git clone https://github.com/meln1k/openorb.git
 cd openorb
-deno --version # first line must be: deno 2.9.5
+deno --version # requires stable Deno 2.9.5 or newer
 deno install --frozen
 ```
 
@@ -118,7 +119,7 @@ the secret-gated private-repository lifecycle, and test traceability.
 
 ### Linux source runner
 
-Use this option when easy source upgrades matter. On the runner host, install Git, Deno 2.9.5, and
+Use this option when easy source upgrades matter. On the runner host, install Git, Deno 2.9.5 or newer, and
 the architecture-appropriate QEMU package. Keep the checkout root-owned at `/opt/openorb`:
 
 ```sh
@@ -233,7 +234,7 @@ In an Amp orb, `amp orb services ensure` supervises the configured development s
 
 ## Build standalone runners
 
-With Deno 2.9.5 and the frozen graph installed:
+For reproducible release artifacts, use pinned Deno 2.9.5 with the frozen graph installed:
 
 ```sh
 deno task release:runner

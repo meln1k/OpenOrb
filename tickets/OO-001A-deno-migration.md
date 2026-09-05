@@ -15,7 +15,7 @@ This is a migration, not a parallel runtime path. The existing OO-001 Node.js/pn
 ### Deno workspace and development commands
 
 - Add the root Deno workspace configuration for the existing `packages/gateway`, `packages/runner`, and `packages/protocol` packages.
-- Pin Deno exactly to `2.9.5` for development, CI, gateway deployment, lockfile generation, and runner compilation.
+- Require stable Deno `2.9.5` or newer for development, gateway deployment, and source runners. Pin CI, lockfile generation, and release runner compilation to `2.9.5` for reproducibility.
 - Give each existing OpenOrb package a Deno-native `deno.json` containing its package metadata, exports, imports, and `publish: false` policy.
 - Resolve dependencies through exact `npm:` and `jsr:` imports and a committed `deno.lock`; use `nodeModulesDir: "auto"` so Deno creates the local package tree required by Remix's Node-style browser-asset resolver, and keep npm compatibility dependencies only where required by the selected Remix, PostgreSQL, Gondolin, or Pi implementations.
 - Remove application-runtime `package.json` files, `pnpm-workspace.yaml`, and `pnpm-lock.yaml`. One

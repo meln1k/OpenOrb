@@ -31,10 +31,10 @@ release ID.
 
 ## Deploy the gateway behind Caddy
 
-Install Deno 2.9.5, Git, PostgreSQL client tools, Caddy, and systemd on the gateway host. Create a
-database and role using the normal policy of the PostgreSQL installation. PostgreSQL may be local or
-managed, but it is the **only** durable gateway data store. The gateway needs no persistent local
-application volume and must not be given Redis, a filesystem data volume, or another secondary
+Install Deno 2.9.5 or newer, Git, PostgreSQL client tools, Caddy, and systemd on the gateway host.
+Create a database and role using the normal policy of the PostgreSQL installation. PostgreSQL may be
+local or managed, but it is the **only** durable gateway data store. The gateway needs no persistent
+local application volume and must not be given Redis, a filesystem data volume, or another secondary
 persistence service. The checkout and Deno cache are replaceable program files, not application
 state.
 
@@ -186,9 +186,9 @@ are lost.
 
 ## Troubleshooting
 
-- **Gateway will not start:** inspect `journalctl -u openorb-gateway`; verify Deno is exactly 2.9.5,
-  all three environment values are present, PostgreSQL is reachable, and migrations can run. An
-  invalid master key fails startup; do not generate a replacement over an existing database.
+- **Gateway will not start:** inspect `journalctl -u openorb-gateway`; verify Deno is 2.9.5 or
+  newer, all three environment values are present, PostgreSQL is reachable, and migrations can run.
+  An invalid master key fails startup; do not generate a replacement over an existing database.
 - **HTTPS or runner connection fails:** check `curl https://…/healthz`, Caddy's certificate and
   logs, DNS, that `PUBLIC_URL` is the public HTTPS origin, and that the proxy supports WebSocket
   upgrades. The runner must use that public origin, while port 44100 remains private.

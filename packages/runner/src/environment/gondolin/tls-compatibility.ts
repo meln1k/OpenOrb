@@ -1,8 +1,9 @@
 import type { Duplex } from "node:stream";
 import tls from "node:tls";
 
+import { isSupportedDenoVersion, MINIMUM_DENO_VERSION } from "@/src/runtime/deno-version.ts";
+
 export const GONDOLIN_TLS_COMPATIBILITY = {
-  denoVersion: "2.9.5",
   gondolinVersion: "0.12.0",
 } as const;
 
@@ -30,15 +31,15 @@ interface TlsSocketReference {
  * verification or the HTTP request policy.
  *
  * This is a process-wide monkey patch against a private Deno API. Before
- * changing either validated version, follow the compatibility review and
- * removal checklist in docs/runner-release.md. The version-gate test is
- * intentionally expected to fail on an unreviewed Deno or Gondolin upgrade.
+ * upgrading the release toolchain or Gondolin, follow the compatibility review
+ * and removal checklist in docs/runner-release.md. Newer stable Deno releases
+ * are accepted; the private restart-method check remains in place.
  */
 export function installGondolinTlsCompatibility(): void {
   if (installed) return;
-  if (Deno.version.deno !== GONDOLIN_TLS_COMPATIBILITY.denoVersion) {
+  if (!isSupportedDenoVersion(Deno.version.deno)) {
     throw new GondolinTlsCompatibilityError(
-      `The Gondolin TLS compatibility shim is validated only with Deno ${GONDOLIN_TLS_COMPATIBILITY.denoVersion}; found ${Deno.version.deno}. Follow the compatibility review in docs/runner-release.md before using Gondolin HTTPS egress with a different Deno version.`,
+      `The Gondolin TLS compatibility shim requires stable Deno ${MINIMUM_DENO_VERSION} or newer; found ${Deno.version.deno}.`,
     );
   }
 

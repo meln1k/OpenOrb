@@ -3,10 +3,10 @@
 OpenOrb runners are native systemd services for glibc Linux on x86-64 and ARM64. Choose one launch
 mode:
 
-| Mode                | Use it when                                     | Runner-host requirements              |
-| ------------------- | ----------------------------------------------- | ------------------------------------- |
-| Standalone artifact | You want the smallest production dependency set | QEMU/KVM; no Deno, Node.js, or Git    |
-| Source checkout     | You want to update by pulling the repository    | QEMU/KVM, Git, and Deno 2.9.5 exactly |
+| Mode                | Use it when                                     | Runner-host requirements               |
+| ------------------- | ----------------------------------------------- | -------------------------------------- |
+| Standalone artifact | You want the smallest production dependency set | QEMU/KVM; no Deno, Node.js, or Git     |
+| Source checkout     | You want to update by pulling the repository    | QEMU/KVM, Git, and Deno 2.9.5 or newer |
 
 Both modes use the same hardened `openorb-runner.service`, persistent state directory, identity, and
 session files. Switching modes does not require re-enrollment because state remains under
@@ -62,11 +62,12 @@ Continue with [Doctor and enrollment](#3-doctor-and-enrollment).
 
 ## 2B. Install from a source checkout
 
-Install Git and Deno 2.9.5, with the Deno executable at `/usr/local/bin/deno`. Then clone OpenOrb to
-the fixed, root-owned production path and prepare its frozen runner dependency graph:
+Install Git and stable Deno 2.9.5 or newer, with the Deno executable at `/usr/local/bin/deno`. Then
+clone OpenOrb to the fixed, root-owned production path and prepare its frozen runner dependency
+graph:
 
 ```sh
-/usr/local/bin/deno --version # first line must be: deno 2.9.5
+/usr/local/bin/deno --version # requires stable Deno 2.9.5 or newer
 
 sudo git clone https://github.com/meln1k/openorb.git /opt/openorb
 sudo install -d -o root -g root -m 0755 /var/cache/openorb-runner/deno

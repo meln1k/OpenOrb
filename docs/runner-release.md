@@ -5,9 +5,10 @@ build metadata and OO-023 completes supported-host/service validation.
 
 ## Pinned toolchain
 
-Use Deno 2.9.5 exactly with a frozen `deno.lock`. Dependency installation creates a Deno-managed
-local `node_modules` tree for gateway browser-asset compatibility; it is only a build/development
-input and is not shipped with the standalone runner:
+For reproducible release artifacts, use Deno 2.9.5 exactly with a frozen `deno.lock`. Source runners
+accept stable Deno 2.9.5 or newer. Dependency installation creates a Deno-managed local
+`node_modules` tree for gateway browser-asset compatibility; it is only a build/development input
+and is not shipped with the standalone runner:
 
 ```sh
 deno --version
@@ -44,11 +45,12 @@ validation; neither is a substitute. Related Deno fixes cover the initial server
 ([#33914](https://github.com/denoland/deno/pull/33914)), but not the reproduced asynchronous-SNI
 stall.
 
-The unit test `Gondolin TLS compatibility requires review when Deno or Gondolin changes` ties the
-workaround to both dependency pins. The runtime also rejects an unreviewed Deno version before
-installing the shim. When upgrading Deno or Gondolin:
+The runtime accepts stable Deno 2.9.5 or newer and checks for the private restart method when
+needed. The unit test retains the Gondolin dependency guard, but does not require an exact Deno
+version. Accepting a newer runtime is not proof that its TLS behavior has been validated. When
+upgrading the release toolchain or Gondolin:
 
-1. Expect the version-gate test to fail; do not update its validated versions mechanically.
+1. Review the workaround on the target runtime; do not update the Gondolin guard mechanically.
 2. On the target versions, temporarily bypass the `installGondolinTlsCompatibility()` call in
    `packages/runner/src/environment/gondolin/layer.ts` (never commit that bypass) and run
    `deno task test:gondolin`. The public GitHub clone is the checked-in async-SNI/custom-`Duplex`

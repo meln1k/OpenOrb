@@ -225,8 +225,8 @@ docs/
 MASTER_PLAN.md
 ```
 
-Use a Deno-native workspace with strict TypeScript and pin Deno exactly to 2.9.5 for development, CI,
-gateway deployment, lockfile generation, and runner compilation. `deno.json`/`deno.lock` are
+Use a Deno-native workspace with strict TypeScript and require stable Deno 2.9.5 or newer for development,
+gateway deployment, and source runners. Pin CI, lockfile generation, and release runner compilation to Deno 2.9.5 for reproducibility. `deno.json`/`deno.lock` are
 authoritative for application runtime dependencies. Retain one private root `package.json` only for
 Effect setup scripts, Effect-aware diagnostics, and local TypeScript tooling. Deno installs and runs
 that tooling. Do not add npm/Bun application scripts or pnpm files. Deno generates and owns the local

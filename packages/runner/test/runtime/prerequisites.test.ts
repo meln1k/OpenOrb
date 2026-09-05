@@ -85,14 +85,40 @@ Deno.test("reports actionable QEMU and KVM errors", async () => {
   assertMatch(report.errors.join("\n"), /kvm group/);
 });
 
-Deno.test("requires the pinned Deno release and glibc baseline", async () => {
+Deno.test("accepts stable Deno releases at or above the minimum", async () => {
+  for (const denoVersion of ["2.9.5", "2.9.6", "2.9.10", "2.10.0", "3.0.0"]) {
+    const report = await checkRunnerPrerequisites(linuxHost({ denoVersion }));
+    assertEquals(report.ok, true, denoVersion);
+  }
+});
+
+Deno.test("rejects older, prerelease, and malformed Deno versions", async () => {
+  for (
+    const denoVersion of [
+      "1.99.0",
+      "2.8.99",
+      "2.9.4",
+      "2.9.5-rc.1",
+      "2.10.0-rc.1",
+      "",
+      "2.9",
+      "invalid",
+    ]
+  ) {
+    const report = await checkRunnerPrerequisites(linuxHost({ denoVersion }));
+    assertEquals(report.ok, false, denoVersion);
+    assertMatch(report.errors.join("\n"), /requires stable Deno 2\.9\.5 or newer/);
+  }
+});
+
+Deno.test("requires the minimum Deno release and glibc baseline", async () => {
   const report = await checkRunnerPrerequisites(linuxHost({
     denoVersion: "2.9.4",
     glibcVersion: "2.26",
   }));
 
   assertEquals(report.ok, false);
-  assertMatch(report.errors.join("\n"), /Deno 2\.9\.5 exactly/);
+  assertMatch(report.errors.join("\n"), /Deno 2\.9\.5 or newer/);
   assertMatch(report.errors.join("\n"), /Unsupported glibc 2\.26/);
   assertMatch(report.errors.join("\n"), /2\.27 or newer/);
 });

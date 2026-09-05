@@ -11,7 +11,7 @@ A contributor can resolve dependencies and start the real Remix gateway plus a t
 ## Final baseline after OO-001A
 
 - The original Node.js/pnpm workspace was intentionally replaced rather than retained in parallel.
-- Deno 2.9.5 is the exact development runtime, workspace manager, checker, formatter, linter, test runner, and runner compiler.
+- Stable Deno 2.9.5 or newer is the development runtime, workspace manager, checker, formatter, linter, and test runner. CI and release runner compilation remain pinned to Deno 2.9.5 for reproducibility.
 - `packages/gateway`, `packages/runner`, and `packages/protocol` use Deno-native manifests and exact dependency imports.
 - Remix remains pinned to `3.0.0-beta.5`.
 - The gateway runs with `Deno.serve()` and keeps `/healthz` plus the browser shell at `http://localhost:44100`.

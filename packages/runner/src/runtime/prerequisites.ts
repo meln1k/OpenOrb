@@ -3,7 +3,8 @@ import { statfs as readFileSystemStats } from "node:fs/promises";
 import { tryAsync } from "@openorb/result";
 import { object, parse, string } from "@remix-run/data-schema";
 
-export const REQUIRED_DENO_VERSION = "2.9.5";
+import { isSupportedDenoVersion, MINIMUM_DENO_VERSION } from "@/src/runtime/deno-version.ts";
+
 export const MINIMUM_GLIBC_VERSION = "2.27";
 const MIB_BYTES = 1024 * 1024;
 const MIB_BYTES_BIGINT = BigInt(MIB_BYTES);
@@ -138,9 +139,9 @@ export async function checkRunnerPrerequisites(
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  if (denoVersion !== REQUIRED_DENO_VERSION) {
+  if (!isSupportedDenoVersion(denoVersion)) {
     errors.push(
-      `OpenOrb runner build requires Deno ${REQUIRED_DENO_VERSION} exactly; found ${denoVersion}. Rebuild with the pinned toolchain.`,
+      `OpenOrb runner requires stable Deno ${MINIMUM_DENO_VERSION} or newer; found ${denoVersion}. Upgrade Deno or rebuild with a supported toolchain.`,
     );
   }
 
