@@ -8,6 +8,13 @@ import { validate as validateUuid } from "@std/uuid";
 
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { createSessionEventStream } from "@/app/actions/api/sessions/session-event-stream.ts";
+import {
+  sessionApiTelemetry,
+  sessionCsrfStage,
+  sessionRejection,
+  sessionSpan,
+  sessionStage,
+} from "./telemetry.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import { sessionModelRuntime } from "@/app/model-provider-catalog.ts";
 import { routes } from "@/app/routes.ts";
@@ -31,29 +38,43 @@ const wakeSessionSchema = f.object({
 });
 
 export default createController(routes.api.sessions, {
-  middleware: [requireAuth<Administrator>(), csrf()],
+  middleware: [
+    sessionApiTelemetry(),
+    requireAuth<Administrator>(),
+    sessionCsrfStage(),
+    csrf(),
+  ],
   actions: {
     async wake(context) {
+      sessionStage("wake.validate");
       const parsed = s.parseSafe(wakeSessionSchema, context.formData);
-      if (!parsed.success) return apiError("Invalid recovery action.", 400);
+      if (!parsed.success) {
+        sessionRejection("invalid_recovery_action");
+        return apiError("Invalid recovery action.", 400);
+      }
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return apiError("Session not found.", 404);
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
-      if (!session) return apiError("Session not found.", 404);
-      const snapshot = await Effect.runPromise(
-        context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
+      const session = await sessionSpan(
+        "catalog.lookup",
+        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
       );
+      if (!session) return apiError("Session not found.", 404);
+      const snapshot = await sessionSpan("runner.snapshot", () =>
+        Effect.runPromise(
+          context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
+        ));
       if (!snapshot) return apiError("The pinned runner is offline.", 503);
 
-      const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] = await Promise
-        .all([
-          context.services.store.getModelProviderApiKey(
-            workspaceId,
-            parseModelReference(snapshot.model).providerId,
-          ),
-          context.services.store.getGitHubToken(workspaceId),
-        ]);
+      const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] =
+        await sessionSpan("credentials.read", () =>
+          Promise.all([
+            context.services.store.getModelProviderApiKey(
+              workspaceId,
+              parseModelReference(snapshot.model).providerId,
+            ),
+            context.services.store.getGitHubToken(workspaceId),
+          ]));
       if (modelCredentialError !== undefined) {
         return apiError("The saved model provider credential could not be read.", 500);
       }
@@ -64,18 +85,19 @@ export default createController(routes.api.sessions, {
         return apiError("Reconfigure this session's model provider before continuing.", 409);
       }
 
-      const woken = await Effect.runPromise(
-        context.services.runnerConnections.wakeSession({
-          workspaceId,
-          sessionId,
-          payload: {
-            modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
-            ...(githubToken === null ? {} : { githubToken }),
-            ...(parsed.value.recovery === undefined ? {} : { recovery: parsed.value.recovery }),
-          },
-        }),
-        { signal: context.request.signal },
-      );
+      const woken = await sessionSpan("runner.wake", () =>
+        Effect.runPromise(
+          context.services.runnerConnections.wakeSession({
+            workspaceId,
+            sessionId,
+            payload: {
+              modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
+              ...(githubToken === null ? {} : { githubToken }),
+              ...(parsed.value.recovery === undefined ? {} : { recovery: parsed.value.recovery }),
+            },
+          }),
+          { signal: context.request.signal },
+        ));
       if (woken.status !== "accepted") {
         return apiError(woken.message, woken.status === "rejected" ? 409 : 503);
       }
@@ -85,27 +107,33 @@ export default createController(routes.api.sessions, {
       );
     },
     async changes(context) {
+      sessionStage("changes.validate");
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return apiError("Session not found.", 404);
       const parsed = s.parseSafe(updateGitFileSchema, context.formData);
       if (!parsed.success) {
+        sessionRejection("invalid_git_file_update");
         return apiError(parsed.issues[0]?.message ?? "Invalid Git file update.", 400);
       }
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
-      if (!session) return apiError("Session not found.", 404);
-      const updated = await Effect.runPromise(
-        context.services.runnerConnections.updateSessionGitFile({
-          workspaceId,
-          sessionId,
-          action: parsed.value.action,
-          path: parsed.value.path,
-          ...(parsed.value.previousPath === undefined
-            ? {}
-            : { previousPath: parsed.value.previousPath }),
-        }),
-        { signal: context.request.signal },
+      const session = await sessionSpan(
+        "catalog.lookup",
+        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
       );
+      if (!session) return apiError("Session not found.", 404);
+      const updated = await sessionSpan("runner.git_file_update", () =>
+        Effect.runPromise(
+          context.services.runnerConnections.updateSessionGitFile({
+            workspaceId,
+            sessionId,
+            action: parsed.value.action,
+            path: parsed.value.path,
+            ...(parsed.value.previousPath === undefined
+              ? {}
+              : { previousPath: parsed.value.previousPath }),
+          }),
+          { signal: context.request.signal },
+        ));
       if (updated.status !== "accepted") {
         return apiError(updated.message, updated.status === "rejected" ? 409 : 503);
       }
@@ -115,17 +143,22 @@ export default createController(routes.api.sessions, {
       });
     },
     async gitSnapshot(context) {
+      sessionStage("gitSnapshot");
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = context.params.sessionId;
       if (!s.parseSafe(sessionIdSchema, sessionId).success) {
         return new Response("Session not found.", { status: 404 });
       }
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      const session = await sessionSpan(
+        "catalog.lookup",
+        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+      );
       if (!session) return new Response("Session not found.", { status: 404 });
 
-      const result = await Effect.runPromise(
-        context.services.runnerConnections.getSessionGitSnapshot(workspaceId, sessionId),
-      );
+      const result = await sessionSpan("runner.git_snapshot", () =>
+        Effect.runPromise(
+          context.services.runnerConnections.getSessionGitSnapshot(workspaceId, sessionId),
+        ));
       if (result.status !== "accepted") {
         return Response.json(
           { error: result.message },
@@ -137,23 +170,31 @@ export default createController(routes.api.sessions, {
       });
     },
     async events(context) {
+      sessionStage("events");
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = context.params.sessionId;
       if (!s.parseSafe(sessionIdSchema, sessionId).success) {
         return new Response("Session not found.", { status: 404 });
       }
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      const session = await sessionSpan(
+        "catalog.lookup",
+        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+      );
       if (!session) return new Response("Session not found.", { status: 404 });
 
       const afterCursor = parseCursor(context.request);
-      if (afterCursor === null) return new Response("Invalid event cursor.", { status: 400 });
+      if (afterCursor === null) {
+        sessionRejection("invalid_event_cursor");
+        return new Response("Invalid event cursor.", { status: 400 });
+      }
 
-      const stream = await Effect.runPromise(
-        createSessionEventStream(
-          context.services.runnerConnections.watchSession(workspaceId, sessionId, afterCursor),
-        ),
-        { signal: context.request.signal },
-      );
+      const stream = await sessionSpan("events.subscribe", () =>
+        Effect.runPromise(
+          createSessionEventStream(
+            context.services.runnerConnections.watchSession(workspaceId, sessionId, afterCursor),
+          ),
+          { signal: context.request.signal },
+        ));
 
       return new Response(stream, {
         headers: {

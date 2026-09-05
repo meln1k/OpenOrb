@@ -7,6 +7,7 @@
     "./server": "./server.ts"
   },
   "imports": {
+    "@opentelemetry/api": "npm:@opentelemetry/api@1.9.0",
     "@/": "./",
     "@earendil-works/pi-ai": "npm:@earendil-works/pi-ai@0.84.2",
     "@earendil-works/pi-ai/": "npm:/@earendil-works/pi-ai@0.84.2/",
@@ -28,7 +29,7 @@
   "publish": false,
   "tasks": {
     "probe": "deno eval --frozen",
-    "dev": "NODE_ENV=development OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_TRACES_EXPORTER=otlp OTEL_TRACES_SAMPLER=always_off OTEL_SERVICE_NAME=openorb-gateway OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno run --watch --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts",
+    "dev": "NODE_ENV=development OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_TRACES_EXPORTER=otlp OTEL_TRACES_SAMPLER=always_on OTEL_SERVICE_NAME=openorb-gateway OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno run --watch --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts",
     "start": "NODE_ENV=production deno run --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts"
   }
 }
