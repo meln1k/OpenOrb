@@ -55,11 +55,6 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
   const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
   const deleteSession = (payload: DeleteSessionPayload) =>
     supervisor.deleteSession(payload.sessionId).pipe(
-      Effect.tapError((error) =>
-        Effect.logWarning(
-          `Runner session ${payload.sessionId} cleanup failed and remains retryable: ${error.message}`,
-        )
-      ),
       Effect.mapError(() =>
         new DeleteFailed({
           sessionId: payload.sessionId,
@@ -90,7 +85,19 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         Stream.provideService(SessionSupervisor, supervisor),
         Stream.provideService(SessionEvents, events),
       ),
-    "session.provision": (payload) => supervisor.provision(payload),
+    "session.provision": (payload) =>
+      supervisor.provision(payload).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("provision.rejected").pipe(
+            Effect.annotateLogs({
+              component: "openorb-runner",
+              runnerId: options.runnerId,
+              sessionId: payload.sessionId,
+              reason: error._tag,
+            }),
+          )
+        ),
+      ),
     "session.wake": (payload) =>
       store.readMetadata(payload.sessionId).pipe(
         Effect.mapError(() =>
@@ -121,6 +128,16 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
                 })
               ),
             )
+        ),
+        Effect.tapError((error) =>
+          Effect.logWarning("wake.rejected").pipe(
+            Effect.annotateLogs({
+              component: "openorb-runner",
+              runnerId: options.runnerId,
+              sessionId: payload.sessionId,
+              reason: error._tag,
+            }),
+          )
         ),
       ),
     "session.prompt": (payload) =>
@@ -181,6 +198,16 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
             sessionId: payload.sessionId,
             message: result.message,
           })
+        ),
+        Effect.tapError((error) =>
+          Effect.logWarning("stop.rejected").pipe(
+            Effect.annotateLogs({
+              component: "openorb-runner",
+              runnerId: options.runnerId,
+              sessionId: payload.sessionId,
+              reason: error._tag,
+            }),
+          )
         ),
       ),
     "session.delete": deleteSession,
@@ -250,5 +277,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
   );
   // SAFETY: The assembled RPC layer supplies every service required by the launched server.
   const runnable = launched as Effect.Effect<never>;
-  return yield* Effect.raceFirst(runnable, Deferred.await(terminal));
+  return yield* Effect.raceFirst(runnable, Deferred.await(terminal)).pipe(
+    Effect.annotateLogs({ component: "openorb-runner", runnerId: options.runnerId }),
+  );
 });

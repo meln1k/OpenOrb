@@ -31,41 +31,66 @@ export function makeOutboundSocketServer(
   const server = {
     address: { _tag: "TcpAddress", hostname: "outbound-websocket", port: 0 },
     run: (handler: (socket: Socket.Socket) => Effect.Effect<unknown, unknown, unknown>) =>
-      Effect.gen(function* () {
-        const closeCode = yield* Deferred.make<number>();
-        const decorated = observeCloseCode(
-          limitSocket(socket, MAX_RUNNER_RPC_FRAME_BYTES),
-          closeCode,
-        );
-        yield* handler(decorated).pipe(
-          Effect.ensuring(Deferred.succeed(closeCode, ABNORMAL_CLOSE_CODE)),
-          Effect.exit,
-        );
-        const code = yield* Deferred.await(closeCode);
-        if (code === PERMANENT_REJECTION_CLOSE_CODE) {
-          yield* Deferred.fail(
-            terminal,
-            new RunnerRpcStartupError({
-              code,
-              message: "Gateway permanently rejected the runner RPC connection.",
-            }),
+      Effect.suspend(() => {
+        let attempt = 0;
+        return Effect.gen(function* () {
+          attempt++;
+          yield* Effect.logInfo("connection.connecting").pipe(
+            Effect.annotateLogs({ component: "openorb-runner", attempt }),
           );
-          return yield* new PermanentRejection({ code });
-        }
-        return yield* new TransientDisconnect({ code });
-      }).pipe(
-        Effect.retry({
-          schedule: Schedule.exponential("1 second").pipe(
-            Schedule.modifyDelay(({ duration }) =>
-              Effect.succeed(Duration.min(duration, Duration.seconds(30)))
+          const closeCode = yield* Deferred.make<number>();
+          const decorated = observeCloseCode(
+            limitSocket(socket, MAX_RUNNER_RPC_FRAME_BYTES),
+            closeCode,
+          );
+          yield* handler(decorated).pipe(
+            Effect.ensuring(Deferred.succeed(closeCode, ABNORMAL_CLOSE_CODE)),
+            Effect.exit,
+          );
+          const code = yield* Deferred.await(closeCode);
+          yield* Effect.logWarning("connection.disconnected").pipe(
+            Effect.annotateLogs({ component: "openorb-runner", attempt, closeCode: code }),
+          );
+          if (code === PERMANENT_REJECTION_CLOSE_CODE) {
+            yield* Effect.logError("connection.auth-rejected").pipe(
+              Effect.annotateLogs({ component: "openorb-runner", attempt, closeCode: code }),
+            );
+            yield* Deferred.fail(
+              terminal,
+              new RunnerRpcStartupError({
+                code,
+                message: "Gateway permanently rejected the runner RPC connection.",
+              }),
+            );
+            return yield* new PermanentRejection({ code });
+          }
+          return yield* new TransientDisconnect({ code });
+        }).pipe(
+          Effect.retry({
+            schedule: Schedule.exponential("1 second").pipe(
+              Schedule.modifyDelay(({ duration }) =>
+                Effect.succeed(Duration.min(duration, Duration.seconds(30)))
+              ),
+              Schedule.jittered,
+              Schedule.modifyDelay(({ duration, input }) =>
+                (Predicate.hasProperty(input, "_tag") && input._tag === "TransientDisconnect"
+                  ? Effect.logInfo("connection.reconnect-scheduled")
+                  : Effect.void).pipe(
+                    Effect.annotateLogs({
+                      component: "openorb-runner",
+                      attempt: attempt + 1,
+                      delayMs: Duration.toMillis(duration),
+                    }),
+                    Effect.as(duration),
+                  )
+              ),
             ),
-            Schedule.jittered,
-          ),
-          while: (error) =>
-            Predicate.hasProperty(error, "_tag") && error._tag === "TransientDisconnect",
-        }),
-        Effect.andThen(Effect.never),
-      ),
+            while: (error) =>
+              Predicate.hasProperty(error, "_tag") && error._tag === "TransientDisconnect",
+          }),
+          Effect.andThen(Effect.never),
+        );
+      }),
   };
   return socketServerService(server);
 }
@@ -96,9 +121,14 @@ function observeCloseCode(
       ),
     );
   return Socket.make({
-    runRaw: (handler, options) => observe(socket.runRaw(handler, options)),
-    run: (handler, options) => observe(socket.run(handler, options)),
-    runString: (handler, options) => observe(socket.runString(handler, options)),
+    runRaw: (handler, options) =>
+      observe(socket.runRaw(handler, {
+        ...options,
+        onOpen: Effect.logInfo("connection.connected").pipe(
+          Effect.annotateLogs({ component: "openorb-runner" }),
+          Effect.andThen(options?.onOpen ?? Effect.void),
+        ),
+      })),
     writer: socket.writer,
   });
 }

@@ -34,7 +34,7 @@ export function makeSessionDecisions(): SessionDecisions {
       (state) =>
         state === undefined
           ? Effect.die(new Error("A session event produced no session state."))
-          : afterCommit(state),
+          : logCommittedLifecycle(event, state).pipe(Effect.andThen(afterCommit(state))),
     );
 
   return {
@@ -43,4 +43,55 @@ export function makeSessionDecisions(): SessionDecisions {
     reply: (reply, value) => none(() => Deferred.succeed(reply, value).pipe(Effect.asVoid)),
     fail: (reply, error) => none(() => Deferred.fail(reply, error).pipe(Effect.asVoid)),
   };
+}
+
+/** Only durable lifecycle facts; never serialize journal events or their diagnostics. */
+function logCommittedLifecycle(event: SessionEvent, state: SessionState): Effect.Effect<void> {
+  let name: string;
+  let failed = false;
+  switch (event.type) {
+    case "session.provisioning-started":
+    case "provisioning.retried":
+      name = "provision.accepted";
+      break;
+    case "provisioning.failed":
+    case "provisioning.interrupted":
+      name = "provision.failed";
+      failed = true;
+      break;
+    case "wake.started":
+    case "restoration.started":
+      name = "wake.started";
+      break;
+    case "wake.completed":
+    case "restoration.completed":
+      name = "wake.ready";
+      break;
+    case "wake.failed":
+    case "wake.interrupted":
+    case "restoration.failed":
+    case "restoration.interrupted":
+      name = "wake.failed";
+      failed = true;
+      break;
+    case "restore.failed":
+      name = "actor.restoration-failed";
+      failed = true;
+      break;
+    case "checkpoint.interrupted":
+      name = "checkpoint.failed";
+      failed = true;
+      break;
+    default:
+      return Effect.void;
+  }
+  return (failed ? Effect.logError(name) : Effect.logInfo(name)).pipe(
+    Effect.annotateLogs({
+      component: "openorb-runner",
+      sessionId: state.data.id,
+      runnerId: state.data.runnerId,
+      transition: event.type,
+      ...(event.type === "checkpoint.interrupted" ? { trigger: "unknown" } : {}),
+    }),
+  );
 }

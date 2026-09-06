@@ -92,7 +92,17 @@ export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
       stage,
       checkoutState: metadata.checkoutState,
       issues: metadata.issues,
-    });
+    }).pipe(
+      Effect.tap(() =>
+        (stage === "failed" ? Effect.logError("session.stage") : Effect.logInfo("session.stage"))
+          .pipe(Effect.annotateLogs({
+            component: "openorb-runner",
+            sessionId,
+            runnerId: metadata.runnerId,
+            stage,
+          }))
+      ),
+    );
 
   const emitBoundedOutput = (
     correlationId: string,

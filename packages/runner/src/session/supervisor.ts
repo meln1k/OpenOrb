@@ -164,7 +164,10 @@ export function makeSessionSupervisor(
           restartTimes = reserved;
           MutableHashMap.set(slots, sessionId, { _tag: "Restarting", restartTimes });
           const metadata = yield* Effect.result(store.readMetadata(sessionId));
-          if (metadata._tag === "Failure") continue;
+          if (metadata._tag === "Failure") {
+            yield* logRestorationFailure(sessionId, restartTimes.length);
+            continue;
+          }
           const spawned = yield* Effect.result(actorFactory.spawn({
             metadata: metadata.success,
             mode: "reconcile",
@@ -172,7 +175,10 @@ export function makeSessionSupervisor(
             correlationId: crypto.randomUUID(),
             idleTimeoutMs,
           }));
-          if (spawned._tag === "Failure") continue;
+          if (spawned._tag === "Failure") {
+            yield* logRestorationFailure(sessionId, restartTimes.length);
+            continue;
+          }
           yield* registerActor(sessionId, spawned.success, restartTimes);
           return;
         }
@@ -197,8 +203,12 @@ export function makeSessionSupervisor(
           recovery: "none",
         };
         MutableHashMap.set(slots, sessionId, { _tag: "Quarantined", issue });
-        yield* Effect.logError(
-          `Session actor ${sessionId} was quarantined after repeated failures.`,
+        yield* Effect.logError("actor.quarantined").pipe(
+          Effect.annotateLogs({
+            component: "openorb-runner",
+            sessionId,
+            runnerId: options.runnerId,
+          }),
         );
         const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
         if (Option.isNone(metadata)) return;
@@ -218,6 +228,16 @@ export function makeSessionSupervisor(
       }
       return actor.shutdown;
     };
+
+    const logRestorationFailure = (sessionId: SessionId, attempt: number) =>
+      Effect.logWarning("actor.restoration-failed").pipe(
+        Effect.annotateLogs({
+          component: "openorb-runner",
+          sessionId,
+          runnerId: options.runnerId,
+          attempt,
+        }),
+      );
 
     const getSlot = (sessionId: SessionId): SessionSlot | undefined =>
       Option.getOrUndefined(MutableHashMap.get(slots, sessionId));
@@ -447,11 +467,7 @@ export function makeSessionSupervisor(
           correlationId: crypto.randomUUID(),
           idleTimeoutMs,
         }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning(
-              `Could not restore session actor ${sessionId}: ${error.message}`,
-            ).pipe(Effect.as(undefined))
-          ),
+          Effect.catch(() => logRestorationFailure(sessionId, 1).pipe(Effect.as(undefined))),
         );
         if (actor === undefined) return undefined;
         yield* registerActor(sessionId, actor);
@@ -463,6 +479,7 @@ export function makeSessionSupervisor(
       sessionId: SessionId,
     ): Effect.Effect<DeletionAcceptance, RunnerSessionStoreError> =>
       admission.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+        const startedAt = Date.now();
         const slot = getSlot(sessionId);
         if (slot?._tag !== "Deleting") {
           const actor = slot?._tag === "Running" ? slot.actor : undefined;
@@ -482,11 +499,46 @@ export function makeSessionSupervisor(
             }
           }
           MutableHashMap.set(slots, sessionId, { _tag: "Deleting" });
+          yield* Effect.logInfo("deletion.accepted").pipe(
+            Effect.annotateLogs({
+              component: "openorb-runner",
+              sessionId,
+              runnerId: options.runnerId,
+            }),
+          );
           if (actor) yield* actor.shutdown;
+        } else {
+          yield* Effect.logInfo("deletion.cleanup-retry").pipe(
+            Effect.annotateLogs({
+              component: "openorb-runner",
+              sessionId,
+              runnerId: options.runnerId,
+            }),
+          );
         }
 
-        yield* store.removeSessionStorage(sessionId);
+        yield* store.removeSessionStorage(sessionId).pipe(
+          Effect.tapError(() =>
+            Effect.logWarning("deletion.cleanup-failed").pipe(
+              Effect.annotateLogs({
+                component: "openorb-runner",
+                sessionId,
+                runnerId: options.runnerId,
+                retryable: true,
+                durationMs: Date.now() - startedAt,
+              }),
+            )
+          ),
+        );
         MutableHashMap.remove(slots, sessionId);
+        yield* Effect.logInfo("deletion.cleanup-completed").pipe(
+          Effect.annotateLogs({
+            component: "openorb-runner",
+            sessionId,
+            runnerId: options.runnerId,
+            durationMs: Date.now() - startedAt,
+          }),
+        );
         return { ok: true } as const;
       })));
 

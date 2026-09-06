@@ -18,7 +18,7 @@ import {
   WakeSessionPayload,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { Effect, Exit, Fiber, Layer, Schema, Stream } from "effect";
+import { Effect, Exit, Fiber, Layer, Logger, Schema, Stream } from "effect";
 import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 
@@ -334,6 +334,7 @@ Deno.test("clone and setup failures remain bounded warnings and still dispatch t
 
 Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session generation", async () => {
   const directory = await Deno.makeTempDir();
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
   const environments: FakeEnvironment[] = [];
   const environmentOptions: AgentEnvironmentOptions[] = [];
   const piSessionFiles: string[] = [];
@@ -387,6 +388,7 @@ Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session 
         cpuCount: 4,
         memoryMiB: 8192,
         createPiSession,
+        logs,
       },
       store,
       environmentProvider,
@@ -473,6 +475,19 @@ Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session 
     );
     assert(environments.every((environment) => environment.closed));
     assertEquals(piDisposals, 3);
+    const checkpoints = logs.filter((log) => String(log.message).startsWith("checkpoint."));
+    assertEquals(checkpoints.map((log) => log.message), [
+      "checkpoint.started",
+      "checkpoint.completed",
+      "checkpoint.started",
+      "checkpoint.completed",
+    ]);
+    assert(checkpoints.every((log) => log.annotations.trigger === "explicit"));
+    assert(checkpoints.every((log) => Schema.is(Schema.Number)(log.annotations.durationMs)));
+    assertEquals(logs.filter((log) => log.message === "provision.accepted").length, 1);
+    assertEquals(logs.filter((log) => log.message === "provision.ready").length, 1);
+    assert(!JSON.stringify(logs).includes(MODEL_RUNTIME.credential.value));
+    assert(!JSON.stringify(logs).includes("Inspect the repository"));
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
@@ -480,6 +495,7 @@ Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session 
 
 Deno.test("Stop rejects active Pi work and the shortened idle timeout stops after it settles", async () => {
   const directory = await Deno.makeTempDir();
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
   const continuationStarted = Promise.withResolvers<void>();
   const releaseContinuation = Promise.withResolvers<void>();
   let promptCalls = 0;
@@ -516,6 +532,7 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
         memoryMiB: 8192,
         idleTimeoutMs: 100,
         createPiSession,
+        logs,
       },
       store,
       fakeEnvironmentProvider(environment),
@@ -535,6 +552,7 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
         assertEquals(environment.checkpointCalls, 0);
         const rejected = await Effect.runPromise(actor.stop(stopPayload()));
         assertEquals(rejected.ok, false);
+        assertEquals(logs.filter((log) => String(log.message).startsWith("checkpoint.")), []);
 
         releaseContinuation.resolve();
         await waitForState(store, "stopped");
@@ -543,6 +561,12 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
         assertEquals(supervisor.activeSessionCount(), 0);
       },
     );
+    const checkpoints = logs.filter((log) => String(log.message).startsWith("checkpoint."));
+    assertEquals(checkpoints.map((log) => log.message), [
+      "checkpoint.started",
+      "checkpoint.completed",
+    ]);
+    assert(checkpoints.every((log) => log.annotations.trigger === "idle"));
   } finally {
     releaseContinuation.resolve();
     await Deno.remove(directory, { recursive: true });
@@ -602,6 +626,7 @@ Deno.test("Stop rejects an active Git Snapshot and succeeds after it finishes", 
 Deno.test("checkpoint failures distinguish reusable and consumed VMs", async () => {
   for (const consumed of [false, true]) {
     const directory = await Deno.makeTempDir();
+    const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
     try {
       const store = await makeStore(directory);
       const environment = new FakeEnvironment();
@@ -616,6 +641,7 @@ Deno.test("checkpoint failures distinguish reusable and consumed VMs", async () 
           cpuCount: 4,
           memoryMiB: 8192,
           createPiSession,
+          logs,
         },
         store,
         fakeEnvironmentProvider(environment),
@@ -632,6 +658,13 @@ Deno.test("checkpoint failures distinguish reusable and consumed VMs", async () 
           );
           const stopped = await Effect.runPromise(actor.stop(stopPayload()));
           assertEquals(stopped.ok, false);
+          assertEquals(
+            logs.filter((log) => String(log.message).startsWith("checkpoint.")).map((log) =>
+              log.message
+            ),
+            ["checkpoint.started", "checkpoint.failed"],
+          );
+          assert(!JSON.stringify(logs).includes("Injected checkpoint failure"));
           const { issue, state } = await visibleIssue;
           assertEquals(issue.severity, consumed ? "failure" : "warning");
           assertEquals(state.stage, consumed ? "failed" : "ready");
@@ -1929,6 +1962,8 @@ Deno.test("SessionSupervisor rejects active deletion, then removes an idle sessi
 
 Deno.test("SessionSupervisor retains deletion admission after a retryable storage failure", async () => {
   const directory = await Deno.makeTempDir();
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
+  const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
   try {
     let removeCalls = 0;
     const durableStore = await makeStore(directory);
@@ -1948,33 +1983,49 @@ Deno.test("SessionSupervisor retains deletion admission after a retryable storag
             : Effect.void;
         }),
     };
-    const { failure, restored, retried } = await Effect.runPromise(Effect.scoped(Effect.gen(
-      function* () {
-        const events = yield* makeSessionEvents().pipe(
-          Effect.provideService(RunnerSessionStore, store),
-        );
-        const supervisor = yield* makeSessionSupervisor({
-          runnerId: RUNNER_ID,
-          cpuCount: 4,
-          memoryMiB: 8192,
-        }).pipe(
-          Effect.provideService(RunnerSessionStore, store),
-          Effect.provideService(SessionActorFactory, {
-            spawn: () => Effect.die("unexpected actor spawn"),
-          }),
-          Effect.provideService(SessionEvents, events),
-        );
+    const { failure, restored, retried } = await Effect.runPromise(
+      Effect.scoped(Effect.gen(
+        function* () {
+          const events = yield* makeSessionEvents().pipe(
+            Effect.provideService(RunnerSessionStore, store),
+          );
+          const supervisor = yield* makeSessionSupervisor({
+            runnerId: RUNNER_ID,
+            cpuCount: 4,
+            memoryMiB: 8192,
+          }).pipe(
+            Effect.provideService(RunnerSessionStore, store),
+            Effect.provideService(SessionActorFactory, {
+              spawn: () => Effect.die("unexpected actor spawn"),
+            }),
+            Effect.provideService(SessionEvents, events),
+          );
 
-        const failure = yield* Effect.flip(supervisor.deleteSession(SESSION_ID));
-        const restored = yield* supervisor.findOrRestoreActor(SESSION_ID);
-        const retried = yield* supervisor.deleteSession(SESSION_ID);
-        return { failure, restored, retried };
-      },
-    )));
+          const failure = yield* Effect.flip(supervisor.deleteSession(SESSION_ID));
+          const restored = yield* supervisor.findOrRestoreActor(SESSION_ID);
+          const retried = yield* supervisor.deleteSession(SESSION_ID);
+          return { failure, restored, retried };
+        },
+      )).pipe(Effect.provide(Logger.layer([logger]))),
+    );
     assertEquals(failure.operation, "remove-session-storage");
     assertEquals(restored, undefined);
     assertEquals(retried, { ok: true });
     assertEquals(removeCalls, 2);
+    assertEquals(logs.map((log) => log.message), [
+      "deletion.accepted",
+      "deletion.cleanup-failed",
+      "deletion.cleanup-retry",
+      "deletion.cleanup-completed",
+    ]);
+    assertEquals(logs[1]?.level, "WARN");
+    assert(logs.every((log) =>
+      log.annotations.component === "openorb-runner" &&
+      log.annotations.sessionId === SESSION_ID && log.annotations.runnerId === RUNNER_ID &&
+      log.cause === undefined
+    ));
+    assert(!JSON.stringify(logs).includes("Injected partial cleanup failure"));
+    assert(!JSON.stringify(logs).includes("injected"));
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
@@ -2211,6 +2262,7 @@ function fakeEnvironmentProvider(environment: FakeEnvironment): AgentEnvironment
 async function withSupervisor(
   options: Omit<SessionSupervisorOptions, "runnerId"> & {
     readonly createPiSession?: CreateRawPiSession;
+    readonly logs?: ReturnType<typeof Logger.formatStructured.log>[];
   },
   store: TestStore,
   environmentProvider: AgentEnvironmentProvider,
@@ -2252,6 +2304,10 @@ async function withSupervisor(
         );
         yield* Effect.promise(() => use(supervisor, events));
       }),
-    ),
+    ).pipe(Effect.provide(
+      options.logs === undefined ? Layer.empty : Logger.layer([
+        Logger.make((entry) => options.logs?.push(Logger.formatStructured.log(entry))),
+      ]),
+    )),
   );
 }

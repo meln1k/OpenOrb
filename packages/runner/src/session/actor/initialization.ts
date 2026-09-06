@@ -177,9 +177,14 @@ export function makeSessionInitialization(options: SessionInitializationOptions)
         ),
       }, (failed) =>
         store.discardCheckpoint(sessionId, phase.file).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning(
-              `Interrupted checkpoint ${phase.file} could not be discarded: ${error.message}`,
+          Effect.catch(() =>
+            Effect.logWarning("checkpoint.cleanup-failed").pipe(
+              Effect.annotateLogs({
+                component: "openorb-runner",
+                sessionId,
+                runnerId: input.metadata.runnerId,
+                cleanup: "interrupted",
+              }),
             )
           ),
           Effect.andThen(publishFailureAndContinue(failed, command)),

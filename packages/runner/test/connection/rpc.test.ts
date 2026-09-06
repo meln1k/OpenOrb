@@ -20,7 +20,18 @@ import {
   WatchSessionEvent,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { Context, Deferred, Effect, Exit, Fiber, Layer, PubSub, Schema, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Logger,
+  PubSub,
+  Schema,
+  Stream,
+} from "effect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
@@ -77,6 +88,8 @@ function snapshot(
 
 Deno.test("runner requests TCP_NODELAY and streams large Unicode deltas through gateway RPC", async () => {
   using cleanup = new DisposableStack();
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
+  const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
   const original = NetSocket.prototype.setNoDelay;
   const noDelayCalls: boolean[] = [];
   NetSocket.prototype.setNoDelay = function (noDelay = true) {
@@ -87,47 +100,63 @@ Deno.test("runner requests TCP_NODELAY and streams large Unicode deltas through 
     NetSocket.prototype.setNoDelay = original;
   });
 
-  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const expected = Array.from({ length: 64 }, (_, index) =>
-      decode(WatchSessionEvent)({
-        runId: "01989d78-65ee-7f6a-a97e-0f16ad134c30",
-        cursor: index + 3,
-        event: {
-          type: "assistant.text.delta",
-          delta: `${index}: ${"🌍漢字 streaming\n".repeat(256)}`,
-        },
-      }));
-    // SAFETY: This watch-only RPC scenario reaches only manifest loading on the store.
-    const store = {
-      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("running")], errors: [] }),
-    } as unknown as RunnerSessionStore;
-    // SAFETY: The runner and session watches use only these two event service methods.
-    const events = {
-      watchStateChanges: () => Stream.empty,
-      watch: () => Stream.fromIterable(expected).pipe(Stream.rechunk(1)),
-    } as unknown as SessionEvents;
-    const harness = yield* makeGatewayHarness(TOKEN);
-    yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
-      provideRunnerServices(store, events),
-      Effect.forkScoped,
-    );
-    yield* pollEventually(
-      harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
-        Effect.map((id) => id !== null),
-      ),
-      "runner did not publish its session",
-    );
-    const received = yield* harness.gateway.watchSession(WORKSPACE_ID, SESSION_ID, 2).pipe(
-      Stream.runCollect,
-      Effect.timeout("10 seconds"),
-    );
-    assertEquals(Array.from(received), expected);
-    // The gateway uses native Deno sockets; this observes the outbound ws TCP socket only.
-    assert(noDelayCalls.includes(true), "runner must enable TCP_NODELAY, not use native WebSocket");
-  })));
+  await Effect.runPromise(
+    Effect.scoped(Effect.gen(function* () {
+      const expected = Array.from({ length: 64 }, (_, index) =>
+        decode(WatchSessionEvent)({
+          runId: "01989d78-65ee-7f6a-a97e-0f16ad134c30",
+          cursor: index + 3,
+          event: {
+            type: "assistant.text.delta",
+            delta: `${index}: ${"🌍漢字 streaming\n".repeat(256)}`,
+          },
+        }));
+      // SAFETY: This watch-only RPC scenario reaches only manifest loading on the store.
+      const store = {
+        loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("running")], errors: [] }),
+      } as unknown as RunnerSessionStore;
+      // SAFETY: The runner and session watches use only these two event service methods.
+      const events = {
+        watchStateChanges: () => Stream.empty,
+        watch: () => Stream.fromIterable(expected).pipe(Stream.rechunk(1)),
+      } as unknown as SessionEvents;
+      const harness = yield* makeGatewayHarness(TOKEN);
+      yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
+        provideRunnerServices(store, events),
+        Effect.forkScoped,
+      );
+      yield* pollEventually(
+        harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+          Effect.map((id) => id !== null),
+        ),
+        "runner did not publish its session",
+      );
+      const received = yield* harness.gateway.watchSession(WORKSPACE_ID, SESSION_ID, 2).pipe(
+        Stream.runCollect,
+        Effect.timeout("10 seconds"),
+      );
+      assertEquals(Array.from(received), expected);
+      // The gateway uses native Deno sockets; this observes the outbound ws TCP socket only.
+      assert(
+        noDelayCalls.includes(true),
+        "runner must enable TCP_NODELAY, not use native WebSocket",
+      );
+    })).pipe(Effect.provide(Logger.layer([logger]))),
+  );
+  const snapshots = logs.filter((log) => log.message === "snapshot.sent");
+  assertEquals(snapshots.length, 1);
+  assertEquals(snapshots[0]?.annotations, {
+    component: "openorb-runner",
+    runnerId: RUNNER_ID,
+    sessionCount: 1,
+  });
+  assert(!JSON.stringify(logs).includes(TOKEN));
+  assert(!JSON.stringify(logs).includes("🌍漢字"));
 });
 
 Deno.test("outbound adapter propagates permanent gateway rejection", async () => {
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
+  const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
   const program = Effect.gen(function* () {
     const closeObserved = yield* Deferred.make<void>();
     const socket = Socket.make({
@@ -152,7 +181,69 @@ Deno.test("outbound adapter propagates permanent gateway rejection", async () =>
   });
 
   // SAFETY: The socket test double supplies every service used by the adapter invocation.
-  await Effect.runPromise(program as Effect.Effect<void>);
+  const runnable = program as Effect.Effect<void>;
+  await Effect.runPromise(runnable.pipe(Effect.provide(Logger.layer([logger]))));
+  assertEquals(logs.map((log) => log.message), [
+    "connection.connecting",
+    "connection.connected",
+    "connection.disconnected",
+    "connection.auth-rejected",
+  ]);
+  assertEquals(logs.at(-1)?.annotations, {
+    component: "openorb-runner",
+    attempt: 1,
+    closeCode: 4401,
+  });
+  assertEquals(logs.at(-1)?.level, "ERROR");
+  assert(logs.every((log) => log.cause === undefined));
+});
+
+Deno.test("outbound reconnect logs the actual jittered delay and next attempt without close reasons", async () => {
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
+  const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
+  const program = Effect.gen(function* () {
+    let opens = 0;
+    const socket = Socket.make({
+      runRaw: (_handler, options) =>
+        Effect.suspend(() => {
+          opens++;
+          return (options?.onOpen ?? Effect.void).pipe(
+            Effect.andThen(Effect.fail(
+              new Socket.SocketError({
+                reason: new Socket.SocketCloseError({
+                  code: opens === 1 ? 1006 : 4401,
+                  closeReason: "secret-close-reason",
+                }),
+              }),
+            )),
+          );
+        }),
+      writer: Effect.succeed(() => Effect.void),
+    });
+    const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
+    yield* makeOutboundSocketServer(socket, terminal).run((decorated) =>
+      decorated.runRaw(() => Effect.void)
+    ).pipe(Effect.exit);
+    assertEquals(opens, 2);
+  });
+  // SAFETY: The socket double and handler require no external services.
+  const runnable = program as Effect.Effect<void>;
+  await Effect.runPromise(
+    runnable.pipe(Effect.provide(Logger.layer([logger])), Effect.timeout("5 seconds")),
+  );
+  const retries = logs.filter((log) => log.message === "connection.reconnect-scheduled");
+  assertEquals(retries.length, 1);
+  assertEquals(retries[0]?.annotations.attempt, 2);
+  const delayMs = Schema.decodeUnknownSync(Schema.Number)(retries[0]?.annotations.delayMs);
+  // Effect's jittered schedule uses 80–120% of the base delay.
+  assert(delayMs >= 800 && delayMs <= 1_200);
+  assertEquals(
+    logs.filter((log) => log.message === "connection.connecting").map((log) =>
+      log.annotations.attempt
+    ),
+    [1, 2],
+  );
+  assert(!JSON.stringify(logs).includes("secret-close-reason"));
 });
 
 Deno.test("transient gateway restart preserves runner work and reconnects from durable state", () =>

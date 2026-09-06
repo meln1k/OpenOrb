@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { Schema } from "effect";
+import { Effect, Logger, Schema } from "effect";
 import {
   GitAuthor,
   ProjectId,
@@ -10,6 +10,7 @@ import {
 } from "@openorb/protocol/runner-api";
 
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
+import { makeSessionDecisions } from "../../../src/session/actor/decision.ts";
 import type { SessionEvent } from "@/src/session/actor/events.ts";
 import {
   applySessionEvent,
@@ -271,6 +272,63 @@ Deno.test("clean VM recovery drops the prior root-disk checkpoint", () => {
 
   assertEquals(ready.phase, { _tag: "Ready" });
   assertEquals(sessionMetadata(ready).checkpoint, undefined);
+});
+
+Deno.test("durable lifecycle logs wait for commit and omit issue diagnostics and session content", async () => {
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
+  const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
+  const decisions = makeSessionDecisions();
+  const secretIssue = {
+    ...modelIssue,
+    message: "secret-message",
+    diagnostics: "secret-diagnostics",
+  };
+  const cases: readonly [SessionEvent, string][] = [
+    [provisioningStarted(), "provision.accepted"],
+    [{ type: "provisioning.failed", issue: secretIssue }, "provision.failed"],
+    [{ type: "wake.started", wakeId: RESUME_ID }, "wake.started"],
+    [{ type: "wake.completed", wakeId: RESUME_ID }, "wake.ready"],
+    [{ type: "wake.failed", wakeId: RESUME_ID, issue: secretIssue }, "wake.failed"],
+    [
+      { type: "restoration.started", restorationId: RESUME_ID, intent: { _tag: "StartCleanVm" } },
+      "wake.started",
+    ],
+    [{ type: "restoration.completed", restorationId: RESUME_ID, issues: [] }, "wake.ready"],
+    [{ type: "restoration.failed", restorationId: RESUME_ID, issue: secretIssue }, "wake.failed"],
+    [{ type: "restore.failed", issue: secretIssue }, "actor.restoration-failed"],
+  ];
+  const state = applyAll(readyEvents());
+  await Effect.runPromise(
+    Effect.scoped(Effect.gen(function* () {
+      for (const [event, name] of cases) {
+        const before = logs.length;
+        const decision = decisions.persist(event);
+        assertEquals(logs.length, before, "constructing a decision must not log acceptance");
+        yield* decision.afterCommit(state);
+        assertEquals(logs.at(-1)?.message, name);
+        assertEquals(logs.at(-1)?.annotations, {
+          component: "openorb-runner",
+          sessionId: SESSION_ID,
+          runnerId: RUNNER_ID,
+          transition: event.type,
+        });
+      }
+      yield* decisions.none().afterCommit(state);
+      assertEquals(logs.length, cases.length);
+    })).pipe(Effect.provide(Logger.layer([logger]))),
+  );
+  const encoded = JSON.stringify(logs);
+  for (
+    const forbidden of [
+      "secret-message",
+      "secret-diagnostics",
+      definition.initialPrompt,
+      definition.repositoryUrl,
+    ]
+  ) {
+    assert(!encoded.includes(forbidden));
+  }
+  assert(logs.every((log) => log.cause === undefined));
 });
 
 function readyEvents(): readonly SessionEvent[] {

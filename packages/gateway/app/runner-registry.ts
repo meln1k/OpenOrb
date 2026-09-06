@@ -34,6 +34,7 @@ import { orbSizeResources } from "@openorb/protocol";
 import { sessionWakeKind } from "@/app/utils/session-recovery.ts";
 import {
   Cause,
+  Clock,
   Context,
   Effect,
   Exit,
@@ -241,11 +242,12 @@ export function makeRunnerRegistry(
       getSessionGitSnapshot: (workspaceId, sessionId) =>
         getSessionGitSnapshot(runtime, workspaceId, sessionId),
       updateSessionGitFile: (input) => updateSessionGitFile(runtime, input),
-      provisionSession: (input) => provisionSession(runtime, input),
-      wakeSession: (input) => wakeSession(runtime, input),
-      promptSession: (input) => promptSession(runtime, input),
-      abortSession: (input) => abortSession(runtime, input),
-      stopSession: (input) => stopSession(runtime, input),
+      provisionSession: (input) =>
+        observeOperation("provision", input, provisionSession(runtime, input)),
+      wakeSession: (input) => observeOperation("wake", input, wakeSession(runtime, input)),
+      promptSession: (input) => observeOperation("prompt", input, promptSession(runtime, input)),
+      abortSession: (input) => observeOperation("abort", input, abortSession(runtime, input)),
+      stopSession: (input) => observeOperation("stop", input, stopSession(runtime, input)),
       deleteSession: (input) => deleteSession(runtime, input),
       watchSession: (workspaceId, sessionId, afterCursor) =>
         watchSession(runtime, workspaceId, sessionId, afterCursor),
@@ -260,10 +262,15 @@ export const runnerRegistryLayer = (
 
 const accept = Effect.fn("RunnerRegistry.accept")(
   function* (registry: RegistryRuntime, socket: Socket.Socket) {
+    const startedAt = yield* Clock.currentTimeMillis;
     const scope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
     const write = yield* socket.writer;
-    const reject = (code: number, reason: string) => write(new Socket.CloseEvent(code, reason));
+    const reject = (code: number, reason: string) =>
+      Effect.logWarning("connection.rejected").pipe(
+        Effect.annotateLogs({ component: "openorb-gateway", closeCode: code, reason }),
+        Effect.andThen(write(new Socket.CloseEvent(code, reason))),
+      );
     const protocol = yield* RpcClientApi.makeProtocolSocket({ retryPolicy: Schedule.recurs(0) })
       .pipe(
         Effect.provideService(Socket.Socket, socket),
@@ -400,7 +407,29 @@ const accept = Effect.fn("RunnerRegistry.accept")(
             ),
           );
           ownedConnection = connection;
-          if (old) yield* Scope.close(old.runtime.scope, Exit.void);
+          const now = yield* Clock.currentTimeMillis;
+          yield* Effect.logInfo("snapshot.accepted").pipe(Effect.annotateLogs({
+            component: "openorb-gateway",
+            runnerId: authenticated.id,
+            generation: connection.generation,
+            sessionCount: connection.sessions.size,
+            tombstoneCount: connection.tombstones.size,
+            durationMs: now - startedAt,
+          }));
+          yield* Effect.logInfo("connection.connected").pipe(Effect.annotateLogs({
+            component: "openorb-gateway",
+            runnerId: authenticated.id,
+            generation: connection.generation,
+          }));
+          if (old) {
+            yield* Effect.logInfo("connection.replaced").pipe(Effect.annotateLogs({
+              component: "openorb-gateway",
+              runnerId: authenticated.id,
+              generation: connection.generation,
+              previousGeneration: old.generation,
+            }));
+            yield* Scope.close(old.runtime.scope, Exit.void);
+          }
           yield* Effect.forEach(
             connection.tombstones,
             (sessionId) => scheduleDeletedSessionCleanup(registry, connection, sessionId),
@@ -408,9 +437,31 @@ const accept = Effect.fn("RunnerRegistry.accept")(
           );
         }),
     ).pipe(
+      Effect.tapError(() =>
+        Effect.logWarning("connection.watch-failed").pipe(
+          Effect.annotateLogs({
+            component: "openorb-gateway",
+            runnerId: authenticated.id,
+            admitted: ownedConnection !== undefined,
+          }),
+        )
+      ),
       Effect.ensuring(Effect.suspend(() => {
         const remove = ownedConnection ? removeConnection(registry, ownedConnection) : Effect.void;
-        return remove.pipe(Effect.andThen(Scope.close(scope, Exit.void)));
+        return remove.pipe(
+          Effect.andThen(
+            ownedConnection
+              ? Effect.logInfo("connection.disconnected").pipe(
+                Effect.annotateLogs({
+                  component: "openorb-gateway",
+                  runnerId: authenticated.id,
+                  generation: ownedConnection.generation,
+                }),
+              )
+              : Effect.void,
+          ),
+          Effect.andThen(Scope.close(scope, Exit.void)),
+        );
       })),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -443,6 +494,7 @@ function applyEvent(
       }
     }
 
+    let lifecycleLog = Effect.void;
     const cleanupSessionId = yield* SynchronizedRef.modify(registry.state, (state) => {
       const current = state.connections.get(connection.runner.id);
       if (!current || current.generation !== connection.generation) return [null, state] as const;
@@ -464,9 +516,38 @@ function applyEvent(
           routes.delete(routeKey(connection.runner.workspaceId, event.session.id));
           cleanupSessionId = event.session.id;
         } else if (unknownSessionDisposition !== "rejected") {
+          const previous = sessions.get(event.session.id);
+          const newIssue = event.session.issues.some((issue) =>
+            !previous?.issues.some((prior) =>
+              prior.category === issue.category && prior.severity === issue.severity &&
+              prior.recovery === issue.recovery
+            )
+          );
+          if (previous?.state !== event.session.state || newIssue) {
+            lifecycleLog = (event.session.state === "error" ||
+                event.session.issues.some((issue) => issue.severity === "failure")
+              ? Effect.logError("session.state-observed")
+              : newIssue
+              ? Effect.logWarning("session.state-observed")
+              : Effect.logInfo("session.state-observed")).pipe(Effect.annotateLogs({
+                component: "openorb-gateway",
+                runnerId: connection.runner.id,
+                generation: connection.generation,
+                sessionId: event.session.id,
+                state: event.session.state,
+                previousState: previous?.state ?? "unknown",
+                issueCategories: event.session.issues.map((issue) => issue.category).join(","),
+              }));
+          }
           sessions.set(event.session.id, event.session);
         }
       } else if (event.type === "session.removed" && event.revision > current.revision) {
+        lifecycleLog = Effect.logInfo("session.removed").pipe(Effect.annotateLogs({
+          component: "openorb-gateway",
+          runnerId: connection.runner.id,
+          generation: connection.generation,
+          sessionId: event.sessionId,
+        }));
         sessions.delete(event.sessionId);
         routes.delete(routeKey(connection.runner.workspaceId, event.sessionId));
       }
@@ -499,6 +580,7 @@ function applyEvent(
       }
       return [cleanupSessionId, { ...state, connections, routes }] as const;
     });
+    yield* lifecycleLog;
     if (cleanupSessionId) {
       yield* scheduleDeletedSessionCleanup(registry, connection, cleanupSessionId);
     }
@@ -660,7 +742,15 @@ const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
         );
       },
     );
-    if (reserved.status === "rejected") return unavailable(reserved.message);
+    if (reserved.status === "rejected") {
+      yield* Effect.logWarning("provision.routing-rejected").pipe(Effect.annotateLogs({
+        component: "openorb-gateway",
+        runnerId: input.runnerId,
+        sessionId: input.sessionId,
+        reason: reserved.message,
+      }));
+      return unavailable(reserved.message);
+    }
     const request = Schema.decodeUnknownSync(ProvisionSessionPayload)({
       ...input.payload,
       sessionId,
@@ -831,6 +921,12 @@ const deleteSession = Effect.fn("RunnerRegistry.deleteSession")(
       routes.delete(key);
       return [updated, { ...replaced, routes, deletions }] as const;
     });
+    yield* Effect.logInfo("deletion.accepted").pipe(Effect.annotateLogs({
+      component: "openorb-gateway",
+      sessionId: input.sessionId,
+      workspaceId: input.workspaceId,
+      cleanup: connection ? "scheduled" : "deferred-until-reconnect",
+    }));
     if (connection) {
       yield* scheduleDeletedSessionCleanup(registry, connection, input.sessionId);
     }
@@ -871,6 +967,11 @@ const disconnectRunner = Effect.fn("RunnerRegistry.disconnectRunner")(
       registry.state,
       (s) => ({ ...s, revoked: new Set(s.revoked).add(runnerKey(workspaceId, runnerId)) }),
     );
+    yield* Effect.logInfo("connection.revoked").pipe(Effect.annotateLogs({
+      component: "openorb-gateway",
+      runnerId,
+      generation: connection.generation,
+    }));
     yield* Scope.close(connection.runtime.scope, Exit.void);
     return true;
   },
@@ -933,29 +1034,39 @@ function scheduleDeletedSessionCleanup(
 function cleanupDeletedSession(
   connection: Connection,
   sessionId: typeof SessionId.Type,
+  attempt = 1,
 ): Effect.Effect<void> {
-  const retry = () =>
-    Effect.sleep(1_000).pipe(
-      Effect.andThen(Effect.suspend(() => cleanupDeletedSession(connection, sessionId))),
-    );
-  return connection.runtime.client["session.delete"](
-    new DeleteSessionPayload({ sessionId }),
-  ).pipe(
-    Effect.timeout(OPERATION_TIMEOUT_MS),
-    Effect.asVoid,
-    Effect.catchCause((cause) => {
-      const failure = Option.flatMap(
-        Cause.findErrorOption(cause),
-        Schema.decodeUnknownOption(DeletionFailure),
+  return Effect.gen(function* () {
+    const startedAt = yield* Clock.currentTimeMillis;
+    yield* Effect.logInfo("deletion.cleanup-started");
+    const result = yield* connection.runtime.client["session.delete"](
+      new DeleteSessionPayload({ sessionId }),
+    ).pipe(Effect.timeout(OPERATION_TIMEOUT_MS), Effect.exit);
+    const now = yield* Clock.currentTimeMillis;
+    if (Exit.isSuccess(result)) {
+      yield* Effect.logInfo("deletion.cleanup-completed").pipe(
+        Effect.annotateLogs({ durationMs: now - startedAt }),
       );
-      if (Option.isSome(failure) && failure.value instanceof DeleteFailed) {
-        return Effect.logWarning(
-          `Runner cleanup for deleted session ${sessionId} failed and will be retried: ${failure.value.message}`,
-        ).pipe(Effect.andThen(retry()));
-      }
-      return retry();
-    }),
-  );
+      return;
+    }
+    const failure = Option.flatMap(
+      Cause.findErrorOption(result.cause),
+      Schema.decodeUnknownOption(DeletionFailure),
+    );
+    yield* Effect.logWarning("deletion.cleanup-retry-scheduled").pipe(Effect.annotateLogs({
+      reason: Option.isSome(failure) ? failure.value._tag : "delivery-uncertain",
+      durationMs: now - startedAt,
+      delayMs: 1_000,
+    }));
+    yield* Effect.sleep(1_000);
+    yield* cleanupDeletedSession(connection, sessionId, attempt + 1);
+  }).pipe(Effect.annotateLogs({
+    component: "openorb-gateway",
+    runnerId: connection.runner.id,
+    generation: connection.generation,
+    sessionId,
+    attempt,
+  }));
 }
 
 function clearCleanupInFlight(
@@ -1071,6 +1182,31 @@ function acceptProvisioned(
       yield* scheduleDeletedSessionCleanup(registry, cleanupConnection, input.sessionId);
     }
   });
+}
+
+function observeOperation<A>(
+  operation: string,
+  input: { workspaceId: WorkspaceId; sessionId: string; runnerId?: string },
+  effect: Effect.Effect<OperationResult<A>>,
+): Effect.Effect<OperationResult<A>> {
+  return Effect.gen(function* () {
+    const startedAt = yield* Clock.currentTimeMillis;
+    yield* Effect.logInfo(`${operation}.requested`);
+    const result = yield* effect;
+    const now = yield* Clock.currentTimeMillis;
+    yield* (result.status === "accepted"
+      ? Effect.logInfo(`${operation}.accepted`)
+      : Effect.logWarning(`${operation}.${result.status}`)).pipe(
+        Effect.annotateLogs({ durationMs: now - startedAt }),
+      );
+    return result;
+  }).pipe(Effect.annotateLogs({
+    component: "openorb-gateway",
+    operation,
+    workspaceId: input.workspaceId,
+    sessionId: input.sessionId,
+    ...(input.runnerId === undefined ? {} : { runnerId: input.runnerId }),
+  }));
 }
 
 function unavailable(message: string) {

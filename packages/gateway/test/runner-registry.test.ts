@@ -30,7 +30,18 @@ import {
   WatchSessionPayload,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { Context, Deferred, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  Logger,
+  Option,
+  Queue,
+  Schema,
+  Stream,
+} from "effect";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
@@ -377,6 +388,73 @@ const makeHarness = Effect.fn(function* (
   const server = Context.get(context, HttpServer.HttpServer);
   if (server.address._tag !== "TcpAddress") return yield* Effect.die("Expected TCP server");
   return { gateway, url: `ws://127.0.0.1:${server.address.port}/runner` };
+});
+
+Deno.test("gateway lifecycle logs admission, state changes, cleanup retries and offline routing without content", async () => {
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
+  const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
+  await Effect.runPromise(
+    Effect.scoped(Effect.gen(function* () {
+      const { gateway, url } = yield* makeHarness();
+      const probe = yield* makeProbe();
+      yield* connectRunner(url, probe);
+      yield* waitUntil(() => Effect.sync(() => probe.watchCalls === 1), "watch not started");
+      assertEquals(logs.filter((log) => log.message === "connection.connected").length, 0);
+      yield* publishSnapshot(probe, [snapshot(SESSION_1)], 1);
+      yield* waitUntil(
+        () => Effect.sync(() => logs.some((log) => log.message === "connection.connected")),
+        "admission not logged",
+      );
+      assertEquals(
+        logs.find((log) => log.message === "snapshot.accepted")?.annotations.sessionCount,
+        1,
+      );
+      yield* gateway.stopSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
+      assert(logs.some((log) => log.message === "stop.accepted"));
+      for (const revision of [2, 3]) {
+        yield* Queue.offer(
+          probe.runnerEvents,
+          decode(RunnerStateEvent)({
+            type: "session.updated",
+            revision,
+            session: snapshot(SESSION_1, undefined, "stopped"),
+          }),
+        );
+      }
+      yield* waitUntil(
+        () => Effect.sync(() => logs.some((log) => log.message === "session.state-observed")),
+        "state not logged",
+      );
+      probe.deleteFailuresRemaining = 1;
+      yield* gateway.deleteSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
+      yield* waitUntil(
+        () => Effect.sync(() => logs.some((log) => log.message === "deletion.cleanup-completed")),
+        "cleanup not logged",
+      );
+      assert(logs.some((log) => log.message === "deletion.cleanup-retry-scheduled"));
+      assertEquals(logs.filter((log) => log.message === "session.state-observed").length, 1);
+      yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID);
+      yield* waitUntil(
+        () =>
+          gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID).pipe(
+            Effect.map((state) => state === null),
+          ),
+        "runner still online",
+      );
+      yield* gateway.stopSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
+      assert(logs.some((log) => log.message === "stop.unavailable"));
+      const invalid = yield* makeProbe("openorb_runner_secret-invalid-token");
+      yield* connectRunner(url, invalid);
+      yield* Deferred.await(invalid.closeCode);
+      assert(logs.some((log) => log.message === "connection.rejected"));
+    })).pipe(Effect.provide(Logger.layer([logger]))),
+  );
+  assert(logs.some((log) => log.message === "connection.disconnected"));
+  const serialized = JSON.stringify(logs);
+  assert(!serialized.includes(TOKEN));
+  assert(!serialized.includes("secret-invalid-token"));
+  assert(!serialized.includes("Session 11"));
+  assert(logs.every((log) => log.annotations.component === "openorb-gateway"));
 });
 
 Deno.test("valid identity and complete snapshot admit; invalid token closes 4401 without watch", () =>

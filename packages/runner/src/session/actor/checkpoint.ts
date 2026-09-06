@@ -47,6 +47,26 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
   } = options;
   const { none, persist, reply, fail } = options.decisions;
   let gitOperationActive = false;
+  let checkpointLog:
+    | { readonly trigger: "idle" | "explicit"; readonly startedAt: number }
+    | undefined;
+
+  const logCheckpoint = (
+    event: "checkpoint.started" | "checkpoint.completed" | "checkpoint.failed",
+    state: SessionState,
+  ) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      yield* (event === "checkpoint.failed" ? Effect.logError(event) : Effect.logInfo(event)).pipe(
+        Effect.annotateLogs({
+          component: "openorb-runner",
+          sessionId,
+          runnerId: state.data.runnerId,
+          trigger: checkpointLog?.trigger ?? "unknown",
+          ...(checkpointLog === undefined ? {} : { durationMs: now - checkpointLog.startedAt }),
+        }),
+      );
+    });
 
   function deletionAcceptance(state: SessionState): DeletionAcceptance {
     if (
@@ -113,6 +133,10 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
           });
         }
       }
+      checkpointLog = {
+        trigger: command.idle ? "idle" : "explicit",
+        startedAt: yield* Clock.currentTimeMillis,
+      };
       const candidate = yield* store.allocateCheckpoint(sessionId).pipe(
         Effect.mapError(actorError),
       );
@@ -122,6 +146,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
         (checkpointing) =>
           emitState(sessionMetadata(checkpointing), "checkpointing", correlationId).pipe(
             Effect.orDie,
+            Effect.andThen(logCheckpoint("checkpoint.started", checkpointing)),
             Effect.andThen(
               Effect.forkScoped(checkpointReadySession(
                 current.environment!,
@@ -142,6 +167,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
             _tag: "RecordIssue",
             issue: checkpointIssue(false, state.phase.checkpoint !== undefined, error),
           }).pipe(
+            Effect.andThen(logCheckpoint("checkpoint.failed", state)),
             Effect.andThen(Deferred.succeed(command.reply, {
               ok: false,
               message: "The session checkpoint could not be started.",
@@ -224,9 +250,14 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
           },
         }, (stopped) =>
           store.cleanupCheckpoints(sessionId, command.candidate.file).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning(
-                `Obsolete checkpoints for session ${sessionId} could not be removed: ${error.message}`,
+            Effect.catch(() =>
+              Effect.logWarning("checkpoint.cleanup-failed").pipe(
+                Effect.annotateLogs({
+                  component: "openorb-runner",
+                  sessionId,
+                  runnerId: stopped.data.runnerId,
+                  cleanup: "obsolete",
+                }),
               )
             ),
             Effect.andThen(runtime.clearEnvironment),
@@ -236,6 +267,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
                 Effect.orDie,
               ),
             ),
+            Effect.andThen(logCheckpoint("checkpoint.completed", stopped)),
             Effect.andThen(Deferred.succeed(command.reply, { ok: true })),
             Effect.asVoid,
           ))
@@ -272,9 +304,14 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
       issue: command.issue,
     }, (failedState) =>
       store.discardCheckpoint(sessionId, command.candidate.file).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning(
-            `Failed checkpoint ${command.candidate.file} could not be discarded: ${error.message}`,
+        Effect.catch(() =>
+          Effect.logWarning("checkpoint.cleanup-failed").pipe(
+            Effect.annotateLogs({
+              component: "openorb-runner",
+              sessionId,
+              runnerId: failedState.data.runnerId,
+              cleanup: "candidate",
+            }),
           )
         ),
         Effect.andThen(
@@ -292,6 +329,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
             command.correlationId,
           ).pipe(Effect.orDie),
         ),
+        Effect.andThen(logCheckpoint("checkpoint.failed", failedState)),
         Effect.andThen(Deferred.succeed(command.reply, {
           ok: false,
           message: command.consumed

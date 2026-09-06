@@ -186,6 +186,15 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
         Effect.andThen(runtime.activateRun(command.runId, command.run)),
         Effect.andThen(runtime.updateStatus(true, command.runId)),
         Effect.andThen(
+          command.completion._tag === "Provisioning"
+            ? Effect.logInfo("provision.ready").pipe(Effect.annotateLogs({
+              component: "openorb-runner",
+              sessionId: running.data.id,
+              runnerId: running.data.runnerId,
+            }))
+            : Effect.void,
+        ),
+        Effect.andThen(
           reporter.emitState(sessionMetadata(running), "running", command.runId).pipe(
             Effect.orDie,
           ),
@@ -480,6 +489,13 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
       completion.correlationId,
     ).pipe(
       Effect.orDie,
+      Effect.andThen(
+        Effect.logError("provision.failed").pipe(Effect.annotateLogs({
+          component: "openorb-runner",
+          sessionId: state.data.id,
+          runnerId: state.data.runnerId,
+        })),
+      ),
       Effect.andThen(
         reporter.emitLog(
           completion.correlationId,

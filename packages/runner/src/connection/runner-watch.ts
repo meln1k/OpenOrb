@@ -32,14 +32,11 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
         new RunnerWatchError({ message: "Runner manifest could not be read." })
       ),
     );
-    yield* Effect.forEach(
-      manifest.errors,
-      (error) =>
-        Effect.logWarning(
-          `Runner session ${error.sessionDirectory} could not be fully inspected: ${error.message}`,
-        ),
-      { discard: true },
-    );
+    if (manifest.errors.length > 0) {
+      yield* Effect.logWarning("snapshot.inspection-failed").pipe(
+        Effect.annotateLogs({ component: "openorb-runner", errorCount: manifest.errors.length }),
+      );
+    }
     const reportedCapacity = yield* readCapacity(getCapacity);
     const capacity = yield* Schema.decodeUnknownEffect(RunnerCapacity)(reportedCapacity).pipe(
       Effect.catch(() => new RunnerWatchError({ message: "Runner capacity was invalid." })),
@@ -110,7 +107,16 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
       }),
       Stream.filter(Predicate.isNotNull),
     );
-    return Stream.concat(snapshot, Stream.merge(observed, sessionUpdates));
+    return Stream.concat(
+      snapshot,
+      Stream.merge(observed, sessionUpdates).pipe(
+        Stream.onStart(
+          Effect.logInfo("snapshot.sent").pipe(
+            Effect.annotateLogs({ component: "openorb-runner", sessionCount: sessions.length }),
+          ),
+        ),
+      ),
+    );
   }));
 }
 
