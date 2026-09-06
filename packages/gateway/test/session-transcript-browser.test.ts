@@ -11,7 +11,7 @@ import { createTestServer } from "@/test/http-test-server.ts";
 const browserEndpoint = Deno.env.get("OPENORB_BROWSER_TEST_CDP");
 
 Deno.test({
-  name: "HTTP browser isolates transcript state across session switches",
+  name: "HTTP browser preserves live transcript interaction state across session switches",
   ignore: browserEndpoint === undefined,
   async fn() {
     const { chromium } = await import("playwright");
@@ -172,6 +172,69 @@ Deno.test({
         "Accepted HTTP continuation",
       ]);
       assertEquals(csrfTokens, ["browser-csrf", "browser-csrf", "browser-csrf"]);
+
+      for (
+        const event of [
+          { type: "session.state", stage: "running", issues: [] },
+          {
+            type: "tool.started",
+            toolCallId: "streaming-tool",
+            toolName: "bash",
+            arguments: JSON.stringify({ command: "printf tool-output" }),
+          },
+          {
+            type: "tool.completed",
+            toolCallId: "streaming-tool",
+            toolName: "bash",
+            result: "tool-output",
+            isError: false,
+          },
+        ]
+      ) {
+        events!.enqueue(new TextEncoder().encode(
+          `event: session\ndata: ${JSON.stringify(event)}\n\n`,
+        ));
+      }
+      const toolDetails = page.locator('[data-tool-call-id="streaming-tool"] details');
+      await toolDetails.getByText("printf tool-output").waitFor();
+      await toolDetails.locator("summary").click();
+      assertEquals(
+        await toolDetails.evaluate((details) =>
+          details instanceof HTMLDetailsElement && details.open
+        ),
+        true,
+      );
+      events!.enqueue(new TextEncoder().encode(
+        `event: session\ndata: ${
+          JSON.stringify({
+            type: "assistant.text.delta",
+            delta: "Streaming after the tool",
+          })
+        }\n\n`,
+      ));
+      await page.getByText("Streaming after the tool").waitFor();
+      assertEquals(
+        await toolDetails.evaluate((details) =>
+          details instanceof HTMLDetailsElement && details.open
+        ),
+        true,
+      );
+      await toolDetails.locator("summary").click();
+      events!.enqueue(new TextEncoder().encode(
+        `event: session\ndata: ${
+          JSON.stringify({
+            type: "assistant.text.delta",
+            delta: " and after closing it",
+          })
+        }\n\n`,
+      ));
+      await page.getByText("Streaming after the tool and after closing it").waitFor();
+      assertEquals(
+        await toolDetails.evaluate((details) =>
+          details instanceof HTMLDetailsElement && details.open
+        ),
+        false,
+      );
 
       await page.evaluate("globalThis.renderSession('switched-session')");
       const connectionTimeout = setTimeout(

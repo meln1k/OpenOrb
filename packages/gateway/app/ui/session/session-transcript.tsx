@@ -487,7 +487,6 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
       );
     }
     case "tool": {
-      const bashCommand = commandForBashTool(entry);
       const readPath = pathForReadTool(entry);
       return (
         <MessageScrollerItem
@@ -515,24 +514,7 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
             </MarkerIcon>
             <MarkerContent mix={markerDetailStyle}>
               {readPath === undefined
-                ? (
-                  <details open={entry.active && bashCommand === undefined ? true : undefined}>
-                    <summary title={bashCommand}>{bashCommand ?? entry.toolName}</summary>
-                    {bashCommand === undefined && entry.arguments
-                      ? <pre data-tool-arguments>{entry.arguments}</pre>
-                      : null}
-                    {entry.result === undefined && entry.partialResult
-                      ? <pre data-tool-partial-result>{entry.partialResult}</pre>
-                      : null}
-                    {entry.result !== undefined
-                      ? (
-                        <pre data-tool-result data-error={String(entry.isError)}>
-                          {entry.result || "No output"}
-                        </pre>
-                      )
-                      : null}
-                  </details>
-                )
+                ? <ToolDetails key={entry.toolCallId} entry={entry} />
                 : (
                   <span data-read-path title={readPath}>
                     <span dir="ltr">{readPath}</span>
@@ -560,6 +542,39 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
         </MessageScrollerItem>
       );
   }
+}
+
+function ToolDetails(handle: Handle<{ entry: ToolEntry }>) {
+  let open = handle.props.entry.active && commandForBashTool(handle.props.entry) === undefined;
+  const toggle = on<HTMLDetailsElement, "toggle">("toggle", (event) => {
+    const nextOpen = event.currentTarget.open;
+    if (open === nextOpen) return;
+    open = nextOpen;
+    void handle.update();
+  });
+
+  return () => {
+    const entry = handle.props.entry;
+    const bashCommand = commandForBashTool(entry);
+    return (
+      <details open={open} mix={toggle}>
+        <summary title={bashCommand}>{bashCommand ?? entry.toolName}</summary>
+        {bashCommand === undefined && entry.arguments
+          ? <pre data-tool-arguments>{entry.arguments}</pre>
+          : null}
+        {entry.result === undefined && entry.partialResult
+          ? <pre data-tool-partial-result>{entry.partialResult}</pre>
+          : null}
+        {entry.result !== undefined
+          ? (
+            <pre data-tool-result data-error={String(entry.isError)}>
+              {entry.result || "No output"}
+            </pre>
+          )
+          : null}
+      </details>
+    );
+  };
 }
 
 function commandForBashTool(entry: ToolEntry): string | undefined {
