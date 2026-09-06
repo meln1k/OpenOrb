@@ -19,6 +19,9 @@
     "label": "gondolin-root",
     "sizeMb": 2560
   },
+  "init": {
+    "rootfsInitExtra": "./prepare-nested-kvm.sh"
+  },
   "postBuild": {
     "copy": [
       {

@@ -69,6 +69,7 @@ RUN apt-get update \
         iproute2 \
         iputils-ping \
         jq \
+        kmod \
         less \
         libasound2t64 \
         libatk-bridge2.0-0t64 \
@@ -233,4 +234,5 @@ RUN sed "s/@CHROMIUM_VERSION@/${CHROMIUM_VERSION}/g" \
     && agent-browser --version \
     && agent-browser skills get core >/dev/null \
     && test ! -e /root/.agent-browser/browsers \
+    && test -x /usr/sbin/modprobe \
     && test -z "$(find /var/cache/apt/archives /var/lib/apt/lists -type f -print -quit 2>/dev/null)"

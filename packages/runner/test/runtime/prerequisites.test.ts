@@ -180,7 +180,7 @@ Deno.test("checks host resources, data-directory writes, and gateway health", as
 Deno.test("requires free space for a full checkpoint candidate", async () => {
   const passing = await checkCheckpointCandidateCapacity({
     workingDirectory: "/runner",
-    rootfsPath: "/runner/images/mvp-5/x64/rootfs.ext4",
+    rootfsPath: "/runner/images/mvp-6/x64/rootfs.ext4",
     inspectFile: () => Promise.resolve({ size: 2560 * 1024 * 1024, isFile: true }),
     getFileSystemStats: () => Promise.resolve({ bavail: 4096n, bsize: 1024n * 1024n }),
   });
@@ -193,7 +193,7 @@ Deno.test("requires free space for a full checkpoint candidate", async () => {
 
   const failing = await checkCheckpointCandidateCapacity({
     workingDirectory: "/runner",
-    rootfsPath: "/runner/images/mvp-5/x64/rootfs.ext4",
+    rootfsPath: "/runner/images/mvp-6/x64/rootfs.ext4",
     inspectFile: () => Promise.resolve({ size: 2560 * 1024 * 1024, isFile: true }),
     getFileSystemStats: () => Promise.resolve({ bavail: 2048n, bsize: 1024n * 1024n }),
   });
