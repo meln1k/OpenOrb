@@ -89,7 +89,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
             name="initialPrompt"
             aria-label="Initial prompt"
             placeholder="Write prompt…"
-            value={values?.initialPrompt ?? ""}
+            defaultValue={values?.initialPrompt ?? ""}
             required
             autoFocus
             mix={promptStyle}
@@ -113,7 +113,6 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
               <Icon name="folder" />
               <select
                 name="projectId"
-                value={selectedProjectId}
                 required
                 disabled={projects.length === 0}
                 mix={selectStyle}
@@ -121,19 +120,25 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
                 {projects.length === 0
                   ? <option value="">No projects</option>
                   : projects.map((project) => (
-                    <option key={project.id} value={project.id}>{project.name}</option>
+                    <option
+                      key={project.id}
+                      value={project.id}
+                      selected={project.id === selectedProjectId}
+                    >
+                      {project.name}
+                    </option>
                   ))}
               </select>
               <Icon name="chevron-down" />
             </label>
             <label aria-label="Orb size" mix={selectControlStyle}>
               <Icon name="server" />
-              <select name="orbSize" value={selectedOrbSize} required mix={selectStyle}>
+              <select name="orbSize" required mix={selectStyle}>
                 {ORB_SIZES.map((orbSize) => (
                   <option
                     key={orbSize}
                     value={orbSize}
-                    selected={orbSize === selectedOrbSize || undefined}
+                    selected={orbSize === selectedOrbSize}
                   >
                     {formatOrbSize(orbSize)}
                   </option>
@@ -145,7 +150,6 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
               <Icon name="sparkles" />
               <select
                 name="model"
-                value={selectedModel}
                 required
                 disabled={models.length === 0}
                 mix={selectStyle}
@@ -153,7 +157,11 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
                 {models.length === 0
                   ? <option value="">No model</option>
                   : models.map((model) => (
-                    <option key={model.id} value={model.id}>
+                    <option
+                      key={model.id}
+                      value={model.id}
+                      selected={model.id === selectedModel}
+                    >
                       {model.providerName} · {model.name}
                     </option>
                   ))}
