@@ -7,7 +7,7 @@ import {
 } from "@std/assert";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionId } from "@openorb/protocol/runner-api";
-import { Effect, Exit, Schema, Scope } from "effect";
+import { Effect, Exit, Logger, Schema, Scope } from "effect";
 
 import {
   createGondolinAgentEnvironment,
@@ -122,6 +122,171 @@ Deno.test({
       );
       assertEquals(result.exitCode, 0);
       assertEquals(output, "retained");
+    } finally {
+      await opened.close();
+      await Deno.remove(temporaryDirectory, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "shell timeouts bound waiting without replacing the VM or losing root and tmpfs state",
+  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
+  async fn() {
+    const temporaryDirectory = await Deno.makeTempDir();
+    const workspacePath = `${temporaryDirectory}/workspace`;
+    await Deno.mkdir(workspacePath);
+    const opened = await openRuntime({
+      workspacePath,
+      guestImage: await installLocalGuestImage(temporaryDirectory),
+      sessionLabel: `openorb session ${SESSION_ID}`,
+      sessionId: SESSION_ID,
+      cpuCount: 2,
+      memoryMiB: 2 * 1024,
+    });
+    const runtime = opened.runtime;
+    const shellOptions = { cwd: "/workspace", onOutput: () => Effect.void };
+    try {
+      assertEquals(
+        (await Effect.runPromise(runtime.runShell(
+          "printf retained >/opt/timeout-root; printf retained >/tmp/timeout-tmp",
+          shellOptions,
+        ))).exitCode,
+        0,
+      );
+      const bootId = await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id"));
+      for (
+        const command of [
+          "sleep 2; touch /workspace/timeout-late",
+          "trap '' TERM; sleep 2; touch /workspace/timeout-late",
+        ]
+      ) {
+        const result = await Effect.runPromise(runtime.runShell(command, {
+          ...shellOptions,
+          timeoutSeconds: 0.1,
+        }));
+        assert([124, 137].includes(result.exitCode));
+        assertEquals(
+          await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id")),
+          bootId,
+        );
+        for (const path of ["/opt/timeout-root", "/tmp/timeout-tmp"]) {
+          assertEquals(
+            new TextDecoder().decode(await Effect.runPromise(runtime.readFile(path))),
+            "retained",
+          );
+        }
+      }
+      for (const exitCode of [0, 7, 124, 137]) {
+        assertEquals(
+          (await Effect.runPromise(runtime.runShell(`exit ${exitCode}`, {
+            ...shellOptions,
+            timeoutSeconds: 1,
+          }))).exitCode,
+          exitCode,
+        );
+      }
+      for (
+        const command of [
+          "sleep 30 &",
+          "bash -c 'trap \"\" TERM; sleep 30' & wait",
+        ]
+      ) {
+        const started = performance.now();
+        await assertRejects(
+          () =>
+            Effect.runPromise(runtime.runShell(command, {
+              ...shellOptions,
+              timeoutSeconds: 0.5,
+            })),
+          Error,
+          "The VM was preserved; command descendants may still be running",
+        );
+        assert(performance.now() - started < 8_000, "Host deadline did not bound the wait");
+        assertEquals(
+          await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id")),
+          bootId,
+        );
+        for (const path of ["/opt/timeout-root", "/tmp/timeout-tmp"]) {
+          assertEquals(
+            new TextDecoder().decode(await Effect.runPromise(runtime.readFile(path))),
+            "retained",
+          );
+        }
+      }
+
+      const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
+      const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
+      const controller = new AbortController();
+      await assertRejects(
+        () =>
+          Effect.runPromise(
+            runtime.runShell("printf ready; sleep 30", {
+              cwd: "/workspace",
+              signal: controller.signal,
+              onOutput: () => Effect.sync(() => controller.abort()),
+            }).pipe(Effect.provide(Logger.layer([logger]))),
+          ),
+        Error,
+        "Command aborted",
+      );
+      const recovered = await Effect.runPromise(
+        runtime.run(["/bin/true"]).pipe(Effect.provide(Logger.layer([logger]))),
+      );
+      assertEquals(recovered.exitCode, 0);
+      assertEquals(logs.filter((entry) => String(entry.message).startsWith("gondolin.vm.")), []);
+      const directAbort = new AbortController();
+      await assertRejects(
+        () =>
+          Effect.runPromise(runtime.run([
+            "/bin/bash",
+            "-lc",
+            "printf ready; sleep 30",
+          ], {
+            signal: directAbort.signal,
+            onOutput: () => Effect.sync(() => directAbort.abort()),
+          })),
+        Error,
+        "Command aborted",
+      );
+      await assertRejects(
+        () =>
+          Effect.runPromise(runtime.runShell("printf output", {
+            cwd: "/workspace",
+            onOutput: () => Effect.fail("observer failed"),
+          })),
+        Error,
+        "Guest shell command execution failed",
+      );
+      // Invalid cwd fails at the exec boundary rather than returning a command exit status.
+      await assertRejects(
+        () =>
+          Effect.runPromise(runtime.run(["/bin/true"], {
+            cwd: "invalid\0cwd",
+          })),
+        Error,
+        "Guest command execution failed",
+      );
+      await assertRejects(
+        () =>
+          Effect.runPromise(runtime.runShell("true", {
+            ...shellOptions,
+            cwd: "invalid\0cwd",
+          })),
+        Error,
+        "Guest shell command execution failed",
+      );
+      assertEquals(
+        await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id")),
+        bootId,
+      );
+      for (const path of ["/opt/timeout-root", "/tmp/timeout-tmp"]) {
+        assertEquals(
+          new TextDecoder().decode(await Effect.runPromise(runtime.readFile(path))),
+          "retained",
+        );
+      }
+      assertEquals((await Effect.runPromise(runtime.run(["/bin/true"]))).exitCode, 0);
     } finally {
       await opened.close();
       await Deno.remove(temporaryDirectory, { recursive: true });
@@ -502,7 +667,7 @@ Deno.test({
             timeout: 0.1,
           }),
         Error,
-        "Command timed out after 0.1 seconds",
+        "Command exited with code 124",
       );
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       await assertRejects(
@@ -525,11 +690,7 @@ Deno.test({
       );
       setTimeout(() => abortController.abort(), 100);
       await assertRejects(() => abortPromise, Error, "Command aborted");
-      await new Promise((resolve) => setTimeout(resolve, 1_100));
-      await assertRejects(
-        () => Deno.stat(`${workspacePath}/aborted-marker`),
-        Deno.errors.NotFound,
-      );
+      // Abort abandons the wait; descendants are allowed to finish in the retained VM.
       const afterAbort = await bash.execute("bash-after-abort", { command: "printf reusable" });
       assertStringIncludes(
         afterAbort.content[0]?.type === "text" ? afterAbort.content[0].text : "",

@@ -37,7 +37,6 @@ interface GondolinEnvironmentInternals extends AgentEnvironment {
   readonly start: Effect.Effect<void, AgentEnvironmentError>;
   readonly close: Effect.Effect<void, AgentEnvironmentError>;
   readonly getVm: Effect.Effect<RunningVm, AgentEnvironmentError>;
-  readonly discard: (running: RunningVm) => Effect.Effect<void, AgentEnvironmentError>;
 }
 
 export function makeGondolinAgentEnvironmentProvider(
@@ -86,6 +85,7 @@ export function createGondolinAgentEnvironment(
         options.sessionLabel,
         options.github,
         options.resumeCheckpoint,
+        options.sessionId,
       );
       yield* environment.start;
       return environment;
@@ -102,11 +102,18 @@ function makeGondolinEnvironment(
   sessionLabel = `openorb ${basename(workspacePath)}`,
   github?: OpenOrbGitHubMediationOptions,
   resumeCheckpoint?: AgentEnvironmentCheckpoint,
+  sessionId?: string,
 ): Effect.Effect<GondolinEnvironmentInternals> {
   return Effect.gen(function* () {
     const gate = yield* Semaphore.make(1);
+    // Command failures never clear this reference. Only explicit lifecycle cleanup owns the VM.
     let running: RunningVm | undefined;
     let closed = false;
+    const logAnnotations = {
+      component: "openorb-runner",
+      sessionLabel,
+      ...(sessionId === undefined ? {} : { sessionId }),
+    };
 
     const startVm: Effect.Effect<RunningVm, AgentEnvironmentError> = Effect.gen(function* () {
       const imagePath = yield* fromLegacyResult(
@@ -216,6 +223,9 @@ function makeGondolinEnvironment(
           }),
         );
       }
+      yield* Effect.logInfo("gondolin.vm.started").pipe(
+        Effect.annotateLogs({ ...logAnnotations, gondolinId: vm.id }),
+      );
       return probe.value.running;
     });
 
@@ -230,13 +240,6 @@ function makeGondolinEnvironment(
         return startVm.pipe(Effect.tap((started) => Effect.sync(() => running = started)));
       }),
     );
-
-    const discard = (discarded: RunningVm): Effect.Effect<void, AgentEnvironmentError> =>
-      gate.withPermit(Effect.suspend(() => {
-        if (running !== discarded) return Effect.void;
-        running = undefined;
-        return closeVm(discarded.vm, "The Gondolin VM could not be discarded.");
-      }));
 
     const run: AgentEnvironment["run"] = Effect.fn("AgentEnvironment.run")(function* (
       command,
@@ -278,7 +281,6 @@ function makeGondolinEnvironment(
         catch: (cause) => new AgentEnvironmentError("Guest command execution failed.", cause),
       }));
       if (execution._tag === "Failure") {
-        yield* discard(activeVm);
         if (options.signal?.aborted) return yield* aborted(options.signal.reason);
         return yield* Effect.failCause(execution.cause);
       }
@@ -291,30 +293,43 @@ function makeGondolinEnvironment(
         if (options.signal?.aborted) return yield* aborted(options.signal.reason);
         const activeVm = yield* getVm;
         if (options.signal?.aborted) return yield* aborted(options.signal.reason);
-        let timedOut = false;
+        const timeoutSeconds = options.timeoutSeconds && options.timeoutSeconds > 0
+          ? options.timeoutSeconds
+          : undefined;
+        let waitTimedOut = false;
         const execution = yield* Effect.exit(Effect.tryPromise({
           try: async () => {
             const controller = new AbortController();
             const abort = () => controller.abort(options.signal?.reason);
             options.signal?.addEventListener("abort", abort, { once: true });
-            const timeoutHandle = options.timeoutSeconds && options.timeoutSeconds > 0
-              ? setTimeout(() => {
-                timedOut = true;
-                controller.abort();
-              }, options.timeoutSeconds * 1000)
-              : undefined;
             using cleanup = new DisposableStack();
-            cleanup.defer(() => {
-              if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-              options.signal?.removeEventListener("abort", abort);
-            });
-            const process = activeVm.vm.exec([activeVm.shellPath, "-lc", command], {
-              cwd: resolveAgentPath(options.cwd),
-              env: { [OPENORB_GUEST_MARKER]: "1" },
-              signal: controller.signal,
-              stdout: "pipe",
-              stderr: "pipe",
-            });
+            cleanup.defer(() => options.signal?.removeEventListener("abort", abort));
+            // Allow the guest's one-second kill grace plus one second for output draining.
+            // Gondolin abort only abandons the host wait: surviving descendants are accepted.
+            if (timeoutSeconds !== undefined) {
+              const timer = setTimeout(() => {
+                waitTimedOut = true;
+                controller.abort();
+              }, (timeoutSeconds + 2) * 1000);
+              cleanup.defer(() => clearTimeout(timer));
+            }
+            // Guest process-group cleanup is best effort; never reset the VM for a timeout.
+            const shellCommand = [activeVm.shellPath, "-lc", command];
+            const process = activeVm.vm.exec(
+              timeoutSeconds === undefined ? shellCommand : [
+                "/usr/bin/timeout",
+                "--kill-after=1s",
+                `${timeoutSeconds}s`,
+                ...shellCommand,
+              ],
+              {
+                cwd: resolveAgentPath(options.cwd),
+                env: { [OPENORB_GUEST_MARKER]: "1" },
+                signal: controller.signal,
+                stdout: "pipe",
+                stderr: "pipe",
+              },
+            );
             for await (const chunk of process.output()) {
               const observerError = await runObserver(options.onOutput(chunk.data));
               if (observerError) throw observerError;
@@ -325,14 +340,15 @@ function makeGondolinEnvironment(
             new AgentEnvironmentError("Guest shell command execution failed.", cause),
         }));
         if (execution._tag === "Failure") {
-          yield* discard(activeVm);
-          if (options.signal?.aborted) return yield* aborted(options.signal.reason);
-          if (timedOut && options.timeoutSeconds) {
+          if (waitTimedOut && timeoutSeconds !== undefined && !options.signal?.aborted) {
             return yield* new AgentEnvironmentError(
-              `Command timed out after ${options.timeoutSeconds} seconds.`,
-              execution.cause,
+              `Stopped waiting after ${
+                timeoutSeconds + 2
+              } seconds. The VM was preserved; command descendants may still be running.`,
+              undefined,
             );
           }
+          if (options.signal?.aborted) return yield* aborted(options.signal.reason);
           return yield* Effect.failCause(execution.cause);
         }
         return { exitCode: execution.value.exitCode };
@@ -462,7 +478,6 @@ function makeGondolinEnvironment(
       start: getVm.pipe(Effect.asVoid),
       close,
       getVm,
-      discard,
       run,
       runShell,
       readFile,

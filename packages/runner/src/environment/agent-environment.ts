@@ -64,6 +64,7 @@ export interface AgentEnvironment {
 export interface AgentEnvironmentOptions {
   readonly workspacePath: string;
   readonly sessionLabel?: string;
+  readonly sessionId?: string;
   readonly github?: {
     readonly repositoryUrl: string;
     readonly gitAuthor: {

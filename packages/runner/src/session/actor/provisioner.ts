@@ -92,6 +92,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
       const environment = yield* environmentProvider.make({
         workspacePath,
         sessionLabel: `openorb session ${sessionId}`,
+        sessionId,
         github: {
           repositoryUrl: metadata.definition.repositoryUrl,
           gitAuthor: metadata.definition.gitAuthor,
@@ -150,6 +151,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
       const environment = yield* environmentProvider.make({
         workspacePath,
         sessionLabel: `openorb session ${sessionId}`,
+        sessionId,
         github: {
           repositoryUrl: metadata.definition.repositoryUrl,
           gitAuthor: metadata.definition.gitAuthor,
@@ -247,6 +249,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
       const environment = yield* environmentProvider.make({
         workspacePath,
         sessionLabel: `openorb session ${sessionId}`,
+        sessionId,
         github: {
           repositoryUrl: metadata.definition.repositoryUrl,
           gitAuthor: metadata.definition.gitAuthor,
