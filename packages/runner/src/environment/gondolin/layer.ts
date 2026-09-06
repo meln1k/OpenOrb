@@ -128,15 +128,7 @@ function makeGondolinEnvironment(
             memory: `${memoryMiB}M`,
             rootfs: { mode: "cow" },
             ...githubOptions,
-            sandbox: {
-              imagePath,
-              // Pin supported hosts to hardware acceleration and skip Gondolin's /dev/kvm probe.
-              ...(Deno.build.os === "linux"
-                ? { accel: "kvm" }
-                : Deno.build.os === "darwin"
-                ? { accel: "hvf" }
-                : {}),
-            },
+            sandbox: createOpenOrbGondolinSandboxOptions(imagePath),
             vfs: {
               mounts: {
                 [AGENT_WORKSPACE]: new RealFSProvider(workspacePath),
@@ -159,6 +151,41 @@ function makeGondolinEnvironment(
       });
       const probe = yield* Effect.exit(Effect.tryPromise({
         try: async () => {
+          let nestedKvmWarning: string | undefined;
+          if (Deno.build.os === "linux") {
+            const nestedKvmProbe = await vm.exec([
+              "/bin/sh",
+              "-lc",
+              [
+                "set -eu",
+                'case "$(uname -m)" in',
+                "  x86_64)",
+                "    if grep -qw vmx /proc/cpuinfo; then",
+                "      modprobe kvm_intel",
+                "    elif grep -qw svm /proc/cpuinfo; then",
+                "      modprobe kvm_amd",
+                "    else",
+                '      echo "the guest CPU does not expose VMX or SVM" >&2',
+                "      exit 1",
+                "    fi",
+                "    ;;",
+                "  aarch64)",
+                "    ;;",
+                "  *)",
+                '    echo "unsupported nested-KVM guest architecture: $(uname -m)" >&2',
+                "    exit 1",
+                "    ;;",
+                "esac",
+                'test -c /dev/kvm || { echo "nested KVM did not create /dev/kvm" >&2; exit 1; }',
+                '/usr/bin/python3 -c \'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12\' || { echo "nested KVM rejected KVM_GET_API_VERSION" >&2; exit 1; }',
+              ].join("\n"),
+            ]);
+            if (!nestedKvmProbe.ok) {
+              const detail = nestedKvmProbe.stderr.trim() ||
+                `initialization exited with status ${nestedKvmProbe.exitCode}`;
+              nestedKvmWarning = `Nested KVM is unavailable in the Gondolin guest: ${detail}`;
+            }
+          }
           const shellProbe = await vm.exec(["/bin/sh", "-lc", "command -v bash || true"]);
           if (closed) {
             throw new AgentEnvironmentError(
@@ -166,15 +193,30 @@ function makeGondolinEnvironment(
               undefined,
             );
           }
-          return { vm, shellPath: shellProbe.stdout.trim() || "/bin/sh" };
+          return {
+            running: { vm, shellPath: shellProbe.stdout.trim() || "/bin/sh" },
+            nestedKvmWarning,
+          };
         },
-        catch: (cause) => new AgentEnvironmentError("The Gondolin VM shell probe failed.", cause),
+        catch: (cause) =>
+          cause instanceof AgentEnvironmentError
+            ? cause
+            : new AgentEnvironmentError("The Gondolin VM startup probe failed.", cause),
       }));
       if (probe._tag === "Failure") {
         yield* closeVm(vm, "The failed Gondolin VM could not be closed.");
         return yield* Effect.failCause(probe.cause);
       }
-      return probe.value;
+      if (probe.value.nestedKvmWarning) {
+        yield* Effect.logWarning("nested-kvm.unavailable").pipe(
+          Effect.annotateLogs({
+            component: "openorb-runner",
+            sessionLabel,
+            reason: probe.value.nestedKvmWarning,
+          }),
+        );
+      }
+      return probe.value.running;
     });
 
     const getVm = gate.withPermit(
@@ -431,6 +473,21 @@ function makeGondolinEnvironment(
       checkpoint,
     };
   });
+}
+
+export function createOpenOrbGondolinSandboxOptions(
+  imagePath: NonNullable<NonNullable<VMOptions["sandbox"]>["imagePath"]>,
+): NonNullable<VMOptions["sandbox"]> {
+  return {
+    imagePath,
+    // Pin Linux guests to host CPU features so VMX/SVM reaches the guest when host KVM nesting is
+    // enabled. The temporary macOS harness continues to use HVF without nested virtualization.
+    ...(Deno.build.os === "linux"
+      ? { vmm: "qemu" as const, accel: "kvm", cpu: "host" }
+      : Deno.build.os === "darwin"
+      ? { accel: "hvf" }
+      : {}),
+  };
 }
 
 function loadCheckpoint(

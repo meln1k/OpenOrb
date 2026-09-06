@@ -11,6 +11,7 @@ import { Effect, Exit, Schema, Scope } from "effect";
 
 import {
   createGondolinAgentEnvironment,
+  createOpenOrbGondolinSandboxOptions,
   OPENORB_GUEST_MARKER,
 } from "@/src/environment/gondolin/layer.ts";
 import { resolveAgentPath } from "@/src/environment/agent-environment.ts";
@@ -26,6 +27,20 @@ const CONVERSATION_PROJECTION = {
 };
 // SAFETY: The custom edit executor does not inspect Pi's extension context.
 const TOOL_CONTEXT = {} as ExtensionContext;
+
+Deno.test("Linux Gondolin VMs expose host CPU virtualization through KVM", () => {
+  const options = createOpenOrbGondolinSandboxOptions("/guest-image");
+
+  assertEquals(options.imagePath, "/guest-image");
+  if (Deno.build.os === "linux") {
+    assertEquals(options.vmm, "qemu");
+    assertEquals(options.accel, "kvm");
+    assertEquals(options.cpu, "host");
+  } else if (Deno.build.os === "darwin") {
+    assertEquals(options.accel, "hvf");
+    assertEquals(options.cpu, undefined);
+  }
+});
 
 Deno.test("agent path mapping anchors relative paths and preserves guest absolute paths", () => {
   assertEquals(resolveAgentPath(""), "/workspace");
@@ -320,6 +335,7 @@ Deno.test({
           'test "$(cat /etc/openorb-image-release)" = mvp-5',
           ". /etc/os-release",
           'test "$ID" = debian && test "$VERSION_ID" = 13',
+          "if test -c /dev/kvm; then python3 -c 'import fcntl, os; fd = os.open(\"/dev/kvm\", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12'; fi",
           'for command in agent-browser apt-get autoconf automake bash bun bunx bzip2 certutil corepack curl dpkg-buildpackage ffmpeg file find fzf g++ gcc gh git hg ip jq less lsof magick make node npm npx openssl patch perl ping pip pip3 pkg-config pnpm pnpx python python3 rg sed socat ssh svn tar time tmux unzip vim websocat wget xz yarn yarnpkg zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
           "test -s /etc/ssl/certs/ca-certificates.crt",
           'for command in chromium chromium-browser google-chrome; do ! command -v "$command" >/dev/null; done',

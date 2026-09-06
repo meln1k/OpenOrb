@@ -191,6 +191,8 @@ build ID, architecture, and internal checksums before use.
 - There is no default CPU, memory, or session-count ceiling.
 - Deno has no FFI or `--allow-all` permission and can execute only the native QEMU suite.
 - QEMU, not Deno, opens `/dev/kvm`; systemd grants only that device.
+- Linux guests receive the host CPU virtualization features and attempt to initialize their own
+  nested `/dev/kvm`; unavailable nesting is reported without rejecting the session VM.
 - The runner uses one authenticated outbound WebSocket and reconnects automatically.
 
 ## Development

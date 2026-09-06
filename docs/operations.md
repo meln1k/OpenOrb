@@ -194,7 +194,8 @@ are lost.
   upgrades. The runner must use that public origin, while port 44100 remains private.
 - **Runner is offline:** run the installation guide's `doctor`, then inspect
   `journalctl -u openorb-runner`. Check outbound DNS/HTTPS, system time, `/dev/kvm`, QEMU, free
-  disk, and that its identity has not been revoked.
+  disk, and that its identity has not been revoked. A `nested-kvm.unavailable` warning means the
+  session continues without guest `/dev/kvm`; enable host nesting only if the workload needs it.
 - **Image verification fails:** stop the runner and follow the narrowly scoped removal/re-download
   procedure in [guest image recovery](guest-image.md#runner-installation-and-recovery). Never edit
   an installed image or pair a checkpoint with a different image release.

@@ -18,10 +18,11 @@ deno task build:image x86_64
 deno task test:gondolin
 ```
 
-The x64 Gondolin job requires `/dev/kvm` and runs real VMs without credentials. Tests that need a
-private repository or paid model are explicitly reported as skipped when their opt-in variables and
-secrets are absent. Regular pull-request CI **does not run** the secret-gated release acceptance and
-does not silently claim that it did.
+The x64 Gondolin job requires `/dev/kvm` and runs real VMs without credentials. When nested KVM is
+available, its guest smoke test also verifies that the nested device responds to the KVM API. Tests
+that need a private repository or paid model are explicitly reported as skipped when their opt-in
+variables and secrets are absent. Regular pull-request CI **does not run** the secret-gated release
+acceptance and does not silently claim that it did.
 
 Before a release, manually dispatch `.github/workflows/release-acceptance.yml`. The workflow fails
 at preflight and names every missing secret unless all of these repository secrets are configured:

@@ -35,6 +35,19 @@ If the service account already exists, omit `useradd`. The runner needs outbound
 to the gateway, GitHub, provider APIs, and package registries used inside sessions. It opens no
 inbound port and needs no VPN.
 
+Nested KVM is optional. To expose `/dev/kvm` inside session VMs on x86-64, verify that the
+applicable host setting reports `Y` or `1`:
+
+```sh
+cat /sys/module/kvm_intel/parameters/nested 2>/dev/null || \
+  cat /sys/module/kvm_amd/parameters/nested
+```
+
+If it is disabled, enable nested virtualization through the host distribution or upstream
+hypervisor. Linux session startup passes the host CPU model to Gondolin and attempts to load the
+matching KVM driver in the guest. If the guest cannot use its own `/dev/kvm`, the runner logs a
+warning and continues without nested virtualization.
+
 ## 2A. Install the standalone artifact
 
 Download the release's `openorb-runner-linux-x64`, `openorb-runner-linux-arm64`, `SHA256SUMS`, and
