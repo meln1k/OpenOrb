@@ -10,6 +10,7 @@ import {
   type OpenOrbGitHubMediationOptions,
 } from "./github-mediation.ts";
 import { installGondolinTlsCompatibility } from "./tls-compatibility.ts";
+import { shellWaitTimeoutMs } from "./shell-timeout.ts";
 import {
   AGENT_WORKSPACE,
   type AgentEnvironment,
@@ -290,12 +291,11 @@ function makeGondolinEnvironment(
 
     const runShell: AgentEnvironment["runShell"] = Effect.fn("AgentEnvironment.runShell")(
       function* (command, options) {
+        const timeoutSeconds = options.timeoutSeconds;
+        const waitTimeoutMs = yield* shellWaitTimeoutMs(timeoutSeconds);
         if (options.signal?.aborted) return yield* aborted(options.signal.reason);
         const activeVm = yield* getVm;
         if (options.signal?.aborted) return yield* aborted(options.signal.reason);
-        const timeoutSeconds = options.timeoutSeconds && options.timeoutSeconds > 0
-          ? options.timeoutSeconds
-          : undefined;
         let waitTimedOut = false;
         const execution = yield* Effect.exit(Effect.tryPromise({
           try: async () => {
@@ -306,11 +306,11 @@ function makeGondolinEnvironment(
             cleanup.defer(() => options.signal?.removeEventListener("abort", abort));
             // Allow the guest's one-second kill grace plus one second for output draining.
             // Gondolin abort only abandons the host wait: surviving descendants are accepted.
-            if (timeoutSeconds !== undefined) {
+            if (waitTimeoutMs !== undefined) {
               const timer = setTimeout(() => {
                 waitTimedOut = true;
                 controller.abort();
-              }, (timeoutSeconds + 2) * 1000);
+              }, waitTimeoutMs);
               cleanup.defer(() => clearTimeout(timer));
             }
             // Guest process-group cleanup is best effort; never reset the VM for a timeout.
@@ -340,10 +340,10 @@ function makeGondolinEnvironment(
             new AgentEnvironmentError("Guest shell command execution failed.", cause),
         }));
         if (execution._tag === "Failure") {
-          if (waitTimedOut && timeoutSeconds !== undefined && !options.signal?.aborted) {
+          if (waitTimedOut && waitTimeoutMs !== undefined && !options.signal?.aborted) {
             return yield* new AgentEnvironmentError(
               `Stopped waiting after ${
-                timeoutSeconds + 2
+                waitTimeoutMs / 1000
               } seconds. The VM was preserved; command descendants may still be running.`,
               undefined,
             );
