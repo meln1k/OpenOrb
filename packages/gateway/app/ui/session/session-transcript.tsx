@@ -53,6 +53,8 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   const page = handle.context.get(SessionPageScope);
   let transcriptState = createSessionTranscriptState(page.projection.sessionState);
   let promptRequestPending = false;
+  // Optimistic keys live only in this transcript, not in the runner's history.
+  let nextOptimisticMessageId = 0;
   let abortPending = false;
   let actionError: string | undefined;
   let updateFrame: number | undefined;
@@ -259,7 +261,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
               const prompt = parseSafe(string(), formData.get("prompt"));
               if (!prompt.success || prompt.value.trim().length === 0) return;
 
-              const optimisticId = `optimistic:${crypto.randomUUID()}`;
+              const optimisticId = `optimistic:${nextOptimisticMessageId++}`;
               actionError = undefined;
               promptRequestPending = true;
               transcriptState = appendOptimisticUserMessage(
