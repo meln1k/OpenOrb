@@ -11,7 +11,7 @@ import { createTestServer } from "@/test/http-test-server.ts";
 const browserEndpoint = Deno.env.get("OPENORB_BROWSER_TEST_CDP");
 
 Deno.test({
-  name: "HTTP browser submits distinct optimistic prompts without crypto.randomUUID",
+  name: "HTTP browser isolates transcript state across session switches",
   ignore: browserEndpoint === undefined,
   async fn() {
     const { chromium } = await import("playwright");
@@ -23,9 +23,13 @@ Deno.test({
     const prompts: string[] = [];
     const csrfTokens: string[] = [];
     const sessionId = "browser-session";
+    const switchedSessionId = "switched-session";
     const messagePath = routes.app.sessions.message.href({ sessionId });
     const eventsPath = routes.api.sessions.events.href({ sessionId });
+    const switchedEventsPath = routes.api.sessions.events.href({ sessionId: switchedSessionId });
     let events: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let switchedEvents: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const switchedConnection = Promise.withResolvers<void>();
     let acknowledge: (() => void) | undefined;
     let received = Promise.withResolvers<void>();
     const uiHref = await assetServer.getHref(
@@ -36,18 +40,21 @@ Deno.test({
     );
     const html = `<!doctype html><html><body><div id="app"></div>
       <script type="module">
-        import { createRoot } from ${JSON.stringify(uiHref)};
+        import { createRoot, Fragment } from ${JSON.stringify(uiHref)};
         import { jsx } from ${JSON.stringify(jsxHref)};
         import { SessionPageScope } from "/assets/app/ui/session/session-page-controller.tsx";
         import { SessionTranscript } from "/assets/app/ui/session/session-transcript.tsx";
         const root = createRoot(document.getElementById("app"));
-        root.render(jsx(SessionPageScope, {
-          csrfToken: "browser-csrf", initialState: "stopped", initialIssues: [],
-          sessionId: "browser-session",
-          children: jsx(SessionTranscript, {
-            csrfToken: "browser-csrf", sessionId: "browser-session", contextWindow: 1000
-          })
+        globalThis.renderSession = (sessionId) => root.render(jsx(Fragment, {
+          children: jsx(SessionPageScope, {
+            csrfToken: "browser-csrf", initialState: "stopped", initialIssues: [],
+            sessionId,
+            children: jsx(SessionTranscript, {
+              csrfToken: "browser-csrf", sessionId, contextWindow: 1000
+            })
+          }, sessionId)
         }));
+        globalThis.renderSession("browser-session");
       </script></body></html>`;
     const server = await createTestServer(async (request) => {
       const path = new URL(request.url).pathname;
@@ -60,6 +67,24 @@ Deno.test({
             start(controller) {
               events = controller;
               controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+            },
+            cancel() {
+              events = undefined;
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      if (path === switchedEventsPath) {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              switchedEvents = controller;
+              controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+              switchedConnection.resolve();
+            },
+            cancel() {
+              switchedEvents = undefined;
             },
           }),
           { headers: { "Content-Type": "text/event-stream" } },
@@ -147,10 +172,30 @@ Deno.test({
         "Accepted HTTP continuation",
       ]);
       assertEquals(csrfTokens, ["browser-csrf", "browser-csrf", "browser-csrf"]);
+
+      await page.evaluate("globalThis.renderSession('switched-session')");
+      const connectionTimeout = setTimeout(
+        () => switchedConnection.reject(new Error("The switched session did not connect.")),
+        5000,
+      );
+      await switchedConnection.promise;
+      clearTimeout(connectionTimeout);
+      switchedEvents!.enqueue(new TextEncoder().encode(
+        `event: session\ndata: ${
+          JSON.stringify({
+            type: "user.message",
+            messageId: "switched-message",
+            text: "Switched session transcript",
+          })
+        }\n\n`,
+      ));
+      await page.getByText("Switched session transcript").waitFor();
+      assertEquals(await messages.allTextContents(), ["Switched session transcript"]);
       assertEquals(errors, []);
     } finally {
       acknowledge?.();
       events?.close();
+      switchedEvents?.close();
       await context.close();
       await browser.close();
       await server.close();

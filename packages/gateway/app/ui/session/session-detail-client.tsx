@@ -77,7 +77,7 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
 
     return () => {
       const sessionName = handle.props.session.initialPromptPreview || "Untitled session";
-      return (
+      const sessionPage = (
         <SessionPageScope
           key={handle.props.session.id}
           csrfToken={handle.props.csrfToken}
@@ -184,6 +184,7 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
           </SessionChangesScope>
         </SessionPageScope>
       );
+      return <>{sessionPage}</>;
     };
   },
 );
