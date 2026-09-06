@@ -16,7 +16,6 @@ import { media } from "@/app/ui/responsive.ts";
 import { SessionComposerBehavior } from "@/app/ui/session/session-composer-behavior.tsx";
 
 export interface SessionComposerValues {
-  sessionId: string;
   projectId: string;
   model: string;
   ref: string;
@@ -67,7 +66,6 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
     >
       <form method="post" action={routes.app.sessions.create.href()} mix={formStyle}>
         <input type="hidden" name="_csrf" value={csrfToken} />
-        <input type="hidden" name="sessionId" value={values?.sessionId ?? ""} />
         <input type="hidden" name="runnerId" value="" />
         <input type="hidden" name="ref" value={ref} />
         <input type="hidden" name="branchName" value={branchName} />

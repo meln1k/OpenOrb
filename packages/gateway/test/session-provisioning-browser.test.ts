@@ -266,6 +266,91 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   }
 }
 
+Deno.test("session composer creates a new server-assigned session on each submission without client initialization", async () => {
+  const store = await createTestStore();
+  const connections = new BrowserTestRunnerConnections();
+  const router = createAppRouter(createAppServices(store, connections));
+  const server = await createTestServer((request) => router.fetch(request));
+
+  try {
+    const client = await authenticate(server.baseUrl, store);
+    connections.workspaceId = client.workspaceId;
+    const project = await store.saveProject(client.workspaceId, {
+      name: "OpenOrb",
+      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
+    });
+    assert(project.status === "saved");
+    await store.saveGitHubCredential(client.workspaceId, GITHUB_TOKEN);
+    await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
+    await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+    connections.runnerId = (await enrollRunner(store, client.workspaceId)).runnerId;
+
+    const page = await fetch(new URL(routes.app.index.href(), server.baseUrl), {
+      headers: { Cookie: client.cookie },
+    });
+    assertEquals(page.status, 200);
+    const html = await page.text();
+    const composer = html.match(/<dialog[^>]*id="openorb-new-session"[^>]*>([\s\S]*?)<\/dialog>/);
+    assert(composer, "expected the session creation modal");
+    const form = composer[1]!.match(/<form[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/);
+    assert(form, "expected the session creation form");
+    assertEquals(form[1], routes.app.sessions.create.href());
+
+    // Preserve SSR hidden fields, as a submission without SessionComposerBehavior would.
+    const body = new URLSearchParams();
+    for (
+      const field of form[2]!.matchAll(
+        /<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g,
+      )
+    ) {
+      body.set(field[1]!, field[2]!);
+    }
+    assertNotMatch(form[2]!, /name="sessionId"/);
+    assertEquals(body.has("sessionId"), false);
+    assert(body.get("_csrf"), "expected the rendered CSRF token");
+    body.set("projectId", project.project.id);
+    body.set("model", MODEL);
+    body.set("orbSize", "medium");
+    body.set("initialPrompt", INITIAL_PROMPT);
+
+    const response = await fetch(new URL(form[1]!, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body,
+    });
+    await response.text();
+    assertEquals(response.status, 303);
+    assertEquals(connections.provisions.length, 1);
+    const firstSessionId = connections.provisions[0]!.sessionId;
+    assertEquals(
+      response.headers.get("location"),
+      routes.app.sessions.detail.href({ sessionId: firstSessionId }),
+    );
+
+    // A stale client-supplied ID cannot select or reuse an existing session.
+    body.set("sessionId", firstSessionId);
+    const secondResponse = await fetch(new URL(form[1]!, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body,
+    });
+    await secondResponse.text();
+    assertEquals(secondResponse.status, 303);
+    assertEquals(connections.provisions.length, 2);
+    const sessionId = connections.provisions[1]!.sessionId;
+    assert(sessionId !== firstSessionId);
+    assertEquals(
+      secondResponse.headers.get("location"),
+      routes.app.sessions.detail.href({ sessionId }),
+    );
+  } finally {
+    await server.close();
+    await store.close();
+  }
+});
+
 Deno.test("browser form waits for runner acceptance before cataloging and keeps token memory-only", async () => {
   const store = await createTestStore();
   const connections = new BrowserTestRunnerConnections();
@@ -325,7 +410,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(createHtml, /large · 8 CPUs · 16 GB memory/);
     assertMatch(createHtml, /xxlarge · 16 CPUs · 32 GB memory/);
     assertNotMatch(createHtml, /aria-label="Runner"/);
-    assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="sessionId"[^>]*value=""/);
+    assertNotMatch(createHtml, /name="sessionId"/);
     assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="runnerId"[^>]*value=""/);
     assertMatch(createHtml, /aria-label="Orb size"/);
     assertMatch(createHtml, /aria-keyshortcuts="Enter"/);
@@ -358,11 +443,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(response.status, 303);
     const location = response.headers.get("location");
     assert(location);
-    assertEquals(location, routes.app.sessions.detail.href({ sessionId: composerSessionId }));
-
     const provision = connections.provisions[0];
     assert(provision?.payload.mode === "create");
-    assertEquals(provision.sessionId, composerSessionId);
+    assert(provision.sessionId !== composerSessionId);
+    assertEquals(location, routes.app.sessions.detail.href({ sessionId: provision.sessionId }));
     assertEquals(provision.runnerId, connections.runnerId);
     assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
     assertEquals(
@@ -1113,7 +1197,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     const foreignHtml = await foreign.text();
     assertMatch(foreignHtml, /<dialog[^>]*id="openorb-new-session"[^>]* open/);
     assertMatch(foreignHtml, /Project is unavailable or does not exist/);
-    assertEquals(sessionIdFrom(foreignHtml), composerSessionId);
+    assertNotMatch(foreignHtml, /name="sessionId"/);
     assertEquals(connections.provisions.length, 0);
 
     const unsupportedProvider = await submitSession(server.baseUrl, client.cookie, {
@@ -1195,7 +1279,11 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     assertEquals(alternateProvider.status, 303);
     const alternateProvision = connections.provisions[0];
     assert(alternateProvision?.payload.mode === "create");
-    assertEquals(alternateProvision.sessionId, composerSessionId);
+    assert(alternateProvision.sessionId !== composerSessionId);
+    assertEquals(
+      alternateProvider.headers.get("location"),
+      routes.app.sessions.detail.href({ sessionId: alternateProvision.sessionId }),
+    );
     assertEquals(
       alternateProvision.payload.modelRuntime,
       new SessionModelRuntime({
@@ -1448,12 +1536,6 @@ function csrfFrom(html: string): string {
   return match[1]!;
 }
 
-function sessionIdFrom(html: string): string {
-  const match = html.match(/name="sessionId" value="([^"]+)"/);
-  assert(match, "expected a session ID form field");
-  return match[1]!;
-}
-
 function deletionSnapshot(
   sessionId: string,
   projectId: string,
@@ -1495,7 +1577,7 @@ function submitSession(
     method: "POST",
     redirect: "manual",
     headers: { Cookie: cookie },
-    body: new URLSearchParams({ sessionId: crypto.randomUUID(), orbSize: "medium", ...body }),
+    body: new URLSearchParams({ orbSize: "medium", ...body }),
   });
 }
 

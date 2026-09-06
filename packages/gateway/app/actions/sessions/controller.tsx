@@ -48,7 +48,6 @@ const promptSchema = s.string().refine(
 );
 
 const createSessionSchema = f.object({
-  sessionId: f.field(sessionIdSchema),
   projectId: f.field(projectIdSchema),
   model: f.field(modelReferenceSchema),
   ref: f.field(sessionGitRefSchema),
@@ -168,7 +167,7 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      const sessionId = parsed.value.sessionId;
+      const sessionId = crypto.randomUUID();
       const provisioned = await Effect.runPromise(
         context.services.runnerConnections.provisionSession({
           workspaceId,
@@ -587,7 +586,6 @@ function parseSessionId(value: string): string | null {
 
 function submittedValues(formData: FormData): SessionComposerValues {
   return {
-    sessionId: stringField(formData, "sessionId"),
     projectId: stringField(formData, "projectId"),
     model: stringField(formData, "model"),
     ref: stringField(formData, "ref"),
