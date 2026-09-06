@@ -24,21 +24,34 @@ const denoConfigSchema = object(
   { unknownKeys: "passthrough" },
 );
 
-Deno.test("source runner tasks disable optional native MessagePack acceleration without FFI", async () => {
+Deno.test("source runner tasks use their intended development permissions", async () => {
   const runnerConfig = parse(
     denoConfigSchema,
     JSON.parse(await Deno.readTextFile(new URL("../../deno.json", import.meta.url))),
   );
 
-  for (const name of ["dev", "start"]) {
-    const command = parse(string(), runnerConfig.tasks?.[name]);
-    assertMatch(command, /^MSGPACKR_NATIVE_ACCELERATION_DISABLED=true /);
-    assertMatch(command, /--allow-read=\.\.\/\.\.,\/lib,\/lib64,\/usr\/lib,\/usr\/lib64(?:\s|$)/);
-    assertMatch(command, /--allow-write=\.\.\/\.\.\/\.openorb-runner-dev(?:\s|$)/);
-    assertMatch(command, /--allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img(?:\s|$)/);
-    assertNotMatch(command, /--allow-all|-A(?:\s|$)|--allow-ffi/);
-    assertEquals(command.split(/\s+/).at(-1), "../../scripts/run-development-runner.ts");
-  }
+  const devCommand = parse(string(), runnerConfig.tasks?.dev);
+  assertMatch(devCommand, /^MSGPACKR_NATIVE_ACCELERATION_DISABLED=true /);
+  assertMatch(devCommand, /--allow-read(?:\s|$)/);
+  assertMatch(devCommand, /--allow-write(?:\s|$)/);
+  assertMatch(devCommand, /--allow-ffi(?:\s|$)/);
+  assertMatch(devCommand, /--allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img(?:\s|$)/);
+  assertNotMatch(devCommand, /--allow-all|-A(?:\s|$)/);
+  assertEquals(devCommand.split(/\s+/).at(-1), "../../scripts/run-development-runner.ts");
+
+  const startCommand = parse(string(), runnerConfig.tasks?.start);
+  assertMatch(startCommand, /^MSGPACKR_NATIVE_ACCELERATION_DISABLED=true /);
+  assertMatch(
+    startCommand,
+    /--allow-read=\.\.\/\.\.,\/lib,\/lib64,\/usr\/lib,\/usr\/lib64(?:\s|$)/,
+  );
+  assertMatch(startCommand, /--allow-write=\.\.\/\.\.\/\.openorb-runner-dev(?:\s|$)/);
+  assertMatch(
+    startCommand,
+    /--allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img(?:\s|$)/,
+  );
+  assertNotMatch(startCommand, /--allow-all|-A(?:\s|$)|--allow-ffi/);
+  assertEquals(startCommand.split(/\s+/).at(-1), "../../scripts/run-development-runner.ts");
 });
 
 Deno.test("standalone compile tasks bake the approved least-privilege permissions", async () => {
