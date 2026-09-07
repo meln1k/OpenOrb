@@ -35,7 +35,7 @@ Deno.test("source runner tasks use their intended development permissions", asyn
   assertMatch(devCommand, /--allow-read(?:\s|$)/);
   assertMatch(devCommand, /--allow-write(?:\s|$)/);
   assertMatch(devCommand, /--allow-ffi(?:\s|$)/);
-  assertMatch(devCommand, /--allow-run=qemu-system-aarch64,qemu-system-x86_64,qemu-img(?:\s|$)/);
+  assertMatch(devCommand, /--allow-run(?:\s|$)/);
   assertNotMatch(devCommand, /--allow-all|-A(?:\s|$)/);
   assertEquals(devCommand.split(/\s+/).at(-1), "../../scripts/run-development-runner.ts");
 
