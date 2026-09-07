@@ -816,11 +816,11 @@ For the MVP, the project-resource allowlist is deliberately empty. The loader re
 - No prompt templates
 - No themes
 - No agent/context files
-- No append-system-prompt fragments
+- No externally discovered system-prompt fragments
 - No project system-prompt override
 - No package resources
 
-The only system prompt is trusted OpenOrb-owned static text plus explicit gateway configuration. It is created without reading the workspace.
+An OpenOrb-owned builder creates a trusted Pi-style system prompt without reading the workspace. It preserves Pi's normal role, configured-tool inventory, and tool guidance, but omits Pi self-documentation instructions because their runner-host package paths are unavailable to guest-backed tools. OpenOrb-owned environment, checkpoint lifecycle, and Git policy follow the Pi-style base prompt. The prompt explains that Pi runs outside Gondolin, all provided filesystem and shell tools target the guest, `/workspace` persists independently, and checkpoint resume does not restore RAM, processes, or tmpfs-backed paths.
 
 The implementation should structurally resemble:
 
@@ -837,7 +837,7 @@ const resourceLoader: ResourceLoader = {
   getPrompts: () => ({ prompts: [], diagnostics: [] }),
   getThemes: () => ({ themes: [], diagnostics: [] }),
   getAgentsFiles: () => ({ agentsFiles: [] }),
-  getSystemPrompt: () => trustedOpenOrbSystemPrompt,
+  getSystemPrompt: () => buildTrustedOpenOrbPiStylePrompt(configuredTools),
   getSystemPromptSource: () => undefined,
   getAppendSystemPrompt: () => [],
   getAppendSystemPromptSources: () => [],

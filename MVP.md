@@ -456,10 +456,10 @@ This security rule remains mandatory even in the lean MVP:
 
 - Never use `DefaultResourceLoader` against the workspace.
 - Use one audited `OpenOrbPiSessionFactory`.
-- Pass an explicit `ResourceLoader` returning no project extensions, packages, skills, prompts, themes, agent files, or appended system prompts.
+- Pass an explicit `ResourceLoader` returning no project extensions, packages, skills, prompts, themes, agent files, or externally discovered system-prompt fragments.
 - Use `SettingsManager.inMemory(...)`.
 - Never load `.pi/settings.json` or global Pi settings.
-- Use only the trusted OpenOrb system prompt.
+- Use an OpenOrb-owned Pi-style prompt builder that preserves Pi's normal role, configured-tool inventory, and tool guidance, omits Pi self-documentation instructions whose runner-host paths are unavailable to guest-backed tools, and appends trusted OpenOrb environment, lifecycle, and Git policy.
 - Project files may be inspected by the model only through Gondolin-backed tools.
 
 ### Model credentials
@@ -548,6 +548,9 @@ The gateway requires a per-user Git author name and email. It resolves the authe
 
 The trusted OpenOrb system prompt instructs the agent:
 
+- Pi runs in the trusted runner process outside the Gondolin guest, while all provided filesystem and shell tools operate on the guest.
+- Relative paths start at `/workspace`; guest root-disk and workspace state persist across checkpoint resume, but RAM, processes, and tmpfs-backed paths do not.
+- A VM can stop only while the agent is idle, and an executable `.agents/resume` hook runs before the next prompt after checkpoint resume.
 - Commit/push only when explicitly requested.
 - Use the session branch.
 - Never force-push.

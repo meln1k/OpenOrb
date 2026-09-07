@@ -24,7 +24,7 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 );
 const REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 const BRANCH_NAME = "openorb/pi-session-test";
-const SYSTEM_PROMPT = createOpenOrbSystemPrompt(REPOSITORY_URL, BRANCH_NAME);
+const SYSTEM_PROMPT = createOpenOrbSystemPrompt(REPOSITORY_URL, BRANCH_NAME, []);
 const CONVERSATION_PROJECTION = {
   activate: () => Effect.succeed({ update() {}, dispose() {} }),
 };
@@ -32,12 +32,36 @@ const RUN_REAL_MODEL_TEST = Deno.env.get("OPENORB_RUN_PI_MODEL_TESTS") === "1";
 const REAL_MODEL_API_KEY = Deno.env.get("OPENCODE_API_KEY");
 
 Deno.test("trusted prompt requires an explicit request and pins safe Git destinations", () => {
+  assert(SYSTEM_PROMPT.includes("expert coding assistant operating inside pi"));
+  assert(SYSTEM_PROMPT.includes("Available tools:\n(none)"));
+  assert(SYSTEM_PROMPT.includes("Use only the tools provided by OpenOrb"));
+  assert(SYSTEM_PROMPT.includes("Pi runs in the trusted OpenOrb runner"));
+  assert(SYSTEM_PROMPT.includes("cannot access the runner host"));
+  assert(SYSTEM_PROMPT.includes("Do not attempt to stop, checkpoint, or resume the VM yourself"));
+  assert(SYSTEM_PROMPT.includes("only after agent and tool activity has finished"));
+  assert(SYSTEM_PROMPT.includes("but not RAM or running processes"));
+  assert(SYSTEM_PROMPT.includes(".agents/resume"));
   assert(SYSTEM_PROMPT.includes("only when the user explicitly requests that operation"));
   assert(SYSTEM_PROMPT.includes(JSON.stringify(REPOSITORY_URL)));
   assert(SYSTEM_PROMPT.includes(JSON.stringify(BRANCH_NAME)));
   assert(SYSTEM_PROMPT.includes("Preserve existing commits"));
   assert(SYSTEM_PROMPT.includes("Never force-push"));
+  assert(!SYSTEM_PROMPT.includes("Pi documentation"));
   assert(!SYSTEM_PROMPT.includes("Push the changes now"));
+});
+
+Deno.test("trusted prompt derives Pi-style inventory and guidance from configured tools", () => {
+  const prompt = createOpenOrbSystemPrompt(REPOSITORY_URL, BRANCH_NAME, [
+    { name: "read", promptSnippet: "Read guest files", promptGuidelines: ["Read carefully"] },
+    { name: "bash", promptSnippet: "Run guest commands", promptGuidelines: ["Read carefully"] },
+    { name: "hidden" },
+  ]);
+
+  assert(prompt.includes("- read: Read guest files"));
+  assert(prompt.includes("- bash: Run guest commands"));
+  assert(!prompt.includes("- hidden:"));
+  assert(prompt.includes("- Use bash for file operations like ls, rg, find"));
+  assertEquals(prompt.match(/- Read carefully/g)?.length, 1);
 });
 
 Deno.test("SessionManager observer runs post-write for every durable conversation append", async () => {
@@ -178,6 +202,8 @@ Deno.test("the factory allowlists supplied tools without enabling Pi host tools"
     name: "guest-test",
     label: "Guest test",
     description: "A test stand-in for a Gondolin-backed tool",
+    promptSnippet: "Exercise a guest-only test operation",
+    promptGuidelines: ["Keep test operations inside the guest"],
     parameters: Type.Object({}),
     execute: () => Promise.resolve({ content: [{ type: "text", text: "guest" }], details: {} }),
   });
@@ -202,6 +228,11 @@ Deno.test("the factory allowlists supplied tools without enabling Pi host tools"
         result.session.getAllTools().map((tool) => tool.name),
         ["guest-test"],
       );
+      assert(result.session.systemPrompt.includes(
+        "- guest-test: Exercise a guest-only test operation",
+      ));
+      assert(result.session.systemPrompt.includes("- Keep test operations inside the guest"));
+      assert(!result.session.systemPrompt.includes("Pi documentation"));
       assert(!(await Deno.readTextFile(sessionFile)).includes(MODEL_RUNTIME.credential.value));
       assertEquals(await pathExists(`${agentDirectory}/auth.json`), false);
     } finally {

@@ -10,14 +10,16 @@ Every OpenOrb Pi session is created through one audited factory that cannot disc
 ## Scope
 
 - Implement `OpenOrbPiSessionFactory` using the current Pi SDK.
-- Supply an explicit empty `ResourceLoader`, fresh empty extension runtime, trusted OpenOrb system prompt, and `SettingsManager.inMemory(...)`.
+- Supply an explicit empty `ResourceLoader`, fresh empty extension runtime, OpenOrb's trusted Pi-style system-prompt builder, and `SettingsManager.inMemory(...)`.
+- Preserve Pi's normal role, configured-tool inventory, and tool guidance, but omit Pi self-documentation instructions whose runner-host paths are unavailable to guest-backed tools. Append trusted OpenOrb environment, lifecycle, and Git policy.
 - Put Pi session/model metadata in runner-owned locations outside the workspace.
 - Add static restrictions that forbid `DefaultResourceLoader`, file-backed `SettingsManager.create(...)`, and direct Pi session construction outside the factory in runner/session code.
 - Build a hostile fixture containing workspace/global settings, extensions, packages, prompts, skills, themes, context files, and system-prompt fragments.
 
 ## Acceptance criteria
 
-- A session over the hostile fixture returns only trusted OpenOrb resources and system prompt.
+- A session over the hostile fixture returns only trusted OpenOrb resources and the OpenOrb-built Pi-style system prompt.
+- The prompt describes the configured tools and guest lifecycle without exposing unusable Pi runner-host documentation paths.
 - No hostile module is imported or initialized on the host.
 - Global Pi configuration/auth files are not read for session configuration.
 - Omitting either the resource loader or settings manager is structurally prevented in runner session code.

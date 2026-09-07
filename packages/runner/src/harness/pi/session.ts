@@ -22,9 +22,58 @@ import { eventsFromPiEntries } from "./history.ts";
 
 export const OPENORB_GUEST_WORKSPACE = "/workspace";
 
-export function createOpenOrbSystemPrompt(repositoryUrl: string, branchName: string): string {
+type PromptTool = Pick<ToolDefinition, "name" | "promptSnippet" | "promptGuidelines">;
+
+export function createOpenOrbSystemPrompt(
+  repositoryUrl: string,
+  branchName: string,
+  tools: readonly PromptTool[],
+): string {
+  const toolSnippets = tools.flatMap((tool) => {
+    const snippet = tool.promptSnippet?.trim();
+    return snippet ? [`- ${tool.name}: ${snippet}`] : [];
+  });
+  const toolNames = new Set(tools.map((tool) => tool.name));
+  const guidelines = new Set<string>();
+  if (
+    toolNames.has("bash") &&
+    !toolNames.has("grep") &&
+    !toolNames.has("find") &&
+    !toolNames.has("ls")
+  ) {
+    guidelines.add("Use bash for file operations like ls, rg, find");
+  }
+  for (const tool of tools) {
+    for (const guideline of tool.promptGuidelines ?? []) {
+      const normalized = guideline.trim();
+      if (normalized) guidelines.add(normalized);
+    }
+  }
+  guidelines.add("Be concise in your responses");
+  guidelines.add("Show file paths clearly when working with files");
+
   return [
-    "You are OpenOrb's coding agent. Use only the tools provided by OpenOrb.",
+    "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
+    "",
+    "Available tools:",
+    toolSnippets.length > 0 ? toolSnippets.join("\n") : "(none)",
+    "",
+    "Use only the tools provided by OpenOrb.",
+    "",
+    "Guidelines:",
+    ...Array.from(guidelines, (guideline) => `- ${guideline}`),
+    "",
+    "OpenOrb environment:",
+    "- Pi runs in the trusted OpenOrb runner outside the Gondolin guest VM.",
+    "- Filesystem and shell tools operate exclusively on the guest; they cannot access the runner host, Pi installation, configuration, or host filesystem.",
+    `- Relative paths resolve from ${OPENORB_GUEST_WORKSPACE}. Absolute paths refer to the guest filesystem.`,
+    `- ${OPENORB_GUEST_WORKSPACE} contains the persistent repository checkout and is the only guest path included in Git change review.`,
+    "- OpenOrb manages the VM lifecycle. Do not attempt to stop, checkpoint, or resume the VM yourself.",
+    "- OpenOrb may checkpoint and stop the VM only after agent and tool activity has finished. It resumes the VM before dispatching another prompt.",
+    `- A successful stop and resume preserves the guest root disk, ${OPENORB_GUEST_WORKSPACE}, and the Pi conversation, but not RAM or running processes.`,
+    "- Temporary filesystems, including /root, /tmp, and /var/log, do not survive stop and resume.",
+    "- Do not rely on background processes surviving stop and resume. If the project provides an executable .agents/resume hook, OpenOrb runs it before dispatching the next prompt.",
+    "",
     "Follow this trusted Git policy:",
     "- Create commits or push them only when the user explicitly requests that operation.",
     `- Keep all work on the session branch ${
@@ -94,7 +143,8 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
       getPrompts: () => ({ prompts: [], diagnostics: [] }),
       getThemes: () => ({ themes: [], diagnostics: [] }),
       getAgentsFiles: () => ({ agentsFiles: [] }),
-      getSystemPrompt: () => createOpenOrbSystemPrompt(options.repositoryUrl, options.branchName),
+      getSystemPrompt: () =>
+        createOpenOrbSystemPrompt(options.repositoryUrl, options.branchName, options.tools),
       getSystemPromptSource: () => undefined,
       getAppendSystemPrompt: () => [],
       getAppendSystemPromptSources: () => [],
