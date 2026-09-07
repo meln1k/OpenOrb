@@ -55,6 +55,7 @@ import {
   type SessionActorInput,
 } from "../../src/session/actor/index.ts";
 import { makeSessionFixture, type SessionFixture } from "./session-fixture.ts";
+import { recoverSessionState } from "../../src/session/actor/state.ts";
 
 const platformLayer = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
 
@@ -1396,6 +1397,86 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
   }
 });
 
+for (const failure of ["open", "start", "run"] as const) {
+  Deno.test(`first Pi ${failure} failure retains the environment and accepts another prompt`, async () => {
+    const directory = await Deno.makeTempDir();
+    try {
+      const store = await makeStore(directory);
+      const environment = new FakeEnvironment();
+      const prompts: string[] = [];
+      let openAttempts = 0;
+      let failed = false;
+      const createPiSession: CreateRawPiSession = (options) => {
+        openAttempts++;
+        if (failure === "open" && !failed) {
+          failed = true;
+          return Effect.fail(
+            new AgentHarnessError("Injected model-secret open failure.", undefined),
+          );
+        }
+        return createSettlingPiSession(options).pipe(Effect.map((created) => ({
+          session: {
+            ...created.session,
+            prompt: async (input, promptOptions) => {
+              prompts.push(input);
+              if (!failed) {
+                failed = true;
+                promptOptions?.preflightResult?.(failure === "run");
+                throw new Error("Injected model-secret prompt failure.");
+              }
+              await created.session.prompt(input, promptOptions);
+            },
+          },
+        })));
+      };
+      await withSupervisor(
+        { cpuCount: 4, memoryMiB: 8192, createPiSession },
+        store,
+        fakeEnvironmentProvider(environment),
+        async (supervisor, events) => {
+          await Effect.runPromise(supervisor.provision(
+            createProvisionPayload(`openorb/first-${failure}-failure-test`),
+          ));
+          const { issue, state } = await waitForVisibleIssue(
+            events,
+            SESSION_ID,
+            "model",
+            "model run failed",
+          );
+          assertEquals(state.stage, "ready");
+          assertEquals(issue.severity, "warning");
+          assertEquals(issue.recovery, "none");
+          assert(!JSON.stringify(issue).includes("model-secret"));
+          await waitForState(store, "ready");
+          assertEquals(environment.closed, false);
+          assertEquals(prompts, failure === "open" ? [] : ["Inspect the repository"]);
+          const commandsBeforeRetry = environment.commands.length;
+          const reply = await Effect.runPromise(
+            requireActor(supervisor).prompt(promptPayload("Continue")),
+          );
+          assert(reply.ok);
+          assertEquals(reply.mode, "started");
+          await waitForState(store, "ready");
+          assertEquals(
+            prompts,
+            failure === "open" ? ["Continue"] : ["Inspect the repository", "Continue"],
+          );
+          assertEquals(openAttempts, failure === "run" ? 1 : 2);
+          assertEquals(environment.closed, false);
+          assert(
+            !environment.commands.slice(commandsBeforeRetry).some((command) =>
+              command[1] === "clone" ||
+              command.some((argument) => argument.includes(".agents/setup"))
+            ),
+          );
+        },
+      );
+    } finally {
+      await Deno.remove(directory, { recursive: true });
+    }
+  });
+}
+
 Deno.test("failed Pi opens are visible and leave a Git-only restore retryable", async () => {
   const directory = await Deno.makeTempDir();
   try {
@@ -1547,7 +1628,7 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
       "01989d78-65ee-7f6a-a97e-0f16ad134c16",
     );
     await Effect.runPromise(store.session.appendAll(ids.promptRun, [
-      { type: "run.requested", runId: promptRunId, purpose: "prompt", issues: [] },
+      { type: "run.requested", runId: promptRunId, issues: [] },
       {
         type: "run.started",
         runId: promptRunId,
@@ -2078,7 +2159,7 @@ function createSettlingPiSession(_options: OpenOrbPiSessionOptions) {
 }
 
 async function waitForState(
-  store: RunnerSessionStoreService,
+  store: TestStore,
   state: "ready" | "running" | "stopped" | "error",
   timeoutMs = 1_000,
 ) {
@@ -2087,7 +2168,12 @@ async function waitForState(
   while (Date.now() < deadline) {
     const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
     currentState = metadata.state;
-    if (metadata.state === state) return;
+    if (metadata.state === state) {
+      const recovered = await Effect.runPromise(
+        recoverSessionState(SESSION_ID).pipe(Effect.provideService(Journal, store.journal)),
+      );
+      if (state !== "ready" || recovered.phase._tag === "Ready") return;
+    }
     if (metadata.state === "error" && state !== "error") {
       throw new Error("Session provisioning failed.");
     }

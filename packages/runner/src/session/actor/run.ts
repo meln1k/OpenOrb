@@ -89,7 +89,6 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     persist({
       type: "run.requested",
       runId,
-      purpose: completion._tag === "Provisioning" ? "initial" : "prompt",
       issues,
     }, () =>
       start(
@@ -246,8 +245,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
         ),
       );
     }
-    const initial = state.phase.purpose === "initial";
-    const issue = modelIssue(command.error, command.completion, initial);
+    const issue = modelIssue(command.error, command.completion);
     return Effect.succeed(
       persist(
         { type: "run.start-failed", runId: command.runId, issue },
@@ -255,19 +253,17 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
           closeOpenedSession(command.openedAgentSession).pipe(
             Effect.andThen(runtime.updateStatus(runtime.get().environment !== undefined)),
             Effect.andThen(
-              initial
-                ? reportInitialFailure(next, command.completion, command.error)
-                : reporter.emitState(sessionMetadata(next), "ready", command.runId).pipe(
-                  Effect.orDie,
-                  Effect.andThen(
-                    command.completion._tag === "Prompt"
-                      ? Deferred.succeed(command.completion.reply, {
-                        ok: false,
-                        message: "The agent prompt could not be started. Try again.",
-                      }).pipe(Effect.asVoid)
-                      : Effect.void,
-                  ),
+              reporter.emitState(sessionMetadata(next), "ready", command.runId).pipe(
+                Effect.orDie,
+                Effect.andThen(
+                  command.completion._tag === "Prompt"
+                    ? Deferred.succeed(command.completion.reply, {
+                      ok: false,
+                      message: "The agent prompt could not be started. Try again.",
+                    }).pipe(Effect.asVoid)
+                    : Effect.void,
                 ),
+              ),
             ),
           ),
       ),
@@ -278,24 +274,21 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     if (state.phase._tag !== "Running" || state.phase.runId !== command.runId) {
       return Effect.succeed(none());
     }
-    const initialFailure = command.error !== undefined && state.phase.purpose === "initial";
     return Effect.succeed(persist(
       command.error === undefined ? { type: "run.completed", runId: command.runId } : {
         type: "run.failed",
         runId: command.runId,
-        issue: modelIssue(command.error, command.completion, initialFailure),
+        issue: modelIssue(command.error, command.completion),
       },
       (next) =>
         runtime.clearActiveRun.pipe(
           Effect.andThen(runtime.updateStatus(runtime.get().environment !== undefined)),
           Effect.andThen(
-            initialFailure
-              ? reportInitialFailure(next, command.completion, command.error!)
-              : reporter.emitState(
-                sessionMetadata(next),
-                "ready",
-                command.runId,
-              ).pipe(Effect.orDie),
+            reporter.emitState(
+              sessionMetadata(next),
+              "ready",
+              command.runId,
+            ).pipe(Effect.orDie),
           ),
         ),
     ));
@@ -477,35 +470,6 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     return openedAgentSession === undefined ? Effect.void : agentRuntime.close(openedAgentSession);
   }
 
-  function reportInitialFailure(
-    state: SessionState,
-    completion: RunCompletion,
-    error: unknown,
-  ): Effect.Effect<void, never> {
-    if (completion._tag !== "Provisioning") return Effect.void;
-    return reporter.emitState(
-      sessionMetadata(state),
-      "failed",
-      completion.correlationId,
-    ).pipe(
-      Effect.orDie,
-      Effect.andThen(
-        Effect.logError("provision.failed").pipe(Effect.annotateLogs({
-          component: "openorb-runner",
-          sessionId: state.data.id,
-          runnerId: state.data.runnerId,
-        })),
-      ),
-      Effect.andThen(
-        reporter.emitLog(
-          completion.correlationId,
-          "stderr",
-          `Provisioning failed: ${redactedErrorMessage(error, completion.logBudget.secrets)}\n`,
-        ).pipe(Effect.orDie),
-      ),
-    );
-  }
-
   return {
     request,
     start,
@@ -524,18 +488,16 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
 function modelIssue(
   error: unknown,
   completion: RunCompletion,
-  initial: boolean,
 ): SessionIssue {
   return makeSessionIssue({
     category: "model",
-    severity: initial ? "failure" : "warning",
-    message: initial
-      ? "The model failed before the initial prompt completed. Retry provisioning explicitly."
-      : "The model run failed. OpenOrb did not replay the prompt; review the transcript before deciding whether to send another prompt.",
+    severity: "warning",
+    message:
+      "The model run failed. OpenOrb did not replay the prompt; review the transcript before deciding whether to send another prompt.",
     diagnostics: completion._tag === "Provisioning"
       ? redactedErrorMessage(error, completion.logBudget.secrets)
       : undefined,
-    recovery: initial ? "retry-provisioning" : "none",
+    recovery: "none",
   });
 }
 

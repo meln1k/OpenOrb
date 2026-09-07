@@ -20,7 +20,6 @@ import type { RunnerSessionDefinition } from "../definition.ts";
 import {
   type PersistedRestorationIntent,
   type RunnerSessionCheckpointMetadata,
-  type RunPurpose,
   SessionEvent,
   type SessionEvent as SessionEventType,
 } from "./events.ts";
@@ -72,12 +71,10 @@ export type SessionPhase =
   | ({
     readonly _tag: "StartingRun";
     readonly runId: RunId;
-    readonly purpose: RunPurpose;
   } & CheckpointRetainingPhase)
   | ({
     readonly _tag: "Running";
     readonly runId: RunId;
-    readonly purpose: RunPurpose;
     readonly followUp: FollowUpPhase;
     readonly abort: AbortPhase;
   } & CheckpointRetainingPhase)
@@ -147,7 +144,7 @@ export function publicSessionState(phase: SessionPhase): RunnerSessionState {
     case "Provisioning":
       return "provisioning";
     case "StartingRun":
-      return phase.purpose === "initial" ? "provisioning" : "ready";
+      return "ready";
     case "Running":
       return "running";
     case "Ready":
@@ -249,16 +246,13 @@ export function applySessionEvent(
         }
         : current;
     case "run.requested": {
-      const allowed = event.purpose === "initial"
-        ? phase._tag === "Provisioning"
-        : phase._tag === "Ready";
+      const allowed = phase._tag === "Provisioning" || phase._tag === "Ready";
       return allowed
         ? {
           data: withIssues(data, event.issues),
           phase: {
             _tag: "StartingRun",
             runId: event.runId,
-            purpose: event.purpose,
             ...retainedCheckpoint(phase),
           },
         }
@@ -271,7 +265,6 @@ export function applySessionEvent(
           phase: {
             _tag: "Running",
             runId: phase.runId,
-            purpose: phase.purpose,
             followUp: { _tag: "Idle" },
             abort: { _tag: "Idle" },
             ...retainedCheckpoint(phase),
@@ -280,7 +273,7 @@ export function applySessionEvent(
         : current;
     case "run.start-failed":
       return phase._tag === "StartingRun" && phase.runId === event.runId
-        ? finishRun(withIssues(data, [event.issue]), phase, phase.purpose === "initial")
+        ? finishRun(withIssues(data, [event.issue]), phase)
         : current;
     case "follow-up.requested":
       return phase._tag === "Running" && phase.runId === event.runId &&
@@ -334,12 +327,11 @@ export function applySessionEvent(
             issues: clearIssueCategories(data.issues, ["model", "operation-uncertain"]),
           },
           phase,
-          false,
         )
         : current;
     case "run.failed":
       return phase._tag === "Running" && phase.runId === event.runId
-        ? finishRun(withIssues(data, [event.issue]), phase, phase.purpose === "initial")
+        ? finishRun(withIssues(data, [event.issue]), phase)
         : current;
     case "run.interrupted":
       return (phase._tag === "StartingRun" || phase._tag === "Running") &&
@@ -397,7 +389,6 @@ export function applySessionEvent(
           phase: {
             _tag: "StartingRun",
             runId: phase.intent.continuation.runId,
-            purpose: "prompt",
             ...retainedCheckpoint(phase),
           },
         };
@@ -467,12 +458,11 @@ function retainedCheckpoint(
 function finishRun(
   data: SessionData,
   phase: Extract<SessionPhase, { readonly _tag: "StartingRun" | "Running" }>,
-  failed: boolean,
 ): SessionState {
   return {
     data,
     phase: {
-      _tag: failed ? "Failed" : "Ready",
+      _tag: "Ready",
       ...retainedCheckpoint(phase),
     },
   };

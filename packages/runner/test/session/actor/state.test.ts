@@ -49,7 +49,7 @@ const checkpoint = {
 };
 const modelIssue = {
   category: "model" as const,
-  severity: "failure" as const,
+  severity: "warning" as const,
   message: "The model operation failed.",
   recovery: "none" as const,
 };
@@ -76,13 +76,11 @@ Deno.test("session facts drive explicit run phases", () => {
   state = applySessionEvent(state, {
     type: "run.requested",
     runId: RUN_ID,
-    purpose: "initial",
     issues: [],
   })!;
   assertEquals(state.phase, {
     _tag: "StartingRun",
     runId: RUN_ID,
-    purpose: "initial",
   });
 
   state = applySessionEvent(state, {
@@ -93,7 +91,6 @@ Deno.test("session facts drive explicit run phases", () => {
   assertEquals(state.phase, {
     _tag: "Running",
     runId: RUN_ID,
-    purpose: "initial",
     followUp: { _tag: "Idle" },
     abort: { _tag: "Idle" },
   });
@@ -117,7 +114,7 @@ Deno.test("session facts drive explicit run phases", () => {
 Deno.test("stale correlated facts are harmless no-ops", () => {
   const running = applyAll([
     ...readyEvents(),
-    { type: "run.requested", runId: RUN_ID, purpose: "prompt", issues: [] },
+    { type: "run.requested", runId: RUN_ID, issues: [] },
     { type: "run.started", runId: RUN_ID, acceptedAt: "2026-08-17T12:15:00Z" },
     { type: "follow-up.requested", runId: RUN_ID, followUpId: FOLLOW_UP_ID },
   ]);
@@ -141,7 +138,7 @@ Deno.test("stale correlated facts are harmless no-ops", () => {
 Deno.test("failed follow-up delivery records an issue and leaves the run active", () => {
   const state = applyAll([
     ...readyEvents(),
-    { type: "run.requested", runId: RUN_ID, purpose: "prompt", issues: [] },
+    { type: "run.requested", runId: RUN_ID, issues: [] },
     { type: "run.started", runId: RUN_ID, acceptedAt: "2026-08-17T12:15:00Z" },
     { type: "follow-up.requested", runId: RUN_ID, followUpId: FOLLOW_UP_ID },
     { type: "follow-up.failed", runId: RUN_ID, followUpId: FOLLOW_UP_ID, issue: followUpIssue },
@@ -150,28 +147,52 @@ Deno.test("failed follow-up delivery records an issue and leaves the run active"
   assertEquals(state.phase, {
     _tag: "Running",
     runId: RUN_ID,
-    purpose: "prompt",
     followUp: { _tag: "Idle" },
     abort: { _tag: "Idle" },
   });
   assertEquals(state.data.issues, [followUpIssue]);
 });
 
-Deno.test("initial run failure fails provisioning but prompt failure returns to ready", () => {
-  const initialFailure = applyAll([
-    provisioningStarted(),
-    { type: "run.requested", runId: RUN_ID, purpose: "initial", issues: [] },
-    { type: "run.start-failed", runId: RUN_ID, issue: modelIssue },
-  ]);
-  assertEquals(initialFailure.phase, { _tag: "Failed" });
-
-  const promptFailure = applyAll([
-    ...readyEvents(),
-    { type: "run.requested", runId: RUN_ID, purpose: "prompt", issues: [] },
-    { type: "run.start-failed", runId: RUN_ID, issue: modelIssue },
-  ]);
-  assertEquals(promptFailure.phase, { _tag: "Ready" });
-});
+for (const origin of ["provisioning", "ready"] as const) {
+  for (const outcome of ["start-failed", "failed", "aborted"] as const) {
+    Deno.test(`${origin} run ${outcome} returns to ready and accepts another prompt`, () => {
+      const starting = applyAll([
+        ...(origin === "provisioning" ? [provisioningStarted()] : readyEvents()),
+        { type: "run.requested", runId: RUN_ID, issues: [] },
+      ]);
+      assertEquals(sessionMetadata(starting).state, "ready");
+      const state = applyAll(
+        outcome === "start-failed"
+          ? [
+            { type: "run.start-failed", runId: RUN_ID, issue: modelIssue },
+          ]
+          : [
+            { type: "run.started", runId: RUN_ID, acceptedAt: "2026-08-17T12:15:00Z" },
+            ...(outcome === "aborted"
+              ? [
+                { type: "abort.requested", runId: RUN_ID },
+                { type: "abort.confirmed", runId: RUN_ID },
+                { type: "run.completed", runId: RUN_ID },
+              ] satisfies SessionEvent[]
+              : [
+                { type: "run.failed", runId: RUN_ID, issue: modelIssue },
+              ] satisfies SessionEvent[]),
+          ],
+        starting,
+      );
+      assertEquals(state.phase, { _tag: "Ready" });
+      assertEquals(state.data.issues, outcome === "aborted" ? [] : [modelIssue]);
+      assertEquals(
+        applySessionEvent(state, {
+          type: "run.requested",
+          runId: OTHER_RUN_ID,
+          issues: [],
+        })?.phase,
+        { _tag: "StartingRun", runId: OTHER_RUN_ID },
+      );
+    });
+  }
+}
 
 Deno.test("checkpoint and wake recovery are explicit state transitions", () => {
   const checkpointing = applyAll([
@@ -234,7 +255,6 @@ Deno.test("prompt recovery resumes directly into its durable run intent", () => 
   assertEquals(starting.phase, {
     _tag: "StartingRun",
     runId: RUN_ID,
-    purpose: "prompt",
     checkpoint,
   });
 });
@@ -335,7 +355,7 @@ function readyEvents(): readonly SessionEvent[] {
   return [
     provisioningStarted(),
     { type: "checkout.updated", checkoutState: "available" },
-    { type: "run.requested", runId: OTHER_RUN_ID, purpose: "initial", issues: [] },
+    { type: "run.requested", runId: OTHER_RUN_ID, issues: [] },
     {
       type: "run.started",
       runId: OTHER_RUN_ID,

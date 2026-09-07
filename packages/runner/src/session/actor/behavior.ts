@@ -274,7 +274,7 @@ function stageForState(state: SessionState): SessionProvisioningStage {
     case "Provisioning":
       return "starting-vm";
     case "StartingRun":
-      return state.phase.purpose === "initial" ? "starting-vm" : "ready";
+      return "ready";
     case "Running":
       return "running";
     case "Ready":

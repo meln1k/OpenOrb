@@ -28,7 +28,6 @@ export const checkpointMetadataSchema = Schema.Struct({
   ),
 });
 const operationIdSchema = Schema.String.check(Schema.isUUID());
-const runPurposeSchema = Schema.Literals(["initial", "prompt"]);
 const restorationContinuationSchema = Schema.Union([
   Schema.TaggedStruct("Wake", {}),
   Schema.TaggedStruct("Prompt", { runId: RunId }),
@@ -41,7 +40,6 @@ const restorationIntentSchema = Schema.Union([
 ]);
 
 export type RunnerSessionCheckpointMetadata = typeof checkpointMetadataSchema.Type;
-export type RunPurpose = typeof runPurposeSchema.Type;
 export type PersistedRestorationIntent = typeof restorationIntentSchema.Type;
 
 const sessionProvisioningStartedEventSchema = Schema.Struct({
@@ -100,7 +98,6 @@ const wakeInterruptedEventSchema = Schema.Struct({
 const runRequestedEventSchema = Schema.Struct({
   type: Schema.Literal("run.requested"),
   runId: RunId,
-  purpose: runPurposeSchema,
   issues: SessionIssues,
 });
 const runStartedEventSchema = Schema.Struct({
