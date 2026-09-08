@@ -11,6 +11,7 @@ import {
   SessionId,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
+import { SessionGitSnapshotId } from "@openorb/protocol/runner-bulk-api";
 import { Context, Effect, FileSystem, Layer, Schema } from "effect";
 import { join } from "node:path";
 
@@ -201,13 +202,16 @@ Deno.test("atomically stores private validated Git Snapshots outside the workspa
   try {
     const { store, session } = await makeStore(workingDirectory);
     await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const snapshotId = Schema.decodeUnknownSync(SessionGitSnapshotId)("a".repeat(64));
+    const patch = "diff --git a/src/main.ts b/src/main.ts\n+hello 🌍\n";
     const snapshot = new SessionGitSnapshot({
+      snapshotId,
       generatedAt: CREATED_AT,
       completeness: "complete",
       stale: false,
       truncated: false,
       sections: {
-        staged: { files: [], patch: "", truncated: false },
+        staged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
         unstaged: {
           files: [{
             kind: "tracked",
@@ -217,15 +221,32 @@ Deno.test("atomically stores private validated Git Snapshots outside the workspa
             diffState: "available",
           }],
           patch: "diff --git a/src/main.ts b/src/main.ts\n",
+          fullPatchBytes: new TextEncoder().encode(patch).byteLength,
           truncated: false,
         },
       },
     });
     const state = { snapshot, notificationPending: true };
 
-    await Effect.runPromise(store.writeGitSnapshotState(SESSION_ID, state));
+    await Effect.runPromise(store.writeGitSnapshotState(SESSION_ID, state, {
+      snapshotId,
+      staged: "",
+      unstaged: patch,
+    }));
     assertEquals(await Effect.runPromise(store.readGitSnapshot(SESSION_ID)), snapshot);
     assertEquals(await Effect.runPromise(store.readGitSnapshotState(SESSION_ID)), state);
+    const first = await Effect.runPromise(
+      store.readGitSnapshotPatchChunk(SESSION_ID, snapshotId, "unstaged", 0, 17),
+    );
+    const second = await Effect.runPromise(
+      store.readGitSnapshotPatchChunk(SESSION_ID, snapshotId, "unstaged", first.nextOffset, 1_000),
+    );
+    assertEquals(first.done, false);
+    assertEquals(second.done, true);
+    assertEquals(
+      new TextDecoder().decode(new Uint8Array([...first.bytes, ...second.bytes])),
+      patch,
+    );
     const snapshotPath = join(
       workingDirectory,
       "sessions",
@@ -244,6 +265,75 @@ Deno.test("atomically stores private validated Git Snapshots outside the workspa
     );
     const invalid = await Effect.runPromise(Effect.flip(store.readGitSnapshot(SESSION_ID)));
     assertEquals(invalid.operation, "read-git-snapshot");
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("a later Git Snapshot write retries failed patch retirement", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const initial = await makeStore(workingDirectory);
+    await Effect.runPromise(initial.session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const firstId = Schema.decodeUnknownSync(SessionGitSnapshotId)("a".repeat(64));
+    const secondId = Schema.decodeUnknownSync(SessionGitSnapshotId)("b".repeat(64));
+    const first = gitSnapshotState(firstId, "first patch", true);
+    const second = gitSnapshotState(secondId, "second patch", true);
+    await Effect.runPromise(initial.store.writeGitSnapshotState(SESSION_ID, first, {
+      snapshotId: firstId,
+      staged: "",
+      unstaged: "first patch",
+    }));
+
+    const firstStagedPatch = gitPatchPath(workingDirectory, firstId, "staged");
+    const firstUnstagedPatch = gitPatchPath(workingDirectory, firstId, "unstaged");
+    const failing = await makeStore(workingDirectory, failRemovalAt(firstStagedPatch));
+    const failure = await Effect.runPromise(Effect.flip(
+      failing.store.writeGitSnapshotState(SESSION_ID, second, {
+        snapshotId: secondId,
+        staged: "",
+        unstaged: "second patch",
+      }),
+    ));
+    assertEquals(failure.operation, "write-git-snapshot");
+
+    const restarted = await makeStore(workingDirectory);
+    assertEquals(await Effect.runPromise(restarted.store.readGitSnapshotState(SESSION_ID)), second);
+    await Effect.runPromise(restarted.store.writeGitSnapshotState(SESSION_ID, {
+      ...second,
+      notificationPending: false,
+    }));
+    await assertPathMissing(firstStagedPatch);
+    await assertPathMissing(firstUnstagedPatch);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("Git Snapshot storage does not replay session metadata", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  const journalPath = join(workingDirectory, "sessions", SESSION_ID, "events.jsonl");
+  let journalReads = 0;
+  try {
+    const { store, session } = await makeStore(
+      workingDirectory,
+      observeReadAt(journalPath, () => journalReads++),
+    );
+    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    await Deno.remove(journalPath);
+    const snapshotId = Schema.decodeUnknownSync(SessionGitSnapshotId)("a".repeat(64));
+    const state = gitSnapshotState(snapshotId, "patch", false);
+    journalReads = 0;
+    await Effect.runPromise(store.writeGitSnapshotState(SESSION_ID, state, {
+      snapshotId,
+      staged: "",
+      unstaged: "patch",
+    }));
+    assertEquals(await Effect.runPromise(store.readGitSnapshotState(SESSION_ID)), state);
+    await Effect.runPromise(
+      store.readGitSnapshotPatchChunk(SESSION_ID, snapshotId, "unstaged", 0, 1),
+    );
+    assertEquals(journalReads, 0);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -457,6 +547,46 @@ function assertPrivateMode(mode: number | null, expected: number): void {
   if (Deno.build.os !== "windows" && mode !== null) assertEquals(mode & 0o777, expected);
 }
 
+function gitSnapshotState(
+  snapshotId: typeof SessionGitSnapshotId.Type,
+  patch: string,
+  notificationPending: boolean,
+) {
+  return {
+    snapshot: new SessionGitSnapshot({
+      snapshotId,
+      generatedAt: CREATED_AT,
+      completeness: "complete",
+      stale: false,
+      truncated: false,
+      sections: {
+        staged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
+        unstaged: {
+          files: [],
+          patch: "",
+          fullPatchBytes: new TextEncoder().encode(patch).byteLength,
+          truncated: false,
+        },
+      },
+    }),
+    notificationPending,
+  };
+}
+
+function gitPatchPath(
+  workingDirectory: string,
+  snapshotId: typeof SessionGitSnapshotId.Type,
+  section: "staged" | "unstaged",
+) {
+  return join(
+    workingDirectory,
+    "sessions",
+    SESSION_ID,
+    "snapshots",
+    `git-snapshot-${snapshotId}-${section}.patch`,
+  );
+}
+
 async function assertPathMissing(path: string): Promise<void> {
   try {
     await Deno.lstat(path);
@@ -498,6 +628,23 @@ function failRemovalAt(target: string): Layer.Layer<FileSystem.FileSystem> {
           path === target
             ? fileSystem.remove(`${target}.injected-missing`)
             : fileSystem.remove(path, options),
+      })),
+  ).pipe(Layer.provide(DenoFileSystem.layer));
+}
+
+function observeReadAt(
+  target: string,
+  observe: () => void,
+): Layer.Layer<FileSystem.FileSystem> {
+  return Layer.effect(
+    FileSystem.FileSystem,
+    Effect.map(FileSystem.FileSystem, (fileSystem) =>
+      FileSystem.FileSystem.of({
+        ...fileSystem,
+        readFile: (path) => {
+          if (path === target) observe();
+          return fileSystem.readFile(path);
+        },
       })),
   ).pipe(Layer.provide(DenoFileSystem.layer));
 }

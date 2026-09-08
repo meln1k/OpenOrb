@@ -9,6 +9,7 @@ import {
   SessionId,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
+import { MAX_SESSION_GIT_SNAPSHOT_FILES } from "@openorb/protocol/runner-api-limits";
 import { Context, Effect, Exit, Layer, Schema, Scope } from "effect";
 
 import type {
@@ -18,7 +19,11 @@ import type {
 import { createGondolinAgentEnvironment } from "@/src/environment/gondolin/layer.ts";
 import { Journal } from "@/src/session/persistent-actor/journal.ts";
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
-import { generateSessionGitSnapshot, updateSessionGitFile } from "@/src/session/git-snapshot.ts";
+import {
+  generateSessionGitSnapshot,
+  generateSessionGitSnapshotBundle,
+  updateSessionGitFile,
+} from "@/src/session/git-snapshot.ts";
 import { sessionJournalLayer } from "@/src/session/persistent-actor/session-journal.ts";
 import { sessionMetadata } from "@/src/session/actor/state.ts";
 import { RunnerSessionStore, runnerSessionStoreLayer } from "@/src/session/store.ts";
@@ -493,16 +498,25 @@ Deno.test("Git Snapshot bounds large file lists and binary/control patch output"
     const metadata = sessionMetadata(
       await Effect.runPromise(fixture.startInitialRun(SESSION_ID, "available", BASE_COMMIT)),
     );
-    const snapshot = await Effect.runPromise(
-      generateSessionGitSnapshot(new GitSnapshotEnvironment("bounds"), metadata),
+    const generated = await Effect.runPromise(
+      generateSessionGitSnapshotBundle(new GitSnapshotEnvironment("bounds"), metadata),
     );
+    const snapshot = generated.snapshot;
 
     assertEquals(snapshot.completeness, "complete");
     assertEquals(snapshot.truncated, true);
     assert(
-      snapshot.sections.staged.files.length + snapshot.sections.unstaged.files.length <= 1_000,
+      snapshot.sections.staged.files.length + snapshot.sections.unstaged.files.length <=
+        MAX_SESSION_GIT_SNAPSHOT_FILES,
     );
     assert(new TextEncoder().encode(snapshot.sections.unstaged.patch).byteLength <= 256 * 1024);
+    assert(
+      (generated.patches?.unstaged.length ?? 0) > snapshot.sections.unstaged.patch.length,
+    );
+    assertEquals(
+      snapshot.sections.unstaged.fullPatchBytes,
+      new TextEncoder().encode(generated.patches?.unstaged).byteLength,
+    );
     assert(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength < 1024 * 1024);
     assertEquals(
       snapshot.sections.unstaged.files.find((file) => file.path === "binary.dat")?.diffState,

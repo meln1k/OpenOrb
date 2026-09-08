@@ -69,7 +69,6 @@ export default createController(routes.app.settings.runners, {
           }
           await Effect.runPromise(
             context.services.runnerConnections.disconnectRunner(workspaceId, parsed.value.runnerId),
-            { signal: context.request.signal },
           );
           return redirect(routes.app.settings.runners.index.href(), 303);
         }

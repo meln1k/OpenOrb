@@ -78,6 +78,13 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     acknowledgement: new StopSessionAccepted({}),
   };
 
+  readSessionGitPatchChunk() {
+    return Effect.succeed({
+      status: "unavailable" as const,
+      message: "Bulk patches are unavailable in this fixture.",
+    });
+  }
+
   getRunnerLiveState(
     workspaceId: WorkspaceId,
     runnerId: string,

@@ -32,14 +32,14 @@
     "npm:@earendil-works/pi-coding-agent@0.84.2": "0.84.2",
     "npm:@effect/language-service@*": "0.87.2",
     "npm:@effect/language-service@~0.87.2": "0.87.2",
-    "npm:@effect/platform-deno@4.0.0-rc.111": "4.0.0-rc.111_effect@4.0.0-rc.111",
-    "npm:@effect/platform-node@4.0.0-rc.111": "4.0.0-rc.111_effect@4.0.0-rc.111_redis@6.2.1__@opentelemetry+api@1.9.0_@opentelemetry+api@1.9.0",
+    "npm:@effect/platform-deno@4.0.0-rc.112": "4.0.0-rc.112_effect@4.0.0-rc.112",
+    "npm:@effect/platform-node@4.0.0-rc.112": "4.0.0-rc.112_effect@4.0.0-rc.112_redis@6.2.1__@opentelemetry+api@1.9.0_@opentelemetry+api@1.9.0",
     "npm:@opentelemetry/api@1.9.0": "1.9.0",
     "npm:@pierre/diffs@1.3.6": "1.3.6_react@19.2.8_react-dom@19.2.8__react@19.2.8",
     "npm:@pierre/diffs@^1.3.6": "1.3.6_react@19.2.8_react-dom@19.2.8__react@19.2.8",
     "npm:@remix-run/csrf-middleware@*": "0.1.8",
     "npm:@remix-run/data-schema@0.3.0": "0.3.0",
-    "npm:effect@4.0.0-rc.111": "4.0.0-rc.111",
+    "npm:effect@4.0.0-rc.112": "4.0.0-rc.112",
     "npm:lucide@1.31.0": "1.31.0",
     "npm:marked@18.0.5": "18.0.5",
     "npm:pg@*": "8.16.3",
@@ -537,8 +537,8 @@
       "integrity": "sha512-CfiSoaVQO8pZgaMZGw5VvMvRGybsJ2LaSDoLYaqiVGvo/YYPYVR2GzUKY0h1NtIweq/+SQ5XLrvtzPIttWQ0GQ==",
       "bin": true
     },
-    "@effect/platform-deno@4.0.0-rc.111_effect@4.0.0-rc.111": {
-      "integrity": "sha512-gc9da+h3q7uysDGLkfcAR1C889/EGMRl3ZUuWUTZEpHUdCQTHo1gDo47jaGW1brUNHPbTOzdd1QyloA7Xmmbww==",
+    "@effect/platform-deno@4.0.0-rc.112_effect@4.0.0-rc.112": {
+      "integrity": "sha512-3BO1bpKep8A4ve39pNxOcJkhJ79p+hamCFL/5qdoqY5Fb2dTzbw9gS/Jwpnyv3Lcv9wgZlfxWVsnSfqxgu958w==",
       "dependencies": [
         "@db/redis@npm:@jsr/db__redis@0.41.2",
         "@effect/platform-node-shared",
@@ -549,22 +549,22 @@
         "effect"
       ]
     },
-    "@effect/platform-node-shared@4.0.0-rc.111_effect@4.0.0-rc.111": {
-      "integrity": "sha512-iES0Q9vmjhaUKqeW9ceonuD45MUg/Ouk08LzRSptZ+B5qB0w9WlRjDmUz5TJmY2betNop5FRI5k4AD4mtQt3Bw==",
+    "@effect/platform-node-shared@4.0.0-rc.112_effect@4.0.0-rc.112": {
+      "integrity": "sha512-ttjz0xKamFN7vL8pNDYVwddJLjZvqKePc05djlz2VcdaKbLsnYbtMnL1rbOfHgEnIUSHGh7FkjaN4DM1Ov81sQ==",
       "dependencies": [
         "@types/ws",
         "effect",
         "ws"
       ]
     },
-    "@effect/platform-node@4.0.0-rc.111_effect@4.0.0-rc.111_redis@6.2.1__@opentelemetry+api@1.9.0_@opentelemetry+api@1.9.0": {
-      "integrity": "sha512-oy1i7HsOGg/5r+DuBe5+ddmnUhnXmyZFPFPXZCBdO/RQpHK3PIFe1/2UMGxZE+ngDymrSksuQTSgQLF6P+MLqw==",
+    "@effect/platform-node@4.0.0-rc.112_effect@4.0.0-rc.112_redis@6.2.1__@opentelemetry+api@1.9.0_@opentelemetry+api@1.9.0": {
+      "integrity": "sha512-/BMAcdNGQQskLmI0Zoa95KfTZkr9HV9N4NSxaSrusG6GeW6Ulp9KvZ+Rlaiw8lnOt43CXjFLdfll5/k5rxL4hQ==",
       "dependencies": [
         "@effect/platform-node-shared",
         "effect",
         "mime",
         "redis",
-        "undici@8.10.1"
+        "undici@8.10.2"
       ]
     },
     "@emnapi/core@1.11.2": {
@@ -2062,10 +2062,9 @@
         "safe-buffer"
       ]
     },
-    "effect@4.0.0-rc.111": {
-      "integrity": "sha512-ASd5L58EIR0CUNueZNKKjSsyOCd+2alxOAIaTcHaqkJkPsaYSsw5Cg/cfANk5K4Jr2YsX756xvX11shzqsreWA==",
+    "effect@4.0.0-rc.112": {
+      "integrity": "sha512-wXxwuh1Ywnv4cPRM3Wfa0vDwuOHnZ1TsTgHJkG9XgzND6inhBH9n1vBxhg3iIXOia/OrpmvVmd3lrD4vq6bF3A==",
       "dependencies": [
-        "@standard-schema/spec",
         "fast-check",
         "msgpackr"
       ]
@@ -2952,8 +2951,8 @@
     "undici@6.28.0": {
       "integrity": "sha512-LIY910g9TI13YS95lrMFrs8Rm/u/irgHeTWoKCoteeJ04CUJ92eEfj0rVn+7VKMPBpUPiUoBKfhNyLI23EE/KA=="
     },
-    "undici@8.10.1": {
-      "integrity": "sha512-YQ3WlbqjYMmNpdvDH64jAgLjxuAR9+649calDWhbshYaeQGO2bR4nI94ORJmwI3J9YhoKQnpyGOK+0zlWS5N5Q=="
+    "undici@8.10.2": {
+      "integrity": "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ=="
     },
     "undici@8.9.0": {
       "integrity": "sha512-aWZpUj7XoGonMClx4gdDRfgBjqeA+F473aDmROQQbM9n6PRfK/u1q/a0X4wMTgcHfT8H6fpbt98PFuDUwFg2YA=="
@@ -3042,8 +3041,8 @@
       "jsr:@std/assert@1.0.19",
       "jsr:@std/tar@0.1.10",
       "npm:@earendil-works/gondolin@0.12.0",
-      "npm:@effect/platform-deno@4.0.0-rc.111",
-      "npm:effect@4.0.0-rc.111",
+      "npm:@effect/platform-deno@4.0.0-rc.112",
+      "npm:effect@4.0.0-rc.112",
       "npm:remix@3.0.0-beta.10"
     ],
     "packageJson": {
@@ -3094,7 +3093,7 @@
           "npm:@earendil-works/gondolin@0.12.0",
           "npm:@earendil-works/pi-ai@0.84.2",
           "npm:@earendil-works/pi-coding-agent@0.84.2",
-          "npm:@effect/platform-node@4.0.0-rc.111",
+          "npm:@effect/platform-node@4.0.0-rc.112",
           "npm:@opentelemetry/api@1.9.0",
           "npm:@remix-run/data-schema@0.3.0"
         ]

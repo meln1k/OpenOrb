@@ -11,6 +11,7 @@ import {
   MAX_SESSION_GIT_PATH_CHARACTERS,
   MAX_SESSION_GIT_SNAPSHOT_FILES,
   MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
+  MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES,
@@ -18,7 +19,7 @@ import {
 } from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 15;
+export const RUNNER_PROTOCOL_VERSION = 16;
 
 export * from "./runner-api-limits.ts";
 
@@ -418,11 +419,17 @@ const SessionGitPatch = Schema.String.check(
 const SessionGitStagedSection = Schema.Struct({
   files: Schema.Array(SessionGitTrackedFile),
   patch: SessionGitPatch,
+  fullPatchBytes: Schema.optionalKey(
+    NonNegativeInt.check(Schema.isLessThanOrEqualTo(MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES)),
+  ),
   truncated: Schema.Boolean,
 }).annotate(StrictObject);
 const SessionGitUnstagedSection = Schema.Struct({
   files: Schema.Array(SessionGitFile),
   patch: SessionGitPatch,
+  fullPatchBytes: Schema.optionalKey(
+    NonNegativeInt.check(Schema.isLessThanOrEqualTo(MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES)),
+  ),
   truncated: Schema.Boolean,
 }).annotate(StrictObject);
 const SessionGitSections = Schema.Struct({
@@ -450,6 +457,7 @@ const SessionGitSections = Schema.Struct({
 
 export class SessionGitSnapshot extends Schema.Class<SessionGitSnapshot>("SessionGitSnapshot")(
   Schema.Struct({
+    snapshotId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))),
     generatedAt: RunnerSessionCreatedAt,
     branch: Schema.optionalKey(SessionGitReference),
     head: Schema.optionalKey(SessionGitHead),

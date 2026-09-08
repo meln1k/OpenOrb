@@ -1,4 +1,11 @@
 import {
+  RunnerBulkApi,
+  runnerBulkRpcSerializationLayer,
+  type SessionGitPatchChunk,
+  SessionGitPatchSection,
+  SessionGitSnapshotId,
+} from "@openorb/protocol/runner-bulk-api";
+import {
   AbortRejected,
   CapacityExceeded,
   ClientRequestId,
@@ -66,6 +73,7 @@ export const BOOTSTRAP_TIMEOUT_CLOSE_CODE = 4408;
 const REJECTION_REASON = "Runner connection rejected";
 
 type Client = RpcClient.RpcClient<RpcGroup.Rpcs<typeof RunnerApi>, RpcClientError>;
+type BulkClient = RpcClient.RpcClient<RpcGroup.Rpcs<typeof RunnerBulkApi>, RpcClientError>;
 type OmitUnion<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 export interface RunnerLiveState {
@@ -114,6 +122,13 @@ export interface UpdateSessionGitFileInput {
   path: string;
   previousPath?: string;
 }
+export interface ReadSessionGitPatchChunkInput {
+  workspaceId: WorkspaceId;
+  sessionId: string;
+  snapshotId: string;
+  section: "staged" | "unstaged";
+  offset: number;
+}
 
 export interface RunnerRegistryService {
   readonly getRunnerLiveState: (
@@ -135,6 +150,9 @@ export interface RunnerRegistryService {
   readonly updateSessionGitFile: (
     input: UpdateSessionGitFileInput,
   ) => Effect.Effect<OperationResult<GitFileUpdateAccepted>>;
+  readonly readSessionGitPatchChunk: (
+    input: ReadSessionGitPatchChunkInput,
+  ) => Effect.Effect<OperationResult<SessionGitPatchChunk>>;
   readonly provisionSession: (
     input: ProvisionSessionInput,
   ) => Effect.Effect<OperationResult<unknown>>;
@@ -157,6 +175,7 @@ export interface RunnerRegistryService {
 
 export interface RunnerRegistry extends RunnerRegistryService {
   readonly accept: (socket: Socket.Socket) => Effect.Effect<void, unknown>;
+  readonly acceptBulk: (socket: Socket.Socket) => Effect.Effect<void, unknown>;
 }
 
 interface Connection {
@@ -176,9 +195,19 @@ interface ConnectionRuntime {
   readonly client: Client;
   readonly scope: Scope.Closeable;
 }
+interface BulkConnection {
+  readonly runner: AuthenticatedRunner;
+  readonly client: BulkClient;
+  readonly scope: Scope.Closeable;
+}
+interface RunnerSlot {
+  readonly runner: AuthenticatedRunner;
+  readonly control?: Connection;
+  readonly bulk?: BulkConnection;
+}
 interface RegistryState {
   readonly nextGeneration: number;
-  readonly connections: ReadonlyMap<string, Connection>;
+  readonly runners: ReadonlyMap<string, RunnerSlot>;
   readonly routes: ReadonlyMap<string, Connection>;
   readonly deletions: ReadonlySet<string>;
   readonly revoked: ReadonlySet<string>;
@@ -186,6 +215,9 @@ interface RegistryState {
 type ReservationResult =
   | { readonly status: "reserved"; readonly connection: Connection }
   | { readonly status: "rejected"; readonly message: string };
+type BulkAdmission =
+  | { readonly accepted: false }
+  | { readonly accepted: true; readonly old?: BulkConnection };
 type RoutedSessionResult =
   | {
     readonly status: "routed";
@@ -221,18 +253,20 @@ export const RunnerRegistry: Context.Service<RunnerRegistry, RunnerRegistry> = C
 
 export function makeRunnerRegistry(
   repository: GatewayRepository,
-): Effect.Effect<RunnerRegistry> {
+): Effect.Effect<RunnerRegistry, never, Scope.Scope> {
   return Effect.gen(function* () {
     const state = yield* SynchronizedRef.make<RegistryState>({
       nextGeneration: 1,
-      connections: new Map(),
+      runners: new Map(),
       routes: new Map(),
       deletions: new Set(),
       revoked: new Set(),
     });
     const runtime: RegistryRuntime = { repository, state };
+    yield* Effect.addFinalizer(() => closeRegistryConnections(runtime));
     return RunnerRegistry.of({
       accept: (socket) => Effect.scoped(accept(runtime, socket)),
+      acceptBulk: (socket) => Effect.scoped(acceptBulk(runtime, socket)),
       getRunnerLiveState: (workspaceId, runnerId) =>
         getRunnerLiveState(runtime, workspaceId, runnerId),
       getSessionRunner: (workspaceId, sessionId) =>
@@ -242,6 +276,7 @@ export function makeRunnerRegistry(
       getSessionGitSnapshot: (workspaceId, sessionId) =>
         getSessionGitSnapshot(runtime, workspaceId, sessionId),
       updateSessionGitFile: (input) => updateSessionGitFile(runtime, input),
+      readSessionGitPatchChunk: (input) => readSessionGitPatchChunk(runtime, input),
       provisionSession: (input) =>
         observeOperation("provision", input, provisionSession(runtime, input)),
       wakeSession: (input) => observeOperation("wake", input, wakeSession(runtime, input)),
@@ -354,6 +389,8 @@ const accept = Effect.fn("RunnerRegistry.accept")(
           const [connection, old] = yield* SynchronizedRef.modifyEffect(
             registry.state,
             (current) => {
+              const key = runnerKey(authenticated.workspaceId, authenticated.id);
+              if (current.revoked.has(key)) return Effect.fail(new CandidateRejected());
               const sessions = new Map(reconciledSessions);
               const tombstones = new Set(reconciled.tombstonedSessionIds);
               for (const sessionId of sessions.keys()) {
@@ -381,8 +418,13 @@ const accept = Effect.fn("RunnerRegistry.accept")(
                 revision: completed.revision,
                 observedAt: completed.observedAt,
               };
-              const previous = current.connections.get(authenticated.id);
-              const connections = new Map(current.connections).set(authenticated.id, connection);
+              const previousSlot = current.runners.get(key);
+              const previous = previousSlot?.control;
+              const runners = new Map(current.runners).set(key, {
+                runner: authenticated,
+                control: connection,
+                ...(previousSlot?.bulk === undefined ? {} : { bulk: previousSlot.bulk }),
+              });
               const routes = new Map(current.routes);
               if (previous) {
                 for (const [id, route] of routes) if (route === previous) routes.delete(id);
@@ -394,7 +436,7 @@ const accept = Effect.fn("RunnerRegistry.accept")(
                 [[connection, previous] as const, {
                   ...current,
                   nextGeneration: current.nextGeneration + 1,
-                  connections,
+                  runners,
                   routes,
                 }] as const,
               );
@@ -468,6 +510,85 @@ const accept = Effect.fn("RunnerRegistry.accept")(
   },
 );
 
+const acceptBulk = Effect.fn("RunnerRegistry.acceptBulk")(
+  function* (registry: RegistryRuntime, socket: Socket.Socket) {
+    const scope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+    const write = yield* socket.writer;
+    const reject = (code: number, reason: string) => write(new Socket.CloseEvent(code, reason));
+    const protocol = yield* RpcClientApi.makeProtocolSocket({ retryPolicy: Schedule.recurs(0) })
+      .pipe(
+        Effect.provideService(Socket.Socket, socket),
+        Effect.provide(runnerBulkRpcSerializationLayer),
+        Effect.provideService(Scope.Scope, scope),
+      );
+    const client = yield* RpcClientApi.make(RunnerBulkApi).pipe(
+      Effect.provideService(RpcClientApi.Protocol, protocol),
+      Effect.provideService(Scope.Scope, scope),
+    );
+    const identity = yield* client["runner.bulk.identify"]().pipe(
+      Effect.timeoutOption(AUTHENTICATION_TIMEOUT_MS),
+    );
+    if (Option.isNone(identity)) {
+      yield* reject(BOOTSTRAP_TIMEOUT_CLOSE_CODE, "Runner identification timed out");
+      return;
+    }
+    const authenticated = yield* Effect.tryPromise(() =>
+      registry.repository.authenticateRunner(identity.value.token)
+    );
+    const state = yield* SynchronizedRef.get(registry.state);
+    if (
+      !authenticated || authenticated.id !== identity.value.runnerId ||
+      identity.value.protocolVersion !== RUNNER_PROTOCOL_VERSION ||
+      state.revoked.has(runnerKey(authenticated.workspaceId, authenticated.id))
+    ) {
+      yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
+      return;
+    }
+
+    const connection: BulkConnection = { runner: authenticated, client, scope };
+    const key = runnerKey(authenticated.workspaceId, authenticated.id);
+    const admitted = yield* SynchronizedRef.modify(
+      registry.state,
+      (current): readonly [BulkAdmission, RegistryState] => {
+        if (current.revoked.has(key)) {
+          return [{ accepted: false as const }, current] as const;
+        }
+        const previous = current.runners.get(key);
+        const runners = new Map(current.runners).set(key, {
+          runner: authenticated,
+          ...(previous?.control === undefined ? {} : { control: previous.control }),
+          bulk: connection,
+        });
+        return [{
+          accepted: true as const,
+          ...(previous?.bulk === undefined ? {} : { old: previous.bulk }),
+        }, { ...current, runners }] as const;
+      },
+    );
+    if (!admitted.accepted) {
+      yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
+      return;
+    }
+    if (admitted.old !== undefined) yield* Scope.close(admitted.old.scope, Exit.void);
+    yield* client["runner.bulk.watch"]().pipe(
+      Stream.timeout(RUNNER_WATCH_INACTIVITY_TIMEOUT_MS),
+      Stream.runDrain,
+      Effect.ensuring(
+        SynchronizedRef.update(registry.state, (current) => {
+          const slot = current.runners.get(key);
+          if (slot?.bulk !== connection) return current;
+          const runners = new Map(current.runners);
+          if (slot.control === undefined) runners.delete(key);
+          else runners.set(key, { runner: slot.runner, control: slot.control });
+          return { ...current, runners };
+        }),
+      ),
+      Effect.provideService(Scope.Scope, scope),
+    );
+  },
+);
+
 function applyEvent(
   registry: RegistryRuntime,
   connection: Connection,
@@ -476,7 +597,9 @@ function applyEvent(
   return Effect.gen(function* () {
     let unknownSessionDisposition: "accepted" | "tombstoned" | "rejected" | null = null;
     if (event.type === "session.updated") {
-      const current = (yield* SynchronizedRef.get(registry.state)).connections.get(
+      const current = getControlConnection(
+        yield* SynchronizedRef.get(registry.state),
+        connection.runner.workspaceId,
         connection.runner.id,
       );
       if (
@@ -496,7 +619,11 @@ function applyEvent(
 
     let lifecycleLog = Effect.void;
     const cleanupSessionId = yield* SynchronizedRef.modify(registry.state, (state) => {
-      const current = state.connections.get(connection.runner.id);
+      const current = getControlConnection(
+        state,
+        connection.runner.workspaceId,
+        connection.runner.id,
+      );
       if (!current || current.generation !== connection.generation) return [null, state] as const;
       let cleanupSessionId: string | null = null;
       const routes = new Map(state.routes);
@@ -574,11 +701,11 @@ function applyEvent(
       ) {
         routes.set(routeKey(current.runner.workspaceId, event.session.id), updated);
       }
-      const connections = new Map(state.connections).set(connection.runner.id, updated);
+      const runners = replaceSlotControl(state.runners, current, updated);
       for (const [id, route] of routes) {
         if (route.generation === current.generation) routes.set(id, updated);
       }
-      return [cleanupSessionId, { ...state, connections, routes }] as const;
+      return [cleanupSessionId, { ...state, runners, routes }] as const;
     });
     yield* lifecycleLog;
     if (cleanupSessionId) {
@@ -589,16 +716,19 @@ function applyEvent(
 
 function removeConnection(registry: RegistryRuntime, connection: Connection) {
   return SynchronizedRef.update(registry.state, (state) => {
-    if (state.connections.get(connection.runner.id)?.generation !== connection.generation) {
+    const key = runnerKey(connection.runner.workspaceId, connection.runner.id);
+    const slot = state.runners.get(key);
+    if (slot?.control?.generation !== connection.generation) {
       return state;
     }
-    const connections = new Map(state.connections);
-    connections.delete(connection.runner.id);
+    const runners = new Map(state.runners);
+    if (slot.bulk === undefined) runners.delete(key);
+    else runners.set(key, { runner: slot.runner, bulk: slot.bulk });
     const routes = new Map(state.routes);
     for (const [id, route] of routes) {
       if (route.generation === connection.generation) routes.delete(id);
     }
-    return { ...state, connections, routes };
+    return { ...state, runners, routes };
   });
 }
 
@@ -620,8 +750,8 @@ function reconcile(
 
 function getRunnerLiveState(registry: RegistryRuntime, workspaceId: WorkspaceId, runnerId: string) {
   return SynchronizedRef.get(registry.state).pipe(Effect.map((state) => {
-    const connection = state.connections.get(runnerId);
-    if (!connection || connection.runner.workspaceId !== workspaceId) return null;
+    const connection = getControlConnection(state, workspaceId, runnerId);
+    if (!connection) return null;
     return {
       capacity: {
         ...connection.capacity,
@@ -671,6 +801,51 @@ const getSessionGitSnapshot = Effect.fn("RunnerRegistry.getSessionGitSnapshot")(
   },
 );
 
+const readSessionGitPatchChunk = Effect.fn("RunnerRegistry.readSessionGitPatchChunk")(
+  function* (registry: RegistryRuntime, input: ReadSessionGitPatchChunkInput) {
+    const routed = yield* routeSession(
+      registry,
+      input.workspaceId,
+      input.sessionId,
+      () => undefined,
+    );
+    if (routed.status === "unavailable") return unavailable(routed.message);
+    if (routed.status === "rejected") {
+      return { status: "rejected" as const, message: routed.message };
+    }
+    const sessionId = Schema.decodeUnknownOption(SessionId)(input.sessionId);
+    const snapshotId = Schema.decodeUnknownOption(SessionGitSnapshotId)(input.snapshotId);
+    const section = Schema.decodeUnknownOption(SessionGitPatchSection)(input.section);
+    if (
+      Option.isNone(sessionId) || Option.isNone(snapshotId) || Option.isNone(section) ||
+      !Number.isInteger(input.offset) || input.offset < 0
+    ) {
+      return { status: "rejected" as const, message: "The Git patch range is invalid." };
+    }
+    const state = yield* SynchronizedRef.get(registry.state);
+    const slot = state.runners.get(
+      runnerKey(routed.connection.runner.workspaceId, routed.connection.runner.id),
+    );
+    if (slot?.control?.generation !== routed.connection.generation) {
+      return unavailable("The runner bulk channel is unavailable.");
+    }
+    const bulk = slot.bulk;
+    if (bulk === undefined) return unavailable("The runner bulk channel is unavailable.");
+    return yield* bulk.client["session.git-patch.read-chunk"]({
+      sessionId: sessionId.value,
+      snapshotId: snapshotId.value,
+      section: section.value,
+      offset: input.offset,
+    }).pipe(
+      Effect.timeout(OPERATION_TIMEOUT_MS),
+      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
+      Effect.catchCause(() =>
+        Effect.succeed(unavailable("The cached Git Snapshot patch is unavailable."))
+      ),
+    );
+  },
+);
+
 const updateSessionGitFile = Effect.fn("RunnerRegistry.updateSessionGitFile")(
   function* (registry: RegistryRuntime, input: UpdateSessionGitFileInput) {
     const routed = yield* routeSession(
@@ -703,9 +878,9 @@ const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
     const reserved = yield* SynchronizedRef.modifyEffect(
       registry.state,
       (state): Effect.Effect<readonly [ReservationResult, RegistryState]> => {
-        const connection = state.connections.get(input.runnerId);
+        const connection = getControlConnection(state, input.workspaceId, input.runnerId);
         let rejection: string | undefined;
-        if (!connection || connection.runner.workspaceId !== input.workspaceId) {
+        if (!connection) {
           rejection = "Runner is unavailable.";
         } else if (connection.reservations.has(input.sessionId)) {
           rejection = "This session already has a provisioning request in flight.";
@@ -768,6 +943,7 @@ const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
         releaseReservation(
           registry,
           reserved.connection.generation,
+          input.workspaceId,
           input.runnerId,
           input.sessionId,
         ),
@@ -897,7 +1073,11 @@ const deleteSession = Effect.fn("RunnerRegistry.deleteSession")(
       const key = routeKey(input.workspaceId, input.sessionId);
       const deletions = new Set(state.deletions).add(key);
       const routed = state.routes.get(key);
-      const current = routed && state.connections.get(routed.runner.id);
+      const current = routed && getControlConnection(
+        state,
+        routed.runner.workspaceId,
+        routed.runner.id,
+      );
       if (
         !routed || !current || current.generation !== routed.generation ||
         current.runner.workspaceId !== input.workspaceId
@@ -961,30 +1141,64 @@ function watchSession(
 
 const disconnectRunner = Effect.fn("RunnerRegistry.disconnectRunner")(
   function* (registry: RegistryRuntime, workspaceId: WorkspaceId, runnerId: string) {
-    const connection = (yield* SynchronizedRef.get(registry.state)).connections.get(runnerId);
-    if (!connection || connection.runner.workspaceId !== workspaceId) return false;
-    yield* SynchronizedRef.update(
+    const key = runnerKey(workspaceId, runnerId);
+    const slot = yield* SynchronizedRef.modify(
       registry.state,
-      (s) => ({ ...s, revoked: new Set(s.revoked).add(runnerKey(workspaceId, runnerId)) }),
+      (state) => {
+        const slot = state.runners.get(key);
+        const runners = new Map(state.runners);
+        runners.delete(key);
+        const routes = new Map(state.routes);
+        if (slot?.control !== undefined) {
+          for (const [id, route] of routes) {
+            if (route.generation === slot.control.generation) routes.delete(id);
+          }
+        }
+        return [slot, {
+          ...state,
+          runners,
+          routes,
+          revoked: new Set(state.revoked).add(key),
+        }] as const;
+      },
     );
+    if (slot === undefined) return false;
     yield* Effect.logInfo("connection.revoked").pipe(Effect.annotateLogs({
       component: "openorb-gateway",
       runnerId,
-      generation: connection.generation,
+      ...(slot.control === undefined ? {} : { generation: slot.control.generation }),
     }));
-    yield* Scope.close(connection.runtime.scope, Exit.void);
+    yield* closeRunnerSlot(slot);
     return true;
   },
 );
 
+const closeRegistryConnections = Effect.fn("RunnerRegistry.close")(
+  function* (registry: RegistryRuntime) {
+    const slots = yield* SynchronizedRef.modify(registry.state, (state) => [
+      Array.from(state.runners.values()),
+      { ...state, runners: new Map(), routes: new Map() },
+    ]);
+    yield* Effect.forEach(slots, closeRunnerSlot, { concurrency: "unbounded", discard: true });
+  },
+);
+
+function closeRunnerSlot(slot: RunnerSlot) {
+  return Effect.all([
+    slot.control === undefined ? Effect.void : Scope.close(slot.control.runtime.scope, Exit.void),
+    slot.bulk === undefined ? Effect.void : Scope.close(slot.bulk.scope, Exit.void),
+  ], { concurrency: "unbounded", discard: true });
+}
+
 function releaseReservation(
   registry: RegistryRuntime,
   generation: number,
+  workspaceId: WorkspaceId,
   runnerId: string,
   sessionId: string,
 ) {
   return SynchronizedRef.update(registry.state, (state) => {
-    const connection = state.connections.get(runnerId);
+    const connection = getControlConnection(state, workspaceId, runnerId);
     if (
       !connection || connection.generation !== generation ||
       !connection.reservations.has(sessionId)
@@ -1008,7 +1222,11 @@ function scheduleDeletedSessionCleanup(
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     const runtime = yield* SynchronizedRef.modify(registry.state, (state) => {
-      const current = state.connections.get(connection.runner.id);
+      const current = getControlConnection(
+        state,
+        connection.runner.workspaceId,
+        connection.runner.id,
+      );
       if (
         !current || current.generation !== connection.generation ||
         !current.tombstones.has(sessionId) || current.cleanupInFlight.has(sessionId)
@@ -1075,7 +1293,11 @@ function clearCleanupInFlight(
   sessionId: string,
 ) {
   return SynchronizedRef.update(registry.state, (state) => {
-    const current = state.connections.get(connection.runner.id);
+    const current = getControlConnection(
+      state,
+      connection.runner.workspaceId,
+      connection.runner.id,
+    );
     if (
       !current || current.generation !== connection.generation ||
       !current.cleanupInFlight.has(sessionId)
@@ -1146,7 +1368,11 @@ function acceptProvisioned(
       }
     }
     const cleanupConnection = yield* SynchronizedRef.modify(registry.state, (state) => {
-      const current = state.connections.get(connection.runner.id);
+      const current = getControlConnection(
+        state,
+        connection.runner.workspaceId,
+        connection.runner.id,
+      );
       if (!current || current.generation !== connection.generation) {
         return [null, state] as const;
       }
@@ -1230,10 +1456,31 @@ function replaceConnection(
   previous: Connection,
   next: Connection,
 ): RegistryState {
-  const connections = new Map(state.connections).set(previous.runner.id, next);
+  const runners = replaceSlotControl(state.runners, previous, next);
   const routes = new Map(state.routes);
   for (const [id, route] of routes) if (route === previous) routes.set(id, next);
-  return { ...state, connections, routes };
+  return { ...state, runners, routes };
+}
+function replaceSlotControl(
+  runners: ReadonlyMap<string, RunnerSlot>,
+  previous: Connection,
+  next: Connection,
+) {
+  const key = runnerKey(previous.runner.workspaceId, previous.runner.id);
+  const slot = runners.get(key);
+  if (slot?.control !== previous) return runners;
+  return new Map(runners).set(key, {
+    runner: slot.runner,
+    control: next,
+    ...(slot.bulk === undefined ? {} : { bulk: slot.bulk }),
+  });
+}
+function getControlConnection(
+  state: RegistryState,
+  workspaceId: WorkspaceId,
+  runnerId: string,
+) {
+  return state.runners.get(runnerKey(workspaceId, runnerId))?.control;
 }
 function runnerSupportsOrbSize(
   capacity: RunnerCapacity,

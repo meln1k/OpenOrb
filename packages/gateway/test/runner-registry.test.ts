@@ -485,6 +485,33 @@ Deno.test("valid identity and complete snapshot admit; invalid token closes 4401
     assertEquals(invalid.watchCalls, 0);
   }))));
 
+Deno.test("revocation wins atomically over in-flight control admission", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const block = {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+    };
+    const reconciliation: ReconciliationProbe = { block };
+    const harness = yield* makeHarness(fakeRepository(new Set(), reconciliation));
+    const probe = yield* makeProbe();
+    yield* connectRunner(harness.url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* Deferred.await(block.started);
+
+    assertEquals(yield* harness.gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID), false);
+    yield* Deferred.succeed(block.release, undefined);
+    yield* Effect.yieldNow;
+
+    const rejected = yield* makeProbe();
+    yield* connectRunner(harness.url, rejected);
+    assertEquals(
+      yield* Deferred.await(rejected.closeCode).pipe(Effect.timeout("2 seconds")),
+      PERMANENT_REJECTION_CLOSE_CODE,
+    );
+    assertEquals(yield* harness.gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
+    assertEquals(yield* harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_1), null);
+  }))));
+
 Deno.test("partial replacement stays hidden until make-before-break admission completes", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const { gateway, url } = yield* makeHarness();

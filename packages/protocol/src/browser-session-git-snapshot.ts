@@ -1,10 +1,11 @@
-import { array, literal, object, optional, string, union } from "@remix-run/data-schema";
+import { array, literal, number, object, optional, string, union } from "@remix-run/data-schema";
 import type { InferOutput } from "@remix-run/data-schema";
 
 import {
   MAX_SESSION_GIT_PATH_CHARACTERS,
   MAX_SESSION_GIT_SNAPSHOT_FILES,
   MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
+  MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES,
@@ -75,6 +76,14 @@ const sessionGitPatchSchema = string().refine(
 );
 const sessionGitSectionBase = {
   patch: sessionGitPatchSchema,
+  fullPatchBytes: optional(
+    number().refine(
+      (value) =>
+        Number.isInteger(value) && value >= 0 &&
+        value <= MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
+      `Git Snapshot patch sizes must be at most ${MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES} bytes.`,
+    ),
+  ),
   truncated: booleanSchema,
 } as const;
 const sessionGitStagedSectionSchema = object({
@@ -101,6 +110,12 @@ const sessionGitSectionsSchema = object({
 );
 
 export const sessionGitSnapshotSchema = object({
+  snapshotId: optional(
+    string().refine(
+      (value) => /^[0-9a-f]{64}$/.test(value),
+      "Expected a Git Snapshot identifier.",
+    ),
+  ),
   generatedAt: string(),
   branch: optional(sessionGitBranchSchema),
   head: optional(sessionGitHeadSchema),

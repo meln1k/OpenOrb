@@ -27,6 +27,7 @@ interface OutboundSocketServerShape {
 export function makeOutboundSocketServer(
   socket: Socket.Socket,
   terminal: Deferred.Deferred<never, RunnerRpcStartupError>,
+  frameLimit = MAX_RUNNER_RPC_FRAME_BYTES,
 ): SocketServer.SocketServer["Service"] {
   const server = {
     address: { _tag: "TcpAddress", hostname: "outbound-websocket", port: 0 },
@@ -40,7 +41,7 @@ export function makeOutboundSocketServer(
           );
           const closeCode = yield* Deferred.make<number>();
           const decorated = observeCloseCode(
-            limitSocket(socket, MAX_RUNNER_RPC_FRAME_BYTES),
+            limitSocket(socket, frameLimit),
             closeCode,
           );
           yield* handler(decorated).pipe(

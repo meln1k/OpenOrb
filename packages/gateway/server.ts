@@ -91,11 +91,17 @@ const gatewayLive = Effect.scoped(Effect.gen(function* () {
       yield* server.serve(
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          if (request.url.split("?", 1)[0] !== routes.api.runners.connect.href()) {
+          const requestPath = request.url.split("?", 1)[0];
+          const isControl = requestPath === routes.api.runners.connect.href();
+          const isBulk = requestPath === routes.api.runners.connectBulk.href();
+          if (!isControl && !isBulk) {
             return yield* remix;
           }
           const socket = yield* request.upgrade;
-          yield* Effect.forkIn(runnerRegistry.accept(socket), gatewayScope);
+          yield* Effect.forkIn(
+            isBulk ? runnerRegistry.acceptBulk(socket) : runnerRegistry.accept(socket),
+            gatewayScope,
+          );
           return HttpServerResponse.empty();
         }),
       );

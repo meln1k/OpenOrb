@@ -20,6 +20,7 @@ import {
   WatchSessionEvent,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
+import { SessionGitSnapshotId } from "@openorb/protocol/runner-bulk-api";
 import {
   Context,
   Deferred,
@@ -45,6 +46,7 @@ import {
   type RunnerRpcStartupError,
   runRunnerRpc,
 } from "../../src/connection/rpc.ts";
+import { runRunnerBulkRpc } from "../../src/connection/bulk-rpc.ts";
 import { SessionEvents, type SessionStateChange } from "../../src/session/events.ts";
 import { RunnerSessionStore } from "../../src/session/store.ts";
 import { SessionSupervisor } from "../../src/session/supervisor.ts";
@@ -153,6 +155,64 @@ Deno.test("runner requests TCP_NODELAY and streams large Unicode deltas through 
   assert(!JSON.stringify(logs).includes(TOKEN));
   assert(!JSON.stringify(logs).includes("🌍漢字"));
 });
+
+Deno.test("bulk Git patches cross the separate SchemaBinary channel as native bytes", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const snapshotId = decode(SessionGitSnapshotId)("a".repeat(64));
+    const bytes = new TextEncoder().encode("full patch 🌍");
+    const store = {
+      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
+      readGitSnapshotPatchChunk: () =>
+        Effect.succeed({ bytes, nextOffset: bytes.byteLength, done: true }),
+    } as unknown as RunnerSessionStore;
+    const events = {
+      watchStateChanges: () => Stream.empty,
+      watch: () => Stream.empty,
+    } as unknown as SessionEvents;
+    const harness = yield* makeGatewayHarness(TOKEN);
+    const options = runnerOptions(harness.url);
+    const control = yield* runRunnerRpc(options).pipe(
+      provideRunnerServices(store, events),
+      Effect.exit,
+      Effect.forkScoped,
+    );
+    const bulk = yield* runRunnerBulkRpc(options).pipe(
+      Effect.provideService(RunnerSessionStore, store),
+      Effect.exit,
+      Effect.forkScoped,
+    );
+    yield* pollEventually(
+      harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID).pipe(
+        Effect.map((id) => id !== null),
+      ),
+      "runner did not publish its session",
+    );
+    let chunk: { readonly bytes: Uint8Array } | undefined;
+    yield* pollEventually(
+      harness.gateway.readSessionGitPatchChunk({
+        workspaceId: WORKSPACE_ID,
+        sessionId: SESSION_ID,
+        snapshotId,
+        section: "unstaged",
+        offset: 0,
+      }).pipe(Effect.map((result) => {
+        if (result.status !== "accepted") return false;
+        chunk = result.acknowledgement;
+        return true;
+      })),
+      "runner bulk channel was not admitted",
+    );
+    assert(chunk !== undefined);
+    assertEquals(new TextDecoder().decode(chunk.bytes), "full patch 🌍");
+
+    assert(yield* harness.gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
+    const [controlExit, bulkExit] = yield* Effect.all([
+      Fiber.await(control),
+      Fiber.await(bulk),
+    ], { concurrency: "unbounded" }).pipe(Effect.timeout("5 seconds"));
+    assert(Exit.isSuccess(controlExit) && Exit.isFailure(controlExit.value));
+    assert(Exit.isSuccess(bulkExit) && Exit.isFailure(bulkExit.value));
+  }))));
 
 Deno.test("outbound adapter propagates permanent gateway rejection", async () => {
   const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
@@ -839,6 +899,25 @@ Deno.test("launched runner RPC layer terminates after the adapter receives perma
     assert(Exit.isFailure(exit.value), "the launched RPC layer must terminate with failure");
   }))));
 
+Deno.test("launched runner bulk RPC layer terminates after permanent close 4401", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const harness = yield* makeGatewayHarness(TOKEN);
+    const store = {
+      readGitSnapshotPatchChunk: () => Effect.die("unexpected patch read"),
+    } as unknown as RunnerSessionStore;
+    const launched = yield* runRunnerBulkRpc(
+      runnerOptions(harness.url, "openorb_runner_rejected"),
+    ).pipe(
+      Effect.provideService(RunnerSessionStore, store),
+      Effect.exit,
+      Effect.forkScoped,
+    );
+
+    const exit = yield* pollFiber(launched, "bulk Layer.launch remained running after close 4401");
+    assert(Exit.isSuccess(exit), "the Effect.exit wrapper must expose bulk RPC-layer termination");
+    assert(Exit.isFailure(exit.value), "the launched bulk RPC layer must terminate with failure");
+  }))));
+
 function runnerOptions(
   gatewayUrl: string,
   runnerToken = TOKEN,
@@ -939,7 +1018,13 @@ const makeGatewayHarness = Effect.fn(function* (
   const app = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const socket = yield* request.upgrade;
-    yield* Effect.forkIn(gateway.accept(socket), gatewayScope);
+    const connection = request.url.includes("/bulk")
+      ? gateway.acceptBulk(socket)
+      : gateway.accept(socket);
+    yield* Effect.forkIn(
+      connection,
+      gatewayScope,
+    );
     return HttpServerResponse.empty();
   });
   const layer = HttpServer.serve(app).pipe(Layer.provideMerge(DenoHttpServer.layer({

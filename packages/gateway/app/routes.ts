@@ -35,12 +35,14 @@ export const routes = route({
     runners: route("runners", {
       enroll: post("enroll"),
       connect: get("connect"),
+      connectBulk: get("connect/bulk"),
     }),
     sessions: route("sessions", {
       wake: post(":sessionId/wake"),
       changes: post(":sessionId/changes"),
       events: get(":sessionId/events"),
       gitSnapshot: get(":sessionId/git-snapshot"),
+      gitPatchChunk: get(":sessionId/git-patch/:snapshotId/:section/:offset"),
     }),
   }),
 });

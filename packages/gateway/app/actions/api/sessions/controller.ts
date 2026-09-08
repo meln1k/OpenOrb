@@ -1,9 +1,11 @@
 import { parseModelReference } from "@openorb/protocol";
-import { MAX_SESSION_GIT_PATH_CHARACTERS } from "@openorb/protocol/runner-api";
+import { MAX_SESSION_GIT_PATH_CHARACTERS, SessionId } from "@openorb/protocol/runner-api";
+import { SessionGitPatchSection, SessionGitSnapshotId } from "@openorb/protocol/runner-bulk-api";
 import { requireAuth } from "remix/middleware/auth";
 import { createController } from "remix/router";
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
+import { encodeBase64 } from "@std/encoding/base64";
 import { validate as validateUuid } from "@std/uuid";
 
 import type { Administrator } from "@/app/data/administrator-repository.ts";
@@ -18,7 +20,7 @@ import {
 import { csrf } from "@/app/middleware/csrf.ts";
 import { sessionModelRuntime } from "@/app/model-provider-catalog.ts";
 import { routes } from "@/app/routes.ts";
-import { Effect } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
 const gitPathSchema = s.string().refine(
@@ -35,6 +37,15 @@ const wakeSessionSchema = f.object({
     s.literal("resume-prior-checkpoint" as const),
     s.literal("start-clean-vm" as const),
   ]))),
+});
+const gitPatchChunkParamsSchema = Schema.Struct({
+  sessionId: SessionId,
+  snapshotId: SessionGitSnapshotId,
+  section: SessionGitPatchSection,
+  offset: Schema.NumberFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
 });
 
 export default createController(routes.api.sessions, {
@@ -166,6 +177,40 @@ export default createController(routes.api.sessions, {
         );
       }
       return Response.json(result.acknowledgement, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    },
+    async gitPatchChunk(context) {
+      sessionStage("gitPatchChunk");
+      const workspaceId = context.auth.identity.workspaceId;
+      const params = Schema.decodeUnknownOption(gitPatchChunkParamsSchema)(context.params);
+      if (Option.isNone(params)) {
+        return apiError("The Git patch range is invalid.", 400);
+      }
+      const { sessionId, snapshotId, section, offset } = params.value;
+      const session = await sessionSpan(
+        "catalog.lookup",
+        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+      );
+      if (!session) return apiError("Session not found.", 404);
+      const result = await sessionSpan(
+        "runner.git_patch_chunk",
+        () =>
+          Effect.runPromise(context.services.runnerConnections.readSessionGitPatchChunk({
+            workspaceId,
+            sessionId,
+            snapshotId,
+            section,
+            offset,
+          })),
+      );
+      if (result.status !== "accepted") {
+        return apiError(result.message, result.status === "rejected" ? 409 : 503);
+      }
+      return Response.json({
+        ...result.acknowledgement,
+        bytes: encodeBase64(result.acknowledgement.bytes),
+      }, {
         headers: { "Cache-Control": "no-store" },
       });
     },

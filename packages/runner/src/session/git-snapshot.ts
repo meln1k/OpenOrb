@@ -2,6 +2,7 @@ import {
   isSafeGitReference,
   MAX_SESSION_GIT_SNAPSHOT_FILES,
   MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
+  MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
@@ -16,9 +17,9 @@ import { Effect } from "effect";
 import { AGENT_WORKSPACE, type AgentEnvironment } from "../environment/agent-environment.ts";
 import type { RunnerSessionMetadata } from "./store.ts";
 
-const MAX_STATUS_BYTES = 256 * 1024;
-const MAX_DIFF_CAPTURE_BYTES = MAX_STATUS_BYTES + MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES;
-const GIT_TIMEOUT = "15s";
+const MAX_STATUS_BYTES = 4 * 1024 * 1024;
+const MAX_DIFF_CAPTURE_BYTES = MAX_STATUS_BYTES + MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES;
+const GIT_TIMEOUT = "60s";
 
 interface CapturedCommand {
   readonly exitCode: number;
@@ -41,6 +42,15 @@ interface PatchesCapture {
   readonly unstaged: string;
   readonly stagedTruncated: boolean;
   readonly unstagedTruncated: boolean;
+}
+
+export interface GeneratedSessionGitSnapshot {
+  readonly snapshot: SessionGitSnapshot;
+  readonly patches?: {
+    readonly snapshotId: string;
+    readonly staged: string;
+    readonly unstaged: string;
+  };
 }
 
 type SessionGitTrackedFile = Extract<SessionGitFile, { readonly kind: "tracked" }>;
@@ -87,10 +97,21 @@ export function generateSessionGitSnapshot(
   environment: AgentEnvironment,
   metadata: RunnerSessionMetadata,
 ): Effect.Effect<SessionGitSnapshot, unknown> {
+  return generateSessionGitSnapshotBundle(environment, metadata).pipe(
+    Effect.map((generated) => generated.snapshot),
+  );
+}
+
+export function generateSessionGitSnapshotBundle(
+  environment: AgentEnvironment,
+  metadata: RunnerSessionMetadata,
+): Effect.Effect<GeneratedSessionGitSnapshot, unknown> {
   if (metadata.checkoutState !== "available" || metadata.baseCommit === undefined) {
-    return Effect.succeed(incompleteSnapshot(
-      "Git changes are unavailable because the session checkout is incomplete.",
-    ));
+    return Effect.succeed({
+      snapshot: incompleteSnapshot(
+        "Git changes are unavailable because the session checkout is incomplete.",
+      ),
+    });
   }
 
   return Effect.gen(function* () {
@@ -162,45 +183,62 @@ export function generateSessionGitSnapshot(
           : file
       ),
     };
-    const boundedPatches = boundPatches(
+    const fullPatches = boundFullPatches(
       parsedStaged.patch,
       `${parsedUnstaged.patch}${parsedUntracked.patch}`,
     );
-    const stagedTruncated = parsedStaged.truncated || boundedPatches.stagedTruncated;
+    const boundedPatches = boundPatches(fullPatches.staged, fullPatches.unstaged);
+    const stagedTruncated = parsedStaged.truncated || fullPatches.stagedTruncated;
     const unstagedTruncated = parsedUnstaged.truncated || parsedUntracked.truncated ||
-      boundedPatches.unstagedTruncated;
+      fullPatches.unstagedTruncated;
     const commandFailed = status.exitCode !== 0 || stagedDiff.exitCode !== 0 ||
       unstagedDiff.exitCode !== 0 || (untrackedCapture?.exitCode ?? 0) !== 0 ||
       !parsedStaged.valid || !parsedUnstaged.valid;
     const truncated = status.truncated || boundedFiles.truncated || stagedTruncated ||
       unstagedTruncated;
     const completeness = commandFailed ? "incomplete" as const : "complete" as const;
+    const snapshotId = yield* hashSnapshot(
+      parsedStatus,
+      sectionFilesWithUntrackedStates,
+      fullPatches.staged,
+      fullPatches.unstaged,
+    );
 
-    return new SessionGitSnapshot({
-      generatedAt: new Date().toISOString(),
-      ...(parsedStatus.branch === undefined ? {} : { branch: parsedStatus.branch }),
-      ...(parsedStatus.head === undefined ? {} : { head: parsedStatus.head }),
-      completeness,
-      stale: false,
-      truncated,
-      ...(commandFailed
-        ? { message: "Some Git changes could not be read. This snapshot may be incomplete." }
-        : truncated
-        ? { message: "The Git Snapshot was truncated to its safety limits." }
-        : {}),
-      sections: {
-        staged: {
-          files: sectionFilesWithUntrackedStates.staged,
-          patch: boundedPatches.staged,
-          truncated: stagedTruncated,
+    return {
+      snapshot: new SessionGitSnapshot({
+        snapshotId,
+        generatedAt: new Date().toISOString(),
+        ...(parsedStatus.branch === undefined ? {} : { branch: parsedStatus.branch }),
+        ...(parsedStatus.head === undefined ? {} : { head: parsedStatus.head }),
+        completeness,
+        stale: false,
+        truncated,
+        ...(commandFailed
+          ? { message: "Some Git changes could not be read. This snapshot may be incomplete." }
+          : truncated
+          ? { message: "The Git Snapshot was truncated to its safety limits." }
+          : {}),
+        sections: {
+          staged: {
+            files: sectionFilesWithUntrackedStates.staged,
+            patch: boundedPatches.staged,
+            fullPatchBytes: byteLength(fullPatches.staged),
+            truncated: stagedTruncated,
+          },
+          unstaged: {
+            files: sectionFilesWithUntrackedStates.unstaged,
+            patch: boundedPatches.unstaged,
+            fullPatchBytes: byteLength(fullPatches.unstaged),
+            truncated: unstagedTruncated,
+          },
         },
-        unstaged: {
-          files: sectionFilesWithUntrackedStates.unstaged,
-          patch: boundedPatches.unstaged,
-          truncated: unstagedTruncated,
-        },
+      }),
+      patches: {
+        snapshotId,
+        staged: fullPatches.staged,
+        unstaged: fullPatches.unstaged,
       },
-    });
+    };
   });
 }
 
@@ -246,7 +284,8 @@ export function sameGitSnapshotContents(
   left: SessionGitSnapshot,
   right: SessionGitSnapshot,
 ): boolean {
-  return left.completeness === right.completeness &&
+  return left.snapshotId === right.snapshotId &&
+    left.completeness === right.completeness &&
     left.branch === right.branch &&
     left.head === right.head &&
     left.truncated === right.truncated &&
@@ -647,6 +686,38 @@ function boundPatch(value: string): Utf8Capture {
   };
 }
 
+function boundFullPatches(stagedValue: string, unstagedValue: string): PatchesCapture {
+  const staged = sanitizePatch(stagedValue);
+  const unstaged = sanitizePatch(unstagedValue);
+  const stagedBytes = byteLength(staged);
+  const unstagedBytes = byteLength(unstaged);
+  if (stagedBytes + unstagedBytes <= MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES) {
+    return {
+      staged,
+      unstaged,
+      stagedTruncated: false,
+      unstagedTruncated: false,
+    };
+  }
+
+  const equalShare = Math.floor(MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES / 2);
+  let stagedBudget = Math.min(stagedBytes, equalShare);
+  let unstagedBudget = Math.min(unstagedBytes, equalShare);
+  let remaining = MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES - stagedBudget - unstagedBudget;
+  const stagedExtra = Math.min(remaining, stagedBytes - stagedBudget);
+  stagedBudget += stagedExtra;
+  remaining -= stagedExtra;
+  unstagedBudget += Math.min(remaining, unstagedBytes - unstagedBudget);
+  const boundedStaged = takeUtf8(staged, stagedBudget);
+  const boundedUnstaged = takeUtf8(unstaged, unstagedBudget);
+  return {
+    staged: boundedStaged.value,
+    unstaged: boundedUnstaged.value,
+    stagedTruncated: boundedStaged.truncated,
+    unstagedTruncated: boundedUnstaged.truncated,
+  };
+}
+
 function boundPatches(stagedValue: string, unstagedValue: string): PatchesCapture {
   const staged = boundPatch(stagedValue);
   const unstaged = boundPatch(unstagedValue);
@@ -774,7 +845,29 @@ function takeJsonStringBytes(value: string, maxBytes: number): Utf8Capture {
 }
 
 function jsonByteLength(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  return byteLength(JSON.stringify(value));
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function hashSnapshot(
+  status: ParsedGitStatus,
+  files: GitSnapshotFiles,
+  stagedPatch: string,
+  unstagedPatch: string,
+): Effect.Effect<string> {
+  const encoded = new TextEncoder().encode(
+    `${
+      JSON.stringify({ branch: status.branch, head: status.head, files })
+    }\0${stagedPatch}\0${unstagedPatch}`,
+  );
+  return Effect.promise(() => crypto.subtle.digest("SHA-256", encoded)).pipe(
+    Effect.map((digest) =>
+      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    ),
+  );
 }
 
 function incompleteSnapshot(message: string, stale = false): SessionGitSnapshot {

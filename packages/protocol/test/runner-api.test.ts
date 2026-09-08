@@ -241,7 +241,7 @@ Deno.test("session issues are categorized, bounded, and carry explicit recovery"
 });
 
 Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budgets", () => {
-  const largeFiles = Array.from({ length: 1_000 }, (_, index) => {
+  const largeFiles = Array.from({ length: 5_000 }, (_, index) => {
     const path = `${index}-${"x".repeat(220)}`;
     return {
       kind: "tracked" as const,
@@ -251,7 +251,7 @@ Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budget
       diffState: "available" as const,
     };
   });
-  assertEquals(largeFiles.length, 1_000);
+  assertEquals(largeFiles.length, 5_000);
   assert(
     byteLength(JSON.stringify(largeFiles)) > MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
   );
@@ -271,7 +271,7 @@ Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budget
   assertThrows(() => Schema.decodeUnknownSync(SessionGitSnapshot)(oversizedPatchSnapshot));
   assertEquals(parseSafe(sessionGitSnapshotSchema, oversizedPatchSnapshot).success, false);
 
-  const individuallyValidPatch = "\u001b".repeat(35_000);
+  const individuallyValidPatch = "\u001b".repeat(17_000);
   assert(
     byteLength(JSON.stringify(individuallyValidPatch)) <
       MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,

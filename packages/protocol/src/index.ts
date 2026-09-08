@@ -29,6 +29,15 @@ export {
   orbSizeSchema,
 } from "@/src/orb-size.ts";
 export {
+  IdentifyBulkRunner,
+  ReadSessionGitPatchChunk,
+  RunnerBulkApi,
+  SessionGitPatchChunk,
+  SessionGitPatchSection,
+  SessionGitSnapshotId,
+  WatchBulkRunner,
+} from "@/src/runner-bulk-api.ts";
+export {
   AbortSession,
   DeleteSession,
   IdentifyRunner,

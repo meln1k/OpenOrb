@@ -86,7 +86,7 @@ Deno.test("operations documentation records the OO-024 recovery contract and rel
   const rootConfiguration = await Deno.readTextFile("deno.json");
   const runnerConfiguration = await Deno.readTextFile("packages/runner/deno.json");
   assert(release.includes('id: "mvp-6"'));
-  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 15"));
+  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 16"));
   for (const pin of ["2.9.5", "0.12.0", "0.84.2", "3.0.0-beta.10"]) {
     assert(
       operations.includes(pin) &&

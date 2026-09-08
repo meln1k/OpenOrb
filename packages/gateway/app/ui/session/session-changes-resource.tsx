@@ -3,7 +3,7 @@ import {
   sessionGitSnapshotSchema,
 } from "../../../../protocol/src/browser-session-git-snapshot.ts";
 import { tryAsync, trySync } from "../../../../result/src/index.ts";
-import { object, parseSafe, string } from "remix/data-schema";
+import { boolean, number, object, parseSafe, string } from "remix/data-schema";
 import { type Handle, type RemixNode, TypedEventTarget } from "remix/ui";
 
 import { routes } from "@/app/routes.ts";
@@ -17,6 +17,16 @@ import {
 } from "@/app/ui/session/session-page-controller.tsx";
 
 const errorResponseSchema = object({ error: string() }, { unknownKeys: "error" });
+const patchChunkSchema = object({
+  snapshotId: string(),
+  section: string(),
+  offset: number(),
+  bytes: string(),
+  nextOffset: number(),
+  done: boolean(),
+}, { unknownKeys: "error" });
+
+class GitPatchChunkError extends Error {}
 
 export type LoadedSessionChanges = {
   readonly snapshot: SessionGitSnapshotData;
@@ -32,6 +42,11 @@ export interface SessionChangesProjection {
 
 interface SessionChangesEventMap {
   readonly change: Event;
+}
+
+interface PatchLoad {
+  readonly snapshotId: string;
+  readonly controller: AbortController;
 }
 
 export interface SessionChangesViewOwner {
@@ -50,6 +65,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     loadError: undefined,
     operationError: undefined,
   };
+  #patchLoad: PatchLoad | undefined;
   #refreshInFlight = false;
   #refreshPending = true;
 
@@ -58,6 +74,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     this.#csrfToken = csrfToken;
     this.#sessionId = sessionId;
     this.#signal = signal;
+    signal.addEventListener("abort", () => this.#cancelPatchLoad(), { once: true });
   }
 
   get projection(): SessionChangesProjection {
@@ -211,7 +228,21 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     }
 
     const snapshot = parsed.value;
-    const preparation = await this.#prepareSnapshotChanges(snapshot);
+    const bulkPending = snapshot.snapshotId !== undefined &&
+      (["staged", "unstaged"] as const).some((section) =>
+        (snapshot.sections[section].fullPatchBytes ?? 0) >
+          new TextEncoder().encode(snapshot.sections[section].patch).byteLength
+      );
+    const displayedSnapshot = bulkPending
+      ? {
+        ...snapshot,
+        sections: {
+          staged: { ...snapshot.sections.staged, patch: "" },
+          unstaged: { ...snapshot.sections.unstaged, patch: "" },
+        },
+      }
+      : snapshot;
+    const preparation = await this.#prepareSnapshotChanges(displayedSnapshot);
     if (this.#signal.aborted) return;
     this.#projection = {
       ...this.#projection,
@@ -222,6 +253,142 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
       },
     };
     this.#notify();
+    if (bulkPending) this.#startPatchLoad(snapshot);
+    else this.#cancelPatchLoad();
+  }
+
+  #startPatchLoad(snapshot: SessionGitSnapshotData): void {
+    const snapshotId = snapshot.snapshotId;
+    if (
+      snapshotId === undefined || this.#signal.aborted ||
+      this.#patchLoad?.snapshotId === snapshotId
+    ) return;
+
+    this.#cancelPatchLoad();
+    const controller = new AbortController();
+    this.#patchLoad = { snapshotId, controller };
+    void this.#loadFullPatches(snapshot, controller);
+  }
+
+  #cancelPatchLoad(): void {
+    this.#patchLoad?.controller.abort();
+    this.#patchLoad = undefined;
+  }
+
+  async #loadFullPatches(
+    snapshot: SessionGitSnapshotData,
+    controller: AbortController,
+  ): Promise<void> {
+    const signal = controller.signal;
+    // Keep browser-side cleanup parseable by Safari, which does not support `using`.
+    try {
+      const snapshotId = snapshot.snapshotId;
+      if (snapshotId === undefined) return;
+      const [patches, patchError] = await tryAsync(
+        (async () => ({
+          staged: await this.#fetchPatch(
+            snapshotId,
+            "staged",
+            snapshot.sections.staged.fullPatchBytes ?? 0,
+            signal,
+          ),
+          unstaged: await this.#fetchPatch(
+            snapshotId,
+            "unstaged",
+            snapshot.sections.unstaged.fullPatchBytes ?? 0,
+            signal,
+          ),
+        }))(),
+        () => true,
+      );
+      if (patchError !== undefined) {
+        if (signal.aborted) return;
+        const loaded = this.#projection.loaded;
+        if (!this.#signal.aborted && loaded?.snapshot.snapshotId === snapshotId) {
+          this.#projection = {
+            ...this.#projection,
+            loaded: { ...loaded, renderError: "The full patch could not be loaded." },
+          };
+          this.#notify();
+        }
+        return;
+      }
+      if (signal.aborted) return;
+      const currentSnapshot = this.#projection.loaded?.snapshot;
+      if (currentSnapshot?.snapshotId !== snapshotId) return;
+      const hydrated: SessionGitSnapshotData = {
+        ...currentSnapshot,
+        sections: {
+          staged: { ...currentSnapshot.sections.staged, patch: patches.staged },
+          unstaged: { ...currentSnapshot.sections.unstaged, patch: patches.unstaged },
+        },
+      };
+      const preparation = await this.#prepareSnapshotChanges(hydrated);
+      if (signal.aborted || this.#projection.loaded?.snapshot.snapshotId !== snapshotId) return;
+      this.#projection = {
+        ...this.#projection,
+        loaded: {
+          snapshot: hydrated,
+          changes: preparation.changes,
+          renderError: preparation.error,
+        },
+      };
+      this.#notify();
+    } finally {
+      if (this.#patchLoad?.controller === controller) this.#patchLoad = undefined;
+    }
+  }
+
+  async #fetchPatch(
+    snapshotId: string,
+    section: "staged" | "unstaged",
+    expectedBytes: number,
+    signal: AbortSignal,
+  ): Promise<string> {
+    if (expectedBytes === 0) return "";
+    const chunks: Uint8Array[] = [];
+    let offset = 0;
+    while (offset < expectedBytes) {
+      const response = await fetch(
+        routes.api.sessions.gitPatchChunk.href({
+          sessionId: this.#sessionId,
+          snapshotId,
+          section,
+          offset: String(offset),
+        }),
+        {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+          signal,
+        },
+      );
+      if (!response.ok) throw new GitPatchChunkError("Git patch chunk unavailable");
+      const parsed = parseSafe(patchChunkSchema, await response.json());
+      if (
+        !parsed.success || parsed.value.snapshotId !== snapshotId ||
+        parsed.value.section !== section || parsed.value.offset !== offset ||
+        !Number.isSafeInteger(parsed.value.nextOffset) || parsed.value.nextOffset <= offset ||
+        parsed.value.nextOffset > expectedBytes
+      ) {
+        throw new GitPatchChunkError("Invalid Git patch chunk");
+      }
+      const bytes = Uint8Array.fromBase64(parsed.value.bytes);
+      if (offset + bytes.byteLength !== parsed.value.nextOffset) {
+        throw new GitPatchChunkError("Invalid Git patch chunk length");
+      }
+      chunks.push(bytes);
+      offset = parsed.value.nextOffset;
+      if (parsed.value.done !== (offset === expectedBytes)) {
+        throw new GitPatchChunkError("Invalid Git patch completion state");
+      }
+    }
+    const combined = new Uint8Array(expectedBytes);
+    let cursor = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, cursor);
+      cursor += chunk.byteLength;
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(combined);
   }
 
   async #requestRefresh(): Promise<void> {

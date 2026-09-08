@@ -66,6 +66,13 @@ export default createController(routes.api.runners, {
         headers: { Upgrade: "websocket" },
       });
     },
+
+    connectBulk() {
+      return new Response("WebSocket upgrade required.", {
+        status: 426,
+        headers: { Upgrade: "websocket" },
+      });
+    },
   },
 });
 

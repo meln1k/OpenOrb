@@ -6,6 +6,7 @@
     ".": "./src/index.ts",
     "./browser-session-git-snapshot": "./src/browser-session-git-snapshot.ts",
     "./browser-session-events": "./src/browser-session-events.ts",
+    "./runner-bulk-api": "./src/runner-bulk-api.ts",
     "./runner-api": "./src/runner-api.ts",
     "./runner-api-limits": "./src/runner-api-limits.ts"
   },

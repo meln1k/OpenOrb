@@ -3,7 +3,7 @@ import type { SessionProvisioningStage } from "@openorb/protocol/runner-api";
 
 import { makeGitSnapshotCoordinator } from "../git-snapshot-coordinator.ts";
 import { makeGitSnapshotSynchronizer } from "../git-snapshot-synchronizer.ts";
-import { generateSessionGitSnapshot } from "../git-snapshot.ts";
+import { generateSessionGitSnapshotBundle } from "../git-snapshot.ts";
 import type {
   CommandHandler,
   PersistentActorContext,
@@ -67,7 +67,7 @@ export function makeSessionBehavior(
       sessionId,
       store,
       generate: (environment, metadata) =>
-        generateSessionGitSnapshot(environment, metadata).pipe(
+        generateSessionGitSnapshotBundle(environment, metadata).pipe(
           Effect.tapError(recordGitSnapshotIssue),
         ),
       publishUpdated: (correlationId) => publish(correlationId, { type: "git.snapshot.updated" }),

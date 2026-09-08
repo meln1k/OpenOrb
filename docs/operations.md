@@ -10,7 +10,7 @@ Treat the gateway, runner, and protocol as one release unit. Check out the same 
 SHA on the gateway and every source-installed runner; do not mix independently updated checkouts.
 Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as
 `OPENORB_REVISION` below. A standalone runner must come from the release for that same source
-revision. Protocol version **15** is source-owned and is not a separately upgradeable public API.
+revision. Protocol version **16** is source-owned and is not a separately upgradeable public API.
 
 The exact runtime and application pins in this release graph are:
 
@@ -21,7 +21,7 @@ The exact runtime and application pins in this release graph are:
 | OpenOrb guest image                    | `mvp-6` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi coding-agent direct imports | 0.84.2                                       |
 | Remix                                  | 3.0.0-beta.10                                |
-| Runner protocol                        | 14                                           |
+| Runner protocol                        | 16                                           |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
 build IDs, hashes, sizes, and immutable URLs are in

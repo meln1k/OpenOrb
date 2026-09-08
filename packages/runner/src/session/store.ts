@@ -6,7 +6,11 @@ import {
   SessionGitSnapshot,
   SessionId,
 } from "@openorb/protocol/runner-api";
-import { Context, Data, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import type {
+  SessionGitPatchSection,
+  SessionGitSnapshotId,
+} from "@openorb/protocol/runner-bulk-api";
+import { Context, Data, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 
 import type { AgentEnvironmentCheckpoint } from "../environment/agent-environment.ts";
 import { readPiSessionEvents } from "../harness/pi/history.ts";
@@ -28,6 +32,18 @@ const GitSnapshotStateJson = Schema.fromJsonString(gitSnapshotStateSchema);
 const strictSchemaOptions = { onExcessProperty: "error" } as const;
 
 export type RunnerSessionGitSnapshotState = typeof gitSnapshotStateSchema.Type;
+
+export interface RunnerSessionGitSnapshotPatches {
+  readonly snapshotId: SessionGitSnapshotId;
+  readonly staged: string;
+  readonly unstaged: string;
+}
+
+export interface RunnerSessionGitPatchChunk {
+  readonly bytes: Uint8Array;
+  readonly nextOffset: number;
+  readonly done: boolean;
+}
 
 export type SessionStorageDisposition = "created" | "existing";
 
@@ -131,7 +147,15 @@ export interface RunnerSessionStore {
   readonly writeGitSnapshotState: (
     sessionId: SessionId,
     state: RunnerSessionGitSnapshotState,
+    patches?: RunnerSessionGitSnapshotPatches,
   ) => Effect.Effect<void, RunnerSessionStoreError>;
+  readonly readGitSnapshotPatchChunk: (
+    sessionId: SessionId,
+    snapshotId: SessionGitSnapshotId,
+    section: SessionGitPatchSection,
+    offset: number,
+    maxBytes: number,
+  ) => Effect.Effect<RunnerSessionGitPatchChunk, RunnerSessionStoreError>;
   readonly getSessionSnapshot: (
     sessionId: SessionId,
   ) => Effect.Effect<RunnerSessionSnapshot, RunnerSessionStoreError>;
@@ -161,7 +185,9 @@ export function makeRunnerSessionStore(
       Effect.mapError(storeError("initialize", "The runner ID is invalid")),
     );
     const piSessionFile = paths.join("pi", "session.jsonl");
-    const gitSnapshotFile = paths.join("snapshots", "git-snapshot.json");
+    const gitSnapshotFile = "git-snapshot.json";
+    const gitPatchFile = (snapshotId: string, section: SessionGitPatchSection) =>
+      `git-snapshot-${snapshotId}-${section}.patch`;
     const sessionsPath = paths.join(config.workingDirectory, SESSIONS_DIRECTORY);
     const sessionDeletionsPath = paths.join(
       config.workingDirectory,
@@ -172,6 +198,7 @@ export function makeRunnerSessionStore(
       paths.join(sessionDeletionsPath, sessionId);
     const checkpointsPath = (sessionId: SessionId) =>
       paths.join(sessionPath(sessionId), CHECKPOINTS_DIRECTORY);
+    const snapshotsPath = (sessionId: SessionId) => paths.join(sessionPath(sessionId), "snapshots");
     const fileSystem = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(Effect.mapError(sessionDataError));
     yield* Effect.forEach(
@@ -320,12 +347,11 @@ export function makeRunnerSessionStore(
       sessionId: SessionId,
     ): Effect.Effect<RunnerSessionGitSnapshotState, RunnerSessionDataError> =>
       Effect.gen(function* () {
-        const metadata = yield* readMetadataValue(sessionId);
-        const snapshotsPath = paths.join(sessionPath(metadata.id), "snapshots");
-        yield* assertDirectory(fs, snapshotsPath, "Runner session snapshots directory");
+        const directory = snapshotsPath(sessionId);
+        yield* assertDirectory(fs, directory, "Runner session snapshots directory");
         return yield* readGitSnapshotFile(
           fs,
-          paths.join(sessionPath(metadata.id), gitSnapshotFile),
+          paths.join(directory, gitSnapshotFile),
         );
       });
 
@@ -508,7 +534,12 @@ export function makeRunnerSessionStore(
 
       cleanupCheckpoints: Effect.fn("RunnerSessionStore.cleanupCheckpoints")(
         function* (sessionId: SessionId, keepFile?: string) {
-          yield* cleanupDirectory(fs, paths, checkpointsPath(sessionId), keepFile);
+          yield* cleanupDirectory(
+            fs,
+            paths,
+            checkpointsPath(sessionId),
+            keepFile === undefined ? [] : [keepFile],
+          );
         },
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(
@@ -582,19 +613,54 @@ export function makeRunnerSessionStore(
       ),
 
       writeGitSnapshotState: Effect.fn("RunnerSessionStore.writeGitSnapshotState")(
-        function* (sessionId: SessionId, state: RunnerSessionGitSnapshotState) {
-          const metadata = yield* readMetadataValue(sessionId);
-          const snapshotsPath = paths.join(sessionPath(metadata.id), "snapshots");
-          yield* assertDirectory(fs, snapshotsPath, "Runner session snapshots directory");
+        function* (
+          sessionId: SessionId,
+          state: RunnerSessionGitSnapshotState,
+          patches?: RunnerSessionGitSnapshotPatches,
+        ) {
+          const directory = snapshotsPath(sessionId);
+          yield* assertDirectory(fs, directory, "Runner session snapshots directory");
           const parsed = yield* Schema.decodeUnknownEffect(gitSnapshotStateSchema)(
             state,
             strictSchemaOptions,
           ).pipe(Effect.mapError(sessionDataError));
+          if (patches !== undefined) {
+            if (parsed.snapshot.snapshotId !== patches.snapshotId) {
+              return yield* sessionDataError(
+                new Error("Git Snapshot patch identity does not match its manifest."),
+              );
+            }
+            yield* Effect.all([
+              writeAtomicBytes(
+                fs,
+                paths,
+                paths.join(directory, gitPatchFile(patches.snapshotId, "staged")),
+                new TextEncoder().encode(patches.staged),
+              ),
+              writeAtomicBytes(
+                fs,
+                paths,
+                paths.join(directory, gitPatchFile(patches.snapshotId, "unstaged")),
+                new TextEncoder().encode(patches.unstaged),
+              ),
+            ], { concurrency: "unbounded", discard: true });
+          }
           yield* writeGitSnapshotFile(
             fs,
             paths,
-            paths.join(sessionPath(metadata.id), gitSnapshotFile),
+            paths.join(directory, gitSnapshotFile),
             parsed,
+          );
+          const snapshotId = parsed.snapshot.snapshotId;
+          yield* cleanupDirectory(
+            fs,
+            paths,
+            directory,
+            snapshotId === undefined ? [gitSnapshotFile] : [
+              gitSnapshotFile,
+              gitPatchFile(snapshotId, "staged"),
+              gitPatchFile(snapshotId, "unstaged"),
+            ],
           );
         },
         (effect, sessionId) =>
@@ -602,6 +668,39 @@ export function makeRunnerSessionStore(
             storeError(
               "write-git-snapshot",
               `Could not write runner session ${sessionId} Git Snapshot`,
+            ),
+          )),
+      ),
+
+      readGitSnapshotPatchChunk: Effect.fn("RunnerSessionStore.readGitSnapshotPatchChunk")(
+        function* (sessionId, snapshotId, section, offset, maxBytes) {
+          const state = yield* readGitSnapshotValue(sessionId);
+          if (state.snapshot.snapshotId !== snapshotId) {
+            return yield* sessionDataError(new Error("The Git Snapshot is no longer current."));
+          }
+          const sectionBytes = state.snapshot.sections[section].fullPatchBytes;
+          if (sectionBytes === undefined || offset > sectionBytes) {
+            return yield* sessionDataError(new Error("The Git Snapshot patch range is invalid."));
+          }
+          const path = paths.join(snapshotsPath(sessionId), gitPatchFile(snapshotId, section));
+          return yield* Effect.scoped(Effect.gen(function* () {
+            yield* assertRegularFile(fs, path, "Runner session Git Snapshot patch file");
+            const file = yield* fs.open(path, { flag: "r" }).pipe(
+              Effect.mapError(sessionDataError),
+            );
+            yield* file.seek(offset, "start").pipe(Effect.mapError(sessionDataError));
+            const requested = Math.min(maxBytes, sectionBytes - offset);
+            const read = yield* file.readAlloc(requested).pipe(Effect.mapError(sessionDataError));
+            const bytes = Option.getOrElse(read, () => new Uint8Array());
+            const nextOffset = offset + bytes.byteLength;
+            return { bytes, nextOffset, done: nextOffset >= sectionBytes };
+          }));
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError(
+              "read-git-snapshot",
+              `Could not read runner session ${sessionId} Git Snapshot patch`,
             ),
           )),
       ),
@@ -707,14 +806,14 @@ function cleanupDirectory(
   fs: FileSystem.FileSystem,
   paths: Path.Path,
   directory: string,
-  keepFile?: string,
+  keepFiles: readonly string[],
 ): Effect.Effect<void, RunnerSessionDataError> {
   return Effect.gen(function* () {
     const entries = yield* fs.readDirectory(directory).pipe(Effect.mapError(sessionDataError));
     yield* Effect.forEach(
       entries,
       (entry) =>
-        entry === keepFile
+        keepFiles.includes(entry)
           ? Effect.void
           : fs.remove(paths.join(directory, entry), { recursive: true }).pipe(
             Effect.mapError(sessionDataError),
@@ -755,6 +854,22 @@ function writeGitSnapshotFile(
     ).pipe(Effect.mapError(sessionDataError));
     yield* writeAtomicMetadata(fs, paths, path, `${JSON.stringify(encoded, null, 2)}\n`);
   });
+}
+
+function writeAtomicBytes(
+  fs: FileSystem.FileSystem,
+  paths: Path.Path,
+  path: string,
+  contents: Uint8Array,
+): Effect.Effect<void, RunnerSessionDataError> {
+  const temporaryPath = `${path}.${crypto.randomUUID()}.tmp`;
+  return Effect.gen(function* () {
+    yield* writeNewPrivateFile(fs, temporaryPath, contents);
+    yield* fs.rename(temporaryPath, path).pipe(Effect.mapError(sessionDataError));
+    yield* syncDirectory(fs, paths.dirname(path));
+  }).pipe(
+    Effect.ensuring(fs.remove(temporaryPath, { force: true }).pipe(Effect.ignore)),
+  );
 }
 
 function writeAtomicMetadata(

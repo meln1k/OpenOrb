@@ -1,9 +1,10 @@
 import type { SessionGitSnapshot, SessionId } from "@openorb/protocol/runner-api";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
 import type { AgentEnvironment } from "../environment/agent-environment.ts";
 import {
-  type generateSessionGitSnapshot,
+  type GeneratedSessionGitSnapshot,
+  type generateSessionGitSnapshotBundle,
   sameGitSnapshotContents,
   staleGitSnapshot,
 } from "./git-snapshot.ts";
@@ -18,9 +19,16 @@ interface GitSnapshotSynchronizerOptions {
     readonly writeGitSnapshotState: (
       sessionId: SessionId,
       state: RunnerSessionGitSnapshotState,
+      patches?: {
+        readonly snapshotId: string;
+        readonly staged: string;
+        readonly unstaged: string;
+      },
     ) => Effect.Effect<void, unknown>;
   };
-  readonly generate: typeof generateSessionGitSnapshot;
+  readonly generate: (
+    ...args: Parameters<typeof generateSessionGitSnapshotBundle>
+  ) => Effect.Effect<SessionGitSnapshot | GeneratedSessionGitSnapshot, unknown>;
   readonly publishUpdated: (correlationId: string) => Effect.Effect<void, unknown>;
 }
 
@@ -47,13 +55,23 @@ export function makeGitSnapshotSynchronizer(
           onSuccess: (state) => state,
         }),
       );
-      const generated = yield* options.generate(environment, metadata).pipe(
-        Effect.catch(() => Effect.succeed(staleGitSnapshot(current?.snapshot))),
+      const generatedResult = yield* options.generate(environment, metadata).pipe(
+        Effect.catch(() => Effect.succeed({ snapshot: staleGitSnapshot(current?.snapshot) })),
       );
+      const generated: GeneratedSessionGitSnapshot = Predicate.hasProperty(
+          generatedResult,
+          "snapshot",
+        )
+        ? generatedResult
+        : { snapshot: generatedResult };
       let state = current;
-      if (!state || !sameGitSnapshotContents(state.snapshot, generated)) {
-        state = { snapshot: generated, notificationPending: true };
-        yield* options.store.writeGitSnapshotState(options.sessionId, state);
+      if (!state || !sameGitSnapshotContents(state.snapshot, generated.snapshot)) {
+        state = { snapshot: generated.snapshot, notificationPending: true };
+        yield* options.store.writeGitSnapshotState(
+          options.sessionId,
+          state,
+          generated.patches,
+        );
       }
       if (state.notificationPending) {
         yield* options.publishUpdated(correlationId);

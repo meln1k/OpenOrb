@@ -1,3 +1,4 @@
+import { runRunnerBulkRpc } from "./connection/bulk-rpc.ts";
 import { runRunnerRpc } from "./connection/rpc.ts";
 import { ensureGuestImage } from "./environment/gondolin/guest-image/installer.ts";
 import { gondolinAgentEnvironmentProviderLayer } from "./environment/gondolin/layer.ts";
@@ -262,14 +263,18 @@ export async function main(
           Effect.gen(function* () {
             const sessionSupervisor = yield* SessionSupervisor;
             getActiveSessionCount = sessionSupervisor.activeSessionCount;
-            return yield* runRunnerRpc({
+            const options = {
               gatewayUrl: identity.gatewayUrl,
               runnerId,
               runnerToken: identity.runnerToken,
               runnerVersion: RUNNER_VERSION,
               protocolVersion: RUNNER_PROTOCOL_VERSION,
               getCapacity,
-            });
+            };
+            return yield* Effect.all([
+              runRunnerRpc(options),
+              runRunnerBulkRpc(options),
+            ], { concurrency: "unbounded", discard: true });
           }),
         ).pipe(Effect.provide(runnerServicesLive)),
         { signal: shutdownController.signal },
