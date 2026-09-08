@@ -17,6 +17,7 @@ import {
   type WriteOperations,
   type WriteToolInput,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
 import { Effect } from "effect";
 import { posix } from "node:path";
 
@@ -45,6 +46,21 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
   const bash = createBashToolDefinition(AGENT_WORKSPACE, {
     operations: createBashOperations(environment),
     exposeSessionEnvironment: false,
+  });
+  const { prepareArguments: _prepareArguments, ...bashWithoutArgumentPreparation } = bash;
+  const boundedBash = defineTool({
+    ...bashWithoutArgumentPreparation,
+    description: bash.description.replace(
+      "Optionally provide a timeout in seconds.",
+      "A timeout in seconds is required.",
+    ),
+    parameters: Type.Object({
+      command: Type.String({ description: "Bash command to execute" }),
+      timeout: Type.Number({
+        description: "Required timeout in seconds",
+        exclusiveMinimum: 0,
+      }),
+    }),
   });
 
   return [
@@ -84,7 +100,7 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
         return edit.renderCall!(args, theme, { ...context, argsComplete: false });
       },
     }),
-    defineTool(bash),
+    boundedBash,
   ];
 }
 
@@ -227,12 +243,16 @@ function createWriteOperations(environment: AgentEnvironment): WriteOperations {
 
 function createBashOperations(environment: AgentEnvironment): BashOperations {
   return {
-    exec: (command, cwd, { onData, signal, timeout }) =>
-      Effect.runPromise(environment.runShell(command, {
+    async exec(command, cwd, { onData, signal, timeout }) {
+      if (timeout === undefined) {
+        throw new AgentEnvironmentError("Bash timeout is required.", undefined);
+      }
+      return await Effect.runPromise(environment.runShell(command, {
         cwd: resolveAgentPath(cwd),
         ...(signal === undefined ? {} : { signal }),
-        ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
+        timeoutSeconds: timeout,
         onOutput: (data) => Effect.sync(() => onData(Buffer.from(data))),
-      })),
+      }));
+    },
   };
 }

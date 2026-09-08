@@ -162,6 +162,42 @@ Deno.test("Pi edit preserves matching, line-ending, and all-or-nothing behavior"
   assertEquals(environment.files.get("/workspace/index.html"), afterFirstEdit);
 });
 
+Deno.test("Pi Bash requires and forwards a positive timeout", async () => {
+  const environment = new MemoryAgentEnvironment([]);
+  const bash = toolMap(environment).get("bash");
+  assert(bash);
+
+  // SAFETY: this checks the concrete Type.Object schema created by createPiTools.
+  const parameters = bash.parameters as {
+    required: string[];
+    properties: { timeout: { exclusiveMinimum: number } };
+  };
+  assertEquals(parameters.required, ["command", "timeout"]);
+  assertEquals(parameters.properties.timeout.exclusiveMinimum, 0);
+  const result = await bash.execute(
+    "bounded-bash",
+    { command: "printf bounded", timeout: 12 },
+    undefined,
+    undefined,
+    TOOL_CONTEXT,
+  );
+
+  assertEquals(environment.shellCalls, [{ command: "printf bounded", timeoutSeconds: 12 }]);
+  assertEquals(result.content, [{ type: "text", text: "bounded" }]);
+  await assertRejects(
+    () =>
+      bash.execute(
+        "missing-timeout",
+        { command: "sleep 300" },
+        undefined,
+        undefined,
+        TOOL_CONTEXT,
+      ),
+    Error,
+    "Bash timeout is required.",
+  );
+});
+
 Deno.test("concurrent Pi edits to the same guest path are serialized", async () => {
   const firstRead = Promise.withResolvers<void>();
   const releaseFirstRead = Promise.withResolvers<void>();
@@ -217,6 +253,7 @@ function toolMap(environment: AgentEnvironment) {
 
 class MemoryAgentEnvironment implements AgentEnvironment {
   readonly files: Map<string, string>;
+  readonly shellCalls: Array<{ command: string; timeoutSeconds: number }> = [];
   beforeRead: () => Promise<void> = () => Promise.resolve();
 
   constructor(files: Iterable<readonly [string, string]>) {
@@ -224,8 +261,16 @@ class MemoryAgentEnvironment implements AgentEnvironment {
   }
 
   run: AgentEnvironment["run"] = () => Effect.die("run is not available in this test");
-  runShell: AgentEnvironment["runShell"] = () =>
-    Effect.die("runShell is not available in this test");
+  runShell: AgentEnvironment["runShell"] = (command, options) => {
+    if (options.timeoutSeconds === undefined) {
+      return Effect.die("runShell requires a timeout in this test");
+    }
+    this.shellCalls.push({ command, timeoutSeconds: options.timeoutSeconds });
+    return options.onOutput(new TextEncoder().encode("bounded")).pipe(
+      Effect.mapError((cause) => new AgentEnvironmentError("Output failed.", cause)),
+      Effect.as({ exitCode: 0 }),
+    );
+  };
   readFile: AgentEnvironment["readFile"] = (path) =>
     Effect.promise(async () => {
       await this.beforeRead();

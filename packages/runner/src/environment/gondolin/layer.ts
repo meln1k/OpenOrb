@@ -27,6 +27,8 @@ export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
 
 export interface GondolinAgentEnvironmentConfig extends AgentEnvironmentOptions {
   readonly guestImage: GuestImage;
+  /** Use QEMU's software accelerator. Intended for tests on hosts without KVM. */
+  readonly softwareEmulation?: boolean;
 }
 
 interface RunningVm {
@@ -87,6 +89,7 @@ export function createGondolinAgentEnvironment(
         options.github,
         options.resumeCheckpoint,
         options.sessionId,
+        options.softwareEmulation,
       );
       yield* environment.start;
       return environment;
@@ -104,6 +107,7 @@ function makeGondolinEnvironment(
   github?: OpenOrbGitHubMediationOptions,
   resumeCheckpoint?: AgentEnvironmentCheckpoint,
   sessionId?: string,
+  softwareEmulation = false,
 ): Effect.Effect<GondolinEnvironmentInternals> {
   return Effect.gen(function* () {
     const gate = yield* Semaphore.make(1);
@@ -127,6 +131,14 @@ function makeGondolinEnvironment(
           (cause) => new AgentEnvironmentError("GitHub mediation could not be configured.", cause),
         )
         : undefined;
+      if (softwareEmulation && Deno.build.os === "linux") {
+        yield* Effect.logWarning("gondolin.software-emulation").pipe(
+          Effect.annotateLogs({
+            ...logAnnotations,
+            reason: "KVM is unavailable; QEMU is starting with TCG software emulation.",
+          }),
+        );
+      }
       const vm = yield* Effect.tryPromise({
         try: () => {
           installGondolinTlsCompatibility();
@@ -136,7 +148,7 @@ function makeGondolinEnvironment(
             memory: `${memoryMiB}M`,
             rootfs: { mode: "cow" },
             ...githubOptions,
-            sandbox: createOpenOrbGondolinSandboxOptions(imagePath),
+            sandbox: createOpenOrbGondolinSandboxOptions(imagePath, softwareEmulation),
             vfs: {
               mounts: {
                 [AGENT_WORKSPACE]: new RealFSProvider(workspacePath),
@@ -492,13 +504,16 @@ function makeGondolinEnvironment(
 
 export function createOpenOrbGondolinSandboxOptions(
   imagePath: NonNullable<NonNullable<VMOptions["sandbox"]>["imagePath"]>,
+  softwareEmulation = false,
 ): NonNullable<VMOptions["sandbox"]> {
   return {
     imagePath,
     // Pin Linux guests to host CPU features so VMX/SVM reaches the guest when host KVM nesting is
     // enabled. The temporary macOS harness continues to use HVF without nested virtualization.
     ...(Deno.build.os === "linux"
-      ? { vmm: "qemu" as const, accel: "kvm", cpu: "host" }
+      ? softwareEmulation
+        ? { vmm: "qemu" as const, accel: "tcg" }
+        : { vmm: "qemu" as const, accel: "kvm", cpu: "host" }
       : Deno.build.os === "darwin"
       ? { accel: "hvf" }
       : {}),

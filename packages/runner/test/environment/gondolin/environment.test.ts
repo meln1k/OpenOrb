@@ -17,7 +17,10 @@ import {
 import { resolveAgentPath } from "@/src/environment/agent-environment.ts";
 import { createOpenOrbPiSession } from "@/src/harness/pi/session.ts";
 import { createPiTools } from "@/src/harness/pi/tools.ts";
-import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
+import {
+  gondolinTestEnvironmentOptions,
+  installLocalGuestImage,
+} from "@/test/environment/gondolin/local-guest-image.ts";
 
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
@@ -38,6 +41,17 @@ Deno.test("Linux Gondolin VMs expose host CPU virtualization through KVM", () =>
     assertEquals(options.cpu, "host");
   } else if (Deno.build.os === "darwin") {
     assertEquals(options.accel, "hvf");
+    assertEquals(options.cpu, undefined);
+  }
+});
+
+Deno.test("Linux Gondolin VMs can explicitly use QEMU software emulation", () => {
+  const options = createOpenOrbGondolinSandboxOptions("/guest-image", true);
+
+  assertEquals(options.imagePath, "/guest-image");
+  if (Deno.build.os === "linux") {
+    assertEquals(options.vmm, "qemu");
+    assertEquals(options.accel, "tcg");
     assertEquals(options.cpu, undefined);
   }
 });
@@ -130,7 +144,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "shell timeouts bound waiting without replacing the VM or losing root and tmpfs state",
+  name: "shell timeouts bound retained output descriptors and preserve the VM",
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {
     const temporaryDirectory = await Deno.makeTempDir();
@@ -147,6 +161,29 @@ Deno.test({
     const runtime = opened.runtime;
     const shellOptions = { cwd: "/workspace", onOutput: () => Effect.void };
     try {
+      const largeChunkSize = 128 * 1024;
+      let foregroundOutput = "";
+      assertEquals(
+        (await withWatchdog(
+          Effect.runPromise(runtime.runShell(
+            `python3 -c 'import os,time; os.write(1,b"A"*${largeChunkSize}); time.sleep(0.2); os.write(2,b"B"*${largeChunkSize}); time.sleep(0.2); os.write(1,b"C"*${largeChunkSize})'`,
+            {
+              cwd: "/workspace",
+              onOutput: (data) =>
+                Effect.sync(() => foregroundOutput += new TextDecoder().decode(data)),
+            },
+          )),
+          10_000,
+          "Large foreground output did not settle",
+        )).exitCode,
+        0,
+      );
+      assertEquals(
+        foregroundOutput,
+        "A".repeat(largeChunkSize) + "B".repeat(largeChunkSize) +
+          "C".repeat(largeChunkSize),
+      );
+
       assertEquals(
         (await Effect.runPromise(runtime.runShell(
           "printf retained >/opt/timeout-root; printf retained >/tmp/timeout-tmp",
@@ -186,33 +223,131 @@ Deno.test({
           exitCode,
         );
       }
+
+      let retainedOutput = "";
+      const retainedError = await assertRejects(
+        () =>
+          withWatchdog(
+            Effect.runPromise(runtime.runShell(
+              [
+                'cd /workspace && export PATH="$HOME/.deno/bin:$PATH" &&',
+                "nohup bash -c 'exec -a openorb-and-list-child sleep 300' >/tmp/openorb-and-list.log 2>&1 &",
+                'echo "started pid $!"',
+                'printf %s "$!" >/tmp/openorb-and-list.pid',
+                "sleep 0.2",
+                "tail -30 /tmp/openorb-and-list.log",
+              ].join("\n"),
+              {
+                cwd: "/workspace",
+                timeoutSeconds: 0.5,
+                onOutput: (data) =>
+                  Effect.sync(() => retainedOutput += new TextDecoder().decode(data)),
+              },
+            )),
+            8_000,
+            "Retained output descriptors exceeded the host watchdog",
+          ),
+        Error,
+        "Stopped waiting after 2.5 seconds",
+      );
+      assertStringIncludes(retainedError.message, "The VM was preserved");
+      assertStringIncludes(retainedOutput, "started pid ");
+
+      let detachedOutput = "";
+      assertEquals(
+        (await withWatchdog(
+          Effect.runPromise(runtime.runShell(
+            [
+              "cd /workspace || exit 1",
+              "nohup bash -c 'exec -a openorb-detached-child sleep 300' </dev/null >/tmp/openorb-detached.log 2>&1 &",
+              'echo "$!"',
+              'printf %s "$!" >/tmp/openorb-detached.pid',
+            ].join("\n"),
+            {
+              cwd: "/workspace",
+              timeoutSeconds: 5,
+              onOutput: (data) =>
+                Effect.sync(() => detachedOutput += new TextDecoder().decode(data)),
+            },
+          )),
+          8_000,
+          "Correctly detached shell did not settle promptly",
+        )).exitCode,
+        0,
+      );
+      assert(/^\d+$/.test(detachedOutput.trim()), "Detached shell did not print its child PID");
+
       for (
-        const command of [
-          "sleep 30 &",
-          "bash -c 'trap \"\" TERM; sleep 30' & wait",
+        const [pidFile, processName] of [
+          ["/tmp/openorb-and-list.pid", "openorb-and-list-child"],
+          ["/tmp/openorb-detached.pid", "openorb-detached-child"],
         ]
       ) {
-        const started = performance.now();
-        await assertRejects(
-          () =>
-            Effect.runPromise(runtime.runShell(command, {
-              ...shellOptions,
-              timeoutSeconds: 0.5,
-            })),
-          Error,
-          "The VM was preserved; command descendants may still be running",
-        );
-        assert(performance.now() - started < 8_000, "Host deadline did not bound the wait");
         assertEquals(
-          await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id")),
-          bootId,
+          (await Effect.runPromise(runtime.runShell(
+            [
+              `pid=$(cat ${pidFile})`,
+              'kill -0 "$pid"',
+              `tr '\\0' ' ' </proc/$pid/cmdline | grep -q ${processName}`,
+            ].join("\n"),
+            shellOptions,
+          ))).exitCode,
+          0,
         );
-        for (const path of ["/opt/timeout-root", "/tmp/timeout-tmp"]) {
-          assertEquals(
-            new TextDecoder().decode(await Effect.runPromise(runtime.readFile(path))),
-            "retained",
-          );
-        }
+      }
+      assertEquals(
+        (await Effect.runPromise(runtime.runShell(
+          "kill $(cat /tmp/openorb-and-list.pid) $(cat /tmp/openorb-detached.pid)",
+          shellOptions,
+        ))).exitCode,
+        0,
+      );
+
+      let timeoutOutput = "";
+      const timeoutError = await assertRejects(
+        () =>
+          withWatchdog(
+            Effect.runPromise(runtime.runShell(
+              [
+                'setsid python3 -I -c $\'import os, signal, time\\nsignal.signal(signal.SIGHUP, signal.SIG_IGN)\\nopen("/tmp/openorb-timeout-output.ready", "w").close()\\nwhile True:\\n os.write(1, b"timeout-chunk")\\n time.sleep(0.02)\' &',
+                'printf %s "$!" >/tmp/openorb-timeout-output.pid',
+                "while test ! -e /tmp/openorb-timeout-output.ready; do sleep 0.01; done",
+              ].join("\n"),
+              {
+                cwd: "/workspace",
+                timeoutSeconds: 1,
+                onOutput: (data) =>
+                  Effect.sync(() => timeoutOutput += new TextDecoder().decode(data)),
+              },
+            )),
+            8_000,
+            "Host fallback did not bound continuing post-exit output",
+          ),
+        Error,
+        "Stopped waiting after 3 seconds",
+      );
+      assertStringIncludes(timeoutError.message, "The VM was preserved");
+      assertStringIncludes(timeoutOutput, "timeout-chunk");
+      assertEquals(
+        (await withWatchdog(
+          Effect.runPromise(runtime.runShell(
+            "kill -KILL $(cat /tmp/openorb-timeout-output.pid)",
+            shellOptions,
+          )),
+          8_000,
+          "The VM did not accept cleanup after the host fallback",
+        )).exitCode,
+        0,
+      );
+      assertEquals(
+        await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id")),
+        bootId,
+      );
+      for (const path of ["/opt/timeout-root", "/tmp/timeout-tmp"]) {
+        assertEquals(
+          new TextDecoder().decode(await Effect.runPromise(runtime.readFile(path))),
+          "retained",
+        );
       }
 
       const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
@@ -220,15 +355,36 @@ Deno.test({
       const controller = new AbortController();
       await assertRejects(
         () =>
-          Effect.runPromise(
-            runtime.runShell("printf ready; sleep 30", {
-              cwd: "/workspace",
-              signal: controller.signal,
-              onOutput: () => Effect.sync(() => controller.abort()),
-            }).pipe(Effect.provide(Logger.layer([logger]))),
+          withWatchdog(
+            Effect.runPromise(
+              runtime.runShell(
+                [
+                  "bash -c 'while test ! -s /tmp/openorb-abort-output.pid; do sleep 0.01; done; exec -a openorb-abort-output sh -c \"while :; do printf abort-chunk; sleep 0.05; done\"' &",
+                  'printf %s "$!" >/tmp/openorb-abort-output.pid',
+                ].join("\n"),
+                {
+                  cwd: "/workspace",
+                  signal: controller.signal,
+                  onOutput: () => Effect.sync(() => controller.abort()),
+                },
+              ).pipe(Effect.provide(Logger.layer([logger]))),
+            ),
+            8_000,
+            "Abort did not settle continuing post-exit output",
           ),
         Error,
         "Command aborted",
+      );
+      assertEquals(
+        (await withWatchdog(
+          Effect.runPromise(runtime.runShell(
+            "kill -KILL $(cat /tmp/openorb-abort-output.pid)",
+            shellOptions,
+          )),
+          8_000,
+          "The VM did not accept cleanup after Abort",
+        )).exitCode,
+        0,
       );
       const recovered = await Effect.runPromise(
         runtime.run(["/bin/true"]).pipe(Effect.provide(Logger.layer([logger]))),
@@ -310,6 +466,7 @@ Deno.test({
       sessionLabel: "openorb checkpoint cycle test",
       cpuCount: 2,
       memoryMiB: 2 * 1024,
+      ...gondolinTestEnvironmentOptions(),
     };
     let opened = await openRuntime(runtimeOptions);
 
@@ -461,6 +618,7 @@ Deno.test({
       memoryMiB: 2 * 1024,
     });
     const runtime = opened.runtime;
+    const softwareEmulation = gondolinTestEnvironmentOptions().softwareEmulation === true;
     const piSessionFile = `${temporaryDirectory}/pi-session.jsonl`;
     await Deno.writeTextFile(piSessionFile, "");
     const pi = await Effect.runPromise(Effect.scoped(createOpenOrbPiSession({
@@ -501,8 +659,10 @@ Deno.test({
           ". /etc/os-release",
           'test "$ID" = debian && test "$VERSION_ID" = 13',
           "test -x /usr/sbin/modprobe",
-          'nested_kvm_module=; if grep -qw svm /proc/cpuinfo; then nested_kvm_module=kvm_amd; elif grep -qw vmx /proc/cpuinfo; then nested_kvm_module=kvm_intel; fi; if [ "$(uname -m)" = x86_64 ]; then test -n "$nested_kvm_module"; modprobe "$nested_kvm_module"; test -c /dev/kvm; fi',
-          "if test -c /dev/kvm; then python3 -c 'import fcntl, os; fd = os.open(\"/dev/kvm\", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12'; fi",
+          ...(softwareEmulation ? [] : [
+            'nested_kvm_module=; if grep -qw svm /proc/cpuinfo; then nested_kvm_module=kvm_amd; elif grep -qw vmx /proc/cpuinfo; then nested_kvm_module=kvm_intel; fi; if [ "$(uname -m)" = x86_64 ]; then test -n "$nested_kvm_module"; modprobe "$nested_kvm_module"; test -c /dev/kvm; fi',
+            "if test -c /dev/kvm; then python3 -c 'import fcntl, os; fd = os.open(\"/dev/kvm\", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12'; fi",
+          ]),
           'for command in agent-browser apt-get autoconf automake bash bun bunx bzip2 certutil corepack curl dpkg-buildpackage ffmpeg file find fzf g++ gcc gh git hg ip jq less lsof magick make modprobe node npm npx openssl patch perl ping pip pip3 pkg-config pnpm pnpx python python3 rg sed socat ssh svn tar time tmux unzip vim websocat wget xz yarn yarnpkg zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
           "test -s /etc/ssl/certs/ca-certificates.crt",
           'for command in chromium chromium-browser google-chrome; do ! command -v "$command" >/dev/null; done',
@@ -533,6 +693,7 @@ Deno.test({
           "test ! -e /usr/sbin/sshd",
           "printf image-ok",
         ].join("\n"),
+        timeout: 600,
       });
       assertStringIncludes(
         imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
@@ -640,6 +801,7 @@ Deno.test({
             `if [ -n "\${OPENORB_HOST_PROCESS_MARKER:-}" ]; then printf host > "\$OPENORB_HOST_PROCESS_MARKER"; fi\n` +
             `printf guest > guest-process-marker\n` +
             `printf first; sleep 0.2; printf second; sleep 0.2; printf ":\$${OPENORB_GUEST_MARKER}"`,
+          timeout: 10,
         },
         undefined,
         (update) => {
@@ -655,7 +817,7 @@ Deno.test({
       await assertRejects(() => Deno.stat(hostProcessMarker), Deno.errors.NotFound);
 
       const linkError = await assertRejects(
-        () => bash.execute("bash-link", { command: "cat relative-escape" }),
+        () => bash.execute("bash-link", { command: "cat relative-escape", timeout: 10 }),
         Error,
       );
       assert(!linkError.message.includes("runner-host-secret"));
@@ -676,6 +838,7 @@ Deno.test({
       );
       const afterTimeout = await bash.execute("bash-after-timeout", {
         command: "printf recovered",
+        timeout: 10,
       });
       assertStringIncludes(
         afterTimeout.content[0]?.type === "text" ? afterTimeout.content[0].text : "",
@@ -685,13 +848,16 @@ Deno.test({
       const abortController = new AbortController();
       const abortPromise = bash.execute(
         "bash-abort",
-        { command: "sleep 1; printf too-late > aborted-marker" },
+        { command: "sleep 1; printf too-late > aborted-marker", timeout: 10 },
         abortController.signal,
       );
       setTimeout(() => abortController.abort(), 100);
       await assertRejects(() => abortPromise, Error, "Command aborted");
       // Abort abandons the wait; descendants are allowed to finish in the retained VM.
-      const afterAbort = await bash.execute("bash-after-abort", { command: "printf reusable" });
+      const afterAbort = await bash.execute("bash-after-abort", {
+        command: "printf reusable",
+        timeout: 10,
+      });
       assertStringIncludes(
         afterAbort.content[0]?.type === "text" ? afterAbort.content[0].text : "",
         "reusable",
@@ -711,10 +877,31 @@ async function openRuntime(
 ) {
   const scope = await Effect.runPromise(Scope.make());
   const runtime = await Effect.runPromise(
-    createGondolinAgentEnvironment(options).pipe(Effect.provideService(Scope.Scope, scope)),
+    createGondolinAgentEnvironment({
+      ...options,
+      ...gondolinTestEnvironmentOptions(),
+    }).pipe(Effect.provideService(Scope.Scope, scope)),
   );
   return {
     runtime,
     close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
   };
+}
+
+async function withWatchdog<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

@@ -9,7 +9,10 @@ import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
 import { createGondolinAgentEnvironment } from "@/src/environment/gondolin/layer.ts";
 import { createOpenOrbPiSession, type OpenOrbPiSession } from "@/src/harness/pi/session.ts";
 import { createPiTools } from "@/src/harness/pi/tools.ts";
-import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
+import {
+  gondolinTestEnvironmentOptions,
+  installLocalGuestImage,
+} from "@/test/environment/gondolin/local-guest-image.ts";
 
 const PUBLIC_REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 const WRONG_REPOSITORY_URL = "https://github.com/octocat/Hello-World.git";
@@ -130,6 +133,7 @@ Deno.test({
           "git -C repository diff >/tmp/openorb-hostile-diff 2>&1 || true",
           "printf hostile-metadata-contained",
         ].join("\n"),
+        timeout: 30,
       });
       await assertRejects(() => Deno.lstat(hostMarkerPath), Deno.errors.NotFound);
     } finally {
@@ -234,6 +238,7 @@ Deno.test({
           "tr '\\0' ' ' < \"/proc/$child/cmdline\"",
           'kill "$child" 2>/dev/null || true',
         ].join("\n"),
+        timeout: 30,
       });
       const surfaceText = textOf(surfaces);
       assert(surfaceText.includes("placeholder-present"));
@@ -457,7 +462,10 @@ async function openRuntime(
 ) {
   const scope = await Effect.runPromise(Scope.make());
   const runtime = await Effect.runPromise(
-    createGondolinAgentEnvironment(options).pipe(Effect.provideService(Scope.Scope, scope)),
+    createGondolinAgentEnvironment({
+      ...options,
+      ...gondolinTestEnvironmentOptions(),
+    }).pipe(Effect.provideService(Scope.Scope, scope)),
   );
   return {
     runtime,

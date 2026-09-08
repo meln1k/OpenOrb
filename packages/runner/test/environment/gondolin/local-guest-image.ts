@@ -7,6 +7,7 @@ import {
   GUEST_IMAGE_RELEASE,
   type GuestImageRelease,
 } from "@/src/environment/gondolin/guest-image/release.ts";
+import type { GondolinAgentEnvironmentConfig } from "@/src/environment/gondolin/layer.ts";
 
 interface LocalGuestImageMetadata {
   releaseId: string;
@@ -14,6 +15,28 @@ interface LocalGuestImageMetadata {
   manifestSha256: string;
   sizeBytes: number;
   sha256: string;
+}
+
+let softwareEmulation: boolean | undefined;
+
+export function gondolinTestEnvironmentOptions(): Pick<
+  GondolinAgentEnvironmentConfig,
+  "softwareEmulation"
+> {
+  if (softwareEmulation === undefined) {
+    softwareEmulation = Deno.build.os === "linux" && !canAccessKvm();
+  }
+  return softwareEmulation ? { softwareEmulation: true } : {};
+}
+
+function canAccessKvm(): boolean {
+  try {
+    const device = Deno.openSync("/dev/kvm", { read: true, write: true });
+    device.close();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function installLocalGuestImage(

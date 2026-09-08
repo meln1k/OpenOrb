@@ -22,7 +22,10 @@ import { generateSessionGitSnapshot, updateSessionGitFile } from "@/src/session/
 import { sessionJournalLayer } from "@/src/session/persistent-actor/session-journal.ts";
 import { sessionMetadata } from "@/src/session/actor/state.ts";
 import { RunnerSessionStore, runnerSessionStoreLayer } from "@/src/session/store.ts";
-import { installLocalGuestImage } from "@/test/environment/gondolin/local-guest-image.ts";
+import {
+  gondolinTestEnvironmentOptions,
+  installLocalGuestImage,
+} from "@/test/environment/gondolin/local-guest-image.ts";
 import { makeSessionFixture } from "./session-fixture.ts";
 
 const platformLayer = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
@@ -544,6 +547,7 @@ Deno.test({
         },
         cpuCount: 1,
         memoryMiB: 1024,
+        ...gondolinTestEnvironmentOptions(),
       }).pipe(Effect.provideService(Scope.Scope, scope)),
     );
 
