@@ -48,7 +48,7 @@ new DefaultResourceLoader({});
 Deno.test("runner code cannot hide Pi APIs behind re-exports or dynamic imports", () => {
   const source = `
 export { createAgentSession } from "@earendil-works/pi-coding-agent";
-export * from "npm:@earendil-works/pi-coding-agent@0.84.2";
+export * from "npm:@earendil-works/pi-coding-agent@0.85.1";
 void import(\`npm:@earendil-works/pi-coding-agent\`);
 `;
 

@@ -19,7 +19,7 @@ The exact runtime and application pins in this release graph are:
 | Deno / standalone runner denort        | 2.9.5                                        |
 | Gondolin                               | 0.12.0                                       |
 | OpenOrb guest image                    | `mvp-6` (Debian snapshot `20260803T000000Z`) |
-| Pi AI / Pi coding-agent direct imports | 0.84.2                                       |
+| Pi AI / Pi coding-agent direct imports | 0.85.1                                       |
 | Remix                                  | 3.0.0-beta.10                                |
 | Runner protocol                        | 16                                           |
 
