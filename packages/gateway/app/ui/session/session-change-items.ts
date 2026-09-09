@@ -7,15 +7,30 @@ export type SessionChangeDiffStats = {
   readonly deletions: number;
 };
 
+export type SessionChangeMutationPaths = {
+  readonly path: string;
+  readonly previousPath?: string;
+};
+
 export type PreparedSessionChangeRow = {
   readonly key: string;
   readonly label: string;
   readonly state: SessionChangeFileState;
   readonly startsSection: boolean;
+  readonly pending?: SessionChangeMutationPaths;
   readonly file: SessionGitFileData;
   readonly fileDiff?: FileDiffMetadata;
   readonly fallback: string;
   readonly stats?: SessionChangeDiffStats;
+};
+
+export type PendingSessionChangeIntent = {
+  readonly action: "stage" | "unstage";
+  readonly generation: number;
+  readonly path: string;
+  readonly previousPath?: string;
+  readonly ambiguousDiff: boolean;
+  readonly row: PreparedSessionChangeRow;
 };
 
 export type SessionChangeItemRecord = {
@@ -62,6 +77,67 @@ export function toggleSessionChangeItem(
   return createCodeViewItem(row, !item.collapsed, (item.version ?? 0) + 1);
 }
 
+export function projectPendingSessionChanges(
+  rows: readonly PreparedSessionChangeRow[],
+  pending: Iterable<PendingSessionChangeIntent>,
+): readonly PreparedSessionChangeRow[] {
+  let projected = [...rows];
+  const intents = Array.from(pending).sort((left, right) => left.generation - right.generation);
+  for (const intent of intents) {
+    const matching = projected.filter((row) =>
+      sessionChangeFileMatches(row.file, intent.path, intent.previousPath)
+    );
+    const targetState = intent.action === "stage" ? "staged" as const : "unstaged" as const;
+    const sourceState = targetState === "staged" ? "unstaged" : "staged";
+    const target = matching.find((row) => row.state === targetState) ??
+      matching.find((row) => row.state === sourceState) ?? intent.row;
+    const optimistic = optimisticSessionChangeRow(
+      target,
+      targetState,
+      intent,
+      intent.ambiguousDiff || matching.length > 1,
+    );
+    projected = [
+      ...projected.filter((row) =>
+        !sessionChangeFileMatches(row.file, intent.path, intent.previousPath)
+      ),
+      optimistic,
+    ];
+  }
+
+  return (["unstaged", "staged"] as const).flatMap((state) =>
+    projected.filter((row) => row.state === state)
+      .sort((left, right) => left.file.displayPath.localeCompare(right.file.displayPath))
+      .map((row, index) => ({
+        ...row,
+        label: state === "staged" ? "Staged" : "Unstaged",
+        startsSection: index === 0,
+      }))
+  );
+}
+
+function optimisticSessionChangeRow(
+  target: PreparedSessionChangeRow,
+  state: SessionChangeFileState,
+  intent: Pick<PendingSessionChangeIntent, "path" | "previousPath">,
+  ambiguousDiff: boolean,
+): PreparedSessionChangeRow {
+  const optimistic: PreparedSessionChangeRow = {
+    ...target,
+    key: sessionChangeRowKey(state, target.file),
+    label: state === "staged" ? "Staged" : "Unstaged",
+    state,
+    startsSection: false,
+    pending: {
+      path: intent.path,
+      ...(intent.previousPath === undefined ? {} : { previousPath: intent.previousPath }),
+    },
+  };
+  if (!ambiguousDiff) return optimistic;
+  const { fileDiff: _fileDiff, stats: _stats, ...withoutDiff } = optimistic;
+  return { ...withoutDiff, fallback: "Updating the combined diff…" };
+}
+
 export function isRenderableSessionChange(
   row: PreparedSessionChangeRow,
 ): row is PreparedSessionChangeRow & { readonly fileDiff: FileDiffMetadata } {
@@ -82,6 +158,38 @@ export function filePreviousPath(file: SessionGitFileData): string | undefined {
 
 export function filePreviousDisplayPath(file: SessionGitFileData): string | undefined {
   return "previousDisplayPath" in file ? file.previousDisplayPath : undefined;
+}
+
+export function sessionChangeMutationPaths(
+  row: PreparedSessionChangeRow,
+): SessionChangeMutationPaths {
+  if (row.pending !== undefined) return row.pending;
+  const previousPath = filePreviousPath(row.file);
+  return {
+    path: row.file.path,
+    ...(previousPath === undefined ? {} : { previousPath }),
+  };
+}
+
+export function sessionChangeFileMatches(
+  file: SessionGitFileData,
+  path: string,
+  intentPreviousPath?: string,
+): boolean {
+  const previousPath = filePreviousPath(file);
+  return sessionChangeMutationPathsMatch(
+    { path: file.path, ...(previousPath === undefined ? {} : { previousPath }) },
+    { path, ...(intentPreviousPath === undefined ? {} : { previousPath: intentPreviousPath }) },
+  );
+}
+
+export function sessionChangeMutationPathsMatch(
+  left: SessionChangeMutationPaths,
+  right: SessionChangeMutationPaths,
+): boolean {
+  return left.path === right.path || left.path === right.previousPath ||
+    left.previousPath === right.path ||
+    left.previousPath !== undefined && left.previousPath === right.previousPath;
 }
 
 function createCodeViewItem(
@@ -118,6 +226,7 @@ function sameSessionChangeRow(
   return left.label === right.label &&
     left.state === right.state &&
     left.startsSection === right.startsSection &&
+    JSON.stringify(left.pending) === JSON.stringify(right.pending) &&
     left.fallback === right.fallback &&
     JSON.stringify(left.file) === JSON.stringify(right.file) &&
     JSON.stringify(left.stats) === JSON.stringify(right.stats) &&

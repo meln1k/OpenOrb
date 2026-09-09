@@ -5,8 +5,8 @@
 OpenOrb is an open-source, self-hosted environment for running Pi coding-agent sessions on your own
 compute. Its browser gateway stores projects and encrypted credentials, enrolls runners, streams
 conversations, and presents Git changes. Each runner executes untrusted session work inside a
-Gondolin QEMU/KVM virtual machine and connects outbound to the gateway; runners need no inbound
-port.
+Gondolin QEMU virtual machine, using KVM acceleration when available, and connects outbound to the
+gateway; runners need no inbound port.
 
 Each user belongs to a **Workspace**, which owns projects, credentials, runners, and sessions.
 Passwords and Git author identity belong to the user. The session's project filesystem is a
@@ -34,7 +34,7 @@ Both Linux options use the same hardened systemd unit and the same persistent
 - Deno **2.9.5 or newer** (stable releases) for the gateway, development, and source runners;
   CI and release builds remain pinned to 2.9.5 for reproducibility
 - PostgreSQL for the gateway
-- QEMU/KVM and `/dev/kvm` for runners
+- QEMU for runners; KVM and `/dev/kvm` are recommended for acceleration but optional
 - glibc 2.27+ Linux on x86-64 or ARM64 for production runners
 
 OpenOrb does not invoke the Node.js, npm, or pnpm CLIs. Deno resolves the pinned npm and JSR
@@ -190,9 +190,11 @@ build ID, architecture, and internal checksums before use.
 - Identity, sessions, and completed checkpoints survive service and installation-mode changes.
 - There is no default CPU, memory, or session-count ceiling.
 - Deno has no FFI or `--allow-all` permission and can execute only the native QEMU suite.
-- QEMU, not Deno, opens `/dev/kvm`; systemd grants only that device.
+- QEMU uses KVM when `/dev/kvm` is accessible and otherwise falls back to slower TCG software
+  emulation with a startup warning; systemd grants QEMU access only to the optional KVM device.
 - Linux guests receive the host CPU virtualization features and attempt to initialize their own
-  nested `/dev/kvm`; unavailable nesting is reported without rejecting the session VM.
+  nested `/dev/kvm` when host KVM is active; unavailable nesting is reported without rejecting the
+  session VM.
 - The runner uses one authenticated outbound WebSocket and reconnects automatically.
 
 ## Development

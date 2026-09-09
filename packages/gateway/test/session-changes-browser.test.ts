@@ -30,6 +30,10 @@ Deno.test({
     const offsets: number[] = [];
     let inFlight = 0;
     let maxInFlight = 0;
+    const mutationResponse = Promise.withResolvers<Response>();
+    const mutationReceived = Promise.withResolvers<void>();
+    let mutationRequests = 0;
+    let snapshotRequests = 0;
 
     const uiHref = await assetServer.getHref(import.meta.resolve("remix/ui"));
     const jsxHref = await assetServer.getHref(import.meta.resolve("remix/ui/jsx-runtime"));
@@ -44,9 +48,14 @@ Deno.test({
 
         function HydrationProbe(handle) {
           const changes = handle.context.get(SessionChangesScope);
+          const page = handle.context.get(SessionPageScope);
           handle.queueTask(() => {
             const update = () => handle.update();
+            const refresh = () => page.apply({ type: "git.snapshot.updated" });
             changes.addEventListener("change", update, { signal: handle.signal });
+            globalThis.addEventListener("openorb-test-git-refresh", refresh, {
+              signal: handle.signal
+            });
           });
           return () => {
             const patch = changes.projection.loaded?.snapshot.sections.unstaged.patch ?? "";
@@ -84,9 +93,11 @@ Deno.test({
         return await assetServer.fetch(request) ?? new Response(null, { status: 404 });
       }
       if (url.pathname.endsWith("/git-snapshot")) {
+        snapshotRequests++;
+        const empty = snapshotRequests === 2;
         return Response.json({
           snapshotId,
-          generatedAt: "browser-bulk-snapshot",
+          generatedAt: `browser-bulk-snapshot-${snapshotRequests}`,
           branch: "openorb/browser-bulk-test",
           head: "b".repeat(40),
           completeness: "complete",
@@ -95,7 +106,7 @@ Deno.test({
           sections: {
             staged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
             unstaged: {
-              files: [{
+              files: empty ? [] : [{
                 kind: "tracked",
                 path: "src/large.ts",
                 displayPath: "src/large.ts",
@@ -103,7 +114,7 @@ Deno.test({
                 diffState: "available",
               }],
               patch: "",
-              fullPatchBytes: patchBytes.byteLength,
+              fullPatchBytes: empty ? 0 : patchBytes.byteLength,
               truncated: false,
             },
           },
@@ -125,6 +136,11 @@ Deno.test({
           nextOffset: end,
           done: end === patchBytes.byteLength,
         });
+      }
+      if (url.pathname.endsWith("/changes") && request.method === "POST") {
+        mutationRequests++;
+        mutationReceived.resolve();
+        return await mutationResponse.promise;
       }
       return new Response(html, { headers: { "Content-Type": "text/html" } });
     });
@@ -167,9 +183,31 @@ Deno.test({
       );
       assertEquals(errors, []);
 
+      await page.getByLabel("Stage src/large.ts").click();
+      const optimisticAction = page.getByLabel("Unstage src/large.ts");
+      await optimisticAction.waitFor({ state: "visible" });
+      assertEquals(await optimisticAction.getAttribute("aria-busy"), "true");
+      assertEquals(await optimisticAction.isEnabled(), true);
+      await mutationReceived.promise;
+      assertEquals(mutationRequests, 1);
+
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("openorb-test-git-refresh")));
+      await page.waitForFunction(() =>
+        document.querySelector("#hydration-probe")?.getAttribute("data-patch-bytes") === "0"
+      );
+      assertEquals(await optimisticAction.isVisible(), true);
+      assertEquals(await optimisticAction.getAttribute("aria-busy"), "true");
+      assertEquals(await optimisticAction.isEnabled(), true);
+
       const screenshot = Deno.env.get("OPENORB_BROWSER_TEST_SCREENSHOT");
       if (screenshot !== undefined) await page.screenshot({ path: screenshot });
+
+      mutationResponse.resolve(new Response(null, { status: 204 }));
+      await page.getByLabel("Stage src/large.ts").waitFor({ state: "visible" });
+      await page.waitForFunction(() => document.querySelector("[aria-busy='true']") === null);
+      assertEquals(await page.locator("[aria-busy='true']").count(), 0);
     } finally {
+      mutationResponse.resolve(new Response(null, { status: 204 }));
       await context.close();
       await browser.close();
       await server.close();

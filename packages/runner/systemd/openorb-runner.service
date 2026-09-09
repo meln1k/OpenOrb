@@ -3,13 +3,11 @@ Description=OpenOrb coding runner
 Documentation=https://github.com/meln1k/openorb/blob/main/docs/runner-installation.md
 Wants=network-online.target
 After=network-online.target
-ConditionPathExists=/dev/kvm
 
 [Service]
 Type=simple
 User=openorb-runner
 Group=openorb-runner
-SupplementaryGroups=kvm
 WorkingDirectory=/var/lib/openorb-runner
 StateDirectory=openorb-runner
 StateDirectoryMode=0700

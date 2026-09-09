@@ -27,7 +27,7 @@ export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
 
 export interface GondolinAgentEnvironmentConfig extends AgentEnvironmentOptions {
   readonly guestImage: GuestImage;
-  /** Use QEMU's software accelerator. Intended for tests on hosts without KVM. */
+  /** Use QEMU's software accelerator when KVM is unavailable. */
   readonly softwareEmulation?: boolean;
 }
 
@@ -44,18 +44,21 @@ interface GondolinEnvironmentInternals extends AgentEnvironment {
 
 export function makeGondolinAgentEnvironmentProvider(
   guestImage: GuestImage,
+  softwareEmulation = false,
 ): AgentEnvironmentProvider {
   return AgentEnvironmentProvider.of({
-    make: (options) => createGondolinAgentEnvironment({ ...options, guestImage }),
+    make: (options) =>
+      createGondolinAgentEnvironment({ ...options, guestImage, softwareEmulation }),
   });
 }
 
 export function gondolinAgentEnvironmentProviderLayer(
   guestImage: GuestImage,
+  softwareEmulation = false,
 ): Layer.Layer<AgentEnvironmentProvider> {
   return Layer.succeed(
     AgentEnvironmentProvider,
-    makeGondolinAgentEnvironmentProvider(guestImage),
+    makeGondolinAgentEnvironmentProvider(guestImage, softwareEmulation),
   );
 }
 
@@ -172,7 +175,7 @@ function makeGondolinEnvironment(
       const probe = yield* Effect.exit(Effect.tryPromise({
         try: async () => {
           let nestedKvmWarning: string | undefined;
-          if (Deno.build.os === "linux") {
+          if (Deno.build.os === "linux" && !softwareEmulation) {
             const nestedKvmProbe = await vm.exec([
               "/bin/sh",
               "-lc",

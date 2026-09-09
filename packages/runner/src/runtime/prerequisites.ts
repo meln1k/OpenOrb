@@ -201,7 +201,7 @@ export async function checkRunnerPrerequisites(
     );
 
     if (platform === "linux") {
-      kvm = await inspectKvm(qemuExecutable, probeKvm, errors);
+      kvm = await inspectKvm(qemuExecutable, probeKvm, warnings);
     }
   }
 
@@ -302,7 +302,7 @@ async function inspectExecutable(
 async function inspectKvm(
   qemuExecutable: string,
   probeKvm: (executable: string) => Promise<void>,
-  errors: string[],
+  warnings: string[],
 ): Promise<PrerequisiteReport["kvm"]> {
   const [, error] = await tryAsync(
     probeKvm(qemuExecutable),
@@ -313,7 +313,7 @@ async function inspectKvm(
       ),
   );
   if (error !== undefined) {
-    errors.push(kvmAccessError(error));
+    warnings.push(kvmUnavailableWarning(error));
     return undefined;
   }
   return { device: KVM_DEVICE, accessible: true };
@@ -492,10 +492,11 @@ function qemuImgError(platform: RunnerPlatform): string {
   return `QEMU disk tooling is unavailable. ${install} and ensure \`qemu-img\` is on PATH.`;
 }
 
-function kvmAccessError(error: unknown): string {
-  return "KVM acceleration is unavailable at /dev/kvm. Enable hardware virtualization, load the " +
-    "host KVM modules, install QEMU/KVM, and grant the openorb-runner service user read/write " +
-    `access through the kvm group.${errorReason(error)}`;
+function kvmUnavailableWarning(error: unknown): string {
+  return "KVM acceleration is unavailable at /dev/kvm; the runner will use slower QEMU TCG " +
+    "software emulation. To enable KVM, enable hardware virtualization, load the host KVM " +
+    "modules, and grant the openorb-runner service user read/write access through the kvm group." +
+    errorReason(error);
 }
 
 function errorReason(error: unknown): string {

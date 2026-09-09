@@ -248,7 +248,10 @@ export async function main(
         runnerId: identity.runnerId,
       }).pipe(Layer.provideMerge(sessionJournalLive));
       const sessionEventsLive = sessionEventsLayer.pipe(Layer.provideMerge(sessionStoreLive));
-      const environmentLive = gondolinAgentEnvironmentProviderLayer(guestImage);
+      const environmentLive = gondolinAgentEnvironmentProviderLayer(
+        guestImage,
+        report.platform === "linux" && report.kvm === undefined,
+      );
       const harnessLive = piAgentHarnessLayer().pipe(Layer.provideMerge(sessionEventsLive));
       const sessionActorLive = sessionActorFactoryLayer().pipe(
         Layer.provideMerge(Layer.merge(harnessLive, environmentLive)),

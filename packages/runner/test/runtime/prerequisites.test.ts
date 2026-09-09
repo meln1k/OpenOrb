@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertMatch } from "@std/assert";
+import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
 
 import {
   checkCheckpointCandidateCapacity,
@@ -69,7 +69,7 @@ Deno.test("checks QEMU without KVM on the temporary macOS harness", async () => 
   assertMatch(report.warnings[0] ?? "", /temporary macOS development harness/);
 });
 
-Deno.test("reports actionable QEMU and KVM errors", async () => {
+Deno.test("keeps missing QEMU fatal while reporting KVM fallback as a warning", async () => {
   const report = await checkRunnerPrerequisites(linuxHost({
     probeExecutable(executable) {
       return executable === "qemu-system-x86_64"
@@ -81,8 +81,21 @@ Deno.test("reports actionable QEMU and KVM errors", async () => {
 
   assertEquals(report.ok, false);
   assertMatch(report.errors.join("\n"), /apt install qemu-system-x86/);
-  assertMatch(report.errors.join("\n"), /\/dev\/kvm/);
-  assertMatch(report.errors.join("\n"), /kvm group/);
+  assertNotMatch(report.errors.join("\n"), /\/dev\/kvm/);
+  assertMatch(report.warnings.join("\n"), /\/dev\/kvm/);
+  assertMatch(report.warnings.join("\n"), /QEMU TCG software emulation/);
+});
+
+Deno.test("accepts Linux without KVM and warns that software emulation is slower", async () => {
+  const report = await checkRunnerPrerequisites(linuxHost({
+    probeKvm: () => Promise.reject(new Deno.errors.NotFound("missing /dev/kvm")),
+  }));
+
+  assertEquals(report.ok, true);
+  assertEquals(report.kvm, undefined);
+  assertEquals(report.errors, []);
+  assertMatch(report.warnings.join("\n"), /runner will use slower QEMU TCG software emulation/);
+  assertMatch(report.warnings.join("\n"), /missing \/dev\/kvm/);
 });
 
 Deno.test("accepts stable Deno releases at or above the minimum", async () => {

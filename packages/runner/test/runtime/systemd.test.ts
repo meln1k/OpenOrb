@@ -16,12 +16,13 @@ const sourceOverrides = [
   },
 ] as const;
 
-Deno.test("systemd unit isolates the runner while preserving KVM access", async () => {
+Deno.test("systemd unit isolates the runner while allowing optional KVM access", async () => {
   const unit = await Deno.readTextFile(unitUrl);
 
   assertMatch(unit, /^User=openorb-runner$/m);
   assertMatch(unit, /^Group=openorb-runner$/m);
-  assertMatch(unit, /^SupplementaryGroups=kvm$/m);
+  assertNotMatch(unit, /^ConditionPathExists=\/dev\/kvm$/m);
+  assertNotMatch(unit, /^SupplementaryGroups=kvm$/m);
   assertMatch(unit, /^WorkingDirectory=\/var\/lib\/openorb-runner$/m);
   assertMatch(unit, /^StateDirectory=openorb-runner$/m);
   assertMatch(unit, /^StateDirectoryMode=0700$/m);

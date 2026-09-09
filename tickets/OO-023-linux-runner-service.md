@@ -10,7 +10,7 @@ The same runner used by the temporary macOS harness installs and runs as a nativ
 ## Scope
 
 - Package the OO-001A standalone `openorb-runner-linux-x64` and `openorb-runner-linux-arm64` executables plus checksums; target glibc 2.27+ Linux only. Runner hosts require neither Node.js nor an installed Deno executable.
-- Implement `doctor` checks for architecture/kernel, glibc (with actionable musl rejection), QEMU/KVM, virtualization access, CPU/memory/disk, gateway reachability, verified pinned checkpoint-compatible image assets with a `manifest.json` build ID, and a writable data directory with space for checkpoint candidates.
+- Implement `doctor` checks for architecture/kernel, glibc (with actionable musl rejection), QEMU, optional KVM acceleration, CPU/memory/disk, gateway reachability, verified pinned checkpoint-compatible image assets with a `manifest.json` build ID, and a writable data directory with space for checkpoint candidates. Warn and use QEMU TCG software emulation when KVM is unavailable.
 - Add systemd unit/install instructions under a dedicated service user. Set `WorkingDirectory=/var/lib/openorb-runner`, preserve the no-`--data-dir` rule, and secure runner data/token permissions.
 - Apply systemd hardening compatible with KVM/QEMU, including `NoNewPrivileges`, narrowly selected `ProtectSystem`/`ReadWritePaths`, and explicit device access. QEMU children are outside Deno's permission sandbox.
 - Configure runner-wide maximum per-VM CPU/memory without imposing a session-count limit.

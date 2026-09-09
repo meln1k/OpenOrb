@@ -191,7 +191,7 @@ Do not create additional abstraction packages until they are justified by workin
 - A temporary macOS development harness may run the same runner workflow locally; macOS is not a supported release target
 - Standalone Deno-compiled GNU Linux x86-64/ARM64 executable; runner hosts need neither Node.js nor an installed Deno executable
 - glibc 2.27 or newer for the current Deno 2.9.5 artifacts; reject musl with an actionable error
-- QEMU/KVM and pinned Gondolin 0.12.0
+- QEMU and pinned Gondolin 0.12.0; use KVM when available and warn before falling back to TCG
 - One outbound JSON WebSocket to the gateway carrying the schema-defined Effect RPC API
 - systemd service for normal deployment
 

@@ -3,10 +3,10 @@
 OpenOrb runners are native systemd services for glibc Linux on x86-64 and ARM64. Choose one launch
 mode:
 
-| Mode                | Use it when                                     | Runner-host requirements               |
-| ------------------- | ----------------------------------------------- | -------------------------------------- |
-| Standalone artifact | You want the smallest production dependency set | QEMU/KVM; no Deno, Node.js, or Git     |
-| Source checkout     | You want to update by pulling the repository    | QEMU/KVM, Git, and Deno 2.9.5 or newer |
+| Mode                | Use it when                                     | Runner-host requirements           |
+| ------------------- | ----------------------------------------------- | ---------------------------------- |
+| Standalone artifact | You want the smallest production dependency set | QEMU; no Deno, Node.js, or Git     |
+| Source checkout     | You want to update by pulling the repository    | QEMU, Git, and Deno 2.9.5 or newer |
 
 Both modes use the same hardened `openorb-runner.service`, persistent state directory, identity, and
 session files. Switching modes does not require re-enrollment because state remains under
@@ -14,8 +14,8 @@ session files. Switching modes does not require re-enrollment because state rema
 
 ## 1. Prepare the host
 
-Enable hardware virtualization and expose `/dev/kvm`. OpenOrb requires glibc 2.27 or newer; musl
-distributions, including Alpine Linux, are unsupported. On Debian or Ubuntu:
+OpenOrb requires glibc 2.27 or newer; musl distributions, including Alpine Linux, are unsupported.
+Install QEMU on Debian or Ubuntu:
 
 ```sh
 sudo apt update
@@ -27,13 +27,20 @@ esac
 
 sudo useradd --system --user-group --home-dir /var/lib/openorb-runner \
   --shell /usr/sbin/nologin openorb-runner
-sudo usermod --append --groups kvm openorb-runner
 sudo install -d -o openorb-runner -g openorb-runner -m 0700 /var/lib/openorb-runner
 ```
 
 If the service account already exists, omit `useradd`. The runner needs outbound HTTP/HTTPS access
 to the gateway, GitHub, provider APIs, and package registries used inside sessions. It opens no
 inbound port and needs no VPN.
+
+KVM is recommended but optional. When `/dev/kvm` is unavailable or inaccessible, the runner logs a
+startup warning and uses slower QEMU TCG software emulation. To enable acceleration when the host
+supports it, expose `/dev/kvm` and add the service account to the host's KVM group:
+
+```sh
+sudo usermod --append --groups kvm openorb-runner
+```
 
 Nested KVM is optional. To expose `/dev/kvm` inside session VMs on x86-64, verify that the
 applicable host setting reports `Y` or `1`:
@@ -185,10 +192,10 @@ source_runner=(
 "${source_runner[@]}" doctor --gateway "$gateway"
 ```
 
-`doctor` checks architecture, kernel, the exact Deno/denort version, glibc, native QEMU/KVM
+`doctor` checks architecture, kernel, the exact Deno/denort version, glibc, QEMU, optional KVM
 initialization, host resources, gateway health, data-directory ownership and free space, and the
 pinned checkpoint-compatible guest image. QEMU—not Deno—opens `/dev/kvm`. Fix every reported error
-before continuing.
+before continuing; a KVM warning means sessions will use slower TCG software emulation.
 
 Copy the enrollment PSK from **Settings → Runners**, read it without echo, and run the matching
 foreground command:
@@ -223,9 +230,9 @@ sudo systemctl status openorb-runner.service
 sudo journalctl --unit openorb-runner.service --follow
 ```
 
-The unit uses `WorkingDirectory=/var/lib/openorb-runner`, grants QEMU access only to `/dev/kvm`, and
-makes the rest of the host filesystem read-only. It stores no credential, accepts no `--data-dir`,
-and applies no default CPU, memory, or session-count ceiling.
+The unit uses `WorkingDirectory=/var/lib/openorb-runner`, grants QEMU access only to the optional
+`/dev/kvm` device, and makes the rest of the host filesystem read-only. It stores no credential,
+accepts no `--data-dir`, and applies no default CPU, memory, or session-count ceiling.
 
 Verify the effective unit and state ownership:
 

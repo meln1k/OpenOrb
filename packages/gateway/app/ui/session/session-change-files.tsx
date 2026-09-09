@@ -9,13 +9,13 @@ import { createIconElement } from "../components/icons.tsx";
 import { RemixCodeView, type RemixCodeViewProps } from "../components/remix-code-view.tsx";
 import {
   filePreviousDisplayPath,
-  filePreviousPath,
   isRenderableSessionChange,
   type PreparedSessionChangeRow,
   reconcileSessionChangeItems,
   type SessionChangeDiffStats,
   type SessionChangeFileState,
   type SessionChangeItemRecord,
+  sessionChangeMutationPaths,
   sessionChangeRowKey,
   toggleSessionChangeItem,
 } from "./session-change-items.ts";
@@ -76,7 +76,6 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
   let items: readonly CodeViewItem[] = [];
   let rowsById = new Map<string, PreparedSessionChangeRow>();
   let itemRecords: ReadonlyMap<string, SessionChangeItemRecord> = new Map();
-  let mutationKey: string | undefined;
 
   const renderCustomHeader = (
     _input: unknown,
@@ -85,7 +84,7 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
     const row = rowsById.get(context.item.id);
     return row === undefined
       ? undefined
-      : createSessionChangeHeader(row, context.item.collapsed ?? false, mutationKey);
+      : createSessionChangeHeader(row, context.item.collapsed ?? false);
   };
 
   const codeViewOptions: CodeViewOptions<undefined> = {
@@ -99,25 +98,6 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
     renderCustomHeader,
   };
 
-  const setMutationButtons = (host: HTMLElement) => {
-    for (
-      const button of host.querySelectorAll<HTMLButtonElement>("[data-git-file-action]")
-    ) {
-      button.disabled = mutationKey !== undefined;
-      const active = button.dataset.changeFileId === mutationKey;
-      if (active) button.setAttribute("aria-busy", "true");
-      else button.removeAttribute("aria-busy");
-      button.querySelector("[data-slot='git-file-action-idle']")?.toggleAttribute(
-        "hidden",
-        active,
-      );
-      button.querySelector("[data-slot='git-file-action-spinner']")?.toggleAttribute(
-        "hidden",
-        !active,
-      );
-    }
-  };
-
   const prepareItems = () => {
     const rows = handle.props.rows;
     if (rows === preparedRows) return;
@@ -126,23 +106,6 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
     items = reconciled.items;
     itemRecords = reconciled.records;
     preparedRows = rows;
-  };
-
-  const updateFile = async (
-    action: "stage" | "unstage",
-    row: PreparedSessionChangeRow,
-    host: HTMLElement,
-  ) => {
-    if (mutationKey !== undefined) return;
-    mutationKey = row.key;
-    setMutationButtons(host);
-    // Keep browser-side cleanup parseable by Safari, which does not support `using`.
-    try {
-      await handle.props.onUpdate(action, row.file.path, filePreviousPath(row.file));
-    } finally {
-      mutationKey = undefined;
-      setMutationButtons(host);
-    }
   };
 
   const handleViewerClick: NonNullable<RemixCodeViewProps["onViewerClick"]> = (event, viewer) => {
@@ -169,7 +132,8 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
       return;
     }
     if (command !== "stage" && command !== "unstage") return;
-    void updateFile(command, row, host);
+    const paths = sessionChangeMutationPaths(row);
+    void handle.props.onUpdate(command, paths.path, paths.previousPath);
   };
 
   return () => {
@@ -190,7 +154,6 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
 function createSessionChangeHeader(
   row: PreparedSessionChangeRow,
   collapsed: boolean,
-  mutationKey?: string,
 ): HTMLElement {
   const { file, stats } = row;
   const action = row.state === "staged" ? "unstage" as const : "stage" as const;
@@ -281,19 +244,17 @@ function createSessionChangeHeader(
   actionButton.dataset.gitFileAction = action;
   actionButton.setAttribute("aria-label", `${actionLabel} ${file.displayPath}`);
   actionButton.title = `${actionLabel} ${file.displayPath}`;
-  actionButton.disabled = mutationKey !== undefined;
-  if (mutationKey === row.key) actionButton.setAttribute("aria-busy", "true");
+  if (row.pending) actionButton.setAttribute("aria-busy", "true");
 
   const idle = document.createElement("span");
   idle.dataset.slot = "git-file-action-idle";
-  idle.hidden = mutationKey === row.key;
   idle.append(createIconElement(action === "stage" ? "circle-plus" : "circle-minus", 17));
   actionButton.append(idle);
 
   const spinner = document.createElement("span");
   spinner.dataset.slot = "git-file-action-spinner";
   spinner.setAttribute("aria-hidden", "true");
-  spinner.hidden = mutationKey !== row.key;
+  spinner.hidden = !row.pending;
   actionButton.append(spinner);
   header.append(actionButton);
   root.append(header);
@@ -545,6 +506,7 @@ const codeViewStyle = css({
     background: "color-mix(in oklab, #9a6700 7%, transparent)",
   },
   "& [data-git-file-action]": {
+    position: "relative",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
@@ -564,15 +526,16 @@ const codeViewStyle = css({
     background: "var(--background)",
     outline: "none",
   },
-  "& [data-git-file-action]:disabled": { opacity: 0.5, cursor: "pointer" },
-  "& [data-git-file-action][aria-busy='true']": { opacity: 1 },
+  "& [data-git-file-action][aria-busy='true'] [data-slot='git-file-action-idle']": {
+    opacity: 0.45,
+  },
   "& [data-slot='git-file-action-idle']": { display: "inline-flex" },
-  "& [data-slot='git-file-action-idle'][hidden]": { display: "none" },
   "& [data-slot='git-file-action-spinner']": {
+    position: "absolute",
     display: "block",
-    width: "17px",
-    height: "17px",
-    border: "2px solid color-mix(in oklab, currentColor 35%, transparent)",
+    width: "23px",
+    height: "23px",
+    border: "1.5px solid color-mix(in oklab, currentColor 28%, transparent)",
     borderTopColor: "currentColor",
     borderRadius: "999px",
     animation: "openorb-git-file-action-spin 800ms linear infinite",

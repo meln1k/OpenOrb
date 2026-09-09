@@ -83,9 +83,9 @@ an unchanged source/lock graph with Deno 2.9.5 must produce identical bytes and 
 The executables embed denort. Smoke-test each on its native architecture in a glibc 2.27+
 environment that has neither a `node` nor a `deno` executable. `--version` must report the matching
 architecture, Deno 2.9.5, and `standalone: true`. `doctor --gateway <origin>` must install and
-verify the pinned guest image, validate the host and gateway, fail actionably when QEMU/KVM is
-absent, and reject musl hosts. Perform this release validation manually on native x86-64 and ARM64
-hosts when CI capacity is unavailable.
+verify the pinned guest image, validate the host and gateway, fail actionably when QEMU is absent,
+warn and select TCG software emulation when KVM is unavailable, and reject musl hosts. Perform this
+release validation manually on native x86-64 and ARM64 hosts when CI capacity is unavailable.
 
 ## Source checkout alternative
 
@@ -104,7 +104,7 @@ from the checkout and are intentionally not standalone release artifacts. See
 The compile command bakes in:
 
 - read/write access relative to the canonical runner working directory; QEMU, rather than Deno,
-  opens `/dev/kvm` and proves acceleration access;
+  opens the optional `/dev/kvm` device and otherwise uses TCG software emulation;
 - read-only access to standard system-library directories so `doctor` can inspect the host glibc
   version without FFI or another subprocess;
 - unrestricted network access for approved public web access;

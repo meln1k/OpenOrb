@@ -3,8 +3,10 @@ import { assert, assertEquals, assertStrictEquals } from "@std/assert";
 import { type FileDiffMetadata, parsePatchFiles } from "@pierre/diffs";
 import {
   type PreparedSessionChangeRow,
+  projectPendingSessionChanges,
   reconcileSessionChangeItems,
   type SessionChangeItemRecord,
+  sessionChangeMutationPaths,
   sessionChangeRowKey,
   toggleSessionChangeItem,
 } from "@/app/ui/session/session-change-items.ts";
@@ -104,6 +106,120 @@ Deno.test("an existing destination keeps its own collapse state", () => {
   const moved = reconcileSessionChangeItems([nextStaged], expandedUnstaged);
 
   assertEquals(moved.items[0]?.collapsed, true);
+});
+
+Deno.test("pending file intents optimistically move the latest logical file state", () => {
+  const unstaged = changeRow("unstaged", "src/value.ts", "before", "after", "unstaged");
+  const staged = projectPendingSessionChanges([unstaged], [{
+    action: "stage",
+    ambiguousDiff: false,
+    generation: 1,
+    path: unstaged.file.path,
+    row: unstaged,
+  }]);
+
+  assertEquals(staged.length, 1);
+  assertEquals(staged[0]?.state, "staged");
+  assertEquals(staged[0]?.pending, { path: "src/value.ts" });
+  assertStrictEquals(staged[0]?.fileDiff, unstaged.fileDiff);
+
+  const optimisticStaged = staged[0];
+  if (optimisticStaged === undefined) throw new Error("Missing optimistic staged row.");
+  const latest = projectPendingSessionChanges([unstaged], [{
+    action: "unstage",
+    ambiguousDiff: false,
+    generation: 2,
+    path: unstaged.file.path,
+    row: optimisticStaged,
+  }]);
+
+  assertEquals(latest.length, 1);
+  assertEquals(latest[0]?.state, "unstaged");
+  assertEquals(latest[0]?.pending, { path: "src/value.ts" });
+});
+
+Deno.test("pending intents do not present either half of a combined diff as authoritative", () => {
+  const staged = changeRow("staged", "src/value.ts", "base", "index", "staged");
+  const unstaged = changeRow("unstaged", "src/value.ts", "index", "worktree", "unstaged");
+
+  const projected = projectPendingSessionChanges([unstaged, staged], [{
+    action: "stage",
+    ambiguousDiff: true,
+    generation: 1,
+    path: unstaged.file.path,
+    row: unstaged,
+  }]);
+
+  assertEquals(projected.length, 1);
+  assertEquals(projected[0]?.state, "staged");
+  assertEquals(projected[0]?.fileDiff, undefined);
+  assertEquals(projected[0]?.stats, undefined);
+  assertEquals(projected[0]?.fallback, "Updating the combined diff…");
+
+  const retained = projectPendingSessionChanges([], [{
+    action: "stage",
+    ambiguousDiff: true,
+    generation: 1,
+    path: unstaged.file.path,
+    row: unstaged,
+  }]);
+  assertEquals(retained.length, 1);
+  assertEquals(retained[0]?.fileDiff, undefined);
+  assertEquals(retained[0]?.stats, undefined);
+  assertEquals(retained[0]?.fallback, "Updating the combined diff…");
+});
+
+Deno.test("pending intent uses newer confirmed source contents before its captured row", () => {
+  const captured = changeRow("unstaged", "src/value.ts", "base", "clicked", "captured");
+  const refreshed = changeRow("unstaged", "src/value.ts", "base", "refreshed", "refreshed");
+
+  const projected = projectPendingSessionChanges([refreshed], [{
+    action: "stage",
+    ambiguousDiff: false,
+    generation: 1,
+    path: captured.file.path,
+    row: captured,
+  }]);
+
+  assertEquals(projected.length, 1);
+  assertEquals(projected[0]?.state, "staged");
+  assertStrictEquals(projected[0]?.fileDiff, refreshed.fileDiff);
+});
+
+Deno.test("pending rename identity survives projection through a modified destination row", () => {
+  const renamedBase = changeRow("staged", "src/new.ts", "old", "index", "renamed");
+  const renamedFile = {
+    kind: "tracked" as const,
+    path: renamedBase.file.path,
+    displayPath: renamedBase.file.displayPath,
+    status: "renamed" as const,
+    diffState: renamedBase.file.diffState,
+    previousPath: "src/old.ts",
+    previousDisplayPath: "src/old.ts",
+  };
+  const renamed = {
+    ...renamedBase,
+    key: sessionChangeRowKey("staged", renamedFile),
+    file: renamedFile,
+  };
+  const modified = changeRow("unstaged", "src/new.ts", "index", "working", "modified");
+
+  const projected = projectPendingSessionChanges([modified, renamed], [{
+    action: "unstage",
+    ambiguousDiff: true,
+    generation: 1,
+    path: renamedFile.path,
+    previousPath: renamedFile.previousPath,
+    row: renamed,
+  }]);
+  const pending = projected[0];
+  if (pending === undefined) throw new Error("Missing pending rename row.");
+
+  assertEquals(pending.state, "unstaged");
+  assertEquals(sessionChangeMutationPaths(pending), {
+    path: "src/new.ts",
+    previousPath: "src/old.ts",
+  });
 });
 
 function changeRow(

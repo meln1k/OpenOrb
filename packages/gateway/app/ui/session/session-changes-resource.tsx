@@ -12,6 +12,14 @@ import {
   prepareSessionChanges,
 } from "@/app/ui/session/session-change-files.tsx";
 import {
+  filePreviousPath,
+  type PendingSessionChangeIntent,
+  projectPendingSessionChanges,
+  sessionChangeFileMatches,
+  type SessionChangeMutationPaths,
+  sessionChangeMutationPathsMatch,
+} from "@/app/ui/session/session-change-items.ts";
+import {
   type SessionPageController,
   SessionPageScope,
 } from "@/app/ui/session/session-page-controller.tsx";
@@ -49,6 +57,20 @@ interface PatchLoad {
   readonly controller: AbortController;
 }
 
+interface PendingFileMutation extends PendingSessionChangeIntent {
+  readonly key: string;
+  readonly settleAfterRefresh?: number;
+}
+
+interface QueuedFileMutation {
+  readonly action: "stage" | "unstage";
+  readonly generation: number;
+  readonly key: string;
+  readonly path: string;
+  readonly previousPath?: string;
+  readonly resolve: () => void;
+}
+
 export interface SessionChangesViewOwner {
   readonly variant: "sidebar" | "content";
 }
@@ -59,13 +81,18 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   readonly #sessionId: string;
   readonly #signal: AbortSignal;
   #connected = false;
-  #mutationInFlight = false;
+  #confirmedChanges: PreparedSessionChanges | undefined;
+  #mutationGeneration = 0;
+  #mutationWorkerActive = false;
+  readonly #mutationQueue: QueuedFileMutation[] = [];
+  readonly #pendingMutations = new Map<string, PendingFileMutation>();
   #projection: SessionChangesProjection = {
     loaded: undefined,
     loadError: undefined,
     operationError: undefined,
   };
   #patchLoad: PatchLoad | undefined;
+  #refreshGeneration = 0;
   #refreshInFlight = false;
   #refreshPending = true;
 
@@ -106,63 +133,141 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     path: string,
     previousPath?: string,
   ): Promise<void> {
-    if (this.#mutationInFlight) return;
-    this.#mutationInFlight = true;
+    const generation = ++this.#mutationGeneration;
+    const request = {
+      path,
+      ...(previousPath === undefined ? {} : { previousPath }),
+    };
+    const identity = this.#resolveMutationIdentity(path, previousPath);
+    const key = fileMutationKey(identity.path, identity.previousPath);
+    const matchingRows =
+      this.#projection.loaded?.changes.rows.filter((candidate) =>
+        sessionChangeFileMatches(candidate.file, identity.path, identity.previousPath)
+      ) ?? [];
+    const row = matchingRows.find((candidate) =>
+      candidate.state === (action === "stage" ? "unstaged" : "staged")
+    );
+    if (row !== undefined) {
+      const current = this.#pendingMutations.get(key);
+      this.#pendingMutations.set(key, {
+        action,
+        ambiguousDiff: current?.ambiguousDiff ?? matchingRows.length > 1,
+        generation,
+        key,
+        ...identity,
+        row,
+      });
+    }
     this.#projection = { ...this.#projection, operationError: undefined };
+    this.#projectConfirmedChanges();
+    this.#notify();
+
+    const completion = Promise.withResolvers<void>();
+    this.#mutationQueue.push({
+      action,
+      generation,
+      key,
+      ...request,
+      resolve: completion.resolve,
+    });
+    void this.#drainMutationQueue();
+    await completion.promise;
+  }
+
+  async #drainMutationQueue(): Promise<void> {
+    if (this.#mutationWorkerActive) return;
+    this.#mutationWorkerActive = true;
     // Keep browser-side cleanup parseable by Safari, which does not support `using`.
     try {
-      const body = new URLSearchParams();
-      body.set("_csrf", this.#csrfToken);
-      body.set("action", action);
-      body.set("path", path);
-      if (previousPath !== undefined) body.set("previousPath", previousPath);
-      const [response, requestError] = await tryAsync(
-        fetch(routes.api.sessions.changes.href({ sessionId: this.#sessionId }), {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-          body,
-          signal: this.#signal,
-        }),
-        () => true,
-      );
-      if (requestError !== undefined) {
-        if (!this.#signal.aborted) {
-          this.#projection = {
-            ...this.#projection,
-            operationError: "The Git index update could not reach the runner.",
-          };
+      while (!this.#signal.aborted) {
+        const mutation = this.#mutationQueue.shift();
+        if (mutation === undefined) return;
+        const current = this.#pendingMutations.get(mutation.key);
+        if (current !== undefined && current.generation !== mutation.generation) {
+          mutation.resolve();
+          continue;
         }
-        return;
+        await this.#sendFileMutation(mutation);
+        mutation.resolve();
       }
-      if (!response.ok) {
-        const [responseBody, bodyError] = await tryAsync(response.json(), () => true);
-        if (bodyError !== undefined) {
+    } finally {
+      this.#mutationWorkerActive = false;
+      for (const mutation of this.#mutationQueue.splice(0)) mutation.resolve();
+    }
+  }
+
+  async #sendFileMutation(mutation: QueuedFileMutation): Promise<void> {
+    const body = new URLSearchParams();
+    body.set("_csrf", this.#csrfToken);
+    body.set("action", mutation.action);
+    body.set("path", mutation.path);
+    if (mutation.previousPath !== undefined) body.set("previousPath", mutation.previousPath);
+    const [response, requestError] = await tryAsync(
+      fetch(routes.api.sessions.changes.href({ sessionId: this.#sessionId }), {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        body,
+        signal: this.#signal,
+      }),
+      () => true,
+    );
+    if (requestError !== undefined) {
+      if (!this.#signal.aborted && this.#mutationIsCurrent(mutation)) {
+        this.#projection = {
+          ...this.#projection,
+          operationError: "The Git index update could not reach the runner.",
+        };
+      }
+      this.#settleFileMutation(mutation);
+      return;
+    } else if (!response.ok && this.#mutationIsCurrent(mutation)) {
+      const [responseBody, bodyError] = await tryAsync(response.json(), () => true);
+      if (bodyError !== undefined) {
+        if (!this.#signal.aborted && this.#mutationIsCurrent(mutation)) {
           this.#projection = {
             ...this.#projection,
             operationError: "The Git index could not be updated.",
           };
-          return;
         }
+        this.#settleFileMutation(mutation);
+        return;
+      } else if (!this.#signal.aborted && this.#mutationIsCurrent(mutation)) {
         this.#projection = {
           ...this.#projection,
           operationError: errorMessage(responseBody),
         };
       }
-    } finally {
-      this.#mutationInFlight = false;
-      if (!this.#signal.aborted) {
-        this.#notify();
-        await this.#requestRefresh();
-      }
     }
+    this.#settleFileMutation(mutation);
+  }
+
+  #settleFileMutation(mutation: QueuedFileMutation): void {
+    if (this.#signal.aborted) return;
+
+    const current = this.#pendingMutations.get(mutation.key);
+    if (current?.generation === mutation.generation) {
+      this.#pendingMutations.set(mutation.key, {
+        ...current,
+        settleAfterRefresh: this.#refreshGeneration + 1,
+      });
+    }
+    this.#projectConfirmedChanges();
+    this.#notify();
+    void this.#requestRefresh();
   }
 
   async #prepareSnapshotChanges(
     snapshot: SessionGitSnapshotData,
   ): Promise<{ readonly changes: PreparedSessionChanges; readonly error?: string }> {
     if (changedFileCount(snapshot) === 0) {
-      return { changes: prepareSessionChanges(snapshot) };
+      const changes = prepareSessionChanges(snapshot);
+      const CodeView = this.#pendingMutations.size > 0
+        ? this.#confirmedChanges?.CodeView
+        : undefined;
+      return {
+        changes: CodeView === undefined ? changes : { ...changes, CodeView },
+      };
     }
     const [diffs, importError] = await tryAsync(import("@pierre/diffs"), () => true);
     if (importError !== undefined) {
@@ -188,6 +293,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   }
 
   async #refresh(): Promise<void> {
+    const refreshGeneration = ++this.#refreshGeneration;
     this.#projection = { ...this.#projection, loadError: undefined };
     if (this.#signal.aborted) return;
     const [response, requestError] = await tryAsync(
@@ -244,11 +350,14 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
       : snapshot;
     const preparation = await this.#prepareSnapshotChanges(displayedSnapshot);
     if (this.#signal.aborted) return;
+    if (!snapshot.stale) this.#retirePendingMutations(refreshGeneration);
+    this.#recordPendingAmbiguities(preparation.changes);
+    this.#confirmedChanges = preparation.changes;
     this.#projection = {
       ...this.#projection,
       loaded: {
         snapshot,
-        changes: preparation.changes,
+        changes: this.#preparedChangesProjection(preparation.changes),
         renderError: preparation.error,
       },
     };
@@ -325,11 +434,13 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
       };
       const preparation = await this.#prepareSnapshotChanges(hydrated);
       if (signal.aborted || this.#projection.loaded?.snapshot.snapshotId !== snapshotId) return;
+      this.#recordPendingAmbiguities(preparation.changes);
+      this.#confirmedChanges = preparation.changes;
       this.#projection = {
         ...this.#projection,
         loaded: {
           snapshot: hydrated,
-          changes: preparation.changes,
+          changes: this.#preparedChangesProjection(preparation.changes),
           renderError: preparation.error,
         },
       };
@@ -394,8 +505,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   async #requestRefresh(): Promise<void> {
     this.#refreshPending = true;
     if (
-      this.#mutationInFlight || this.#activeViews.size === 0 || this.#refreshInFlight ||
-      this.#signal.aborted
+      this.#activeViews.size === 0 || this.#refreshInFlight || this.#signal.aborted
     ) return;
     this.#refreshInFlight = true;
     // Keep browser-side cleanup parseable by Safari, which does not support `using`.
@@ -409,6 +519,85 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     } finally {
       this.#refreshInFlight = false;
     }
+  }
+
+  #retirePendingMutations(refreshGeneration: number): void {
+    for (const [key, mutation] of this.#pendingMutations) {
+      if (
+        mutation.settleAfterRefresh !== undefined &&
+        mutation.settleAfterRefresh <= refreshGeneration
+      ) {
+        this.#pendingMutations.delete(key);
+      }
+    }
+  }
+
+  #mutationIsCurrent(mutation: QueuedFileMutation): boolean {
+    const latest = this.#pendingMutations.get(mutation.key);
+    return latest === undefined || latest.generation === mutation.generation;
+  }
+
+  #resolveMutationIdentity(
+    path: string,
+    previousPath?: string,
+  ): SessionChangeMutationPaths {
+    const requested: SessionChangeMutationPaths = {
+      path,
+      ...(previousPath === undefined ? {} : { previousPath }),
+    };
+    if (previousPath !== undefined) return requested;
+
+    const pending = Array.from(this.#pendingMutations.values())
+      .filter((mutation) =>
+        mutation.previousPath !== undefined &&
+        sessionChangeMutationPathsMatch(mutation, requested)
+      )
+      .sort((left, right) => right.generation - left.generation)[0];
+    if (pending?.previousPath !== undefined) {
+      return { path: pending.path, previousPath: pending.previousPath };
+    }
+
+    const rename = this.#confirmedChanges?.rows.find((row) => {
+      const rowPreviousPath = filePreviousPath(row.file);
+      return rowPreviousPath !== undefined && sessionChangeFileMatches(row.file, path);
+    });
+    if (rename === undefined) return requested;
+    const renamePreviousPath = filePreviousPath(rename.file);
+    return renamePreviousPath === undefined
+      ? requested
+      : { path: rename.file.path, previousPath: renamePreviousPath };
+  }
+
+  #recordPendingAmbiguities(changes: PreparedSessionChanges): void {
+    for (const [key, mutation] of this.#pendingMutations) {
+      if (
+        !mutation.ambiguousDiff &&
+        changes.rows.filter((row) =>
+            sessionChangeFileMatches(row.file, mutation.path, mutation.previousPath)
+          ).length > 1
+      ) {
+        this.#pendingMutations.set(key, { ...mutation, ambiguousDiff: true });
+      }
+    }
+  }
+
+  #preparedChangesProjection(changes: PreparedSessionChanges): PreparedSessionChanges {
+    return {
+      ...changes,
+      rows: projectPendingSessionChanges(changes.rows, this.#pendingMutations.values()),
+    };
+  }
+
+  #projectConfirmedChanges(): void {
+    const loaded = this.#projection.loaded;
+    if (loaded === undefined || this.#confirmedChanges === undefined) return;
+    this.#projection = {
+      ...this.#projection,
+      loaded: {
+        ...loaded,
+        changes: this.#preparedChangesProjection(this.#confirmedChanges),
+      },
+    };
   }
 
   #setLoadError(message: string): void {
@@ -452,4 +641,8 @@ export function changedFileCount(snapshot: SessionGitSnapshotData): number {
 function errorMessage(body: unknown, fallback = "The Git index could not be updated."): string {
   const parsed = parseSafe(errorResponseSchema, body);
   return parsed.success ? parsed.value.error : fallback;
+}
+
+function fileMutationKey(path: string, previousPath?: string): string {
+  return JSON.stringify([previousPath ?? null, path]);
 }

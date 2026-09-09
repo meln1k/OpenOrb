@@ -314,7 +314,7 @@ Use envelope-style application encryption:
 - Native service, preferably installed with a package or `curl | sh` wrapper
 - Standalone OpenOrb executable compiled by Deno 2.9.5 for GNU Linux x86-64 or ARM64; no installed Deno or Node.js runtime
 - glibc 2.27 or newer; musl is unsupported in the MVP
-- QEMU/KVM
+- QEMU; KVM is optional acceleration, with a warned TCG fallback when unavailable
 - No host OpenSSH prerequisite in the current compiled permission profile; the later terminal ticket must select and explicitly permit an audited Deno-compatible SSH/PTTY bridge before adding one
 - systemd service
 
@@ -330,7 +330,7 @@ The runner package must include a `doctor` command that checks:
 - Embedded Deno/denort and runner version
 - glibc compatibility (with actionable musl rejection)
 - QEMU availability/version
-- `/dev/kvm` access and hardware virtualization
+- `/dev/kvm` access and hardware virtualization capability; warn and select TCG when unavailable
 - Available CPU, memory, and disk
 - Ability to reach the gateway URL
 - Gondolin image availability

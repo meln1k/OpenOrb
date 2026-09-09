@@ -3,7 +3,7 @@ import { css, type Handle } from "remix/ui";
 import { Icon } from "../components/icons.tsx";
 import { screens } from "../responsive.ts";
 import { SessionChangeFiles } from "./session-change-files.tsx";
-import { changedFileCount, SessionChangesScope } from "./session-changes-resource.tsx";
+import { SessionChangesScope } from "./session-changes-resource.tsx";
 
 export type SessionChangesPanelProps = {
   sessionId: string;
@@ -53,6 +53,9 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
 
   return () => {
     const { loaded, loadError, operationError } = changes.projection;
+    const displayedFileCount = loaded === undefined
+      ? 0
+      : new Set(loaded.changes.rows.map((row) => row.file.path)).size;
     return (
       <section
         id={panelId}
@@ -67,9 +70,7 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
                 <Icon name="file-diff" size={18} />
                 <strong data-slot="changes-tab">Changes</strong>
               </span>
-              {loaded
-                ? <span mix={changedCountStyle}>{changedFileCount(loaded.snapshot)}</span>
-                : null}
+              {loaded ? <span mix={changedCountStyle}>{displayedFileCount}</span> : null}
             </header>
           )
           : null}
@@ -119,7 +120,7 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
                 {loaded.renderError
                   ? <p role="alert" mix={operationErrorStyle}>{loaded.renderError}</p>
                   : null}
-                {changedFileCount(loaded.snapshot) === 0
+                {loaded.changes.rows.length === 0
                   ? <p mix={panelMessageStyle}>No staged or unstaged changes.</p>
                   : active
                   ? (
