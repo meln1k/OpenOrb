@@ -55,6 +55,13 @@ export function reconcileSessionChangeItems(
   return { items, records };
 }
 
+export function toggleSessionChangeItem(
+  row: PreparedSessionChangeRow,
+  item: CodeViewItem,
+): CodeViewItem {
+  return createCodeViewItem(row, !item.collapsed, (item.version ?? 0) + 1);
+}
+
 export function isRenderableSessionChange(
   row: PreparedSessionChangeRow,
 ): row is PreparedSessionChangeRow & { readonly fileDiff: FileDiffMetadata } {
@@ -82,7 +89,7 @@ function createCodeViewItem(
   collapsed: boolean,
   version: number,
 ): CodeViewItem {
-  if (isRenderableSessionChange(row)) {
+  if (!collapsed && isRenderableSessionChange(row)) {
     return {
       id: row.key,
       type: "diff",

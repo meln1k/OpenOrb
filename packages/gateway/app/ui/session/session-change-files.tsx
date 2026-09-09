@@ -17,12 +17,14 @@ import {
   type SessionChangeFileState,
   type SessionChangeItemRecord,
   sessionChangeRowKey,
+  toggleSessionChangeItem,
 } from "./session-change-items.ts";
 
 type DiffsModule = typeof import("@pierre/diffs");
 type ChangeHeaderContext = {
   readonly item: Pick<CodeViewItem, "collapsed" | "id">;
 };
+const changeFileHeaderHeight = 46;
 
 export type PreparedSessionChanges = {
   readonly rows: readonly PreparedSessionChangeRow[];
@@ -93,7 +95,7 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
     expansionLineCount: 100,
     overflow: "wrap",
     stickyHeaders: false,
-    layout: { paddingTop: 0, paddingBottom: 12, gap: 0 },
+    layout: { paddingTop: 0, paddingBottom: changeFileHeaderHeight, gap: 0 },
     renderCustomHeader,
   };
 
@@ -156,16 +158,14 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
     if (command === "toggle") {
       const item = viewer.getItem(row.key);
       if (item === undefined) return;
-      const updatedItem: CodeViewItem = {
-        ...item,
-        collapsed: !item.collapsed,
-        version: (item.version ?? 0) + 1,
-      };
-      if (!viewer.updateItem(updatedItem)) return;
+      const updatedItem = toggleSessionChangeItem(row, item);
+      items = items.map((candidate) => candidate.id === row.key ? updatedItem : candidate);
+      viewer.setItems(items);
       const record = itemRecords.get(row.key);
       if (record !== undefined) {
         itemRecords = new Map(itemRecords).set(row.key, { ...record, item: updatedItem });
       }
+      void handle.update();
       return;
     }
     if (command !== "stage" && command !== "unstage") return;
@@ -436,7 +436,7 @@ const codeViewStyle = css({
     display: "flex",
     alignItems: "center",
     minWidth: 0,
-    minHeight: "46px",
+    minHeight: `${changeFileHeaderHeight}px`,
     background: "var(--sidebar)",
     borderTop: "1px solid var(--sidebar-border)",
   },

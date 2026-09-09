@@ -1,6 +1,8 @@
 import type { CodeView as PierreCodeView, CodeViewItem, CodeViewOptions } from "@pierre/diffs";
 import { css, type Handle, on, type Props, ref } from "remix/ui";
 
+import { getPierreWorkerPool } from "./pierre-worker-pool.ts";
+
 export type RemixCodeViewProps = Omit<Props<"nav">, "children"> & {
   readonly CodeView: typeof PierreCodeView | undefined;
   readonly items: readonly CodeViewItem[];
@@ -40,7 +42,7 @@ export function RemixCodeView(handle: Handle<RemixCodeViewProps>) {
     }
     if (viewer === undefined || mountedCodeView !== CodeView) {
       cleanViewer();
-      const nextViewer = new CodeView(handle.props.options);
+      const nextViewer = new CodeView(handle.props.options, getPierreWorkerPool());
       nextViewer.setup(host);
       viewer = nextViewer;
       mountedCodeView = CodeView;

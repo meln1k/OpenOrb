@@ -1,21 +1,37 @@
 import { assert, assertEquals, assertStrictEquals } from "@std/assert";
 
-import { type CodeViewItem, type FileDiffMetadata, parsePatchFiles } from "@pierre/diffs";
+import { type FileDiffMetadata, parsePatchFiles } from "@pierre/diffs";
 import {
   type PreparedSessionChangeRow,
   reconcileSessionChangeItems,
   type SessionChangeItemRecord,
   sessionChangeRowKey,
+  toggleSessionChangeItem,
 } from "@/app/ui/session/session-change-items.ts";
+
+Deno.test("collapsed renderable changes stay lightweight until expanded", () => {
+  const row = changeRow("unstaged", "src/value.ts", "before", "after", "initial");
+  const initial = reconcileSessionChangeItems([row], new Map());
+  const collapsed = initial.items[0];
+  if (collapsed === undefined) throw new Error("Missing initial item.");
+
+  assertEquals(collapsed.type, "file");
+  assertEquals(collapsed.collapsed, true);
+
+  const expanded = toggleSessionChangeItem(row, collapsed);
+  assertEquals(expanded.type, "diff");
+  assertEquals(expanded.collapsed, false);
+  if (expanded.type === "diff") assertStrictEquals(expanded.fileDiff, row.fileDiff);
+
+  const recollapsed = toggleSessionChangeItem(row, expanded);
+  assertEquals(recollapsed.type, "file");
+  assertEquals(recollapsed.collapsed, true);
+});
 
 Deno.test("unchanged snapshots retain the exact Pierre item", () => {
   const initialRow = changeRow("unstaged", "src/value.ts", "before", "after", "initial");
   const initial = reconcileSessionChangeItems([initialRow], new Map());
-  const expanded = updateItem(initial.records, initialRow.key, (item) => ({
-    ...item,
-    collapsed: false,
-    version: (item.version ?? 0) + 1,
-  }));
+  const expanded = expandItem(initial.records, initialRow.key);
 
   const refreshedRow = changeRow("unstaged", "src/value.ts", "before", "after", "refresh");
   const refreshed = reconcileSessionChangeItems([refreshedRow], expanded);
@@ -44,11 +60,7 @@ Deno.test("a changed file invalidates only its own Pierre item", () => {
 Deno.test("collapse state follows an unambiguous stage transition", () => {
   const unstaged = changeRow("unstaged", "src/value.ts", "before", "after", "unstaged");
   const initial = reconcileSessionChangeItems([unstaged], new Map());
-  const expanded = updateItem(initial.records, unstaged.key, (item) => ({
-    ...item,
-    collapsed: false,
-    version: (item.version ?? 0) + 1,
-  }));
+  const expanded = expandItem(initial.records, unstaged.key);
   const staged = changeRow("staged", "src/value.ts", "before", "after", "staged");
 
   const moved = reconcileSessionChangeItems([staged], expanded);
@@ -60,11 +72,7 @@ Deno.test("collapse state follows an unambiguous stage transition", () => {
 Deno.test("collapse state follows an unambiguous rename", () => {
   const original = changeRow("unstaged", "src/old.ts", "before", "after", "original");
   const initial = reconcileSessionChangeItems([original], new Map());
-  const expanded = updateItem(initial.records, original.key, (item) => ({
-    ...item,
-    collapsed: false,
-    version: (item.version ?? 0) + 1,
-  }));
+  const expanded = expandItem(initial.records, original.key);
   const renamedBase = changeRow("unstaged", "src/new.ts", "before", "after", "renamed");
   const renamedFile = {
     kind: "tracked" as const,
@@ -90,11 +98,7 @@ Deno.test("an existing destination keeps its own collapse state", () => {
   const staged = changeRow("staged", "src/value.ts", "base", "index", "initial");
   const unstaged = changeRow("unstaged", "src/value.ts", "index", "worktree", "initial");
   const initial = reconcileSessionChangeItems([unstaged, staged], new Map());
-  const expandedUnstaged = updateItem(initial.records, unstaged.key, (item) => ({
-    ...item,
-    collapsed: false,
-    version: (item.version ?? 0) + 1,
-  }));
+  const expandedUnstaged = expandItem(initial.records, unstaged.key);
   const nextStaged = changeRow("staged", "src/value.ts", "base", "worktree", "next");
 
   const moved = reconcileSessionChangeItems([nextStaged], expandedUnstaged);
@@ -149,12 +153,14 @@ function parseFileDiff(
   return fileDiff;
 }
 
-function updateItem(
+function expandItem(
   records: ReadonlyMap<string, SessionChangeItemRecord>,
   id: string,
-  update: (item: CodeViewItem) => CodeViewItem,
 ): ReadonlyMap<string, SessionChangeItemRecord> {
   const record = records.get(id);
   if (record === undefined) throw new Error(`Missing test item ${id}.`);
-  return new Map(records).set(id, { ...record, item: update(record.item) });
+  return new Map(records).set(id, {
+    ...record,
+    item: toggleSessionChangeItem(record.row, record.item),
+  });
 }

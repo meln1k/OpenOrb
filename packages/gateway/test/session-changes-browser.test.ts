@@ -18,7 +18,9 @@ Deno.test({
     await page.setViewportSize({ width: 1200, height: 720 });
 
     const errors: string[] = [];
+    const requestedPaths: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => requestedPaths.push(new URL(request.url()).pathname));
 
     const snapshotId = "a".repeat(64);
     const addedLines = 24_000;
@@ -145,6 +147,7 @@ Deno.test({
       ]);
       assertEquals(maxInFlight, 1);
       assertEquals(await page.getByText("openorb/browser-bulk-test").isVisible(), true);
+      await page.getByLabel(`${addedLines} additions, 0 deletions`).waitFor({ state: "visible" });
       assertEquals(
         await page.getByLabel(`${addedLines} additions, 0 deletions`).isVisible(),
         true,
@@ -158,6 +161,10 @@ Deno.test({
       );
       await page.getByText(/generatedLine0/).waitFor({ state: "visible", timeout: 15_000 });
       assertEquals(await page.getByRole("alert").count(), 0);
+      assertEquals(
+        requestedPaths.some((path) => path.endsWith("/pierre-diff-worker.ts")),
+        true,
+      );
       assertEquals(errors, []);
 
       const screenshot = Deno.env.get("OPENORB_BROWSER_TEST_SCREENSHOT");
