@@ -7,6 +7,7 @@ import BadgeCheck from "lucide/dist/esm/icons/badge-check.mjs";
 import Bell from "lucide/dist/esm/icons/bell.mjs";
 import BookOpenText from "lucide/dist/esm/icons/book-open-text.mjs";
 import Brain from "lucide/dist/esm/icons/brain.mjs";
+import Check from "lucide/dist/esm/icons/check.mjs";
 import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
 import ChevronRight from "lucide/dist/esm/icons/chevron-right.mjs";
 import ChevronsUpDown from "lucide/dist/esm/icons/chevrons-up-down.mjs";
@@ -45,6 +46,7 @@ export type IconName =
   | "bell"
   | "book-open-text"
   | "brain"
+  | "check"
   | "chevron-down"
   | "chevron-right"
   | "chevrons-up-down"
@@ -150,6 +152,7 @@ const iconNodes = {
   bell: Bell,
   "book-open-text": BookOpenText,
   brain: Brain,
+  check: Check,
   "chevron-down": ChevronDown,
   "chevron-right": ChevronRight,
   "chevrons-up-down": ChevronsUpDown,

@@ -48,6 +48,7 @@ export const assetServer = createAssetServer({
     "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/data-schema.js",
     "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/fetch-router/routes.js",
     "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/{ui.js,ui/*.js}",
+    "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/combobox/primitives.js",
     "node_modules/.deno/@remix-run+fetch-router@0.21.0/node_modules/@remix-run/fetch-router/dist/**/*.js",
     "node_modules/.deno/@remix-run+route-pattern@0.24.0/node_modules/@remix-run/route-pattern/dist/**/*.js",
     "node_modules/.deno/@remix-run+ui@0.7.0/node_modules/@remix-run/ui/dist/**/*.js",
