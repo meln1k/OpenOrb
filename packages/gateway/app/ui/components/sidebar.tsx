@@ -308,6 +308,9 @@ export const SidebarMobileSwipeBehavior = clientEntry<{ sidebarId: string }>(
       sidebarLayout.addEventListener("pointermove", (event) => {
         updateSwipe(event);
       }, { signal: handle.signal });
+      sidebarLayout.addEventListener("touchmove", (event) => {
+        if (swipe?.active && event.cancelable) event.preventDefault();
+      }, { passive: false, signal: handle.signal });
       sidebarLayout.addEventListener("pointerup", (event) => {
         const current = swipe;
         if (!current || event.pointerId !== current.pointerId) return;

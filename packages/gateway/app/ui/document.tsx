@@ -12,7 +12,7 @@ export function Document(handle: Handle<DocumentProps>) {
     const { children, title = "OpenOrb" } = handle.props;
 
     return (
-      <html lang="en">
+      <html lang="en" mix={css({ overscrollBehavior: "none" })}>
         <head>
           <meta charSet="utf-8" />
           <meta
