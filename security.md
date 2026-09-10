@@ -14,6 +14,29 @@ credential key, and key version.
 First setup atomically creates one Workspace and the single administrator; concurrent attempts must
 not leave an orphan Workspace or create another administrator.
 
+## Product security boundaries
+
+- Session repositories, files, and Git metadata are untrusted. Native host Git never consumes a
+  session checkout; clone, branch, status, diff, fetch, commit, and push execute inside Gondolin.
+- Pi runs on the trusted runner host with an explicit resource loader that discovers no project or
+  global Pi resources and with in-memory settings. Its file and shell tools are Gondolin-backed.
+- Each Session owns one Project Checkout and one isolated Agent Environment. Only the checkout,
+  runner-owned Harness State, Session Journal, Git Snapshots, logs, and current Environment Snapshot
+  persist when the environment stops; RAM and processes do not.
+- Provider credentials remain on the gateway and trusted runner. GitHub operations receive a
+  guest-visible placeholder that is substituted only for `github.com` and `api.github.com`; the real
+  token must not enter guest files, environment values, process arguments, logs, or tool output.
+- Runners initiate one authenticated outbound connection to the gateway and require no inbound
+  listener. Guest egress denies loopback, private, link-local, cloud-metadata, redirected, and
+  DNS-rebinding targets while preserving guest-local loopback.
+- PostgreSQL is the gateway's only durable persistence. Complete Session state remains runner-owned;
+  the gateway stores only configuration, the minimal Session catalog, and deletion markers.
+- Ambiguous prompt, Abort, Git, and lifecycle handoffs are reported to the user and are never
+  retried automatically. OpenOrb does not claim exactly-once execution.
+
+The executable release criteria and regression evidence for these boundaries are maintained in the
+[release acceptance guide](docs/release-acceptance.md).
+
 ## Deferred Gondolin `RealFSProvider` path race
 
 **Status:** Known, unresolved risk while OpenOrb uses Gondolin's host-backed VFS adapter.

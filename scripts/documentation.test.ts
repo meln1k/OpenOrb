@@ -53,7 +53,7 @@ Deno.test("documentation has valid local links, anchors, and root task reference
   assertEquals(failures, []);
 });
 
-Deno.test("operations documentation records the OO-024 recovery contract and release pins", async () => {
+Deno.test("operations documentation records the recovery contract and release pins", async () => {
   const operations = await Deno.readTextFile("docs/operations.md");
   const normalizedOperations = operations.replaceAll(/\s+/gu, " ");
   for (
@@ -101,7 +101,7 @@ Deno.test("release guide and workflows preserve acceptance traceability and secr
   for (let criterion = 1; criterion <= 18; criterion += 1) {
     assert(
       new RegExp(`^\\|\\s*${criterion}\\s*\\|`, "mu").test(guide),
-      `release guide does not map MVP criterion ${criterion}`,
+      `release guide does not map release criterion ${criterion}`,
     );
   }
   for (

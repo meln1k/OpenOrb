@@ -613,7 +613,7 @@ Deno.test({
     const opened = await openRuntime({
       workspacePath,
       guestImage,
-      sessionLabel: "openorb OO-008 integration test",
+      sessionLabel: "openorb Gondolin integration test",
       cpuCount: 2,
       memoryMiB: 2 * 1024,
     });

@@ -1,7 +1,7 @@
 # OpenOrb agent instructions
 
-Before implementing a ticket, read `tickets/README.md` and the complete ticket. Follow its security,
-scope, dependency, and acceptance constraints. Ask rather than invent undecided architecture,
+Before changing architecture, protocols, persistence, or security boundaries, read `CONTEXT.md`,
+`security.md`, and the relevant documentation. Ask rather than invent undecided architecture,
 protocols, persistence, or interfaces.
 
 ## Commands

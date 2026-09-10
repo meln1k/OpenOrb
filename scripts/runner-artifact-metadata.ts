@@ -35,7 +35,7 @@ for (const artifact of artifacts) {
   const glibcBaseline = findGlibcBaseline(bytes);
   if (compareVersions(glibcBaseline, "2.27") > 0) {
     throw new Error(
-      `${artifact.path} requires glibc ${glibcBaseline}, newer than the approved MVP baseline 2.27.`,
+      `${artifact.path} requires glibc ${glibcBaseline}, newer than the supported baseline 2.27.`,
     );
   }
   checksumLines.push(`${checksum}  ${artifact.path.replace("dist/", "")}`);

@@ -57,7 +57,7 @@ Deno.test({
       opened = await openRuntime({
         workspacePath,
         guestImage: await installLocalGuestImage(temporaryDirectory),
-        sessionLabel: "openorb OO-010 public GitHub integration test",
+        sessionLabel: "openorb public GitHub integration test",
         github: { repositoryUrl: PUBLIC_REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
         cpuCount: 2,
         memoryMiB: 2 * 1024,
@@ -162,14 +162,14 @@ Deno.test({
     let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
     let runtime: AgentEnvironment | undefined;
     let pi: OpenOrbPiSession | undefined;
-    const branch = `openorb-oo-010-${crypto.randomUUID()}`;
+    const branch = `openorb-token-mediation-${crypto.randomUUID()}`;
     let pushed = false;
 
     try {
       opened = await openRuntime({
         workspacePath,
         guestImage: await installLocalGuestImage(temporaryDirectory),
-        sessionLabel: "openorb OO-010 private GitHub integration test",
+        sessionLabel: "openorb private GitHub integration test",
         github: { repositoryUrl, gitAuthor: GIT_AUTHOR, token },
         cpuCount: 2,
         memoryMiB: 2 * 1024,
@@ -188,8 +188,8 @@ Deno.test({
             shellQuote(`repos/${repository.owner}/${repository.name}`)
           } --jq .full_name)\" = ${shellQuote(`${repository.owner}/${repository.name}`)}`,
           `git ls-remote --exit-code ${shellQuote(WRONG_REPOSITORY_URL)} HEAD >/dev/null`,
-          `printf '%s\n' ${shellQuote(branch)} > repository/.openorb-oo-010`,
-          "git -C repository add .openorb-oo-010",
+          `printf '%s\n' ${shellQuote(branch)} > repository/.openorb-token-mediation`,
+          "git -C repository add .openorb-token-mediation",
           "git -C repository commit -m 'Test OpenOrb GitHub token mediation'",
           `git -C repository push ${shellQuote(repositoryUrl)} ${
             shellQuote(`HEAD:refs/heads/${branch}`)
@@ -303,9 +303,9 @@ Deno.test({
     const modelApiKey = REAL_MODEL_API_KEY!;
     const temporaryDirectory = await Deno.makeTempDir();
     const workspacePath = `${temporaryDirectory}/workspace`;
-    const branch = `openorb-oo-017-${crypto.randomUUID()}`;
-    const firstFile = `.openorb-oo-017-first-${crypto.randomUUID()}`;
-    const secondFile = `.openorb-oo-017-second-${crypto.randomUUID()}`;
+    const branch = `openorb-agent-push-${crypto.randomUUID()}`;
+    const firstFile = `.openorb-agent-push-first-${crypto.randomUUID()}`;
+    const secondFile = `.openorb-agent-push-second-${crypto.randomUUID()}`;
     await Deno.mkdir(workspacePath);
     const monitor = new LinuxHostGitProcessMonitor(workspacePath);
     let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
@@ -316,7 +316,7 @@ Deno.test({
       opened = await openRuntime({
         workspacePath,
         guestImage: await installLocalGuestImage(temporaryDirectory),
-        sessionLabel: "openorb OO-017 real agent GitHub push test",
+        sessionLabel: "openorb real agent GitHub push test",
         github: { repositoryUrl, gitAuthor: GIT_AUTHOR, token },
         cpuCount: 2,
         memoryMiB: 2 * 1024,
@@ -341,36 +341,36 @@ Deno.test({
 
       pushed = true;
       await pi.session.prompt(
-        `Create ${firstFile} containing exactly "first OpenOrb OO-017 change" and commit it ` +
-          `with message "OpenOrb OO-017 first agent commit". Do not push this commit.`,
+        `Create ${firstFile} containing exactly "first OpenOrb agent change" and commit it ` +
+          `with message "OpenOrb first agent commit". Do not push this commit.`,
       );
       await bash.execute("verify-unpushed-first-commit", {
         command: [
           "set -eu",
           `test \"$(git branch --show-current)\" = ${shellQuote(branch)}`,
-          `test \"$(cat ${shellQuote(firstFile)})\" = 'first OpenOrb OO-017 change'`,
+          `test \"$(cat ${shellQuote(firstFile)})\" = 'first OpenOrb agent change'`,
           `test \"$(git show -s --format=%an HEAD)\" = ${shellQuote(GIT_AUTHOR.name)}`,
           `test \"$(git show -s --format=%ae HEAD)\" = ${shellQuote(GIT_AUTHOR.email)}`,
           `test -z \"$(git ls-remote --heads ${shellQuote(repositoryUrl)} ${
             shellQuote(`refs/heads/${branch}`)
           })\"`,
-          "git rev-parse HEAD > /tmp/openorb-oo-017-first-head",
+          "git rev-parse HEAD > /tmp/openorb-agent-push-first-head",
         ].join("\n"),
         timeout: 120,
       });
 
       await pi.session.prompt(
-        `Create ${secondFile} containing exactly "second OpenOrb OO-017 change", commit it ` +
-          `with message "OpenOrb OO-017 second agent commit", and push the session branch. ` +
+        `Create ${secondFile} containing exactly "second OpenOrb agent change", commit it ` +
+          `with message "OpenOrb second agent commit", and push the session branch. ` +
           `This is an explicit request to commit and push.`,
       );
       const verified = await bash.execute("verify-agent-push", {
         command: [
           "set -eu",
-          "first_head=$(cat /tmp/openorb-oo-017-first-head)",
+          "first_head=$(cat /tmp/openorb-agent-push-first-head)",
           "head=$(git rev-parse HEAD)",
           `test \"$(git branch --show-current)\" = ${shellQuote(branch)}`,
-          `test \"$(cat ${shellQuote(secondFile)})\" = 'second OpenOrb OO-017 change'`,
+          `test \"$(cat ${shellQuote(secondFile)})\" = 'second OpenOrb agent change'`,
           'test "$head" != "$first_head"',
           'git merge-base --is-ancestor "$first_head" "$head"',
           `test \"$(git show -s --format=%an HEAD)\" = ${shellQuote(GIT_AUTHOR.name)}`,

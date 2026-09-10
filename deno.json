@@ -42,9 +42,7 @@
       "AGENTS.md",
       "deno_migration.md",
       "MASTER_PLAN.md",
-      "MVP.md",
-      "README.md",
-      "tickets"
+      "README.md"
     ],
     "lineWidth": 100
   },

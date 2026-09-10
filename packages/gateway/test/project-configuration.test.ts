@@ -322,7 +322,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
   }
 });
 
-Deno.test("the ticket down migration removes the encrypted GitHub token", async () => {
+Deno.test("the Git configuration down migration removes the encrypted GitHub token", async () => {
   const store = await createTestStore();
   const connection = await store.pool.connect();
   try {

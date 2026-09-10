@@ -1,7 +1,7 @@
 # Runner release process
 
-OO-001A establishes the standalone runner build path. OO-009 supplies the first real guest-image
-build metadata and OO-023 completes supported-host/service validation.
+The standalone runner build produces native Linux artifacts tied to immutable guest-image metadata
+and validated on supported hosts.
 
 ## Pinned toolchain
 
@@ -141,11 +141,11 @@ credential helper remains scoped to the configured repository for normal clone, 
 
 ## Guest assets
 
-VM images are never embedded in the executable. The runner downloads OO-009's architecture-specific
+VM images are never embedded in the executable. The runner downloads the architecture-specific
 pinned asset into its working directory, verifies it, and gives Gondolin explicit local asset paths.
 See [Guest image release process](guest-image.md) for the build, publication, installation, and
 recovery procedure.
 
 Do not sign a runner release until native QEMU/KVM integration has exercised the exact executable
-and image assets. Release/checksum signing belongs to the release ticket once signing identity and
-format are approved.
+and image assets. Release/checksum signing requires a separately approved signing identity and
+format.

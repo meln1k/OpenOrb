@@ -168,7 +168,7 @@ export async function checkRunnerPrerequisites(
     );
   } else if (platform === "linux" && libc === "unknown") {
     errors.push(
-      "Unable to confirm the Linux C library. OpenOrb MVP runner executables support glibc only; Alpine Linux and other musl/gcompat hosts are unsupported.",
+      "Unable to confirm the Linux C library. OpenOrb runner executables support glibc only; Alpine Linux and other musl/gcompat hosts are unsupported.",
     );
   } else if (platform === "linux" && libc === "glibc") {
     if (!glibcVersion || !/^\d+(?:\.\d+)+$/.test(glibcVersion)) {

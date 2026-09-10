@@ -1,6 +1,6 @@
 # Production operations
 
-This is the supported MVP deployment shape: one password-protected gateway from a pinned source
+This is the supported deployment shape: one password-protected gateway from a pinned source
 checkout, PostgreSQL, an HTTPS reverse proxy, and one or more outbound-only Linux runners. It is not
 a container or high-availability design.
 

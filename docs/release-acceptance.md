@@ -1,9 +1,9 @@
 # Release acceptance and traceability
 
-This document is the release gate for the supported Linux MVP. It connects the browser-to-runner
-acceptance run, security suites, and every criterion in
-[MVP section 22](../MVP.md#22-mvp-acceptance-criteria) to executable evidence. Production deployment
-and recovery are covered by the [operations guide](operations.md).
+This document is the release gate and acceptance contract for the supported Linux release. It
+connects the browser-to-runner acceptance run, security suites, and each release criterion to
+executable evidence. Production deployment and recovery are covered by the
+[operations guide](operations.md).
 
 ## CI policy
 
@@ -85,13 +85,9 @@ and an unusable `PATH` to prove that installed Node.js and Deno runtimes are not
 12. confirms deletion removes the catalog view and complete runner session directory, including the
     active checkpoint, then removes both remote branches and the temporary database.
 
-## MVP acceptance matrix
+## Release acceptance matrix
 
-The OO-018 lifecycle amendment supersedes criteria 15–16's clean-VM wording: Stop publishes one disk
-checkpoint, continuation loads it with matching assets, runs `.agents/resume`, and does not rerun
-`.agents/setup`.
-
-|  # | MVP criterion                                                                                                                        | Required evidence                                                                                                                                                                                                                                  |
+|  # | Release criterion                                                                                                                    | Required evidence                                                                                                                                                                                                                                  |
 | -: | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 |  1 | First-run password setup; protected Remix gateway; browser session survives restart                                                  | Browser setup/login in the release lifecycle; `packages/gateway/test/auth.test.ts`, `packages/gateway/test/postgres-session-storage.test.ts`, and the credential restart test in `packages/gateway/test/credentials.test.ts`.                      |
 |  2 | NATed runner enrolls with URL and PSK                                                                                                | Release lifecycle enrollment plus `packages/gateway/test/runner-registry.test.ts`.                                                                                                                                                                 |
@@ -103,19 +99,19 @@ checkpoint, continuation loads it with matching assets, runs `.agents/resume`, a
 |  8 | Pi uses the explicit empty resource loader, in-memory settings, and trusted Pi-style prompt without host-only Pi documentation paths | `packages/runner/test/harness/pi/session.test.ts` and `scripts/security-boundaries.test.ts`.                                                                                                                                                       |
 |  9 | Pi read/write/edit/bash tools execute through Gondolin                                                                               | `packages/runner/test/harness/pi/tools.test.ts`, real VM tool tests in `packages/runner/test/environment/gondolin/environment.test.ts`, and the security source audit.                                                                             |
 | 10 | Text, thinking, tools, results, and status stream to the browser                                                                     | Real Pi release lifecycle plus projection/replay tests in `packages/runner/test/session/events.test.ts` and browser tests.                                                                                                                         |
-| 11 | One normal prompt at a time and Abort                                                                                                | Runner state/race tests in `packages/runner/test/session/supervisor.test.ts`, RPC tests, and browser session tests. OO-015's approved live-only Pi follow-up behavior is described in the deferral audit below.                                    |
+| 11 | Normal prompts, live-only Pi follow-ups, and Abort obey the current Agent Run state                                                  | Runner state/race tests in `packages/runner/test/session/supervisor.test.ts`, RPC tests, and browser session tests.                                                                                                                                |
 | 12 | Minimal gateway catalog/deletion marker; replay from runner                                                                          | Schema and tombstone assertions in `packages/gateway/test/session-provisioning-browser.test.ts`, reconciliation tests in `packages/gateway/test/runner-registry.test.ts`, and JSONL replay tests in `packages/runner/test/session/events.test.ts`. |
 | 13 | View the latest guest-generated Git diff                                                                                             | Changes assertion in the release lifecycle and `packages/runner/test/session/git-snapshot.test.ts`.                                                                                                                                                |
 | 14 | Private clone/commit/push without the real GitHub token                                                                              | Credential-enabled private Git and real Pi tests plus the release branch-content, environment, file, transcript, and log assertions.                                                                                                               |
-| 15 | Idle VM stops while workspace and Pi JSONL remain                                                                                    | Amended checkpoint Stop in the release lifecycle; real disk checkpoint and supervisor lifecycle tests.                                                                                                                                             |
-| 16 | Continue with the same checkout and conversation                                                                                     | Release `.agents/resume`, marker, pushed-file, and transcript assertions; checkpoint and Pi JSONL replay tests.                                                                                                                                    |
+| 15 | Idle VM stops with one disk checkpoint while workspace and Pi JSONL remain                                                           | Checkpoint Stop in the release lifecycle; real disk checkpoint and supervisor lifecycle tests.                                                                                                                                                     |
+| 16 | Continue from the checkpoint with the same checkout and conversation                                                                 | Release `.agents/resume`, marker, pushed-file, and transcript assertions; checkpoint and Pi JSONL replay tests.                                                                                                                                    |
 | 17 | Pinned session remains unavailable while its runner is offline                                                                       | Runner disconnect/reconnect tests in `packages/gateway/test/runner-registry.test.ts` and `packages/runner/test/connection/rpc.test.ts`.                                                                                                            |
 | 18 | Stop and explicit deletion; offline deletion prevents resurrection                                                                   | Release Stop/deletion directory assertion; browser tombstone test and stale-snapshot cleanup tests in `packages/gateway/test/session-provisioning-browser.test.ts` and `packages/gateway/test/runner-registry.test.ts`.                            |
 
 ## Security invariant matrix
 
-Every invariant in [MVP section 20](../MVP.md#20-testing-priorities) is part of
-`deno task test:security`, `deno task test:gondolin`, or the manual release lifecycle.
+Every invariant below is part of `deno task test:security`, `deno task test:gondolin`, or the manual
+release lifecycle.
 
 | Security invariant                                                                                                 | Enforced by                                                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -142,7 +138,7 @@ Every invariant in [MVP section 20](../MVP.md#20-testing-priorities) is part of
 | VM/checkpoint failure                 | Checkpoint publication/resume failure tests retain the last valid generation or require explicit clean recovery without dispatching the prompt.                                                   |
 | Deleted session in a stale manifest   | Tombstoned reconnect and unknown-session tests never republish a route and repeatedly request idempotent cleanup.                                                                                 |
 
-## Deferral audit
+## Scope audit
 
 The source audit in `scripts/security-boundaries.test.ts`, protocol tests, route inventory, database
 schema tests, and the review below keep deferred surfaces out of the release:
@@ -150,17 +146,15 @@ schema tests, and the review below keep deferred surfaces out of the release:
 - Git repositories remain canonical GitHub HTTPS URLs; generic Git hosts and SSH credentials are
   rejected.
 - There is no steering, durable post-handoff queue, queue-item mutation, pending-message editing, or
-  automatic command retry. **OO-015 intentionally superseded the older MVP deferral for one narrow
-  item:** Pi-native follow-ups are live and process-local while a run is active. They are not a
-  durable queue or a steering API.
+  automatic command retry. Pi-native follow-ups are live and process-local while a run is active;
+  they are not a durable queue or a steering API.
 - Passkeys, shared package caches, browser terminals, private/managed previews, project-secret
   injection, resource reservation/scoring, archives, retention workflows, centrally managed agent
   profiles, HA, migration, and telemetry-platform integration remain absent.
 - The standalone Linux runner artifact added for the release path is not a browser terminal or a new
   runner transport; it speaks the version-16 WebSocket/RPC protocol.
-- **OO-018 intentionally superseded the checkpoint deferral:** one current Gondolin disk checkpoint
-  and `.agents/resume` are supported. RAM/process restoration, services, leases, user-managed
-  generations, and checkpoint portability remain absent.
+- One current Gondolin disk checkpoint and `.agents/resume` are supported. RAM/process restoration,
+  services, leases, user-managed generations, and checkpoint portability remain absent.
 
-Any change to these results requires a scoped ticket, schema/protocol review where applicable, and
+Any change to these results requires a scoped design, schema/protocol review where applicable, and
 an update to this matrix before release.

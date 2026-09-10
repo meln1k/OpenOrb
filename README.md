@@ -23,7 +23,7 @@ The gateway currently runs from a source checkout. Choose either runner installa
 
 | Runner installation | Best for | Deno required on runner host? | Updates |
 | --- | --- | --- | --- |
-| [Source checkout](#linux-source-runner) | Simple self-hosting and MVP+ iteration | Deno 2.9.5 or newer | Pull the checkout, install the frozen graph, restart |
+| [Source checkout](#linux-source-runner) | Simple self-hosting and ongoing development | Deno 2.9.5 or newer | Pull the checkout, install the frozen graph, restart |
 | [Standalone artifact](#linux-standalone-runner) | Minimal production host | No | Replace the verified executable, restart |
 
 Both Linux options use the same hardened systemd unit and the same persistent

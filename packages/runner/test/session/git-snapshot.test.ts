@@ -554,7 +554,7 @@ Deno.test({
       createGondolinAgentEnvironment({
         workspacePath,
         guestImage: await installLocalGuestImage(workingDirectory),
-        sessionLabel: "openorb OO-016 hostile Git Snapshot test",
+        sessionLabel: "openorb hostile Git Snapshot test",
         github: {
           repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
           gitAuthor: GIT_AUTHOR,

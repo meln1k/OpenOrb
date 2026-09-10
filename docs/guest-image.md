@@ -1,9 +1,8 @@
 # Guest image release process
 
-OO-009 defines one OpenOrb guest-image release with immutable Gondolin assets for each supported
-runner architecture. The runner uses the published Debian-based `mvp-6` release. An OpenOrb release
-ID is not derived from the Gondolin package version or either architecture-specific Gondolin build
-ID.
+Each OpenOrb guest-image release contains immutable Gondolin assets for every supported runner
+architecture. The runner uses the published Debian-based `mvp-6` release. An OpenOrb release ID is
+not derived from the Gondolin package version or either architecture-specific Gondolin build ID.
 
 The guest userspace is Debian 13 and provides an Amp-orb-like development command line: Git and
 GitHub CLI; GCC/G++, Make, Autoconf, Automake, and pkg-config; Python/pip; Node.js/npm, Corepack,
