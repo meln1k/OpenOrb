@@ -20,9 +20,9 @@ not leave an orphan Workspace or create another administrator.
   session checkout; clone, branch, status, diff, fetch, commit, and push execute inside Gondolin.
 - Pi runs on the trusted runner host with an explicit resource loader that discovers no project or
   global Pi resources and with in-memory settings. Its file and shell tools are Gondolin-backed.
-- Each Session owns one Project Checkout and one isolated Agent Environment. Only the checkout,
-  runner-owned Harness State, Session Journal, Git Snapshots, logs, and current Environment Snapshot
-  persist when the environment stops; RAM and processes do not.
+- Each Session owns one Project Checkout and one isolated Agent Environment. Its private root disk,
+  including the checkout and non-tmpfs guest state, persists together with runner-owned Harness
+  State, Session Journal, Git Snapshots, and logs; RAM and processes do not.
 - Provider credentials remain on the gateway and trusted runner. GitHub operations receive a
   guest-visible placeholder that is substituted only for `github.com` and `api.github.com`; the real
   token must not enter guest files, environment values, process arguments, logs, or tool output.
@@ -37,45 +37,29 @@ not leave an orphan Workspace or create another administrator.
 The executable release criteria and regression evidence for these boundaries are maintained in the
 [release acceptance guide](docs/release-acceptance.md).
 
-## Deferred Gondolin `RealFSProvider` path race
+## Gondolin persistent root disk
 
-**Status:** Known, unresolved risk while OpenOrb uses Gondolin's host-backed VFS adapter.
+**Status:** The former `RealFSProvider` workspace path race is resolved by removing the host-backed
+workspace mount.
 
-Gondolin 0.12.0's `RealFSProvider` checks that a path resolves beneath its root and then performs
-the corresponding asynchronous, pathname-based host filesystem operation. Its containment check and
-filesystem operation are not atomic.
+Each session checkout lives at `/workspace` on a private qcow2 root disk under runner-owned session
+storage. Shell and Pi filesystem tools access it through guest processes; untrusted paths are never
+interpreted by a host filesystem adapter. The runner does not invoke native host Git against the
+disk or expose the disk as a shared writable mount.
 
-Gondolin's guest `sandboxfs` daemon processes its own FUSE requests one at a time, so a single guest
-cannot exercise this race using two concurrent FUSE requests alone. OpenOrb nevertheless has two
-independent paths to the same provider: `bash` accesses the workspace through guest FUSE, while the
-Pi `read`, `write`, and `edit` adapters use Gondolin's host-side `vm.fs` shortcut. Gondolin does not
-serialize direct `vm.fs` calls against guest FUSE requests, and a detached guest process can
-continue running after the shell that launched it exits. A malicious `bash` invocation could
-therefore leave a workspace mutator running while a later Pi filesystem tool calls `vm.fs`,
-potentially replacing a checked path or parent directory with an escaping symlink between validation
-and use. Another VM or host process sharing the workspace would provide the same concurrent mutation
-path.
+Root disk files use mode 0600 and their session directories use mode 0700. A guest `fsync` reaches
+the QEMU block device, whose flushes are enabled, and therefore reaches the host storage stack. This
+durability guarantee still depends on the runner filesystem and physical storage honoring host
+`fsync` correctly.
 
-Static traversal and symlink checks do not cover this TOCTOU interleaving. We have confirmed the
-vulnerable provider shape and the independent OpenOrb access paths, but have not demonstrated a
-successful end-to-end escape from a real Gondolin guest.
+The root disk always has the stable session path `root-disk.qcow2`. Its initial sparse 40 GiB file
+is file-synced and atomically published before first use. Stop records a final Git Snapshot, runs
+guest `/bin/sync`, closes Pi, and explicitly stops and closes the VM without deleting the disk. The
+runner then calls host `fsync` on `root-disk.qcow2` and its session directory before journaling
+`stop.completed`.
 
-OpenOrb intentionally does not serialize every provider operation as a workaround. Global
-serialization could materially degrade filesystem-heavy guest workloads such as dependency
-installation and repository tooling. Consequently, the current `RealFSProvider` mount must not be
-treated as a proven containment boundary against concurrent rename/symlink attacks.
-
-Before relying on Gondolin's VFS adapter as that boundary:
-
-1. Re-evaluate whether OpenOrb still needs a writable host-backed workspace mount.
-2. If it does, avoid mixing direct `vm.fs` operations with guest FUSE access, or otherwise
-   coordinate those paths without serializing unrelated guest filesystem work.
-3. Reproduce and measure a detached guest mutator racing a direct `vm.fs` operation on supported
-   runner platforms, and benchmark any mitigation.
-4. Prefer an upstream Gondolin fix that performs descriptor-relative, beneath-root operations
-   atomically, or otherwise enforces the invariant inside `RealFSProvider`.
-5. Add race tests for reads, writes, creates, and parent-directory mutations, including shared
-   workspaces if multiple VMs may mount the same host directory.
-
-If OpenOrb stops using the host-backed VFS adapter for untrusted workspaces, this specific risk does
-not apply.
+After a runner interruption in `Stopping`, reconciliation cannot prove that the guest sync and VM
+exit finished, so the Session fails with the explicit `restart-environment` recovery action. The
+runner does not replace or delete the disk. Wake opens the same disk in a new VM and runs
+`.agents/resume`. RAM, processes, and tmpfs-backed paths such as `/root`, `/tmp`, `/var/tmp`,
+`/var/cache`, and `/var/log` never persist across Stop.

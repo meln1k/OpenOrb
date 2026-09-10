@@ -11,7 +11,7 @@ import type {
 import { RunnerSessionStore } from "../store.ts";
 import { SessionActorError } from "./actor-error.ts";
 import { makeSessionAgentRuntime } from "./agent-runtime.ts";
-import { makeCheckpointBehavior } from "./checkpoint.ts";
+import { makeStopBehavior } from "./stop.ts";
 import type {
   ActorCommand,
   InternalCommand,
@@ -96,7 +96,7 @@ export function makeSessionBehavior(
       run,
       send,
     });
-    const checkpoint = makeCheckpointBehavior({
+    const stopping = makeStopBehavior({
       sessionId,
       idleTimeoutMs: input.idleTimeoutMs,
       store,
@@ -110,7 +110,6 @@ export function makeSessionBehavior(
     });
     const initialization = makeSessionInitialization({
       input,
-      store,
       runtime,
       provisioner,
       reporter,
@@ -134,14 +133,15 @@ export function makeSessionBehavior(
         if (MutableRef.get(deletionRequested)) {
           return Effect.succeed(decisions.reply(command.reply, { ok: true }));
         }
-        const acceptance = checkpoint.deletionAcceptance(state);
-        return Effect.succeed(
-          acceptance.ok
-            ? decisions.none(() => {
-              MutableRef.set(deletionRequested, true);
-              return Deferred.succeed(command.reply, acceptance).pipe(Effect.asVoid);
-            })
-            : decisions.reply(command.reply, acceptance),
+        return stopping.prepareDeletion(state).pipe(
+          Effect.map((acceptance) =>
+            acceptance.ok
+              ? decisions.none(() => {
+                MutableRef.set(deletionRequested, true);
+                return Deferred.succeed(command.reply, acceptance).pipe(Effect.asVoid);
+              })
+              : decisions.reply(command.reply, acceptance)
+          ),
         );
       }
       if (MutableRef.get(deletionRequested)) return Effect.succeed(rejectDuringDeletion(command));
@@ -153,9 +153,9 @@ export function makeSessionBehavior(
         case "Abort":
           return run.abort(state, command);
         case "Stop":
-          return checkpoint.stop(state, command);
+          return stopping.stop(state, command);
         case "UpdateGitFile":
-          return checkpoint.updateGitFile(state, command);
+          return stopping.updateGitFile(state, command);
       }
     }
 
@@ -211,16 +211,16 @@ export function makeSessionBehavior(
           return run.abortConfirmed(state, command);
         case "AbortFailed":
           return run.abortFailed(state, command);
-        case "CheckpointCompleted":
-          return checkpoint.complete(state, command);
-        case "CheckpointFailed":
-          return Effect.succeed(checkpoint.failed(state, command));
+        case "StopCompleted":
+          return stopping.complete(state, command);
+        case "StopFailed":
+          return Effect.succeed(stopping.failed(state, command));
         case "RestorationCompleted":
           return Effect.succeed(continuation.restorationCompleted(state, command));
         case "RestorationFailed":
           return Effect.succeed(continuation.restorationFailed(state, command));
         case "RefreshGitSnapshot":
-          return Effect.succeed(checkpoint.refreshGitSnapshot(state, command));
+          return Effect.succeed(stopping.refreshGitSnapshot(state, command));
         case "RecordIssue":
           return Effect.succeed(decisions.persist(
             { type: "issue.recorded", issue: command.issue },
@@ -281,9 +281,9 @@ function stageForState(state: SessionState): SessionProvisioningStage {
     case "Waking":
       return "ready";
     case "Restoring":
-      return state.phase.intent._tag === "ResumeCheckpoint" ? "resuming" : "starting-vm";
-    case "Checkpointing":
-      return "checkpointing";
+      return "resuming";
+    case "Stopping":
+      return "stopping";
     case "Stopped":
       return "stopped";
     case "Failed":

@@ -40,7 +40,6 @@ const WORKSPACE_ID = Schema.decodeUnknownSync(WorkspaceId)(
 );
 const CREATED_AT = "2026-08-17T12:00:00Z";
 const MODEL = "opencode-go/deepseek-v4-flash";
-const GUEST_BUILD_ID = "02e784cb-e063-5138-b1c4-334e8a3307a9";
 
 interface TestStore {
   readonly store: RunnerSessionStore;
@@ -80,7 +79,7 @@ Deno.test("creates private session storage and recovers cold session state", asy
     );
 
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
-    for (const directory of ["workspace", "pi", "logs", "snapshots", "checkpoints"]) {
+    for (const directory of ["pi", "logs", "snapshots"]) {
       const info = await Deno.lstat(join(sessionPath, directory));
       assert(info.isDirectory);
       assertEquals(info.isSymlink, false);
@@ -92,6 +91,11 @@ Deno.test("creates private session storage and recovers cold session state", asy
       assertEquals(info.isSymlink, false);
       assertPrivateMode(info.mode, 0o600);
     }
+    assertEquals(
+      await Effect.runPromise(store.getSessionRootDiskPath(SESSION_ID)),
+      join(sessionPath, "root-disk.qcow2"),
+    );
+    await assertPathMissing(join(sessionPath, "root-disk.qcow2"));
     const deletionQueue = await Deno.lstat(join(workingDirectory, "session-deletions"));
     assert(deletionQueue.isDirectory);
     assertEquals(deletionQueue.isSymlink, false);
@@ -118,27 +122,6 @@ Deno.test("creates private session storage and recovers cold session state", asy
       }),
     ]);
     assertEquals(Array.from(manifest.sessions[0]!.initialPromptPreview).length, 200);
-  } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
-  }
-});
-
-Deno.test("clears untrusted workspace contents without following symlinks", async () => {
-  const workingDirectory = await Deno.makeTempDir();
-  try {
-    const { store, session } = await makeStore(workingDirectory);
-    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
-    const workspace = join(workingDirectory, "sessions", SESSION_ID, "workspace");
-    const hostMarker = join(workingDirectory, "host-marker");
-    await Deno.writeTextFile(hostMarker, "keep");
-    await Deno.mkdir(join(workspace, "nested"));
-    await Deno.writeTextFile(join(workspace, "nested", "guest-file"), "remove");
-    await Deno.symlink(hostMarker, join(workspace, "host-marker-link"));
-
-    await Effect.runPromise(store.clearSessionWorkspace(SESSION_ID));
-
-    assertEquals(await Array.fromAsync(Deno.readDir(workspace)), []);
-    assertEquals(await Deno.readTextFile(hostMarker), "keep");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -339,55 +322,48 @@ Deno.test("Git Snapshot storage does not replay session metadata", async () => {
   }
 });
 
-Deno.test("manages checkpoint files without owning checkpoint state transitions", async () => {
+Deno.test("syncs a regular persistent session root disk", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     const { store, session } = await makeStore(workingDirectory);
     await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
-    await Effect.runPromise(session.completeInitialRun(SESSION_ID));
-
-    const candidate = await Effect.runPromise(store.allocateCheckpoint(SESSION_ID));
-    assertStringIncludes(candidate.path, join("sessions", SESSION_ID, "checkpoints"));
-    assertEquals(
-      await Effect.runPromise(store.checkpointExists(SESSION_ID, candidate.file)),
-      false,
-    );
-    await Deno.writeTextFile(candidate.path, "complete checkpoint");
-    assertEquals(await Effect.runPromise(store.checkpointExists(SESSION_ID, candidate.file)), true);
-
-    await Effect.runPromise(session.append(SESSION_ID, {
-      type: "checkpoint.started",
-      file: candidate.file,
-    }));
-    await Effect.runPromise(store.validateCheckpoint(
+    const rootDiskPath = join(
+      workingDirectory,
+      "sessions",
       SESSION_ID,
-      candidate,
-      environmentCheckpoint(candidate.path),
-    ));
-    await Effect.runPromise(session.append(SESSION_ID, {
-      type: "checkpoint.published",
-      checkpoint: persistedCheckpoint(candidate.file),
-    }));
-    assertEquals(
-      await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID)),
-      environmentCheckpoint(candidate.path),
+      "root-disk.qcow2",
+    );
+    await Deno.writeTextFile(rootDiskPath, "persistent guest state");
+
+    await Effect.runPromise(store.syncSessionRootDisk(SESSION_ID));
+
+    assertEquals(await Deno.readTextFile(rootDiskPath), "persistent guest state");
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("rejects a missing or non-regular session root disk", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const { store, session } = await makeStore(workingDirectory);
+    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const rootDiskPath = join(
+      workingDirectory,
+      "sessions",
+      SESSION_ID,
+      "root-disk.qcow2",
     );
 
-    const obsolete = await Effect.runPromise(store.allocateCheckpoint(SESSION_ID));
-    await Deno.writeTextFile(obsolete.path, "obsolete");
-    await Effect.runPromise(store.cleanupCheckpoints(SESSION_ID, candidate.file));
-    assertEquals(await Effect.runPromise(store.checkpointExists(SESSION_ID, candidate.file)), true);
-    assertEquals(await Effect.runPromise(store.checkpointExists(SESSION_ID, obsolete.file)), false);
+    const missing = await Effect.runPromise(Effect.flip(store.syncSessionRootDisk(SESSION_ID)));
+    assertEquals(missing.operation, "sync-root-disk");
 
-    const invalid = await Effect.runPromise(Effect.flip(
-      store.checkpointExists(SESSION_ID, "../checkpoint.qcow2"),
-    ));
-    assertEquals(invalid.operation, "inspect-checkpoint");
-    await Effect.runPromise(store.discardCheckpoint(SESSION_ID, candidate.file));
-    assertEquals(
-      await Effect.runPromise(store.checkpointExists(SESSION_ID, candidate.file)),
-      false,
+    await Deno.mkdir(rootDiskPath);
+    const notRegular = await Effect.runPromise(
+      Effect.flip(store.syncSessionRootDisk(SESSION_ID)),
     );
+    assertEquals(notRegular.operation, "sync-root-disk");
+    assertStringIncludes(notRegular.message, "root disk must be a regular file");
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -435,17 +411,14 @@ Deno.test("idempotently removes every session-owned storage path", async () => {
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
     for (
       const [directory, file] of [
-        ["workspace", "source.ts"],
         ["pi", "history.jsonl"],
         ["logs", "runner.log"],
         ["snapshots", "git-snapshot.json"],
-        ["checkpoints", "candidate.qcow2"],
       ] as const
     ) {
       await Deno.writeTextFile(join(sessionPath, directory, file), directory);
     }
-    await Deno.mkdir(join(sessionPath, "workspace", "nested"));
-    await Deno.writeTextFile(join(sessionPath, "workspace", "nested", "file.txt"), "nested");
+    await Deno.writeTextFile(join(sessionPath, "root-disk.qcow2"), "root disk");
     await Deno.mkdir(join(sessionPath, "obsolete"));
     await Deno.writeTextFile(join(sessionPath, "obsolete", "vm-state"), "obsolete");
 
@@ -495,7 +468,7 @@ Deno.test("startup sweeps a partially removed queued deletion without its journa
     const queuedPath = join(workingDirectory, "session-deletions", SESSION_ID);
     await Deno.rename(sessionPath, queuedPath);
     await Deno.remove(join(queuedPath, "events.jsonl"));
-    await Deno.remove(join(queuedPath, "workspace"), { recursive: true });
+    await Deno.remove(join(queuedPath, "snapshots"), { recursive: true });
 
     const restarted = await makeStore(workingDirectory);
 
@@ -524,24 +497,6 @@ Deno.test("fails store construction when session storage cannot be initialized",
     await Deno.remove(workingDirectory, { recursive: true });
   }
 });
-
-function persistedCheckpoint(file: string) {
-  return {
-    file,
-    guestAssetBuildId: GUEST_BUILD_ID,
-    createdWithVmm: "qemu" as const,
-    compatibleVmm: ["qemu" as const],
-  };
-}
-
-function environmentCheckpoint(path: string) {
-  return {
-    path,
-    guestAssetBuildId: GUEST_BUILD_ID,
-    createdWithVmm: "qemu" as const,
-    compatibleVmm: ["qemu" as const],
-  };
-}
 
 function assertPrivateMode(mode: number | null, expected: number): void {
   if (Deno.build.os !== "windows" && mode !== null) assertEquals(mode & 0o777, expected);

@@ -1045,7 +1045,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         headers: { Cookie: client.cookie },
         body: new URLSearchParams({
           _csrf: csrfFrom(failedHtml),
-          recovery: "start-clean-vm",
+          recovery: "restart-environment",
         }),
       },
     );
@@ -1364,6 +1364,10 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     const csrfToken = csrfFrom(detailHtml);
     const deleteHref = routes.app.sessions.delete.href({ sessionId: onlineSession.id });
     assertStringIncludes(detailHtml, "Delete session?");
+    assertStringIncludes(
+      detailHtml,
+      "This permanently deletes the Pi conversation, VM disk, snapshots, and logs for this session.",
+    );
     assertStringIncludes(detailHtml, "This cannot be undone.");
     assertStringIncludes(detailHtml, `action="${deleteHref}"`);
     assertMatch(detailHtml, /<button[^>]*type="submit"[^>]*>Delete session<\/button>/);

@@ -7,10 +7,7 @@ import { createRunnerCapacityReporter } from "./runtime/capacity.ts";
 import { enrollRunner } from "./runtime/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "./runtime/identity.ts";
 import { parseRunnerCommand } from "./runtime/options.ts";
-import {
-  checkCheckpointCandidateCapacity,
-  checkRunnerPrerequisites,
-} from "./runtime/prerequisites.ts";
+import { checkRunnerPrerequisites } from "./runtime/prerequisites.ts";
 import { validateRunnerWorkingDirectory } from "./runtime/working-directory.ts";
 import { sessionActorFactoryLayer } from "./session/actor/index.ts";
 import { sessionEventsLayer } from "./session/events.ts";
@@ -146,24 +143,6 @@ export async function main(
     return 1;
   }
 
-  const [checkpointCapacity, checkpointCapacityError] = await tryAsync(
-    checkCheckpointCandidateCapacity({
-      workingDirectory,
-      rootfsPath: `${guestImage.path}/rootfs.ext4`,
-    }),
-    (cause) => new RunnerRuntimeError("Checkpoint capacity could not be checked.", cause),
-  );
-  if (checkpointCapacityError !== undefined) {
-    console.error(`[openorb-runner] error: ${checkpointCapacityError.message}`);
-    return 1;
-  }
-  if (!checkpointCapacity.ok) {
-    for (const error of checkpointCapacity.errors) {
-      console.error(`[openorb-runner] error: ${error}`);
-    }
-    return 1;
-  }
-
   console.log(
     JSON.stringify({
       component: "openorb-runner",
@@ -188,7 +167,6 @@ export async function main(
         gondolinBuildId: guestImage.gondolinBuildId,
         path: guestImage.path,
       },
-      checkpointCapacity,
     }),
   );
 

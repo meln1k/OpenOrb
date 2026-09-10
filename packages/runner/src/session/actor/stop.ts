@@ -4,7 +4,7 @@ import { Clock, Deferred, Effect, type Scope } from "effect";
 import type { AgentEnvironment } from "../../environment/agent-environment.ts";
 import type { GitSnapshotSynchronizer } from "../git-snapshot-synchronizer.ts";
 import { updateSessionGitFile } from "../git-snapshot.ts";
-import type { RunnerSessionCheckpointCandidate, RunnerSessionStore } from "../store.ts";
+import type { RunnerSessionStore } from "../store.ts";
 import { actorError, SessionActorError } from "./actor-error.ts";
 import type { OpenAgentSession, SessionAgentRuntime } from "./agent-runtime.ts";
 import type {
@@ -21,7 +21,7 @@ import type { SessionRuntime } from "./runtime.ts";
 import { sessionMetadata, type SessionState } from "./state.ts";
 import { makeSessionIssue } from "./issues.ts";
 
-interface CheckpointBehaviorOptions {
+interface StopBehaviorOptions {
   readonly sessionId: SessionState["data"]["id"];
   readonly idleTimeoutMs: number;
   readonly store: RunnerSessionStore;
@@ -34,7 +34,7 @@ interface CheckpointBehaviorOptions {
   readonly decisions: SessionDecisions;
 }
 
-export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
+export function makeStopBehavior(options: StopBehaviorOptions) {
   const {
     sessionId,
     store,
@@ -47,45 +47,64 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
   } = options;
   const { none, persist, reply, fail } = options.decisions;
   let gitOperationActive = false;
-  let checkpointLog:
+  let stopLog:
     | { readonly trigger: "idle" | "explicit"; readonly startedAt: number }
     | undefined;
 
-  const logCheckpoint = (
-    event: "checkpoint.started" | "checkpoint.completed" | "checkpoint.failed",
+  const logStop = (
+    event: "stop.started" | "stop.completed" | "stop.failed",
     state: SessionState,
   ) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
-      yield* (event === "checkpoint.failed" ? Effect.logError(event) : Effect.logInfo(event)).pipe(
+      yield* (event === "stop.failed" ? Effect.logError(event) : Effect.logInfo(event)).pipe(
         Effect.annotateLogs({
           component: "openorb-runner",
           sessionId,
           runnerId: state.data.runnerId,
-          trigger: checkpointLog?.trigger ?? "unknown",
-          ...(checkpointLog === undefined ? {} : { durationMs: now - checkpointLog.startedAt }),
+          trigger: stopLog?.trigger ?? "unknown",
+          ...(stopLog === undefined ? {} : { durationMs: now - stopLog.startedAt }),
         }),
       );
     });
 
-  function deletionAcceptance(state: SessionState): DeletionAcceptance {
+  function prepareDeletion(state: SessionState): Effect.Effect<DeletionAcceptance> {
     if (
       state.phase._tag !== "Ready" && state.phase._tag !== "Stopped" &&
       state.phase._tag !== "Failed"
     ) {
-      return {
+      return Effect.succeed({
         ok: false,
         message: "Wait for active session work to finish before deleting the session.",
-      };
+      });
     }
     if (gitOperationActive) {
-      return {
+      return Effect.succeed({
         ok: false,
         message:
           "Wait for the active Git Snapshot operation to finish before deleting the session.",
-      };
+      });
     }
-    return { ok: true };
+    const current = runtime.get();
+    return (current.agentSession === undefined
+      ? Effect.void
+      : agentRuntime.close(current.agentSession).pipe(Effect.andThen(runtime.clearAgentSession)))
+      .pipe(
+        Effect.andThen(
+          current.environment === undefined
+            ? Effect.void
+            : current.environment.stop.pipe(Effect.andThen(runtime.clearEnvironment)),
+        ),
+        Effect.andThen(runtime.updateStatus(false)),
+        Effect.as<DeletionAcceptance>({ ok: true }),
+        Effect.catch(() =>
+          Effect.succeed({
+            ok: false,
+            message:
+              "The session environment could not be confirmed stopped, so its storage was preserved.",
+          })
+        ),
+      );
   }
 
   function stop(
@@ -133,79 +152,61 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
           });
         }
       }
-      checkpointLog = {
+      stopLog = {
         trigger: command.idle ? "idle" : "explicit",
         startedAt: yield* Clock.currentTimeMillis,
       };
-      const candidate = yield* store.allocateCheckpoint(sessionId).pipe(
-        Effect.mapError(actorError),
-      );
+      const stopId = crypto.randomUUID();
       const correlationId = crypto.randomUUID();
       return persist(
-        { type: "checkpoint.started", file: candidate.file },
-        (checkpointing) =>
-          emitState(sessionMetadata(checkpointing), "checkpointing", correlationId).pipe(
+        { type: "stop.started", stopId },
+        (stopping) =>
+          emitState(sessionMetadata(stopping), "stopping", correlationId).pipe(
             Effect.orDie,
-            Effect.andThen(logCheckpoint("checkpoint.started", checkpointing)),
+            Effect.andThen(logStop("stop.started", stopping)),
             Effect.andThen(
-              Effect.forkScoped(checkpointReadySession(
+              Effect.forkScoped(stopReadySession(
                 current.environment!,
                 current.agentSession,
-                candidate,
-                state.phase.checkpoint !== undefined,
+                stopId,
                 correlationId,
                 command.reply,
               )).pipe(Effect.asVoid),
             ),
           ),
       );
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.succeed(none(() =>
-          send({
-            kind: "internal",
-            _tag: "RecordIssue",
-            issue: checkpointIssue(false, state.phase.checkpoint !== undefined, error),
-          }).pipe(
-            Effect.andThen(logCheckpoint("checkpoint.failed", state)),
-            Effect.andThen(Deferred.succeed(command.reply, {
-              ok: false,
-              message: "The session checkpoint could not be started.",
-            })),
-            Effect.asVoid,
-          )
-        ))
-      ),
-    );
+    });
   }
 
-  function checkpointReadySession(
+  function stopReadySession(
     environment: AgentEnvironment,
     agentSession: OpenAgentSession | undefined,
-    candidate: RunnerSessionCheckpointCandidate,
-    hasPriorCheckpoint: boolean,
+    stopId: string,
     correlationId: string,
     commandReply: Deferred.Deferred<StopAcceptance>,
   ): Effect.Effect<void, never> {
-    let consumed = false;
+    let environmentUsable = true;
     let agentSessionClosed = agentSession === undefined;
     return Effect.gen(function* () {
       yield* requestGitSnapshot.pipe(Effect.mapError(actorError));
-      yield* environment.run(["/bin/sync"]).pipe(Effect.mapError(actorError), Effect.asVoid);
+      const sync = yield* environment.run(["/bin/sync"]).pipe(Effect.mapError(actorError));
+      if (sync.exitCode !== 0) {
+        return yield* new SessionActorError(
+          `Guest sync exited with status ${sync.exitCode}.`,
+          undefined,
+        );
+      }
       if (agentSession !== undefined) {
         yield* agentRuntime.close(agentSession);
         agentSessionClosed = true;
       }
-      const checkpoint = yield* environment.checkpoint(candidate.path).pipe(
-        Effect.tapError((error) => Effect.sync(() => consumed = error.consumed)),
-        Effect.mapError(actorError),
-      );
-      consumed = true;
+      environmentUsable = false;
+      yield* environment.stop.pipe(Effect.mapError(actorError));
+      yield* store.syncSessionRootDisk(sessionId).pipe(Effect.mapError(actorError));
       yield* send({
         kind: "internal",
-        _tag: "CheckpointCompleted",
-        candidate,
-        checkpoint,
+        _tag: "StopCompleted",
+        stopId,
         correlationId,
         reply: commandReply,
       });
@@ -213,12 +214,12 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
       Effect.catch((error) =>
         send({
           kind: "internal",
-          _tag: "CheckpointFailed",
-          candidate,
-          consumed,
+          _tag: "StopFailed",
+          stopId,
+          environmentUsable,
           agentSessionClosed,
           correlationId,
-          issue: checkpointIssue(consumed, hasPriorCheckpoint, error),
+          issue: stopIssue(environmentUsable, error),
           reply: commandReply,
         })
       ),
@@ -228,116 +229,68 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
 
   function complete(
     state: SessionState,
-    command: Extract<InternalCommand, { readonly _tag: "CheckpointCompleted" }>,
+    command: Extract<InternalCommand, { readonly _tag: "StopCompleted" }>,
   ): Effect.Effect<SessionDecision> {
-    if (state.phase._tag !== "Checkpointing" || state.phase.file !== command.candidate.file) {
+    if (state.phase._tag !== "Stopping" || state.phase.stopId !== command.stopId) {
       return Effect.succeed(reply(command.reply, {
         ok: false,
-        message: "The completed checkpoint no longer matches the active operation.",
+        message: "The completed stop no longer matches the active operation.",
       }));
     }
-    return store.validateCheckpoint(sessionId, command.candidate, command.checkpoint).pipe(
-      Effect.map(() =>
-        persist({
-          type: "checkpoint.published",
-          checkpoint: {
-            file: command.candidate.file,
-            guestAssetBuildId: command.checkpoint.guestAssetBuildId,
-            ...(command.checkpoint.createdWithVmm === undefined
-              ? {}
-              : { createdWithVmm: command.checkpoint.createdWithVmm }),
-            compatibleVmm: command.checkpoint.compatibleVmm,
-          },
-        }, (stopped) =>
-          store.cleanupCheckpoints(sessionId, command.candidate.file).pipe(
-            Effect.catch(() =>
-              Effect.logWarning("checkpoint.cleanup-failed").pipe(
-                Effect.annotateLogs({
-                  component: "openorb-runner",
-                  sessionId,
-                  runnerId: stopped.data.runnerId,
-                  cleanup: "obsolete",
-                }),
-              )
+    return Effect.succeed(persist(
+      { type: "stop.completed", stopId: command.stopId },
+      (stopped) =>
+        runtime.clearEnvironment.pipe(
+          Effect.andThen(runtime.updateStatus(false)),
+          Effect.andThen(
+            emitState(sessionMetadata(stopped), "stopped", command.correlationId).pipe(
+              Effect.orDie,
             ),
-            Effect.andThen(runtime.clearEnvironment),
-            Effect.andThen(runtime.updateStatus(false)),
-            Effect.andThen(
-              emitState(sessionMetadata(stopped), "stopped", command.correlationId).pipe(
-                Effect.orDie,
-              ),
-            ),
-            Effect.andThen(logCheckpoint("checkpoint.completed", stopped)),
-            Effect.andThen(Deferred.succeed(command.reply, { ok: true })),
-            Effect.asVoid,
-          ))
-      ),
-      Effect.catch((error) =>
-        Effect.succeed(failed(state, {
-          kind: "internal",
-          _tag: "CheckpointFailed",
-          candidate: command.candidate,
-          consumed: true,
-          agentSessionClosed: true,
-          correlationId: command.correlationId,
-          issue: checkpointIssue(true, state.phase.checkpoint !== undefined, error),
-          reply: command.reply,
-        }))
-      ),
-    );
+          ),
+          Effect.andThen(logStop("stop.completed", stopped)),
+          Effect.andThen(Deferred.succeed(command.reply, { ok: true })),
+          Effect.asVoid,
+        ),
+    ));
   }
 
   function failed(
     state: SessionState,
-    command: Extract<InternalCommand, { readonly _tag: "CheckpointFailed" }>,
+    command: Extract<InternalCommand, { readonly _tag: "StopFailed" }>,
   ): SessionDecision {
-    if (state.phase._tag !== "Checkpointing" || state.phase.file !== command.candidate.file) {
+    if (state.phase._tag !== "Stopping" || state.phase.stopId !== command.stopId) {
       return reply(command.reply, {
         ok: false,
-        message: "The failed checkpoint no longer matches the active operation.",
+        message: "The failed stop no longer matches the active operation.",
       });
     }
-    return persist({
-      type: "checkpoint.failed",
-      file: command.candidate.file,
-      consumed: command.consumed,
-      issue: command.issue,
-    }, (failedState) =>
-      store.discardCheckpoint(sessionId, command.candidate.file).pipe(
-        Effect.catch(() =>
-          Effect.logWarning("checkpoint.cleanup-failed").pipe(
-            Effect.annotateLogs({
-              component: "openorb-runner",
-              sessionId,
-              runnerId: failedState.data.runnerId,
-              cleanup: "candidate",
-            }),
-          )
+    return persist(
+      {
+        type: "stop.failed",
+        stopId: command.stopId,
+        environmentUsable: command.environmentUsable,
+        issue: command.issue,
+      },
+      (failedState) =>
+        (command.agentSessionClosed ? runtime.clearAgentSession : Effect.void).pipe(
+          Effect.andThen(runtime.updateStatus(command.environmentUsable)),
+          Effect.andThen(
+            emitState(
+              sessionMetadata(failedState),
+              command.environmentUsable ? "ready" : "failed",
+              command.correlationId,
+            ).pipe(Effect.orDie),
+          ),
+          Effect.andThen(logStop("stop.failed", failedState)),
+          Effect.andThen(Deferred.succeed(command.reply, {
+            ok: false,
+            message: command.environmentUsable
+              ? "The session could not be stopped; the VM remains available."
+              : "VM shutdown could not be confirmed; restart the environment explicitly.",
+          })),
+          Effect.asVoid,
         ),
-        Effect.andThen(
-          command.consumed
-            ? runtime.clearEnvironment
-            : command.agentSessionClosed
-            ? runtime.clearAgentSession
-            : Effect.void,
-        ),
-        Effect.andThen(runtime.updateStatus(!command.consumed)),
-        Effect.andThen(
-          emitState(
-            sessionMetadata(failedState),
-            command.consumed ? "failed" : "ready",
-            command.correlationId,
-          ).pipe(Effect.orDie),
-        ),
-        Effect.andThen(logCheckpoint("checkpoint.failed", failedState)),
-        Effect.andThen(Deferred.succeed(command.reply, {
-          ok: false,
-          message: command.consumed
-            ? "The VM stopped, but its checkpoint could not be published. The session was not stopped successfully."
-            : "The session checkpoint could not be created.",
-        })),
-        Effect.asVoid,
-      ));
+    );
   }
 
   function updateGitFile(
@@ -401,7 +354,7 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
     if (
       environment === undefined ||
       (state.phase._tag !== "Ready" && state.phase._tag !== "Running" &&
-        state.phase._tag !== "Checkpointing")
+        state.phase._tag !== "Stopping")
     ) return reply(command.reply, undefined);
     if (gitOperationActive) {
       return fail(
@@ -440,35 +393,30 @@ export function makeCheckpointBehavior(options: CheckpointBehaviorOptions) {
     )).pipe(Effect.asVoid);
   }
 
-  return { deletionAcceptance, stop, complete, failed, updateGitFile, refreshGitSnapshot };
+  return { prepareDeletion, stop, complete, failed, updateGitFile, refreshGitSnapshot };
 }
 
 function rejectGitFileUpdate(message: string): GitFileUpdateAcceptance {
   return { ok: false, message };
 }
 
-function checkpointIssue(
-  consumed: boolean,
-  hasPriorCheckpoint: boolean,
-  error: unknown,
-): SessionIssue {
-  if (!consumed) {
+function stopIssue(environmentUsable: boolean, error: unknown): SessionIssue {
+  if (environmentUsable) {
     return makeSessionIssue({
-      category: "checkpoint-create",
+      category: "vm-stop",
       severity: "warning",
-      message: "The checkpoint could not be created. The current VM remains available; retry Stop.",
+      message: "The session could not be stopped. The current VM remains available; retry Stop.",
       diagnostics: redactedErrorMessage(error, []),
       recovery: "none",
     });
   }
   return makeSessionIssue({
-    category: "checkpoint-publish",
+    category: "vm-stop",
     severity: "failure",
-    message: hasPriorCheckpoint
-      ? "The VM stopped, but its new checkpoint could not be published. Resume the prior checkpoint explicitly; newer guest root-disk changes may roll back, while the Project Checkout and Pi conversation remain preserved."
-      : "The VM stopped, but its checkpoint could not be published. Start a clean VM explicitly; the Project Checkout and Pi conversation remain preserved.",
+    message:
+      "VM shutdown began, so the current environment cannot be reused. The persistent disk was preserved; restart the environment explicitly.",
     diagnostics: redactedErrorMessage(error, []),
-    recovery: hasPriorCheckpoint ? "resume-prior-checkpoint" : "start-clean-vm",
+    recovery: "restart-environment",
   });
 }
 

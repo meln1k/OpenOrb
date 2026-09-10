@@ -87,10 +87,8 @@ function recoveryLabel(recovery: Exclude<SessionRecoveryAction, "none">): string
   switch (recovery) {
     case "retry-provisioning":
       return "Retry provisioning";
-    case "resume-prior-checkpoint":
-      return "Resume prior checkpoint";
-    case "start-clean-vm":
-      return "Start clean VM";
+    case "restart-environment":
+      return "Restart environment";
   }
 }
 

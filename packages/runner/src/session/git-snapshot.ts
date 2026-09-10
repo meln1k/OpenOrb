@@ -14,7 +14,7 @@ import {
 } from "@openorb/protocol/runner-api";
 import { Effect } from "effect";
 
-import { AGENT_WORKSPACE, type AgentEnvironment } from "../environment/agent-environment.ts";
+import type { AgentEnvironment } from "../environment/agent-environment.ts";
 import type { RunnerSessionMetadata } from "./store.ts";
 
 const MAX_STATUS_BYTES = 4 * 1024 * 1024;
@@ -350,8 +350,6 @@ function snapshotGitCommand(args: readonly string[]): string[] {
     "/usr/bin/git",
     "--no-pager",
     "-c",
-    `safe.directory=${AGENT_WORKSPACE}`,
-    "-c",
     "core.fsmonitor=false",
     "-c",
     "core.hooksPath=/dev/null",
@@ -378,8 +376,6 @@ function mutationGitCommand(args: readonly string[]): string[] {
     ...gitCommandPrefix(false),
     "/usr/bin/git",
     "--no-pager",
-    "-c",
-    `safe.directory=${AGENT_WORKSPACE}`,
     ...args,
   ];
 }
@@ -388,7 +384,7 @@ function untrackedDiffCommand(paths: readonly string[]): string[] {
   const script = [
     "for path do",
     "  printf '\\0'",
-    `  /usr/bin/git --no-pager -c safe.directory=${AGENT_WORKSPACE} -c core.attributesFile=/dev/null -c core.quotePath=true -c diff.external= diff --no-index --numstat --patch --no-color --no-ext-diff --no-textconv --unified=1000000 -- /dev/null "$path"`,
+    '  /usr/bin/git --no-pager -c core.attributesFile=/dev/null -c core.quotePath=true -c diff.external= diff --no-index --numstat --patch --no-color --no-ext-diff --no-textconv --unified=1000000 -- /dev/null "$path"',
     "  status=$?",
     '  if [ "$status" -gt 1 ]; then exit "$status"; fi',
     "done",

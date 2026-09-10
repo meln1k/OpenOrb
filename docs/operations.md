@@ -10,7 +10,7 @@ Treat the gateway, runner, and protocol as one release unit. Check out the same 
 SHA on the gateway and every source-installed runner; do not mix independently updated checkouts.
 Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as
 `OPENORB_REVISION` below. A standalone runner must come from the release for that same source
-revision. Protocol version **16** is source-owned and is not a separately upgradeable public API.
+revision. Protocol version **17** is source-owned and is not a separately upgradeable public API.
 
 The exact runtime and application pins in this release graph are:
 
@@ -21,7 +21,7 @@ The exact runtime and application pins in this release graph are:
 | OpenOrb guest image                    | `mvp-6` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi coding-agent direct imports | 0.85.1                                       |
 | Remix                                  | 3.0.0-beta.10                                |
-| Runner protocol                        | 16                                           |
+| Runner protocol                        | 17                                           |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
 build IDs, hashes, sizes, and immutable URLs are in
@@ -170,19 +170,17 @@ and guest-asset release, preserving owner `openorb-runner`, directory mode `0700
 mode `0600`.
 
 Do not claim a crash-consistent copy of a running directory is a session backup. Journals, Pi
-`session.jsonl`, workspace files, deletion markers, and checkpoint publication can change
-independently while a session runs. In particular, Gondolin/QEMU checkpoints are non-self-contained
-qcow2 overlays: they require the exact matching pinned kernel, initramfs, rootfs, and backing
-assets. A checkpoint file may be **mutated in place** while Gondolin rebases its backing file during
-resume. Copying it concurrently can therefore produce a corrupt or internally inconsistent backup.
-Stop the service first; filesystem snapshots alone do not coordinate with an active rebase.
+`session.jsonl`, each session's `root-disk.qcow2`, deletion markers, and Session Journals can change
+independently while a session runs. QEMU mutates the persistent root disk in place while its VM is
+running, so copying it concurrently can produce a corrupt or internally inconsistent backup. Stop
+the service first; filesystem snapshots alone do not coordinate with an active VM.
 
 Even a consistent runner backup is not a gateway backup and does not make sessions portable or
 provide migration/HA. Keep the matching guest assets or allow the same immutable release assets to
 be downloaded and verified. After restore, run `doctor` before starting the service. A missing or
-incompatible checkpoint may require the UI's explicit **Start clean VM** recovery; the separately
-stored Project Checkout and Pi conversation can remain available, but guest root-disk-only changes
-are lost.
+corrupt `root-disk.qcow2` prevents that Session from being resumed; the Project Checkout is on that
+disk, not separately stored on the host. The explicit **Restart environment** recovery reopens the
+preserved disk after a Stop durability or VM-start failure and never substitutes an older copy.
 
 ## Troubleshooting
 
@@ -199,7 +197,7 @@ are lost.
   without guest `/dev/kvm`; enable host nesting only if the workload needs it.
 - **Image verification fails:** stop the runner and follow the narrowly scoped removal/re-download
   procedure in [guest image recovery](guest-image.md#runner-installation-and-recovery). Never edit
-  an installed image or pair a checkpoint with a different image release.
+  an installed image or reopen a persistent root disk with a different image release.
 - **Private clone/push gets 403:** confirm the token is restricted to the selected repository with
   Contents read/write, has not expired, and is approved for any organization SSO policy. Rotate it
   in gateway Settings, not on the runner.
@@ -220,5 +218,5 @@ before promotion.
 Stop gateway and runners, deploy the same approved source revision/release artifacts, prepare the
 frozen graph, then restart and run gateway health and runner `doctor` checks. Do not change either
 external secret as part of a software upgrade. Rollback is only safe when the database migrations,
-protocol, runner state, and guest/checkpoint assets are compatible with the reviewed older release;
-there is no general downgrade guarantee.
+protocol, runner state, persistent root disks, and guest assets are compatible with the reviewed
+older release; there is no general downgrade guarantee.

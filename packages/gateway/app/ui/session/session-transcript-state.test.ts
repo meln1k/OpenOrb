@@ -239,15 +239,15 @@ Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's li
   assertEquals(ready.followUpQueue, []);
 });
 
-Deno.test("checkpoint lifecycle stages expose transcript-specific status", () => {
-  const checkpointing = reduceSessionTranscriptState(
+Deno.test("VM lifecycle stages expose transcript-specific status", () => {
+  const stopping = reduceSessionTranscriptState(
     createSessionTranscriptState("ready"),
-    { type: "session.state", stage: "checkpointing", checkoutState: "available", issues: [] },
+    { type: "session.state", stage: "stopping", checkoutState: "available", issues: [] },
     "provisioning",
   );
-  assertEquals(checkpointing.status, "Creating checkpoint");
+  assertEquals(stopping.status, "Stopping VM");
 
-  const stopped = reduceSessionTranscriptState(checkpointing, {
+  const stopped = reduceSessionTranscriptState(stopping, {
     type: "session.state",
     stage: "stopped",
     checkoutState: "available",
@@ -261,7 +261,7 @@ Deno.test("checkpoint lifecycle stages expose transcript-specific status", () =>
     checkoutState: "available",
     issues: [],
   }, "provisioning");
-  assertEquals(resuming.status, "Resuming checkpoint");
+  assertEquals(resuming.status, "Restarting environment");
 });
 
 Deno.test("agent and turn boundaries do not add transcript activity", () => {

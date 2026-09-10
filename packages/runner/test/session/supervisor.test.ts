@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { delay } from "@std/async/delay";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import * as DenoPath from "@effect/platform-deno/DenoPath";
@@ -24,7 +24,6 @@ import { join } from "node:path";
 
 import {
   type AgentEnvironment,
-  AgentEnvironmentCheckpointError,
   AgentEnvironmentError,
   type AgentEnvironmentOptions,
   AgentEnvironmentProvider,
@@ -100,8 +99,8 @@ function sessionDefinition(branchName: string): RunnerSessionDefinition {
 
 class FakeEnvironment implements AgentEnvironment {
   readonly commands: string[][] = [];
-  checkpointCalls = 0;
-  checkpointFailureConsumed: boolean | undefined;
+  stopCalls = 0;
+  stopFailure: AgentEnvironmentError | undefined;
   gitSnapshotBlock:
     | { started: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> }
     | undefined;
@@ -160,28 +159,10 @@ class FakeEnvironment implements AgentEnvironment {
   writeFile: AgentEnvironment["writeFile"] = () => Effect.void;
   makeDirectory: AgentEnvironment["makeDirectory"] = () => Effect.void;
   detectImageMimeType: AgentEnvironment["detectImageMimeType"] = () => Effect.succeed(null);
-  checkpoint: AgentEnvironment["checkpoint"] = (path) => {
-    this.checkpointCalls++;
-    return Effect.promise(() => Deno.writeTextFile(path, `fake checkpoint ${this.checkpointCalls}`))
-      .pipe(
-        Effect.flatMap(() =>
-          this.checkpointFailureConsumed === undefined
-            ? Effect.succeed({
-              path,
-              guestAssetBuildId: "02e784cb-e063-5138-b1c4-334e8a3307a9",
-              createdWithVmm: "qemu" as const,
-              compatibleVmm: ["qemu" as const],
-            })
-            : Effect.fail(
-              new AgentEnvironmentCheckpointError(
-                "Injected checkpoint failure.",
-                undefined,
-                this.checkpointFailureConsumed,
-              ),
-            )
-        ),
-      );
-  };
+  stop: AgentEnvironment["stop"] = Effect.suspend(() => {
+    this.stopCalls++;
+    return this.stopFailure === undefined ? Effect.void : Effect.fail(this.stopFailure);
+  });
 }
 
 Deno.test("SessionSupervisor accepts typed provisioning and owns the background Pi job", async () => {
@@ -232,6 +213,7 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
         assertEquals(accepted.session.id, SESSION_ID);
         await waitForState(store, "ready");
         assertEquals(runtime.commands.map((command) => command.slice(0, 2)), [
+          ["/usr/bin/find", "/workspace"],
           ["/usr/bin/git", "clone"],
           ["/usr/bin/git", "rev-parse"],
           ["/usr/bin/git", "switch"],
@@ -333,7 +315,7 @@ Deno.test("clone and setup failures remain bounded warnings and still dispatch t
   }
 });
 
-Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session generation", async () => {
+Deno.test("manual Stop syncs the persistent root disk and wake restores the environment", async () => {
   const directory = await Deno.makeTempDir();
   const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
   const environments: FakeEnvironment[] = [];
@@ -341,11 +323,13 @@ Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session 
   const piSessionFiles: string[] = [];
   const prompts: string[] = [];
   let piDisposals = 0;
+  let rootDiskInitializations = 0;
   const environmentProvider = AgentEnvironmentProvider.of({
+    initializeRootDisk: () => Effect.sync(() => rootDiskInitializations++),
     make: (options) => {
       environmentOptions.push(options);
       const environment = new FakeEnvironment();
-      if (options.resumeCheckpoint !== undefined && environments.length === 2) {
+      if (environments.length === 1) {
         environment.resumeHookExitCode = 23;
       }
       environments.push(environment);
@@ -383,7 +367,15 @@ Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session 
   };
 
   try {
-    const store = await makeStore(directory);
+    const durableStore = await makeStore(directory);
+    let rootDiskSyncs = 0;
+    const store: TestStore = {
+      ...durableStore,
+      syncSessionRootDisk: (sessionId) =>
+        Effect.sync(() => rootDiskSyncs++).pipe(
+          Effect.andThen(durableStore.syncSessionRootDisk(sessionId)),
+        ),
+    };
     await withSupervisor(
       {
         cpuCount: 4,
@@ -393,22 +385,37 @@ Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session 
       },
       store,
       environmentProvider,
-      async (supervisor, events) => {
+      async (supervisor) => {
         await Effect.runPromise(
-          supervisor.provision(createProvisionPayload("openorb/checkpoint-cycle-test")),
+          supervisor.provision(createProvisionPayload("openorb/stop-wake-cycle-test")),
         );
         await waitForState(store, "ready");
+        await createRootDisk(directory, SESSION_ID, "persistent root disk");
         const actor = requireActor(supervisor);
 
         assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
-        const first = await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID));
         assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "stopped");
+        assertEquals(
+          (await Effect.runPromise(
+            recoverSessionState(SESSION_ID).pipe(
+              Effect.provideService(Journal, store.journal),
+            ),
+          )).phase._tag,
+          "Stopped",
+        );
         assertEquals(supervisor.activeSessionCount(), 0);
+        assertEquals(environments[0]?.stopCalls, 1);
+        assert(environments[0]?.commands.some((command) => command[0] === "/bin/sync"));
+        assertEquals(rootDiskSyncs, 1);
+        assertEquals(
+          await Deno.readTextFile(join(directory, "sessions", SESSION_ID, "root-disk.qcow2")),
+          "persistent root disk",
+        );
         assertEquals(piDisposals, 1);
 
         assertEquals(
           await Effect.runPromise(
-            actor.wake(wakePayload(undefined, "resume-prior-checkpoint")),
+            actor.wake(wakePayload(undefined, "restart-environment")),
           ),
           { ok: false, message: "This session does not require environment recovery." },
         );
@@ -417,74 +424,43 @@ Deno.test("manual Stop checkpoints and repeatedly resumes the newest Pi session 
         )));
         assertEquals(woken, { ok: true });
         await waitForState(store, "ready");
-        assertEquals(environmentOptions[1]?.resumeCheckpoint, first);
+        assertEquals(environments.length, 2);
+        assertEquals(
+          (await Effect.runPromise(store.readMetadata(SESSION_ID))).issues.some((issue) =>
+            issue.category === "resume-hook" && issue.severity === "warning"
+          ),
+          true,
+        );
         assertEquals(environmentOptions[1]?.github?.token, "continuation-github-token");
+        assertEquals(environmentOptions[1]?.rootDiskPath, environmentOptions[0]?.rootDiskPath);
+        assertStringIncludes(
+          environmentOptions[0]?.rootDiskPath ?? "",
+          `/sessions/${SESSION_ID}/root-disk.qcow2`,
+        );
+        assertEquals(rootDiskInitializations, 1);
         assert(
           environments[1]?.commands.some((command) =>
             command.some((argument) => argument.includes(".agents/resume"))
           ),
         );
-        assertEquals(prompts, ["Inspect the repository"]);
-
-        const firstContinuation = await Effect.runPromise(actor.prompt(promptPayload(
-          "Continue after first checkpoint",
-          "continuation-github-token",
-        )));
-        assert(firstContinuation.ok);
-        await waitForState(store, "ready");
-
-        assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
-        const second = await Effect.runPromise(store.readCurrentCheckpoint(SESSION_ID));
-        assert(second.path !== first.path);
-        await assertPathMissing(first.path);
-        assertEquals(piDisposals, 2);
-
-        const resumeFailureLog = Effect.runPromise(
-          events.watch(SESSION_ID, 0).pipe(
-            Stream.filter((item) =>
-              item.event.type === "provisioning.log" &&
-              item.event.text.includes(".agents/resume exited with status 23")
-            ),
-            Stream.take(1),
-            Stream.runCollect,
-            Effect.timeout("1 second"),
-          ),
-        );
-        await delay(0);
-        const secondContinuation = await Effect.runPromise(
-          actor.prompt(promptPayload("Continue despite resume hook failure")),
-        );
-        assert(secondContinuation.ok);
-        await waitForState(store, "ready");
-        assertEquals(Array.from(await resumeFailureLog).length, 1);
-        assertEquals(environmentOptions[2]?.resumeCheckpoint, second);
-        assertEquals(environments[2]?.resumeHookExitCode, 23);
+        assertEquals(environments[1]?.resumeHookExitCode, 23);
         assertEquals(
           environments.flatMap((environment) => environment.commands).filter((command) =>
             command.some((argument) => argument.includes(".agents/setup"))
           ).length,
           1,
         );
-        assertEquals(piSessionFiles.length, 3);
+        assertEquals(piSessionFiles.length, 2);
         assertEquals(new Set(piSessionFiles).size, 1);
-        assertEquals(prompts, [
-          "Inspect the repository",
-          "Continue after first checkpoint",
-          "Continue despite resume hook failure",
-        ]);
+        assertEquals(prompts, ["Inspect the repository"]);
       },
     );
     assert(environments.every((environment) => environment.closed));
-    assertEquals(piDisposals, 3);
-    const checkpoints = logs.filter((log) => String(log.message).startsWith("checkpoint."));
-    assertEquals(checkpoints.map((log) => log.message), [
-      "checkpoint.started",
-      "checkpoint.completed",
-      "checkpoint.started",
-      "checkpoint.completed",
-    ]);
-    assert(checkpoints.every((log) => log.annotations.trigger === "explicit"));
-    assert(checkpoints.every((log) => Schema.is(Schema.Number)(log.annotations.durationMs)));
+    assertEquals(piDisposals, 2);
+    const stops = logs.filter((log) => String(log.message).startsWith("stop."));
+    assertEquals(stops.map((log) => log.message), ["stop.started", "stop.completed"]);
+    assert(stops.every((log) => log.annotations.trigger === "explicit"));
+    assert(stops.every((log) => Schema.is(Schema.Number)(log.annotations.durationMs)));
     assertEquals(logs.filter((log) => log.message === "provision.accepted").length, 1);
     assertEquals(logs.filter((log) => log.message === "provision.ready").length, 1);
     assert(!JSON.stringify(logs).includes(MODEL_RUNTIME.credential.value));
@@ -542,6 +518,7 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
           supervisor.provision(createProvisionPayload("openorb/idle-stop-test")),
         );
         await waitForState(store, "ready");
+        await createRootDisk(directory, SESSION_ID);
         const actor = requireActor(supervisor);
         const continued = await Effect.runPromise(
           actor.prompt(promptPayload("Keep working past the idle threshold")),
@@ -550,24 +527,21 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
         await continuationStarted.promise;
         await delay(150);
         assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "running");
-        assertEquals(environment.checkpointCalls, 0);
+        assertEquals(environment.stopCalls, 0);
         const rejected = await Effect.runPromise(actor.stop(stopPayload()));
         assertEquals(rejected.ok, false);
-        assertEquals(logs.filter((log) => String(log.message).startsWith("checkpoint.")), []);
+        assertEquals(logs.filter((log) => String(log.message).startsWith("stop.")), []);
 
         releaseContinuation.resolve();
         await waitForState(store, "stopped");
-        assertEquals(environment.checkpointCalls, 1);
+        assertEquals(environment.stopCalls, 1);
         await waitForActorInactive(actor);
         assertEquals(supervisor.activeSessionCount(), 0);
       },
     );
-    const checkpoints = logs.filter((log) => String(log.message).startsWith("checkpoint."));
-    assertEquals(checkpoints.map((log) => log.message), [
-      "checkpoint.started",
-      "checkpoint.completed",
-    ]);
-    assert(checkpoints.every((log) => log.annotations.trigger === "idle"));
+    const stops = logs.filter((log) => String(log.message).startsWith("stop."));
+    assertEquals(stops.map((log) => log.message), ["stop.started", "stop.completed"]);
+    assert(stops.every((log) => log.annotations.trigger === "idle"));
   } finally {
     releaseContinuation.resolve();
     await Deno.remove(directory, { recursive: true });
@@ -594,6 +568,7 @@ Deno.test("Stop rejects an active Git Snapshot and succeeds after it finishes", 
           supervisor.provision(createProvisionPayload("openorb/stop-git-snapshot-test")),
         );
         await waitForState(store, "ready");
+        await createRootDisk(directory, SESSION_ID);
         environment.gitSnapshotBlock = {
           started: snapshotStarted,
           release: releaseSnapshot,
@@ -624,116 +599,86 @@ Deno.test("Stop rejects an active Git Snapshot and succeeds after it finishes", 
   }
 });
 
-Deno.test("checkpoint failures distinguish reusable and consumed VMs", async () => {
-  for (const consumed of [false, true]) {
-    const directory = await Deno.makeTempDir();
-    const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
-    try {
-      const store = await makeStore(directory);
-      const environment = new FakeEnvironment();
-      environment.checkpointFailureConsumed = consumed;
-      let piCreations = 0;
-      const createPiSession: CreateRawPiSession = (options) => {
-        piCreations++;
-        return createSettlingPiSession(options);
-      };
-      await withSupervisor(
-        {
-          cpuCount: 4,
-          memoryMiB: 8192,
-          createPiSession,
-          logs,
-        },
-        store,
-        fakeEnvironmentProvider(environment),
-        async (supervisor, events) => {
-          await Effect.runPromise(supervisor.provision(
-            createProvisionPayload(`openorb/checkpoint-failure-${consumed}`),
-          ));
-          await waitForState(store, "ready");
-          const actor = requireActor(supervisor);
-          const visibleIssue = waitForVisibleIssue(
-            events,
-            SESSION_ID,
-            consumed ? "checkpoint-publish" : "checkpoint-create",
-          );
-          const stopped = await Effect.runPromise(actor.stop(stopPayload()));
-          assertEquals(stopped.ok, false);
-          assertEquals(
-            logs.filter((log) => String(log.message).startsWith("checkpoint.")).map((log) =>
-              log.message
-            ),
-            ["checkpoint.started", "checkpoint.failed"],
-          );
-          assert(!JSON.stringify(logs).includes("Injected checkpoint failure"));
-          const { issue, state } = await visibleIssue;
-          assertEquals(issue.severity, consumed ? "failure" : "warning");
-          assertEquals(state.stage, consumed ? "failed" : "ready");
-          const metadata = await Effect.runPromise(store.readMetadata(SESSION_ID));
-          assertEquals(metadata.state, consumed ? "error" : "ready");
-          assertEquals(metadata.checkpoint, undefined);
-          assertEquals(metadata.checkpointCandidate, undefined);
-          assertEquals(
-            metadata.issues.findLast((issue) => issue.severity === "failure")?.recovery,
-            consumed ? "start-clean-vm" : undefined,
-          );
-          assertEquals(
-            (await Array.fromAsync(
-              Deno.readDir(join(directory, "sessions", SESSION_ID, "checkpoints")),
-            )).length,
-            0,
-          );
-          assertEquals(actor.active, !consumed);
+Deno.test("an environment stop failure requires an explicit environment restart", async () => {
+  const directory = await Deno.makeTempDir();
+  const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
+  try {
+    const store = await makeStore(directory);
+    const environment = new FakeEnvironment();
+    environment.stopFailure = new AgentEnvironmentError(
+      "Injected environment stop failure.",
+      undefined,
+    );
+    let piCreations = 0;
+    const createPiSession: CreateRawPiSession = (options) => {
+      piCreations++;
+      return createSettlingPiSession(options);
+    };
+    await withSupervisor(
+      {
+        cpuCount: 4,
+        memoryMiB: 8192,
+        createPiSession,
+        logs,
+      },
+      store,
+      fakeEnvironmentProvider(environment),
+      async (supervisor, events) => {
+        await Effect.runPromise(supervisor.provision(
+          createProvisionPayload("openorb/stop-failure-test"),
+        ));
+        await waitForState(store, "ready");
+        await createRootDisk(directory, SESSION_ID);
+        const actor = requireActor(supervisor);
+        const visibleIssue = waitForVisibleIssue(events, SESSION_ID, "vm-stop");
 
-          if (consumed) {
-            const setupCalls = environment.commands.filter((command) =>
-              command.some((argument) =>
-                argument.includes(".agents/setup")
-              )
-            ).length;
-            assertEquals(
-              await Effect.runPromise(actor.wake(wakePayload(undefined, "start-clean-vm"))),
-              { ok: true },
-            );
-            await waitForState(store, "ready");
-            assertEquals(
-              environment.commands.filter((command) =>
-                command.some((argument) => argument.includes(".agents/setup"))
-              ).length,
-              setupCalls + 1,
-            );
-          }
+        assertEquals((await Effect.runPromise(actor.stop(stopPayload()))).ok, false);
+        const { issue, state } = await visibleIssue;
+        assertEquals(issue.severity, "failure");
+        assertEquals(issue.recovery, "restart-environment");
+        assertEquals(state.stage, "failed");
+        assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "error");
+        assertEquals(environment.stopCalls, 1);
+        assertEquals(actor.active, false);
+        assertEquals(
+          logs.filter((log) => String(log.message).startsWith("stop.")).map((log) => log.message),
+          ["stop.started", "stop.failed"],
+        );
+        assert(!JSON.stringify(logs).includes("Injected environment stop failure"));
 
-          const prompted = await Effect.runPromise(
-            actor.prompt(promptPayload("Try after failed checkpoint")),
-          );
-          assertEquals(prompted.ok, true);
-          await waitForState(store, "ready");
-          assertEquals(piCreations, 2);
-        },
-      );
-    } finally {
-      await Deno.remove(directory, { recursive: true });
-    }
+        environment.stopFailure = undefined;
+        assertEquals(
+          await Effect.runPromise(actor.wake(wakePayload(undefined, "restart-environment"))),
+          { ok: true },
+        );
+        await waitForState(store, "ready");
+        assertEquals(environment.stopCalls, 2);
+        assertEquals(piCreations, 2);
+        assertEquals(actor.active, true);
+      },
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
   }
 });
 
-Deno.test("checkpoint resume failure requires explicit retry and leaves the prompt undispatched", async () => {
+Deno.test("environment restart failure requires explicit retry and leaves the prompt undispatched", async () => {
   const directory = await Deno.makeTempDir();
   let environmentCreations = 0;
   let piPromptCalls = 0;
   const environment = new FakeEnvironment();
   const environmentProvider = AgentEnvironmentProvider.of({
-    make: (options) => {
+    initializeRootDisk: () => Effect.void,
+    make: () => {
       environmentCreations++;
-      return options.resumeCheckpoint === undefined
+      return environmentCreations === 1
         ? Effect.acquireRelease(
           Effect.succeed(environment),
           () => Effect.sync(() => environment.closed = true),
         )
         : Effect.fail(
           new AgentEnvironmentError(
-            "Injected incompatible checkpoint backend.",
+            "Injected persistent environment restart failure.",
             undefined,
           ),
         );
@@ -767,9 +712,10 @@ Deno.test("checkpoint resume failure requires explicit retry and leaves the prom
       environmentProvider,
       async (supervisor) => {
         await Effect.runPromise(
-          supervisor.provision(createProvisionPayload("openorb/resume-failure-test")),
+          supervisor.provision(createProvisionPayload("openorb/restart-failure-test")),
         );
         await waitForState(store, "ready");
+        await createRootDisk(directory, SESSION_ID);
         const actor = requireActor(supervisor);
         assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
         const promptCallsBeforeResume = piPromptCalls;
@@ -779,10 +725,9 @@ Deno.test("checkpoint resume failure requires explicit retry and leaves the prom
         assertEquals(resumed.ok, false);
         const failed = await Effect.runPromise(store.readMetadata(SESSION_ID));
         assertEquals(failed.state, "error");
-        assert(failed.checkpoint !== undefined);
         assertEquals(
           failed.issues.findLast((issue) => issue.severity === "failure")?.recovery,
-          "resume-prior-checkpoint",
+          "restart-environment",
         );
         assertEquals(piPromptCalls, promptCallsBeforeResume);
         assertEquals(environmentCreations, 2);
@@ -817,6 +762,7 @@ Deno.test("session owners retain separate immutable Git identities in guest envi
       const store = await makeStore(sessionDirectory);
       const environment = new FakeEnvironment();
       const environmentProvider: AgentEnvironmentProvider = {
+        initializeRootDisk: () => Effect.void,
         make: (options) => {
           observed.push(options);
           return Effect.acquireRelease(
@@ -1685,91 +1631,46 @@ Deno.test("SessionSupervisor reconciles orphaned durable states before accepting
   }
 });
 
-Deno.test("SessionSupervisor restart preserves only a valid published checkpoint", async () => {
+Deno.test("SessionSupervisor fails interrupted Stopping without claiming disk durability", async () => {
   const directory = await Deno.makeTempDir();
   try {
-    const store = await makeStore(directory);
+    const durableStore = await makeStore(directory);
+    const syncAttempts: SessionId[] = [];
+    const store: TestStore = {
+      ...durableStore,
+      syncSessionRootDisk: (sessionId) =>
+        Effect.sync(() => syncAttempts.push(sessionId)).pipe(
+          Effect.andThen(durableStore.syncSessionRootDisk(sessionId)),
+        ),
+    };
     const sessions = {
-      interruptedResume: Schema.decodeUnknownSync(SessionId)(
+      durableDisk: Schema.decodeUnknownSync(SessionId)(
         "01989d78-65ee-7f6a-a97e-0f16ad134c21",
       ),
-      interruptedCheckpoint: Schema.decodeUnknownSync(SessionId)(
+      missingDisk: Schema.decodeUnknownSync(SessionId)(
         "01989d78-65ee-7f6a-a97e-0f16ad134c22",
       ),
-      missingCheckpoint: Schema.decodeUnknownSync(SessionId)(
-        "01989d78-65ee-7f6a-a97e-0f16ad134c23",
-      ),
-    };
-    const checkpointFiles = {
-      current: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c31.qcow2",
-      obsolete: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c32.qcow2",
-      partial: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c33.qcow2",
-      missing: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c34.qcow2",
-      invalidObsolete: "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c35.qcow2",
-    };
-    const checkpointMetadata = (file: string) => ({
-      file,
-      guestAssetBuildId: "02e784cb-e063-5138-b1c4-334e8a3307a9",
-      createdWithVmm: "qemu" as const,
-      compatibleVmm: ["qemu" as const],
-    });
-    const checkpointPath = (sessionId: SessionId, file: string) =>
-      join(directory, "sessions", sessionId, "checkpoints", file);
+    } as const;
 
     for (const [name, sessionId] of Object.entries(sessions)) {
       await Effect.runPromise(
         store.session.create(
           sessionId,
-          sessionDefinition(`openorb/restart-checkpoint-${name}`),
+          sessionDefinition(`openorb/reconcile-stopping-${name}`),
           CREATED_AT,
         ),
       );
       await Effect.runPromise(store.session.completeInitialRun(sessionId));
     }
-
-    await Effect.runPromise(store.session.append(sessions.interruptedResume, {
-      type: "checkpoint.started",
-      file: checkpointFiles.current,
+    await createRootDisk(directory, sessions.durableDisk);
+    await Effect.runPromise(store.session.append(sessions.durableDisk, {
+      type: "stop.started",
+      stopId: "01989d78-65ee-7f6a-a97e-0f16ad134c31",
     }));
-    await Deno.writeTextFile(
-      checkpointPath(sessions.interruptedResume, checkpointFiles.current),
-      "published checkpoint",
-    );
-    await Effect.runPromise(store.session.append(sessions.interruptedResume, {
-      type: "checkpoint.published",
-      checkpoint: checkpointMetadata(checkpointFiles.current),
+    await Effect.runPromise(store.session.append(sessions.missingDisk, {
+      type: "stop.started",
+      stopId: "01989d78-65ee-7f6a-a97e-0f16ad134c32",
     }));
-    await Deno.writeTextFile(
-      checkpointPath(sessions.interruptedResume, checkpointFiles.obsolete),
-      "obsolete checkpoint",
-    );
-    await Effect.runPromise(store.session.append(sessions.interruptedResume, {
-      type: "restoration.started",
-      restorationId: "01989d78-65ee-7f6a-a97e-0f16ad134c41",
-      intent: { _tag: "ResumeCheckpoint", continuation: { _tag: "Wake" } },
-    }));
-
-    await Effect.runPromise(store.session.append(sessions.interruptedCheckpoint, {
-      type: "checkpoint.started",
-      file: checkpointFiles.partial,
-    }));
-    await Deno.writeTextFile(
-      checkpointPath(sessions.interruptedCheckpoint, checkpointFiles.partial),
-      "partial checkpoint",
-    );
-
-    await Effect.runPromise(store.session.append(sessions.missingCheckpoint, {
-      type: "checkpoint.started",
-      file: checkpointFiles.missing,
-    }));
-    await Effect.runPromise(store.session.append(sessions.missingCheckpoint, {
-      type: "checkpoint.published",
-      checkpoint: checkpointMetadata(checkpointFiles.missing),
-    }));
-    await Deno.writeTextFile(
-      checkpointPath(sessions.missingCheckpoint, checkpointFiles.invalidObsolete),
-      "obsolete checkpoint",
-    );
 
     let piCreations = 0;
     await withSupervisor(
@@ -1784,39 +1685,24 @@ Deno.test("SessionSupervisor restart preserves only a valid published checkpoint
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
       async (supervisor) => {
-        const resumed = await Effect.runPromise(
-          store.readMetadata(sessions.interruptedResume),
+        const durable = await Effect.runPromise(
+          store.readMetadata(sessions.durableDisk),
         );
-        assertEquals(resumed.state, "error");
-        assertEquals(resumed.checkpoint?.file, checkpointFiles.current);
-        assertEquals(resumed.checkpointCandidate, undefined);
+        assertEquals(durable.state, "error");
         assertEquals(
-          resumed.issues.findLast((issue) => issue.severity === "failure")?.recovery,
-          "resume-prior-checkpoint",
-        );
-        await Deno.stat(checkpointPath(sessions.interruptedResume, checkpointFiles.current));
-        await assertPathMissing(
-          checkpointPath(sessions.interruptedResume, checkpointFiles.obsolete),
+          durable.issues.findLast((issue) => issue.category === "vm-stop")?.recovery,
+          "restart-environment",
         );
 
-        const interrupted = await Effect.runPromise(
-          store.readMetadata(sessions.interruptedCheckpoint),
+        const failed = await Effect.runPromise(
+          store.readMetadata(sessions.missingDisk),
         );
-        assertEquals(interrupted.state, "error");
-        assertEquals(interrupted.checkpoint, undefined);
-        assertEquals(interrupted.checkpointCandidate, undefined);
-        await assertPathMissing(
-          checkpointPath(sessions.interruptedCheckpoint, checkpointFiles.partial),
-        );
-
-        const invalid = await Effect.runPromise(
-          store.readMetadata(sessions.missingCheckpoint),
-        );
-        assertEquals(invalid.state, "error");
-        assertEquals(invalid.checkpoint, undefined);
-        await assertPathMissing(
-          checkpointPath(sessions.missingCheckpoint, checkpointFiles.invalidObsolete),
-        );
+        assertEquals(failed.state, "error");
+        const issue = failed.issues.findLast((issue) => issue.category === "vm-stop");
+        assert(issue);
+        assertEquals(issue.severity, "failure");
+        assertEquals(issue.recovery, "restart-environment");
+        assertEquals(syncAttempts, []);
         assertEquals(supervisor.activeSessionCount(), 0);
         assertEquals(piCreations, 0);
       },
@@ -2041,6 +1927,44 @@ Deno.test("SessionSupervisor rejects active deletion, then removes an idle sessi
   }
 });
 
+Deno.test("SessionSupervisor preserves storage when deletion cannot stop the environment", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = await makeStore(directory);
+    const environment = new FakeEnvironment();
+    await withSupervisor(
+      { cpuCount: 4, memoryMiB: 8192, createPiSession: createSettlingPiSession },
+      store,
+      fakeEnvironmentProvider(environment),
+      async (supervisor) => {
+        await Effect.runPromise(
+          supervisor.provision(createProvisionPayload("openorb/deletion-stop-failure-test")),
+        );
+        await waitForState(store, "ready");
+        const markerPath = join(directory, "sessions", SESSION_ID, "preserve-me");
+        await Deno.writeTextFile(markerPath, "persistent session data");
+        environment.stopFailure = new AgentEnvironmentError(
+          "Injected deletion stop failure.",
+          undefined,
+        );
+
+        const rejected = await Effect.runPromise(supervisor.deleteSession(SESSION_ID));
+        assertEquals(rejected.ok, false);
+        assertEquals(await Deno.readTextFile(markerPath), "persistent session data");
+        assert(supervisor.findActor(SESSION_ID));
+        assertEquals(environment.stopCalls, 1);
+
+        environment.stopFailure = undefined;
+        assertEquals(await Effect.runPromise(supervisor.deleteSession(SESSION_ID)), { ok: true });
+        await assertPathMissing(join(directory, "sessions", SESSION_ID));
+        assertEquals(environment.stopCalls, 2);
+      },
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 Deno.test("SessionSupervisor retains deletion admission after a retryable storage failure", async () => {
   const directory = await Deno.makeTempDir();
   const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
@@ -2224,7 +2148,7 @@ function promptPayload(prompt: string, githubToken?: string) {
 
 function wakePayload(
   githubToken?: string,
-  recovery?: "resume-prior-checkpoint" | "start-clean-vm",
+  recovery?: "restart-environment",
 ) {
   return Schema.decodeUnknownSync(WakeSessionPayload)({
     sessionId: SESSION_ID,
@@ -2236,6 +2160,17 @@ function wakePayload(
 
 function stopPayload() {
   return Schema.decodeUnknownSync(StopSessionPayload)({ sessionId: SESSION_ID });
+}
+
+function createRootDisk(
+  workingDirectory: string,
+  sessionId: typeof SessionId.Type,
+  contents = "fake persistent root disk",
+): Promise<void> {
+  return Deno.writeTextFile(
+    join(workingDirectory, "sessions", sessionId, "root-disk.qcow2"),
+    contents,
+  );
 }
 
 async function assertPathMissing(path: string): Promise<void> {
@@ -2337,6 +2272,7 @@ const EMPTY_PI_SESSION_MANAGER: Pick<SessionManager, "getLeafEntry"> = {
 
 function fakeEnvironmentProvider(environment: FakeEnvironment): AgentEnvironmentProvider {
   return {
+    initializeRootDisk: () => Effect.void,
     make: () =>
       Effect.acquireRelease(
         Effect.succeed(environment),

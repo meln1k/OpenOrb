@@ -136,5 +136,5 @@ const EMPTY_ENVIRONMENT: AgentEnvironment = {
   writeFile: () => Effect.void,
   makeDirectory: () => Effect.void,
   detectImageMimeType: () => Effect.succeed(null),
-  checkpoint: () => Effect.die("unexpected checkpoint"),
+  stop: Effect.die("unexpected stop"),
 };

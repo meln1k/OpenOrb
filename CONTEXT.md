@@ -40,20 +40,24 @@ cursor.
 **Ephemeral Session Event**: A Session Event observed during live activity without a replay
 guarantee. _Avoid_: Durable event, conversation event
 
-**Project Checkout**: The host-backed project filesystem mounted into an Agent Environment. It
-persists independently of the Agent Environment and its snapshots. _Avoid_: VM workspace
+**Project Checkout**: The session-specific repository at `/workspace` inside the persistent Agent
+Environment root disk. _Avoid_: Host workspace, mounted workspace
 
 **Git Snapshot**: A bounded point-in-time summary of a Project Checkout's Git state, including file
-status and staged and unstaged patches, cached by the runner independently of an Environment
-Snapshot. _Avoid_: Git report, Diff Snapshot
+status and staged and unstaged patches, cached by the runner independently of the Agent
+Environment's lifecycle. _Avoid_: Git report, Diff Snapshot
 
-**Agent Environment**: The live isolated compute capabilities and mounted Project Checkout available
-to an Agent Harness during an Agent Run, independent of how the underlying compute was created or
+**Agent Environment**: The live isolated compute capabilities and Project Checkout available to an
+Agent Harness during an Agent Run, independent of how the underlying compute was created or
 restored. _Avoid_: Workspace Runtime, VM
 
-**Agent Environment Provider**: The authority that supplies Agent Environments and makes a
-best-effort attempt to preserve their root-disk state between Agent Runs. _Avoid_: Workspace Runtime
+**Agent Environment Provider**: The authority that supplies Agent Environments backed by a durable,
+session-owned root disk. _Avoid_: Workspace Runtime
 
-**Environment Snapshot**: A reusable copy of an Agent Environment's root disk, captured on a
-best-effort basis after an Agent Run. It excludes the host-backed Project Checkout and Harness State
-and is not required to continue a Session. _Avoid_: Workspace snapshot, session snapshot
+**Persistent Root Disk**: The private, sparse 40 GiB `root-disk.qcow2` retained for one Session and
+reopened by each new VM. It includes the Project Checkout and other non-tmpfs guest state, but not
+RAM, processes, or tmpfs-backed paths. _Avoid_: Workspace disk, host checkout
+
+**Stop**: The durability boundary that records a final Git Snapshot, syncs the guest filesystem,
+closes the Agent Harness, stops the VM without deleting its Persistent Root Disk, syncs that disk on
+the host, and journals completion. _Avoid_: Shutdown, suspend

@@ -33,10 +33,7 @@ const updateGitFileSchema = f.object({
   previousPath: f.field(s.optional(gitPathSchema)),
 });
 const wakeSessionSchema = f.object({
-  recovery: f.field(s.optional(s.union([
-    s.literal("resume-prior-checkpoint" as const),
-    s.literal("start-clean-vm" as const),
-  ]))),
+  recovery: f.field(s.optional(s.literal("restart-environment" as const))),
 });
 const gitPatchChunkParamsSchema = Schema.Struct({
   sessionId: SessionId,

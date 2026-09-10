@@ -26,8 +26,8 @@ const OTHER_RUN_ID = Schema.decodeUnknownSync(RunId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c16",
 );
 const FOLLOW_UP_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c15";
-const RESUME_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c18";
-const CHECKPOINT_FILE = "checkpoint-01989d78-65ee-7f6a-a97e-0f16ad134c20.qcow2";
+const OPERATION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c18";
+const STOP_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c20";
 const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c09",
 );
@@ -42,11 +42,6 @@ const definition = new RunnerSessionDefinition({
   model: "opencode-go/deepseek-v4-flash",
   orbSize: "small",
 });
-const checkpoint = {
-  file: CHECKPOINT_FILE,
-  guestAssetBuildId: "02e784cb-e063-5138-b1c4-334e8a3307a9",
-  compatibleVmm: ["qemu" as const],
-};
 const modelIssue = {
   category: "model" as const,
   severity: "warning" as const,
@@ -57,13 +52,25 @@ const interruptedIssue = {
   category: "operation-uncertain" as const,
   severity: "failure" as const,
   message: "The operation was interrupted.",
-  recovery: "start-clean-vm" as const,
+  recovery: "restart-environment" as const,
 };
 const followUpIssue = {
   category: "operation-uncertain" as const,
   severity: "warning" as const,
   message: "Follow-up delivery is uncertain.",
   recovery: "none" as const,
+};
+const retryStopIssue = {
+  category: "vm-stop" as const,
+  severity: "warning" as const,
+  message: "The session could not be stopped. Retry Stop.",
+  recovery: "none" as const,
+};
+const restartEnvironmentIssue = {
+  category: "vm-stop" as const,
+  severity: "failure" as const,
+  message: "Root-disk durability could not be confirmed.",
+  recovery: "restart-environment" as const,
 };
 
 Deno.test("session facts drive explicit run phases", () => {
@@ -194,104 +201,57 @@ for (const origin of ["provisioning", "ready"] as const) {
   }
 }
 
-Deno.test("checkpoint and wake recovery are explicit state transitions", () => {
-  const checkpointing = applyAll([
-    ...readyEvents(),
-    { type: "checkpoint.started", file: CHECKPOINT_FILE },
-  ]);
-  assertEquals(checkpointing.phase, {
-    _tag: "Checkpointing",
-    file: CHECKPOINT_FILE,
-  });
-
-  const stopped = applySessionEvent(checkpointing, {
-    type: "checkpoint.published",
-    checkpoint,
-  });
-  assert(stopped);
-  assertEquals(stopped.phase, { _tag: "Stopped", checkpoint });
-  assertEquals(sessionMetadata(stopped).state, "stopped");
-
-  const resuming = applySessionEvent(stopped, {
-    type: "restoration.started",
-    restorationId: RESUME_ID,
-    intent: { _tag: "ResumeCheckpoint", continuation: { _tag: "Wake" } },
-  });
-  assert(resuming);
-  assertEquals(resuming.phase, {
-    _tag: "Restoring",
-    restorationId: RESUME_ID,
-    intent: { _tag: "ResumeCheckpoint", continuation: { _tag: "Wake" } },
-    checkpoint,
-  });
-
-  const ready = applySessionEvent(resuming, {
-    type: "restoration.completed",
-    restorationId: RESUME_ID,
-    issues: [],
-  });
-  assert(ready);
-  assertEquals(ready.phase, { _tag: "Ready", checkpoint });
-});
-
-Deno.test("prompt recovery resumes directly into its durable run intent", () => {
-  const stopped = applyAll([
-    ...readyEvents(),
-    { type: "checkpoint.started", file: CHECKPOINT_FILE },
-    { type: "checkpoint.published", checkpoint },
-  ]);
-  const starting = applyAll([
-    {
-      type: "restoration.started",
-      restorationId: RESUME_ID,
-      intent: {
-        _tag: "ResumeCheckpoint",
-        continuation: { _tag: "Prompt", runId: RUN_ID },
-      },
-    },
-    { type: "restoration.completed", restorationId: RESUME_ID, issues: [] },
-  ], stopped);
-
-  assertEquals(starting.phase, {
-    _tag: "StartingRun",
-    runId: RUN_ID,
-    checkpoint,
-  });
-});
-
-Deno.test("clean VM recovery drops the prior root-disk checkpoint", () => {
-  const failed = applyAll([
-    ...readyEvents(),
-    { type: "checkpoint.started", file: CHECKPOINT_FILE },
-    { type: "checkpoint.published", checkpoint },
-    {
-      type: "restoration.started",
-      restorationId: RESUME_ID,
-      intent: { _tag: "ResumeCheckpoint", continuation: { _tag: "Wake" } },
-    },
-    { type: "restoration.completed", restorationId: RESUME_ID, issues: [] },
-    {
-      type: "actor.crashed",
-      issue: interruptedIssue,
-    },
-  ]);
-  assertEquals(failed.phase, { _tag: "Failed", checkpoint });
-
-  const recovering = applyAll([
-    {
-      type: "restoration.started",
-      restorationId: RESUME_ID,
-      intent: { _tag: "StartCleanVm" },
-    },
-  ], failed);
-  assertEquals(sessionMetadata(recovering).state, "provisioning");
-
+Deno.test("stop lifecycle transitions a ready session to stopped", () => {
   const ready = applyAll([
-    { type: "restoration.completed", restorationId: RESUME_ID, issues: [] },
-  ], recovering);
+    ...readyEvents(),
+    { type: "issue.recorded", issue: retryStopIssue },
+  ]);
+  const stopping = applySessionEvent(ready, { type: "stop.started", stopId: STOP_ID });
+  assert(stopping);
+  assertEquals(stopping.phase, { _tag: "Stopping", stopId: STOP_ID });
+  assertEquals(stopping.data.issues, []);
+  assertEquals(sessionMetadata(stopping).state, "ready");
 
+  const stopped = applySessionEvent(stopping, { type: "stop.completed", stopId: STOP_ID });
+  assert(stopped);
+  assertEquals(stopped.phase, { _tag: "Stopped" });
+  assertEquals(sessionMetadata(stopped).state, "stopped");
+});
+
+Deno.test("stop failure returns to ready while the environment remains available", () => {
+  const stopping = applyAll([
+    ...readyEvents(),
+    { type: "stop.started", stopId: STOP_ID },
+  ]);
+  const ready = applySessionEvent(stopping, {
+    type: "stop.failed",
+    stopId: STOP_ID,
+    environmentUsable: true,
+    issue: retryStopIssue,
+  });
+
+  assert(ready);
   assertEquals(ready.phase, { _tag: "Ready" });
-  assertEquals(sessionMetadata(ready).checkpoint, undefined);
+  assertEquals(ready.data.issues, [retryStopIssue]);
+  assertEquals(sessionMetadata(ready).state, "ready");
+});
+
+Deno.test("stop failure enters failed after environment shutdown begins", () => {
+  const stopping = applyAll([
+    ...readyEvents(),
+    { type: "stop.started", stopId: STOP_ID },
+  ]);
+  const failed = applySessionEvent(stopping, {
+    type: "stop.failed",
+    stopId: STOP_ID,
+    environmentUsable: false,
+    issue: restartEnvironmentIssue,
+  });
+
+  assert(failed);
+  assertEquals(failed.phase, { _tag: "Failed" });
+  assertEquals(failed.data.issues, [restartEnvironmentIssue]);
+  assertEquals(sessionMetadata(failed).state, "error");
 });
 
 Deno.test("durable lifecycle logs wait for commit and omit issue diagnostics and session content", async () => {
@@ -306,15 +266,22 @@ Deno.test("durable lifecycle logs wait for commit and omit issue diagnostics and
   const cases: readonly [SessionEvent, string][] = [
     [provisioningStarted(), "provision.accepted"],
     [{ type: "provisioning.failed", issue: secretIssue }, "provision.failed"],
-    [{ type: "wake.started", wakeId: RESUME_ID }, "wake.started"],
-    [{ type: "wake.completed", wakeId: RESUME_ID }, "wake.ready"],
-    [{ type: "wake.failed", wakeId: RESUME_ID, issue: secretIssue }, "wake.failed"],
+    [{ type: "wake.started", wakeId: OPERATION_ID }, "wake.started"],
+    [{ type: "wake.completed", wakeId: OPERATION_ID }, "wake.ready"],
+    [{ type: "wake.failed", wakeId: OPERATION_ID, issue: secretIssue }, "wake.failed"],
     [
-      { type: "restoration.started", restorationId: RESUME_ID, intent: { _tag: "StartCleanVm" } },
+      {
+        type: "restoration.started",
+        restorationId: OPERATION_ID,
+        continuation: { _tag: "Wake" },
+      },
       "wake.started",
     ],
-    [{ type: "restoration.completed", restorationId: RESUME_ID, issues: [] }, "wake.ready"],
-    [{ type: "restoration.failed", restorationId: RESUME_ID, issue: secretIssue }, "wake.failed"],
+    [{ type: "restoration.completed", restorationId: OPERATION_ID, issues: [] }, "wake.ready"],
+    [
+      { type: "restoration.failed", restorationId: OPERATION_ID, issue: secretIssue },
+      "wake.failed",
+    ],
     [{ type: "restore.failed", issue: secretIssue }, "actor.restoration-failed"],
   ];
   const state = applyAll(readyEvents());

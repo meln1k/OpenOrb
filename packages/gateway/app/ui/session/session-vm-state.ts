@@ -38,7 +38,7 @@ export function sessionVmPhaseForStage(stage: SessionProvisioningStage): Session
       return "starting";
     case "resuming":
       return "waking";
-    case "checkpointing":
+    case "stopping":
       return "stopping";
     case "running":
     case "ready":

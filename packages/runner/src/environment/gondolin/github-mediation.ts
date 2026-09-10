@@ -3,8 +3,6 @@ import { err, ok, type Result, trySync } from "@openorb/result";
 
 const GITHUB_HOST = "github.com";
 const GITHUB_API_HOST = "api.github.com";
-const OPENORB_WORKSPACE = "/workspace";
-const OPENORB_NESTED_WORKSPACE_REPOSITORIES = "/workspace/*";
 const GITHUB_OWNER_PATTERN = /^(?!-)(?!.*--)[A-Za-z0-9-]{1,39}(?<!-)$/;
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 
@@ -63,21 +61,17 @@ export function createOpenOrbGitHubVmOptions(
     ...secretEnvironment,
     GH_HOST: GITHUB_HOST,
     GH_PROMPT_DISABLED: "1",
-    GIT_CONFIG_COUNT: token === undefined ? "4" : "6",
-    GIT_CONFIG_KEY_0: "safe.directory",
-    GIT_CONFIG_VALUE_0: OPENORB_WORKSPACE,
-    GIT_CONFIG_KEY_1: "safe.directory",
-    GIT_CONFIG_VALUE_1: OPENORB_NESTED_WORKSPACE_REPOSITORIES,
-    GIT_CONFIG_KEY_2: "user.name",
-    GIT_CONFIG_VALUE_2: options.gitAuthor.name,
-    GIT_CONFIG_KEY_3: "user.email",
-    GIT_CONFIG_VALUE_3: options.gitAuthor.email,
+    GIT_CONFIG_COUNT: token === undefined ? "2" : "4",
+    GIT_CONFIG_KEY_0: "user.name",
+    GIT_CONFIG_VALUE_0: options.gitAuthor.name,
+    GIT_CONFIG_KEY_1: "user.email",
+    GIT_CONFIG_VALUE_1: options.gitAuthor.email,
     GIT_TERMINAL_PROMPT: "0",
     ...(token === undefined ? {} : {
-      GIT_CONFIG_KEY_4: `credential.${options.repositoryUrl}.helper`,
-      GIT_CONFIG_VALUE_4: "!gh auth git-credential",
-      GIT_CONFIG_KEY_5: `credential.${options.repositoryUrl}.useHttpPath`,
-      GIT_CONFIG_VALUE_5: "true",
+      GIT_CONFIG_KEY_2: `credential.${options.repositoryUrl}.helper`,
+      GIT_CONFIG_VALUE_2: "!gh auth git-credential",
+      GIT_CONFIG_KEY_3: `credential.${options.repositoryUrl}.useHttpPath`,
+      GIT_CONFIG_VALUE_3: "true",
     }),
   } satisfies Record<string, string>;
 

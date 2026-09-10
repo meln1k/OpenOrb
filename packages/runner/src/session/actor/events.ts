@@ -12,35 +12,13 @@ import { Schema } from "effect";
 
 import { RunnerSessionDefinition } from "../definition.ts";
 
-export const CHECKPOINT_FILE_PATTERN = /^checkpoint-[0-9a-f-]{36}\.qcow2$/;
-
-const checkpointFileSchema = Schema.String.check(
-  Schema.isPattern(CHECKPOINT_FILE_PATTERN),
-);
-const checkpointBackendSchema = Schema.Literals(["qemu", "krun"]);
-export const checkpointMetadataSchema = Schema.Struct({
-  file: checkpointFileSchema,
-  guestAssetBuildId: Schema.String.check(Schema.isUUID()),
-  createdWithVmm: Schema.optionalKey(checkpointBackendSchema),
-  compatibleVmm: Schema.Array(checkpointBackendSchema).check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(2),
-  ),
-});
 const operationIdSchema = Schema.String.check(Schema.isUUID());
-const restorationContinuationSchema = Schema.Union([
+const persistedRestorationContinuationSchema = Schema.Union([
   Schema.TaggedStruct("Wake", {}),
   Schema.TaggedStruct("Prompt", { runId: RunId }),
 ]);
-const restorationIntentSchema = Schema.Union([
-  Schema.TaggedStruct("ResumeCheckpoint", {
-    continuation: restorationContinuationSchema,
-  }),
-  Schema.TaggedStruct("StartCleanVm", {}),
-]);
 
-export type RunnerSessionCheckpointMetadata = typeof checkpointMetadataSchema.Type;
-export type PersistedRestorationIntent = typeof restorationIntentSchema.Type;
+export type PersistedRestorationContinuation = typeof persistedRestorationContinuationSchema.Type;
 
 const sessionProvisioningStartedEventSchema = Schema.Struct({
   type: Schema.Literal("session.provisioning-started"),
@@ -161,7 +139,7 @@ const runInterruptedEventSchema = Schema.Struct({
 const restorationStartedEventSchema = Schema.Struct({
   type: Schema.Literal("restoration.started"),
   restorationId: operationIdSchema,
-  intent: restorationIntentSchema,
+  continuation: persistedRestorationContinuationSchema,
 });
 const restorationCompletedEventSchema = Schema.Struct({
   type: Schema.Literal("restoration.completed"),
@@ -178,28 +156,18 @@ const restorationInterruptedEventSchema = Schema.Struct({
   restorationId: operationIdSchema,
   issue: SessionIssue,
 });
-const checkpointStartedEventSchema = Schema.Struct({
-  type: Schema.Literal("checkpoint.started"),
-  file: checkpointFileSchema,
+const stopStartedEventSchema = Schema.Struct({
+  type: Schema.Literal("stop.started"),
+  stopId: operationIdSchema,
 });
-const checkpointPublishedEventSchema = Schema.Struct({
-  type: Schema.Literal("checkpoint.published"),
-  checkpoint: checkpointMetadataSchema,
+const stopCompletedEventSchema = Schema.Struct({
+  type: Schema.Literal("stop.completed"),
+  stopId: operationIdSchema,
 });
-const checkpointFailedEventSchema = Schema.Struct({
-  type: Schema.Literal("checkpoint.failed"),
-  file: checkpointFileSchema,
-  consumed: Schema.Boolean,
-  issue: SessionIssue,
-});
-const checkpointInterruptedEventSchema = Schema.Struct({
-  type: Schema.Literal("checkpoint.interrupted"),
-  file: checkpointFileSchema,
-  issue: SessionIssue,
-});
-const checkpointInvalidatedEventSchema = Schema.Struct({
-  type: Schema.Literal("checkpoint.invalidated"),
-  file: checkpointFileSchema,
+const stopFailedEventSchema = Schema.Struct({
+  type: Schema.Literal("stop.failed"),
+  stopId: operationIdSchema,
+  environmentUsable: Schema.Boolean,
   issue: SessionIssue,
 });
 export const SessionEvent = Schema.Union([
@@ -232,10 +200,8 @@ export const SessionEvent = Schema.Union([
   restorationCompletedEventSchema,
   restorationFailedEventSchema,
   restorationInterruptedEventSchema,
-  checkpointStartedEventSchema,
-  checkpointPublishedEventSchema,
-  checkpointFailedEventSchema,
-  checkpointInterruptedEventSchema,
-  checkpointInvalidatedEventSchema,
+  stopStartedEventSchema,
+  stopCompletedEventSchema,
+  stopFailedEventSchema,
 ]);
 export type SessionEvent = typeof SessionEvent.Type;

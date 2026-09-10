@@ -28,9 +28,9 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 2. **Outbound-only runners.** Control, terminal, and preview traffic all use connections initiated by the runner.
 3. **One session, one VM, one checkout.** This is the isolation and concurrency boundary.
 4. **Trusted host, isolated guest.** The runner host is trusted. Agent-generated commands, repository setup scripts, and every Git operation against a guest-writable checkout run in Gondolin.
-5. **Untrusted workspace metadata.** The entire checkout, including `.git`, is attacker-controlled data once mounted into the guest. Native host Git must never consume it.
+5. **Untrusted workspace metadata.** The entire checkout, including `.git`, is attacker-controlled data on the guest root disk. Native host Git must never consume it.
 6. **Central configuration.** Model credentials, Git credentials, project secrets, project configuration, and defaults live in the gateway.
-7. **Automatic lifecycle.** VMs wake when needed and checkpoint after 15 minutes without relevant activity.
+7. **Automatic lifecycle.** VMs wake when needed and Stop after 15 minutes without relevant activity while retaining the Session's root disk.
 8. **Useful remotely.** Chat, tools, diffs, files, terminals, and app previews must work without SSHing into a runner.
 9. **Mobile-capable.** The main workflows must be usable from a phone, not merely render on a narrow screen.
 10. **Web-standard interfaces.** Use HTTP, SSE, WebSockets, Fetch APIs, and versioned runtime-validated protocol types.
@@ -68,7 +68,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Project `.agents/setup` and `.agents/resume` hooks, executed only inside Gondolin
 - Explicit allowlist-only Pi `ResourceLoader` with no project resource discovery and in-memory Pi settings
 - Batteries-included Gondolin guest image
-- Shared package download caches
+- Ephemeral guest package caches
 - Archive and explicit deletion
 - Minimal Workspace-owned gateway live-session catalog (project, creation time, trimmed initial prompt) plus Workspace-owned deleted-session ID/time markers; all full session data is runner-backed
 
@@ -100,17 +100,17 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - **Gateway:** The self-hosted Remix web application, API, scheduler, secret store, runner gateway, and preview gateway.
 - **Runner:** A native Linux service running Pi, managing Gondolin/session storage, and orchestrating Git operations inside the guest.
 - **Project:** Repository configuration, credentials, secrets, defaults, and policies shared by sessions.
-- **Session:** One linear user-visible Pi conversation, one checkout, one pinned runner, and one Gondolin VM/checkpoint.
+- **Session:** One linear user-visible Pi conversation, one checkout on a persistent root disk, one pinned runner, and at most one running Gondolin VM.
 - **Draft session:** A session whose first prompt has not been sent. Its runner selection can still change.
 - **Workspace:** The tenant that owns projects, credentials, secrets, runners, enrollment credentials, and the session catalog. Each user belongs directly to one Workspace.
-- **Project Checkout:** The session-specific host checkout mounted at `/workspace` in Gondolin.
+- **Project Checkout:** The session-specific checkout at `/workspace` on Gondolin's persistent root disk.
 - **Turn:** One Pi model response plus its tool calls. One user prompt may produce multiple turns.
 - **Run:** All work resulting from an accepted prompt, including retries, compaction, and Pi-native queued continuations, until Pi is fully settled.
 - **Pending delivery:** A normal user message durably held by the assigned runner before it is handed to Pi.
 - **Pi queue:** Pi’s process-local steering/follow-up queue. It is live-only, has no stable item IDs, and is not part of Pi JSONL until delivery.
 - **Lease:** A reason a VM must remain awake, such as active agent work, a terminal, provisioning, or a preview.
-- **Managed preview:** A preview with a restart command that can wake and resume after VM sleep.
-- **Live-only preview:** A published port without a restart command; it expires when the VM sleeps.
+- **Managed preview:** A preview with a restart command that can wake and resume after VM Stop.
+- **Live-only preview:** A published port without a restart command; it expires when the VM Stops.
 - **Capability link:** An unlisted, revocable preview URL that grants access without gateway login.
 
 ## 5. Locked product decisions
@@ -122,11 +122,11 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Pi placement | Pi SDK runs on the runner host |
 | Tool execution | Pi read/write/edit/bash operations execute through Gondolin |
 | Repository | Fresh clone per session, performed inside Gondolin |
-| Workspace storage | Host directory mounted into Gondolin with `RealFSProvider`; all contents including `.git` are untrusted |
+| Workspace storage | Private per-session qcow2 root disk; `/workspace` and `.git` are untrusted guest bytes, not a host mount |
 | Git execution boundary | Never run native host Git against a session checkout; all clone/status/diff/fetch/commit/push operations execute inside Gondolin |
 | Session placement | Auto-select runner; user may override before first prompt; immutable afterward |
 | Resource scheduling | Sessions select `tiny`, `small`, `medium`, `large`, or `xxlarge`; runners advertise total/reserved/free resources |
-| Idle lifecycle | Stop/checkpoint after 15 minutes without relevant activity |
+| Idle lifecycle | Stop after 15 minutes without relevant activity; retain the persistent root disk |
 | Conversation | Linear UI; Pi tree remains an internal implementation detail |
 | Edit last | Conversation-only rewind; do not roll back files or VM state |
 | While running | Normal send calls Pi `followUp()`; an explicit “Steer now” action calls `steer()` |
@@ -144,13 +144,13 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Gateway UI | Remix 3, end-to-end TypeScript |
 | Gateway persistence | PostgreSQL only, for Workspace-owned gateway configuration, a five-column live-session catalog (`workspace_id` plus four catalog fields), and three-column deletion markers (`workspace_id`, session ID, deletion time); no Redis, secondary database/KV store, or durable local gateway files |
 | Tenant ownership | Direct `users.workspace_id`; tenant repository methods receive authenticated `workspaceId`, tenant uniqueness is composite with `workspace_id`, and foreign keys prevent cross-Workspace references. Passwords and Git author identity use `userId`. No memberships, new roles, tenant abstractions, or Workspace-selection UI |
-| Runner persistence | Ordinary files/directories only for metadata, JSONL, logs, workspaces, Git Snapshots, checkpoints, and journals; no runner database |
+| Runner persistence | Ordinary files/directories only for metadata, JSONL, logs, persistent root disks, Git Snapshots, and journals; no runner database |
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | One outbound Effect RPC WebSocket for MVP; a separately scoped binary data plane is future work |
 | Pi workspace resources | No project resource discovery in MVP; use an explicit empty/allowlist-only `ResourceLoader` and in-memory settings |
 | Project guidance | Project files are available only through Gondolin-backed tools; Pi does not host-load `AGENTS.md`, `CLAUDE.md`, skills, prompts, packages, settings, or extensions |
 | Guest image | Batteries-included OpenOrb Gondolin image |
-| Caches | Shared package download caches enabled |
+| Caches | Guest package caches are tmpfs-backed and do not survive Stop; shared host caches are deferred |
 | Retention | No automatic deletion; explicit archive and delete; offline delete is represented by a durable minimal control-plane marker |
 
 ## 6. High-level architecture
@@ -184,7 +184,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
                                  │                    │
                                  │                    ▼
                                  │             Gondolin VM
-                                 │             ├── /workspace host VFS mount
+                                 │             ├── persistent root disk with /workspace
                                  │             ├── developer toolchain
                                  │             ├── setup/resume hooks
                                  │             ├── managed dev services
@@ -379,21 +379,13 @@ Recommended layout:
   identity/
     ed25519.key
   images/
-  caches/
-    npm/
-    pnpm/
-    yarn/
-    pip/
-    uv/
   sessions/
     <session-id>/
       events.jsonl
-      workspace/
+      root-disk.qcow2
       pi/
         session.jsonl
         agent/
-      vm/
-        checkpoint.qcow2
       runtime/
         services/
         logs/
@@ -410,10 +402,12 @@ The runner is authoritative for all complete live-session data; the gateway dupl
 - Full file contents
 - Host-owned cached Git Snapshots produced by guest-side Git
 - Preview definitions, access policy, and capability hashes
-- VM checkpoint
+- Persistent 40 GiB sparse `root-disk.qcow2`
 - Guest service logs
 
-The session workspace is guest-writable. The runner may safely store, mount, copy, hash, or serve bounded file bytes from it, but must never invoke native host Git—or another executable selected by workspace metadata—against that directory.
+The session root disk is guest-writable and opaque to ordinary host file tools. The runner stores and
+deletes it as a private file, but must never attach it to multiple writable VMs or invoke native host
+Git—or another executable selected by workspace metadata—against its contents.
 
 The gateway persists gateway configuration:
 
@@ -436,7 +430,7 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is derived from the initial textual prompt by collapsing whitespace and truncating to at most 200 Unicode code points. It excludes attachments and is display-only; it must never be used to reconstruct or replay a prompt.
 
-No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or checkpoint is persisted in the gateway. The only session record outside the live five-column catalog is a deleted-session marker containing immutable Workspace ID, session ID, and deletion time. After authentication, each runner streams a complete bounded initial `WatchRunner` snapshot containing the four catalog data fields plus live routing/state data. The gateway derives the owner from the authenticated runner record, never from runner-supplied tenant data; it upserts missing non-deleted catalog rows and atomically installs a Workspace-scoped in-memory routing index only after the snapshot completion boundary. Snapshot absence alone does not delete a catalog row because runner assignment is not persisted. A tombstoned snapshot entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
+No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or root-disk state is persisted in the gateway. The only session record outside the live five-column catalog is a deleted-session marker containing immutable Workspace ID, session ID, and deletion time. After authentication, each runner streams a complete bounded initial `WatchRunner` snapshot containing the four catalog data fields plus live routing/state data. The gateway derives the owner from the authenticated runner record, never from runner-supplied tenant data; it upserts missing non-deleted catalog rows and atomically installs a Workspace-scoped in-memory routing index only after the snapshot completion boundary. Snapshot absence alone does not delete a catalog row because runner assignment is not persisted. A tombstoned snapshot entry is never reinserted or routed and triggers idempotent runner cleanup once active work settles.
 
 ## 11. Domain model
 
@@ -546,8 +540,9 @@ interface SessionRuntimeState {
     | "absent"
     | "starting"
     | "running"
-    | "checkpointing"
-    | "sleeping"
+    | "stopping"
+    | "stopped"
+    | "resuming"
     | "failed"
   agent: "idle" | "running" | "aborting" | "failed"
   git: "clean" | "dirty" | "pushing" | "failed"
@@ -577,7 +572,7 @@ interface Preview {
   sessionId: string
   hostname: string
   access: "private" | "capability"
-  state: "starting" | "ready" | "sleeping" | "expired" | "failed"
+  state: "starting" | "ready" | "stopped" | "expired" | "failed"
   config: PreviewConfig
   lastActivityAt?: string
 }
@@ -641,9 +636,10 @@ than embedded in a periodic transport message.
 
 A runner observation is advisory; `ProvisionSession` acceptance is authoritative.
 
-### 12.3 Sleeping sessions
+### 12.3 Stopped sessions
 
-Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pinned runner must reacquire resources. If unavailable:
+Stopped sessions retain their persistent root disk but do not reserve CPU or memory. On wake, the
+pinned runner must reacquire resources. If unavailable:
 
 - Keep the prompt queued as `waiting-for-capacity`.
 - Show the condition in the UI.
@@ -661,7 +657,8 @@ Sleeping sessions consume disk but do not reserve CPU or memory. On wake, the pi
 4. Sending the first prompt reserves an online runner.
 5. Runner creates the session locally, durably stores the full initial prompt, and becomes permanently assigned.
 6. After runner confirmation, gateway stores only the Workspace owner and four catalog data fields with the trimmed prompt preview; the runner assignment remains in the live routing index, not the catalog row.
-7. Runner creates an empty session workspace, boots Gondolin with requested resources, and mounts it.
+7. Runner creates the persistent session root disk, boots Gondolin with requested resources, and
+   creates `/workspace` inside the guest.
 8. Git inside Gondolin clones the repository through mediated HTTPS/SSH credentials and reports the exact base commit.
 9. Git inside Gondolin creates the local working branch.
 10. Runner stores the reported base/branch state outside the guest-writable workspace.
@@ -674,8 +671,8 @@ Provisioning logs stream to the browser as session events.
 
 1. Gateway resolves the session through its live runner index; if the assigned runner is offline, reject the send.
 2. Runner durably stores the message in its local session store with a unique `clientRequestId` before acknowledging HTTP acceptance.
-3. If the VM is sleeping or lacks capacity, wake/reserve it and retain the runner-local pending record.
-4. Recreate transient Gondolin policy, mounts, ingress, and secret placeholders.
+3. If the VM is stopped or lacks capacity, wake/reserve it and retain the runner-local pending record.
+4. Recreate transient Gondolin policy, ingress, and secret placeholders around the persistent disk.
 5. Run `.agents/resume` and open Pi’s existing JSONL session.
 6. Invoke `PromptSession` once with the stable `clientRequestId`; do not retry it automatically after an ambiguous transport outcome.
 7. Runner calls `session.prompt()` if Pi is idle or `session.followUp()` if Pi is currently streaming. For idle prompts, use Pi’s documented preflight acceptance callback rather than waiting for the complete run.
@@ -740,27 +737,30 @@ At timeout:
 3. Stop managed services cleanly with a short deadline.
 4. Close terminal sessions.
 5. Run a final controlled status/diff operation inside Gondolin and atomically store the Git Snapshot outside the workspace.
-6. Flush guest filesystems.
-7. Create a disk checkpoint; this consumes/stops the current Gondolin VM.
-8. Persist checkpoint metadata and set VM state to `sleeping`.
+6. Run guest `/bin/sync`.
+7. Close Pi.
+8. Explicitly stop and close the Gondolin VM without deleting `root-disk.qcow2`.
+9. Call host `fsync` on `root-disk.qcow2` and its session directory.
+10. Append `stop.completed` to the Session Journal and set VM state to `stopped`.
 
-Gondolin checkpoints are disk-only. Processes and RAM do not survive.
+Wake opens the same disk in a new VM and runs `.agents/resume`. RAM, processes, and tmpfs-backed
+guest paths do not survive Stop.
 
 ### 13.6 Archive and delete
 
 Archive:
 
-- Stop/checkpoint the VM.
+- Stop the VM and retain its persistent root disk.
 - Expire preview access.
 - Hide the session from the active list.
-- Retain transcript, checkout, Pi JSONL, checkpoint, and logs.
+- Retain transcript, checkout, Pi JSONL, `root-disk.qcow2`, and logs.
 
 Delete:
 
 - Require explicit confirmation.
 - If the owning runner is online and any agent, provisioning, setup/resume, maintenance, terminal, or preview work is active, reject deletion until that work settles; do not interrupt it implicitly.
 - In one PostgreSQL transaction, write a durable deleted-session marker containing only Workspace ID, session ID, and deletion time, remove the five-column catalog row, and remove any persisted gateway configuration that is scoped only to that session. Remove the ephemeral Workspace-scoped route immediately afterward.
-- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, checkout, Pi JSONL, checkpoint, logs, and snapshots.
+- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, the persistent root disk and its checkout, Pi JSONL, logs, and Git Snapshots.
 - If the runner is offline or permanently lost, deletion still succeeds at the control plane. The marker prevents a stale runner disk or backup from recreating the catalog entry.
 - If a runner later reports a tombstoned session, do not route or reinsert it. Repeatedly request runner cleanup; if the runner reports active work, wait for it to settle rather than interrupting it.
 - Retain the deleted-session marker after runner cleanup so a later stale snapshot cannot resurrect the ID.
@@ -795,7 +795,8 @@ Replace Pi’s built-in tools with Gondolin-backed operations, following Gondoli
 - User shell commands
 
 Relative paths resolve from `/workspace`. Absolute paths address the guest filesystem and must never
-be interpreted as runner-host paths. Only `/workspace` is persistent and included in review.
+be interpreted as runner-host paths. The non-tmpfs root disk is persistent; only `/workspace` is
+included in Git review.
 
 ### 14.3 Allowlist-only resource and settings boundary
 
@@ -820,7 +821,7 @@ For the MVP, the project-resource allowlist is deliberately empty. The loader re
 - No project system-prompt override
 - No package resources
 
-An OpenOrb-owned builder creates a trusted Pi-style system prompt without reading the workspace. It preserves Pi's normal role, configured-tool inventory, and tool guidance, but omits Pi self-documentation instructions because their runner-host package paths are unavailable to guest-backed tools. OpenOrb-owned environment, checkpoint lifecycle, and Git policy follow the Pi-style base prompt. The prompt explains that Pi runs outside Gondolin, all provided filesystem and shell tools target the guest, `/workspace` persists independently, and checkpoint resume does not restore RAM, processes, or tmpfs-backed paths.
+An OpenOrb-owned builder creates a trusted Pi-style system prompt without reading the workspace. It preserves Pi's normal role, configured-tool inventory, and tool guidance, but omits Pi self-documentation instructions because their runner-host package paths are unavailable to guest-backed tools. OpenOrb-owned environment, Stop/wake lifecycle, and Git policy follow the Pi-style base prompt. The prompt explains that Pi runs outside Gondolin, all provided filesystem and shell tools target the guest, `/workspace` lives on the persistent root disk, and wake does not restore RAM, processes, or tmpfs-backed paths.
 
 The implementation should structurally resemble:
 
@@ -885,24 +886,29 @@ Use Pi’s fully settled event when available. Do not sleep on a low-level `turn
 - Requested CPU and memory passed to Gondolin/QEMU
 - One VM object at a time per active session
 - Session label includes OpenOrb session ID
-- Root disk checkpoint stored per session
-- `/workspace` uses `RealFSProvider(sessionWorkspace)`
-- Cache paths use separate host-backed providers
+- Private sparse 40 GiB qcow2 active root disk stored at a stable per-session path
+- `/workspace` is an ordinary directory on the root disk; no host workspace VFS is mounted
+- Package caches use tmpfs until an explicit safe cache design is added
 - Runtime/service logs use a session runtime mount
 - Internal ranges blocked by default
 - HTTP/HTTPS mediated through host hooks
 - Generic TCP denied except explicit mappings and SSH Git proxy
 
-### 15.2 Checkpoint constraints
+### 15.2 Persistent root disk and Stop constraints
 
-- Disk-only; no memory or process restoration
-- Captures root disk only
-- Does not capture VFS mounts
-- Does not capture tmpfs-backed paths such as `/root`, `/tmp`, `/var/log`
-- Requires matching Gondolin guest assets/build ID
-- Resume creates a new VM object
+- One sparse 40 GiB `root-disk.qcow2` exists at a stable path in each Session directory.
+- `/workspace` and all other non-tmpfs root-disk paths persist on that disk.
+- Stop runs a final Git Snapshot and guest `/bin/sync`, closes Pi, then explicitly stops and closes
+  the VM without deleting the disk.
+- The runner calls host `fsync` on the disk and Session directory before journaling
+  `stop.completed`.
+- A runner interrupted in `Stopping` cannot confirm guest sync and VM exit, so it preserves the
+  disk and fails with `restart-environment`.
+- Wake creates a new VM object over the same disk and runs `.agents/resume`.
+- RAM, processes, and tmpfs-backed paths such as `/root`, `/tmp`, and `/var/log` do not persist.
+- The Session remains pinned to the matching Gondolin guest assets/build ID.
 
-Setup documentation must tell projects not to rely on checkpoint persistence under tmpfs-backed paths.
+Setup documentation must tell projects not to rely on persistence under tmpfs-backed paths.
 
 ### 15.3 Setup hooks
 
@@ -926,23 +932,15 @@ Gondolin currently implements an Alpine boot-image pipeline, but it accepts an O
 
 The image does not embed Chromium. An OpenOrb wrapper serializes on-demand installation before the first browser command: it fetches current Stable Chrome for Testing with the guest's Gondolin-compatible `curl` on x86-64, while ARM64 installs snapshot-pinned Debian Chromium because Google does not publish a Linux ARM64 Chrome for Testing build. The browser lands in the writable copy-on-write rootfs. The image does not include Amp/E2B internals, Deno, Go, Rust, Java, host container/VM/database tooling, a package cache, service supervisor, SSH daemon, terminal service, or preview service.
 
-Image builds must be versioned and reproducible. Checkpoint resume requires the matching image.
+Image builds must be versioned and reproducible. Reopening a Session root disk requires the matching
+image.
 
-### 15.5 Shared caches
+### 15.5 Package caches
 
-Mount download caches outside the workspace. Do not share installed project dependency directories by default.
-
-Candidate mounts:
-
-```text
-/openorb-cache/npm
-/openorb-cache/pnpm
-/openorb-cache/yarn
-/openorb-cache/pip
-/openorb-cache/uv
-```
-
-Cache mounts improve fresh-session setup while preserving per-session checkouts and installed dependencies.
+Package caches use tmpfs in the current guest image and therefore do not survive Stop. Do not mount
+host directories into the guest or share installed project dependency directories. A safe shared
+cache design is deferred; dependencies installed on non-tmpfs paths within the Session root disk do
+persist.
 
 ## 16. Model providers
 
@@ -971,7 +969,8 @@ Defer OAuth/subscription credentials because refresh-token concurrency and provi
 
 ### 17.1 Absolute execution boundary
 
-The complete session checkout, including `.git`, becomes untrusted as soon as it is mounted into Gondolin. A repository or agent can modify executable Git configuration such as:
+The complete session checkout, including `.git`, is untrusted guest data on the persistent root
+disk. A repository or agent can modify executable Git configuration such as:
 
 - Credential helpers
 - `core.sshCommand`
@@ -981,13 +980,15 @@ The complete session checkout, including `.git`, becomes untrusted as soon as it
 - `core.fsmonitor`
 - URL rewrites, remote helpers, aliases, and include files
 
-Consequently, **the runner must never run native host Git against a session workspace**. This applies to clone, status, log, diff, fetch, commit, push, cleanup, and any future Git operation. It also applies when the VM is sleeping. Otherwise a later host-side Git command could execute guest-controlled code with runner privileges.
+Consequently, **the runner must never run native host Git against a session workspace**. This applies to clone, status, log, diff, fetch, commit, push, cleanup, and any future Git operation. It also applies when the VM is stopped. Otherwise a later host-side Git command could execute guest-controlled code with runner privileges.
 
-All Git operations against session data execute inside Gondolin. The host may handle the workspace only as untrusted file bytes and may consume bounded serialized Git Snapshots returned by the guest.
+All Git operations against session data execute inside Gondolin. The host handles the opaque root-disk
+file only for lifecycle and durability operations and may consume bounded serialized Git Snapshots
+returned by the guest.
 
 ### 17.2 Clone and branch creation
 
-1. Runner creates an empty host workspace and mounts it into Gondolin.
+1. Runner creates or opens the Session's persistent root disk and starts Gondolin.
 2. Git inside Gondolin clones the configured repository into `/workspace` through mediated credentials.
 3. Automatic recursive submodule initialization is disabled.
 4. The clone command permits only the configured network protocol and canonical repository URL.
@@ -1044,7 +1045,7 @@ The real HTTPS credential is not placed in guest environment variables, files, p
 - Deny interactive SSH, SFTP, agent forwarding, port forwarding, and unrelated repositories.
 - Agent-modified `core.sshCommand` may execute only inside the guest and cannot obtain the host-held key.
 
-### 17.6 Git Snapshots and sleeping sessions
+### 17.6 Git Snapshots and stopped sessions
 
 During an Agent Run, the runner executes controlled status/diff commands inside Gondolin at tool and
 turn boundaries, every 15 seconds, and in a final awaited run-end flush. It debounces boundary
@@ -1052,16 +1053,17 @@ bursts, prevents overlapping inspections, and stores a bounded normalized Git Sn
 host-owned runtime path that is not mounted guest-writable. The gateway proxies this snapshot
 without persisting it.
 
-While the VM sleeps:
+While the VM is stopped:
 
 - Show the last cached Git Snapshot.
 - Mark it stale if terminal or VM failure prevented a final refresh.
 - Wake the VM for an authoritative refresh when requested.
-- Never run host Git against the sleeping workspace.
+- Never run host Git against the checkout on the stopped VM's disk.
 
 A future host-side implementation may use a deliberately non-executing parser over a sanitized immutable snapshot, but it must not use native Git, load `.git/config`, invoke hooks/drivers/filters/fsmonitor, or execute workspace-selected programs. This parser is not required for the MVP.
 
-Read-only file browsing may read bounded workspace bytes directly with path/symlink protections because it does not interpret Git configuration or execute repository-selected code.
+Read-only file browsing executes through bounded guest operations with path/symlink protections. It
+wakes a stopped VM rather than reading `root-disk.qcow2` through host filesystem tools.
 
 ### 17.7 Commit and push
 
@@ -1173,8 +1175,9 @@ Require wildcard DNS and TLS. A path-based fallback is not a primary target beca
 - Runner starts the command through a guest service supervisor and returns promptly.
 - Configure `vm.enableIngress()` and `vm.setIngressRoutes()`.
 - HTTP and WebSocket supported.
-- Keeps VM awake while active; sleeps after inactivity.
-- On request while sleeping: reserve resources, resume, run `.agents/resume`, restart command, wait for readiness, and proxy.
+- Keeps VM awake while active; Stops after inactivity.
+- On request while stopped: reserve resources, wake the same disk, run `.agents/resume`, restart the
+  command, wait for readiness, and proxy.
 - Use a bounded readiness timeout and return a useful failure page/log link.
 
 ### 19.6 Live-only preview
@@ -1189,7 +1192,7 @@ Require wildcard DNS and TLS. A path-based fallback is not a primary target beca
 
 - Publishes an already-running port.
 - Keeps the VM awake while active.
-- Expires when the VM sleeps because the process command is unknown.
+- Expires when the VM Stops because the process command is unknown.
 - Later requests return `410 Preview expired`.
 - Manual terminal “Publish port” defaults to live-only unless the user supplies a restart command.
 
@@ -1522,7 +1525,7 @@ interface AgentRuntime {
 interface VmManager {
   ensureRunning(reason: WakeReason): Promise<RunningVm>
   acquireLease(type: LeaseType): Promise<VmLease>
-  checkpointAndStop(): Promise<void>
+  stop(): Promise<void>
   getState(): SessionRuntimeState["vm"]
 }
 ```
@@ -1582,7 +1585,7 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 - `deleted_sessions`, restricted to `workspace_id`, `session_id`, and `deleted_at`
 - Control-plane audit events that contain no session content beyond the catalog identity
 
-It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, checkpoints, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
+It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, root-disk state, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
 
 Each runner owns a file-backed local Session Journal in addition to the filesystem layout in section 10. It persists:
 
@@ -1646,7 +1649,7 @@ Always distinguish:
 - Message pending delivery
 - Follow-up/steering held in Pi’s live queue
 - Idle, VM awake
-- Sleeping
+- Stopped, persistent disk retained
 - Runner offline
 - Failed with retryable/non-retryable reason
 
@@ -1679,7 +1682,7 @@ Untrusted or constrained:
 - Git credentials remain gateway/runner-side; guest sees placeholders or an SSH proxy.
 - The session checkout and `.git` metadata are untrusted; native host Git never consumes them.
 - Every Git operation against a session checkout executes inside Gondolin, including status/diff while the VM is awake and clone/fetch/commit/push.
-- Sleeping-session review uses a host-owned cached Git Snapshot generated inside Gondolin, not host Git.
+- Stopped-session review uses a host-owned cached Git Snapshot generated inside Gondolin, not host Git.
 - Project secrets use Gondolin placeholder substitution scoped to allowed destinations.
 - Pi uses an explicit allowlist-only `ResourceLoader`; `DefaultResourceLoader` is forbidden for untrusted workspaces.
 - Pi uses `SettingsManager.inMemory(...)` and never loads workspace or global Pi settings/packages.
@@ -1757,8 +1760,8 @@ Gateway:
 Runner:
 
 - CPU/memory/disk total and free
-- Running VMs and sleeping sessions
-- VM start/resume/checkpoint duration
+- Running VMs and stopped sessions
+- VM start/wake/Stop duration
 - Pi run duration and failures
 - Setup/resume duration
 - Git operation duration
@@ -1798,18 +1801,25 @@ Session-scoped audit records remain on the owning runner:
 - Browser SSE reconnects through the runner-owned cursor after the runner is available.
 - Stable domain IDs and runner-owned state support reconciliation; ambiguous prompt/Abort handoffs remain explicit.
 
-### VM start/resume failure
+### VM start/wake failure
 
-- Preserve checkpoint and diagnostics.
+- Preserve the persistent root disk and diagnostics.
 - Mark VM failed without deleting data.
 - Surface image/backend/build-ID mismatch distinctly.
 - Permit explicit retry after remediation.
+
+### Interrupted Stop
+
+- Reconcile a Session journaled as `Stopping` by preserving the disk, marking the Session failed,
+  and requiring the explicit `restart-environment` recovery action. Host `fsync` alone cannot prove
+  that guest sync and VM exit completed.
 
 ### Setup/resume failure
 
 - Stream logs and show the exact failed hook.
 - A failed `.agents/setup` emits a visible warning and continues to Pi so the prompt can repair the project.
-- A failed `.agents/resume` stops before dispatching the next prompt; permit terminal access when safe and allow an explicit resume retry.
+- A failed `.agents/resume` emits a visible warning and continues to Pi so the prompt can diagnose
+  or repair the project.
 
 ### Pi/model failure
 
@@ -1885,15 +1895,15 @@ Scenarios:
 - Clone/push private HTTPS repository with guest-visible placeholder only
 - Clone/push private SSH repository through Gondolin proxy
 - Every clone/status/diff/fetch/commit/push process runs inside the guest, never on the runner host
-- Sleeping diff uses a final guest-generated cached Git Snapshot and wakes for refresh
+- Stopped-session diff uses a final guest-generated cached Git Snapshot and wakes for refresh
 - Provision setup hook
-- Prompt → tools → settled → sleep → wake → continue
+- Prompt → tools → settled → Stop → wake same disk → continue
 - Pi-native follow-up and steering with no post-handoff mutation controls
 - Runner-local waking/provisioning pending delivery
 - Offline runner rejects message submission and exposes only the minimal catalog card, not cached full session data
 - Crash during Pi handoff produces `delivery-uncertain` and no automatic replay
 - Edit last without workspace rollback
-- Diff/file browsing while VM sleeps
+- Diff review and wake-for-file browsing while the VM is stopped
 - Browser terminal through data tunnel
 - Managed preview wake/restart
 - Live-only preview expiration
@@ -1978,12 +1988,13 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Session storage layout
 - Guest image build and distribution
 - Per-session VM creation with CPU/memory
-- `/workspace` and cache mounts
+- Persistent `root-disk.qcow2` with `/workspace` inside the guest
 - `.agents/setup`/`.agents/resume`
-- Checkpoint/sleep/wake lifecycle
+- Stop/wake lifecycle and interrupted-Stop reconciliation
 - Provisioning logs/events
 
-**Exit:** First prompt provisioning can boot Gondolin, clone inside the guest, run setup, checkpoint, resume, and preserve workspace state without Pi yet.
+**Exit:** First prompt provisioning can boot Gondolin, clone inside the guest, run setup, Stop, wake
+from the same root disk, and preserve workspace state without Pi yet.
 
 ### Milestone 4 — Pi runtime and conversation
 
@@ -2082,13 +2093,13 @@ A release is MVP-complete when all of the following are true:
 8. Chat, thinking, tool calls, and tool output stream to desktop and mobile UI.
 9. While Pi is running, the UI exposes normal follow-up and explicit “Steer now” actions; Pi-accepted queue items are visible when connected but are not editable, cancellable, promotable, or claimed durable.
 10. Sends are rejected while the assigned runner is offline; while connected/waking, pending messages are stored only on that runner until handoff, and ambiguous handoff is surfaced instead of silently replayed.
-11. VM checkpoints after 15 minutes idle and wakes for subsequent work.
-12. While the owning runner is connected, the user can review the runner-owned guest-generated aggregate diff and files while the VM is sleeping, without native host Git interpreting the checkout.
+11. VM Stops after 15 minutes idle, retains its root disk, and wakes from that same disk for subsequent work.
+12. While the owning runner is connected, the user can review the runner-owned guest-generated aggregate diff while the VM is stopped and wake it to browse files, without native host Git interpreting the checkout.
 13. Browser terminal works without any inbound runner port.
 14. Agent can fetch, commit, and push to a private repository without obtaining the real credential in the guest.
 15. User can choose the pushed branch name.
 16. Agent can publish a private managed preview that supports HTTP/WebSockets over the outbound tunnel.
-17. Managed preview wakes and restarts after sleep; live-only preview clearly expires.
+17. Managed preview wakes and restarts after Stop; live-only preview clearly expires.
 18. Capability preview links are revocable and do not expose gateway authentication to the guest.
 19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the five-column Workspace-owned catalog row, stores only a Workspace/session/time deletion marker, and causes any later stale runner snapshot entry to be cleaned up rather than resurrected.
 20. Pi never discovers project settings, packages, extensions, skills, prompts, themes, context files, or system-prompt fragments on the runner host; Pi/the model accesses project files and scripts only through Gondolin-backed tools.
@@ -2103,7 +2114,7 @@ A release is MVP-complete when all of the following are true:
 
 ### Gondolin maturity and limitations
 
-**Risk:** Experimental APIs, Alpine-only image builder, disk-only checkpoints, and serialized guest exec behavior.
+**Risk:** Experimental APIs, Alpine-only image builder, persistent-disk lifecycle, and serialized guest exec behavior.
 
 **Mitigation:** Pin versions/build IDs and Debian OCI inputs, own a tested guest image, keep services explicitly process-managed, and maintain real-QEMU integration tests.
 
@@ -2145,7 +2156,7 @@ A release is MVP-complete when all of the following are true:
 
 ### Disk growth
 
-**Risk:** Checkouts, Git objects, caches, logs, and checkpoints accumulate.
+**Risk:** Persistent root disks, Git objects, caches, and logs accumulate.
 
 **Mitigation:** Disk reporting, reservation safety threshold, bounded logs/caches, archive/delete UI, and no surprise automatic deletion.
 
@@ -2163,7 +2174,7 @@ A release is MVP-complete when all of the following are true:
 - Local checkout synchronization
 - Managed service manifest committed to repositories
 - Portals for multiple coordinated services
-- Object-store backup of checkpoints/workspaces
+- Object-store backup of Session root disks
 - PostgreSQL-only multi-instance control-plane coordination
 - macOS runners
 - GPU resources

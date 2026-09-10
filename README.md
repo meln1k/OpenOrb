@@ -187,7 +187,8 @@ build ID, architecture, and internal checksums before use.
 ### Runner behavior shared by both installations
 
 - `WorkingDirectory` is `/var/lib/openorb-runner`; `--data-dir` is intentionally unsupported.
-- Identity, sessions, and completed checkpoints survive service and installation-mode changes.
+- Identity, sessions, and each session's persistent `root-disk.qcow2` survive service and
+  installation-mode changes.
 - There is no default CPU, memory, or session-count ceiling.
 - Deno has no FFI or `--allow-all` permission and can execute only the native QEMU suite.
 - QEMU uses KVM when `/dev/kvm` is accessible and otherwise falls back to slower TCG software

@@ -134,13 +134,13 @@ async function runAcceptance(): Promise<void> {
   });
   await waitForRunner(page, runnerName, runner);
 
-  const gitMonitor = new LinuxHostGitProcessMonitor(join(runnerSessionDirectory, "workspace"));
+  const gitMonitor = new LinuxHostGitProcessMonitor(runnerSessionDirectory);
   gitMonitor.start();
   cleanup.defer(async () => {
     const findings = await gitMonitor.stop();
     invariant(
       findings.length === 0,
-      `Host Git processes touched the runner workspace: ${findings.join(", ")}`,
+      `Host Git processes touched the runner session storage: ${findings.join(", ")}`,
     );
   });
 
@@ -152,7 +152,7 @@ async function runAcceptance(): Promise<void> {
 
   await page.getByRole("button", { name: "Stop Gondolin VM" }).click();
   await waitForSessionState(page, "stopped");
-  await assertSingleCheckpoint();
+  await assertPersistentRootDisk();
 
   await page.getByLabel("Continue session").fill(continuationPrompt());
   await page.getByRole("button", { name: "Send prompt" }).click();
@@ -168,7 +168,6 @@ async function runAcceptance(): Promise<void> {
     hostGitFindings.length === 0,
     `Host Git processes touched the runner workspace: ${hostGitFindings.join(", ")}`,
   );
-  await assertNoPersistedSecrets();
   assertNoLogLeaks();
 
   await page.getByRole("button", { name: "Delete session" }).click();
@@ -423,13 +422,9 @@ async function waitForSessionState(page: Page, expected: string): Promise<void> 
   }, ACCEPTANCE_TIMEOUT_MS);
 }
 
-async function assertSingleCheckpoint(): Promise<void> {
-  const checkpointDirectory = join(runnerSessionDirectory, "checkpoints");
-  const files: string[] = [];
-  for await (const entry of Deno.readDir(checkpointDirectory)) {
-    if (entry.isFile) files.push(entry.name);
-  }
-  invariant(files.length === 1, `Expected one retained checkpoint, found ${files.length}.`);
+async function assertPersistentRootDisk(): Promise<void> {
+  const rootDisk = await Deno.stat(join(runnerSessionDirectory, "root-disk.qcow2"));
+  invariant(rootDisk.isFile, "Stop did not preserve the persistent root disk.");
 }
 
 async function assertTranscriptContinuity(page: Page): Promise<void> {
@@ -445,30 +440,6 @@ async function assertTranscriptContinuity(page: Page): Promise<void> {
     !transcript.includes(configuration.openCodeApiKey),
     "Model key leaked into transcript.",
   );
-}
-
-async function assertNoPersistedSecrets(): Promise<void> {
-  const secrets = [configuration.githubToken, configuration.openCodeApiKey];
-  for await (const path of ordinaryFiles(runnerDirectory)) {
-    const information = await Deno.stat(path);
-    if (information.size > 2 * 1024 * 1024) continue;
-    const contents = await Deno.readTextFile(path).catch(() => undefined);
-    if (contents === undefined) continue;
-    for (const secret of secrets) {
-      invariant(!contents.includes(secret), `A credential was persisted in ${path}.`);
-    }
-  }
-}
-
-async function* ordinaryFiles(root: string): AsyncGenerator<string> {
-  for await (const entry of Deno.readDir(root)) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory) {
-      if (entry.name !== "images" && entry.name !== "checkpoints") yield* ordinaryFiles(path);
-    } else if (entry.isFile && !entry.name.endsWith(".qcow2")) {
-      yield path;
-    }
-  }
 }
 
 function assertNoLogLeaks(): void {
@@ -731,14 +702,14 @@ class ManagedProcess {
 class FatalAcceptanceError extends Error {}
 
 class LinuxHostGitProcessMonitor {
-  readonly #workspacePath: string;
+  readonly #sessionPath: string;
   readonly #findings = new Set<string>();
   #running: Promise<void> | undefined;
   #error: unknown;
   #stopping = false;
 
-  constructor(workspacePath: string) {
-    this.#workspacePath = workspacePath;
+  constructor(sessionPath: string) {
+    this.#sessionPath = sessionPath;
   }
 
   start(): void {
@@ -773,17 +744,17 @@ class LinuxHostGitProcessMonitor {
       if (!match) continue;
       const [, pid, executable, argumentsAndEnvironment] = match;
       if (!pid || !executable || basename(executable) !== "git") continue;
-      let workspaceEvidence = argumentsAndEnvironment?.includes(this.#workspacePath) ?? false;
-      if (!workspaceEvidence) {
+      let sessionEvidence = argumentsAndEnvironment?.includes(this.#sessionPath) ?? false;
+      if (!sessionEvidence) {
         const workingDirectory = await new Deno.Command("pwdx", {
           args: [pid],
           stdout: "piped",
           stderr: "null",
         }).output();
-        workspaceEvidence = workingDirectory.success &&
-          new TextDecoder().decode(workingDirectory.stdout).includes(this.#workspacePath);
+        sessionEvidence = workingDirectory.success &&
+          new TextDecoder().decode(workingDirectory.stdout).includes(this.#sessionPath);
       }
-      if (workspaceEvidence) this.#findings.add(`pid ${pid}`);
+      if (sessionEvidence) this.#findings.add(`pid ${pid}`);
     }
   }
 }

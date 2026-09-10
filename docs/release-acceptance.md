@@ -76,14 +76,14 @@ and an unusable `PATH` to prove that installed Node.js and Deno runtimes are not
 5. starts an outbound-only runner without either external credential in its host environment;
 6. provisions a tiny Gondolin VM from the fixture branch and runs a real Pi turn;
 7. observes the guest-created file in the cached Changes review surface;
-8. manually stops the idle session and requires exactly one retained checkpoint generation;
-9. submits a continuation, proving root-disk and workspace persistence, `.agents/resume` execution,
-   no `.agents/setup` rerun, and prior Pi transcript continuity;
+8. manually stops the idle session and requires the stable `root-disk.qcow2` to remain;
+9. submits a continuation, proving that wake opens the same root disk, runs `.agents/resume` without
+   rerunning `.agents/setup`, and preserves the Project Checkout and prior Pi transcript;
 10. has Pi commit and push the exact session branch, then verifies file contents through GitHub;
-11. requires that no host Git process touched the runner workspace and scans ordinary runner files,
-    transcript, and process output for the GitHub and model credentials;
+11. requires that no host Git process touched the runner workspace and checks the transcript and
+    process output for the GitHub and model credentials;
 12. confirms deletion removes the catalog view and complete runner session directory, including the
-    active checkpoint, then removes both remote branches and the temporary database.
+    persistent root disk, then removes both remote branches and the temporary database.
 
 ## Release acceptance matrix
 
@@ -103,8 +103,8 @@ and an unusable `PATH` to prove that installed Node.js and Deno runtimes are not
 | 12 | Minimal gateway catalog/deletion marker; replay from runner                                                                          | Schema and tombstone assertions in `packages/gateway/test/session-provisioning-browser.test.ts`, reconciliation tests in `packages/gateway/test/runner-registry.test.ts`, and JSONL replay tests in `packages/runner/test/session/events.test.ts`. |
 | 13 | View the latest guest-generated Git diff                                                                                             | Changes assertion in the release lifecycle and `packages/runner/test/session/git-snapshot.test.ts`.                                                                                                                                                |
 | 14 | Private clone/commit/push without the real GitHub token                                                                              | Credential-enabled private Git and real Pi tests plus the release branch-content, environment, file, transcript, and log assertions.                                                                                                               |
-| 15 | Idle VM stops with one disk checkpoint while workspace and Pi JSONL remain                                                           | Checkpoint Stop in the release lifecycle; real disk checkpoint and supervisor lifecycle tests.                                                                                                                                                     |
-| 16 | Continue from the checkpoint with the same checkout and conversation                                                                 | Release `.agents/resume`, marker, pushed-file, and transcript assertions; checkpoint and Pi JSONL replay tests.                                                                                                                                    |
+| 15 | Idle VM Stop retains the stable root disk, Project Checkout, and Pi JSONL                                                            | Stop in the release lifecycle; persistent-root-disk, root-disk durability, and supervisor lifecycle tests.                                                                                                                                         |
+| 16 | Wake opens the same root disk and continues the same checkout and conversation                                                       | Release `.agents/resume`, marker, pushed-file, and transcript assertions; persistent-root-disk and Pi JSONL replay tests.                                                                                                                          |
 | 17 | Pinned session remains unavailable while its runner is offline                                                                       | Runner disconnect/reconnect tests in `packages/gateway/test/runner-registry.test.ts` and `packages/runner/test/connection/rpc.test.ts`.                                                                                                            |
 | 18 | Stop and explicit deletion; offline deletion prevents resurrection                                                                   | Release Stop/deletion directory assertion; browser tombstone test and stale-snapshot cleanup tests in `packages/gateway/test/session-provisioning-browser.test.ts` and `packages/gateway/test/runner-registry.test.ts`.                            |
 
@@ -113,16 +113,16 @@ and an unusable `PATH` to prove that installed Node.js and Deno runtimes are not
 Every invariant below is part of `deno task test:security`, `deno task test:gondolin`, or the manual
 release lifecycle.
 
-| Security invariant                                                                                                 | Enforced by                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| No native host Git consumes a session workspace                                                                    | Linux process monitors in the release lifecycle and `github-mediation.integration.test.ts`; the security source audit forbids runner-host Git spawning.                                                                                                     |
-| Hostile Git config, hooks, helpers, filters, textconv, fsmonitor, and external commands cannot execute on the host | Hostile private/public Git mediation tests and the real hostile Git Snapshot test.                                                                                                                                                                          |
-| `DefaultResourceLoader` is forbidden in runner session code                                                        | `scripts/security-boundaries.test.ts` scans runner sources and `packages/runner/test/harness/pi/session.test.ts` exercises the audited factory.                                                                                                             |
-| Hostile `.pi` resources/settings cannot execute or alter Pi                                                        | Hostile fixture tests in `packages/runner/test/harness/pi/session.test.ts`; in-memory settings and empty resource-loader source assertions.                                                                                                                 |
-| All Pi file and shell tools execute through Gondolin                                                               | Tool-adapter source assertions, no-host-filesystem permission tests, real VM cancellation/path tests, and Git Snapshot guest-command tests.                                                                                                                 |
-| Real Git and model credentials do not appear in guest files/environment/process arguments/logs/tool output         | Credential-enabled Gondolin tests scan guest surfaces; the real Pi test scans persistence; release acceptance scans transcript, runner files, and gateway/runner output. The model key is delivered only to trusted host-side Pi and never enters Gondolin. |
-| `GH_TOKEN` substitution is restricted to `github.com` and `api.github.com`; repository access is provider-enforced | `packages/runner/test/environment/gondolin/github-mediation.test.ts` and private integration tests against the token's selected repository.                                                                                                                 |
-| Path traversal and escaping symlinks are rejected                                                                  | Path mapping and real symlink escape tests in `packages/runner/test/environment/gondolin/environment.test.ts`, plus tool tests with host read/write denied.                                                                                                 |
+| Security invariant                                                                                                 | Enforced by                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No native host Git consumes a session workspace                                                                    | Linux process monitors in the release lifecycle and `github-mediation.integration.test.ts`; the security source audit forbids runner-host Git spawning.                                                                     |
+| Hostile Git config, hooks, helpers, filters, textconv, fsmonitor, and external commands cannot execute on the host | Hostile private/public Git mediation tests and the real hostile Git Snapshot test.                                                                                                                                          |
+| `DefaultResourceLoader` is forbidden in runner session code                                                        | `scripts/security-boundaries.test.ts` scans runner sources and `packages/runner/test/harness/pi/session.test.ts` exercises the audited factory.                                                                             |
+| Hostile `.pi` resources/settings cannot execute or alter Pi                                                        | Hostile fixture tests in `packages/runner/test/harness/pi/session.test.ts`; in-memory settings and empty resource-loader source assertions.                                                                                 |
+| All Pi file and shell tools execute through Gondolin                                                               | Tool-adapter source assertions, no-host-filesystem permission tests, real VM cancellation/path tests, and Git Snapshot guest-command tests.                                                                                 |
+| Git and model credentials remain mediated and do not appear in logs or tool output                                 | Credential-enabled Gondolin tests exercise GitHub request mediation; release acceptance checks the transcript and gateway/runner output. The model key is delivered only to trusted host-side Pi and never enters Gondolin. |
+| `GH_TOKEN` substitution is restricted to `github.com` and `api.github.com`; repository access is provider-enforced | `packages/runner/test/environment/gondolin/github-mediation.test.ts` and private integration tests against the token's selected repository.                                                                                 |
+| Agent paths, including traversal and symlinks, remain in the guest namespace and cannot access runner-host files   | Guest path mapping and real host-shaped path/symlink tests in `packages/runner/test/environment/gondolin/environment.test.ts`, plus tool tests with host read/write denied.                                                 |
 
 ## Failure and recovery matrix
 
@@ -135,7 +135,7 @@ release lifecycle.
 | Non-fatal clone failure               | The same supervisor test requires a usable Pi session and bounded visible diagnostics.                                                                                                            |
 | Model failure                         | State and supervisor tests require a failed prompt to return to an explicitly recoverable ready state; credential resolution failures are covered in `packages/gateway/test/credentials.test.ts`. |
 | Runner process crash                  | Supervisor crash/reconstruction and interrupted-provisioning tests recover durable state without replaying in-memory queues.                                                                      |
-| VM/checkpoint failure                 | Checkpoint publication/resume failure tests retain the last valid generation or require explicit clean recovery without dispatching the prompt.                                                   |
+| Interrupted Stop or disk sync failure | Reconciliation marks the Session failed with explicit `restart-environment` recovery because guest sync and VM exit cannot be confirmed; no prompt is dispatched.                                 |
 | Deleted session in a stale manifest   | Tombstoned reconnect and unknown-session tests never republish a route and repeatedly request idempotent cleanup.                                                                                 |
 
 ## Scope audit
@@ -152,9 +152,9 @@ schema tests, and the review below keep deferred surfaces out of the release:
   injection, resource reservation/scoring, archives, retention workflows, centrally managed agent
   profiles, HA, migration, and telemetry-platform integration remain absent.
 - The standalone Linux runner artifact added for the release path is not a browser terminal or a new
-  runner transport; it speaks the version-16 WebSocket/RPC protocol.
-- One current Gondolin disk checkpoint and `.agents/resume` are supported. RAM/process restoration,
-  services, leases, user-managed generations, and checkpoint portability remain absent.
+  runner transport; it speaks the version-17 WebSocket/RPC protocol.
+- One persistent `root-disk.qcow2` per Session and `.agents/resume` are supported. RAM/process or
+  tmpfs restoration, services, leases, disk history, and Session portability remain absent.
 
 Any change to these results requires a scoped design, schema/protocol review where applicable, and
 an update to this matrix before release.

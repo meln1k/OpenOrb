@@ -6,7 +6,6 @@ import type {
   ActorCommand,
   InternalCommand,
   RestorationContinuation,
-  RestorationRequest,
   SessionCommand,
 } from "./commands.ts";
 import type { SessionDecision, SessionDecisions } from "./decision.ts";
@@ -53,25 +52,11 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
           message: "Choose the recovery action currently offered for this failed session.",
         }));
       }
-      return Effect.succeed(
-        recovery === "resume-prior-checkpoint" && state.phase.checkpoint !== undefined
-          ? beginRestoration(
-            state,
-            {
-              _tag: "ResumeCheckpoint",
-              continuation: { _tag: "Wake", payload: command.payload, reply: command.reply },
-            },
-            crypto.randomUUID(),
-          )
-          : beginRestoration(
-            state,
-            {
-              _tag: "StartCleanVm",
-              continuation: { _tag: "Wake", payload: command.payload, reply: command.reply },
-            },
-            crypto.randomUUID(),
-          ),
-      );
+      return Effect.succeed(beginRestoration(
+        state,
+        { _tag: "Wake", payload: command.payload, reply: command.reply },
+        crypto.randomUUID(),
+      ));
     }
     if (command.payload.recovery !== undefined) {
       return Effect.succeed(reply(command.reply, {
@@ -82,10 +67,7 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
     if (state.phase._tag === "Stopped") {
       return Effect.succeed(beginRestoration(
         state,
-        {
-          _tag: "ResumeCheckpoint",
-          continuation: { _tag: "Wake", payload: command.payload, reply: command.reply },
-        },
+        { _tag: "Wake", payload: command.payload, reply: command.reply },
         crypto.randomUUID(),
       ));
     }
@@ -221,13 +203,10 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
       return Effect.succeed(beginRestoration(
         state,
         {
-          _tag: "ResumeCheckpoint",
-          continuation: {
-            _tag: "Prompt",
-            payload: command.payload,
-            runId,
-            reply: command.reply,
-          },
+          _tag: "Prompt",
+          payload: command.payload,
+          runId,
+          reply: command.reply,
         },
         runId,
       ));
@@ -257,46 +236,41 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
 
   function beginRestoration(
     state: SessionState,
-    request: RestorationRequest,
+    continuation: RestorationContinuation,
     correlationId: string,
   ): SessionDecision {
     const restorationId = crypto.randomUUID();
-    const continuation = request.continuation;
-    const recoveryMode = request._tag === "ResumeCheckpoint"
-      ? "resume-prior-checkpoint" as const
-      : "start-clean-vm" as const;
     return persist(
       {
         type: "restoration.started",
         restorationId,
-        intent: request._tag === "ResumeCheckpoint"
-          ? {
-            _tag: "ResumeCheckpoint",
-            continuation: continuation._tag === "Wake"
-              ? { _tag: "Wake" }
-              : { _tag: "Prompt", runId: continuation.runId },
-          }
-          : { _tag: "StartCleanVm" },
+        continuation: continuation._tag === "Wake"
+          ? { _tag: "Wake" }
+          : { _tag: "Prompt", runId: continuation.runId },
       },
       (restoring) =>
         emitState(
           sessionMetadata(restoring),
-          request._tag === "ResumeCheckpoint" ? "resuming" : "starting-vm",
+          "resuming",
           correlationId,
         ).pipe(
           Effect.orDie,
           Effect.andThen(
             Effect.forkScoped(
-              provisioner.recover(
-                sessionMetadata(state),
-                recoveryMode,
-                continuation.payload.githubToken,
-                continuation.payload.modelRuntime,
-                correlationId,
-              ).pipe(
+              closeCurrentSession().pipe(
+                Effect.andThen(provisioner.restore(
+                  sessionMetadata(state),
+                  continuation.payload.githubToken,
+                  correlationId,
+                )),
                 Effect.flatMap(({ environment, issues, release }) =>
                   agentRuntime.open(environment, continuation.payload.modelRuntime).pipe(
-                    Effect.map((agentSession) => ({ environment, agentSession, issues })),
+                    Effect.map((agentSession) => ({
+                      environment,
+                      agentSession,
+                      issues,
+                      release,
+                    })),
                     Effect.onError(() => release),
                   )
                 ),
@@ -307,20 +281,27 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
                       _tag: "RestorationFailed",
                       restorationId,
                       correlationId,
-                      request,
-                      issue: restorationIssue(error, request),
+                      continuation,
+                      issue: restorationIssue(error, continuation),
                     }),
-                  onSuccess: ({ environment, agentSession, issues }) =>
+                  onSuccess: ({ environment, agentSession, issues, release }) =>
                     send({
                       kind: "internal",
                       _tag: "RestorationCompleted",
                       restorationId,
                       environment,
                       agentSession,
+                      release,
                       correlationId,
-                      request,
+                      continuation,
                       issues,
-                    }),
+                    }).pipe(
+                      Effect.flatMap((sent) =>
+                        sent
+                          ? Effect.void
+                          : agentRuntime.close(agentSession).pipe(Effect.andThen(release))
+                      ),
+                    ),
                 }),
                 Effect.asVoid,
               ),
@@ -330,14 +311,29 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
     );
   }
 
+  function closeCurrentSession(): Effect.Effect<void, unknown> {
+    const current = runtime.get();
+    return (current.agentSession === undefined
+      ? Effect.void
+      : agentRuntime.close(current.agentSession).pipe(Effect.andThen(runtime.clearAgentSession)))
+      .pipe(
+        Effect.andThen(
+          current.environment === undefined
+            ? Effect.void
+            : current.environment.stop.pipe(Effect.andThen(runtime.clearEnvironment)),
+        ),
+      );
+  }
+
   function restorationCompleted(
     state: SessionState,
     command: Extract<InternalCommand, { readonly _tag: "RestorationCompleted" }>,
   ): SessionDecision {
-    const continuation = command.request.continuation;
-    if (!matchesRestoration(state, command.restorationId, command.request)) {
+    const continuation = command.continuation;
+    if (!matchesRestoration(state, command.restorationId, continuation)) {
       return none(() =>
         agentRuntime.close(command.agentSession).pipe(
+          Effect.andThen(command.release),
           Effect.andThen(rejectContinuation(
             continuation,
             "The completed restoration no longer matches the active operation.",
@@ -379,8 +375,8 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
     state: SessionState,
     command: Extract<InternalCommand, { readonly _tag: "RestorationFailed" }>,
   ): SessionDecision {
-    const continuation = command.request.continuation;
-    if (!matchesRestoration(state, command.restorationId, command.request)) {
+    const continuation = command.continuation;
+    if (!matchesRestoration(state, command.restorationId, continuation)) {
       return none(() =>
         rejectContinuation(
           continuation,
@@ -395,8 +391,7 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
         issue: command.issue,
       },
       (failed) =>
-        runtime.clearEnvironment.pipe(
-          Effect.andThen(runtime.updateStatus(false)),
+        runtime.updateStatus(false).pipe(
           Effect.andThen(
             emitState(sessionMetadata(failed), "failed", command.correlationId).pipe(
               Effect.orDie,
@@ -404,11 +399,9 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
           ),
           Effect.andThen(rejectContinuation(
             continuation,
-            command.request._tag === "StartCleanVm"
-              ? command.issue.message
-              : continuation._tag === "Prompt"
-              ? "The checkpoint could not be resumed. The prompt was not dispatched."
-              : "The checkpoint could not be resumed.",
+            continuation._tag === "Prompt"
+              ? "The environment could not be restarted. The prompt was not dispatched."
+              : "The environment could not be restarted.",
           )),
         ),
     );
@@ -444,48 +437,32 @@ function modelRestoreIssue(error: unknown, modelCredential: string): SessionIssu
   });
 }
 
-function restorationIssue(error: unknown, request: RestorationRequest): SessionIssue {
-  const continuation = request.continuation;
+function restorationIssue(error: unknown, continuation: RestorationContinuation): SessionIssue {
   const secrets = [
     continuation.payload.modelRuntime.credential.value,
     ...(continuation.payload.githubToken === undefined ? [] : [continuation.payload.githubToken]),
   ];
-  if (request._tag === "StartCleanVm") return cleanRecoveryIssue(error, secrets);
-  return makeSessionIssue({
-    category: "checkpoint-resume",
-    severity: "failure",
-    message: continuation._tag === "Prompt"
-      ? "The prior checkpoint could not be resumed. The prompt was not dispatched; retry checkpoint resume explicitly."
-      : "The prior checkpoint could not be resumed. Retry checkpoint resume explicitly.",
-    diagnostics: redactedErrorMessage(error, secrets),
-    recovery: "resume-prior-checkpoint",
-  });
-}
-
-function cleanRecoveryIssue(error: unknown, secrets: readonly string[]): SessionIssue {
   return makeSessionIssue({
     category: "vm-start",
     severity: "failure",
-    message:
-      "A clean Gondolin VM could not be started. The Project Checkout and Pi conversation remain preserved; retry clean VM recovery explicitly.",
+    message: continuation._tag === "Prompt"
+      ? "The persistent environment could not be restarted. The prompt was not dispatched; retry explicitly."
+      : "The persistent environment could not be restarted. Retry explicitly.",
     diagnostics: redactedErrorMessage(error, secrets),
-    recovery: "start-clean-vm",
+    recovery: "restart-environment",
   });
 }
 
 function matchesRestoration(
   state: SessionState,
   restorationId: string,
-  request: RestorationRequest,
+  continuation: RestorationContinuation,
 ): boolean {
   if (state.phase._tag !== "Restoring" || state.phase.restorationId !== restorationId) {
     return false;
   }
-  if (state.phase.intent._tag !== request._tag) return false;
-  if (state.phase.intent._tag === "StartCleanVm") return true;
-  const continuation = request.continuation;
-  if (state.phase.intent.continuation._tag !== continuation._tag) return false;
-  return state.phase.intent.continuation._tag === "Wake" ||
-    state.phase.intent.continuation.runId ===
+  if (state.phase.continuation._tag !== continuation._tag) return false;
+  return state.phase.continuation._tag === "Wake" ||
+    state.phase.continuation.runId ===
       (continuation as Extract<RestorationContinuation, { readonly _tag: "Prompt" }>).runId;
 }

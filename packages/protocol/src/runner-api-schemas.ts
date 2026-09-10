@@ -19,7 +19,7 @@ import {
 } from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 16;
+export const RUNNER_PROTOCOL_VERSION = 17;
 
 export * from "./runner-api-limits.ts";
 

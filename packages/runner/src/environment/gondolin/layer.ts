@@ -1,6 +1,6 @@
-import { basename, isAbsolute, resolve } from "node:path";
+import { basename } from "node:path";
 
-import { RealFSProvider, VM, VmCheckpoint, type VMOptions } from "@earendil-works/gondolin";
+import { VM, type VMOptions } from "@earendil-works/gondolin";
 import { Effect, Layer, type Scope, Semaphore } from "effect";
 import type { Result } from "@openorb/result";
 
@@ -12,11 +12,13 @@ import {
 import { installGondolinTlsCompatibility } from "./tls-compatibility.ts";
 import { shellWaitTimeoutMs } from "./shell-timeout.ts";
 import {
+  assertPersistentRootDiskDetached,
+  initializePersistentRootDisk,
+  validatePersistentRootDisk,
+} from "./persistent-root-disk.ts";
+import {
   AGENT_WORKSPACE,
   type AgentEnvironment,
-  type AgentEnvironmentBackend,
-  type AgentEnvironmentCheckpoint,
-  AgentEnvironmentCheckpointError,
   AgentEnvironmentError,
   type AgentEnvironmentOptions,
   AgentEnvironmentProvider,
@@ -24,6 +26,8 @@ import {
 } from "../agent-environment.ts";
 
 export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
+export const MAX_GUEST_FILE_BYTES = 16 * 1024 * 1024;
+const GUEST_FILE_READ_TIMEOUT_MS = 30_000;
 
 export interface GondolinAgentEnvironmentConfig extends AgentEnvironmentOptions {
   readonly guestImage: GuestImage;
@@ -47,6 +51,22 @@ export function makeGondolinAgentEnvironmentProvider(
   softwareEmulation = false,
 ): AgentEnvironmentProvider {
   return AgentEnvironmentProvider.of({
+    initializeRootDisk: (path) =>
+      Effect.gen(function* () {
+        const imagePath = yield* fromLegacyResult(
+          prepareGuestImageForVm(guestImage),
+          (cause) => new AgentEnvironmentError("The guest image could not be prepared.", cause),
+        );
+        yield* fromLegacyResult(
+          initializePersistentRootDisk({
+            path,
+            backingPath: imagePath.rootfsPath,
+            backingFormat: "raw",
+          }),
+          (cause) =>
+            new AgentEnvironmentError("The persistent root disk could not be created.", cause),
+        );
+      }),
     make: (options) =>
       createGondolinAgentEnvironment({ ...options, guestImage, softwareEmulation }),
   });
@@ -67,30 +87,13 @@ export function createGondolinAgentEnvironment(
 ): Effect.Effect<AgentEnvironment, AgentEnvironmentError, Scope.Scope> {
   return Effect.acquireRelease(
     Effect.gen(function* () {
-      const workspace = yield* Effect.tryPromise({
-        try: () => Deno.lstat(options.workspacePath),
-        catch: (cause) =>
-          new AgentEnvironmentError("The agent workspace could not be inspected.", cause),
-      });
-      if (!workspace.isDirectory || workspace.isSymlink) {
-        return yield* new AgentEnvironmentError(
-          "The agent workspace must be a real host directory.",
-          undefined,
-        );
-      }
-      const workspacePath = yield* Effect.tryPromise({
-        try: () => Deno.realPath(options.workspacePath),
-        catch: (cause) =>
-          new AgentEnvironmentError("The agent environment could not be created.", cause),
-      });
       const environment = yield* makeGondolinEnvironment(
-        workspacePath,
+        options.rootDiskPath,
         options.guestImage,
         options.cpuCount,
         options.memoryMiB,
         options.sessionLabel,
         options.github,
-        options.resumeCheckpoint,
         options.sessionId,
         options.softwareEmulation,
       );
@@ -102,13 +105,12 @@ export function createGondolinAgentEnvironment(
 }
 
 function makeGondolinEnvironment(
-  workspacePath: string,
+  rootDiskPath: string,
   guestImage: GuestImage,
   cpuCount: number,
   memoryMiB: number,
-  sessionLabel = `openorb ${basename(workspacePath)}`,
+  sessionLabel = `openorb ${basename(rootDiskPath)}`,
   github?: OpenOrbGitHubMediationOptions,
-  resumeCheckpoint?: AgentEnvironmentCheckpoint,
   sessionId?: string,
   softwareEmulation = false,
 ): Effect.Effect<GondolinEnvironmentInternals> {
@@ -116,6 +118,7 @@ function makeGondolinEnvironment(
     const gate = yield* Semaphore.make(1);
     // Command failures never clear this reference. Only explicit lifecycle cleanup owns the VM.
     let running: RunningVm | undefined;
+    let closing = false;
     let closed = false;
     const logAnnotations = {
       component: "openorb-runner",
@@ -143,37 +146,55 @@ function makeGondolinEnvironment(
         );
       }
       const vm = yield* Effect.tryPromise({
-        try: () => {
+        try: async () => {
           installGondolinTlsCompatibility();
+          const [, rootDiskError] = await validatePersistentRootDisk(rootDiskPath);
+          if (rootDiskError !== undefined) throw rootDiskError;
           const vmOptions: VMOptions = {
             sessionLabel,
             cpus: cpuCount,
             memory: `${memoryMiB}M`,
-            rootfs: { mode: "cow" },
             ...githubOptions,
-            sandbox: createOpenOrbGondolinSandboxOptions(imagePath, softwareEmulation),
-            vfs: {
-              mounts: {
-                [AGENT_WORKSPACE]: new RealFSProvider(workspacePath),
-              },
+            sandbox: {
+              ...createOpenOrbGondolinSandboxOptions(imagePath, softwareEmulation),
+              rootDiskPath,
+              rootDiskFormat: "qcow2",
+              rootDiskDeleteOnClose: false,
             },
+            vfs: {},
           };
-          if (resumeCheckpoint) {
-            const checkpoint = loadCheckpoint(resumeCheckpoint, guestImage);
-            return checkpoint.resume<VM>(vmOptions);
-          }
-          return VM.create(vmOptions);
+          return await VM.create(vmOptions);
         },
-        catch: (cause) =>
-          new AgentEnvironmentError(
-            resumeCheckpoint
-              ? "The Gondolin checkpoint could not be resumed."
-              : "The Gondolin VM could not be created.",
-            cause,
-          ),
+        catch: (cause) => new AgentEnvironmentError("The Gondolin VM could not be created.", cause),
       });
       const probe = yield* Effect.exit(Effect.tryPromise({
         try: async () => {
+          const workspace = await vm.exec([
+            "/usr/bin/mkdir",
+            "-p",
+            "-m",
+            "0700",
+            "--",
+            AGENT_WORKSPACE,
+          ]);
+          if (!workspace.ok) {
+            throw new AgentEnvironmentError(
+              "The persistent guest workspace could not be prepared.",
+              undefined,
+            );
+          }
+          const workspacePermissions = await vm.exec([
+            "/usr/bin/chmod",
+            "0700",
+            "--",
+            AGENT_WORKSPACE,
+          ]);
+          if (!workspacePermissions.ok) {
+            throw new AgentEnvironmentError(
+              "The persistent guest workspace permissions could not be set.",
+              undefined,
+            );
+          }
           let nestedKvmWarning: string | undefined;
           if (Deno.build.os === "linux" && !softwareEmulation) {
             const nestedKvmProbe = await vm.exec([
@@ -227,7 +248,11 @@ function makeGondolinEnvironment(
             : new AgentEnvironmentError("The Gondolin VM startup probe failed.", cause),
       }));
       if (probe._tag === "Failure") {
-        yield* closeVm(vm, "The failed Gondolin VM could not be closed.");
+        yield* closeVm(
+          vm,
+          rootDiskPath,
+          "The failed Gondolin VM could not be closed.",
+        );
         return yield* Effect.failCause(probe.cause);
       }
       if (probe.value.nestedKvmWarning) {
@@ -247,7 +272,7 @@ function makeGondolinEnvironment(
 
     const getVm = gate.withPermit(
       Effect.suspend(() => {
-        if (closed) {
+        if (closing || closed) {
           return Effect.fail(
             new AgentEnvironmentError("The agent environment is closed.", undefined),
           );
@@ -371,19 +396,91 @@ function makeGondolinEnvironment(
     );
 
     const readFile: AgentEnvironment["readFile"] = Effect.fn("AgentEnvironment.readFile")(
-      function* (path) {
+      function* (path, options = {}) {
+        if (options.signal?.aborted) return yield* aborted(options.signal.reason);
         const activeVm = yield* getVm;
-        return yield* Effect.tryPromise({
-          try: () => activeVm.vm.fs.readFile(resolveAgentPath(path)),
-          catch: (cause) => new AgentEnvironmentError("Guest file could not be read.", cause),
-        });
+        const resolvedPath = resolveAgentPath(path);
+        const read = yield* Effect.exit(Effect.tryPromise({
+          try: async () => {
+            const regularFile = await activeVm.vm.exec(["/usr/bin/test", "-f", resolvedPath]);
+            if (!regularFile.ok) {
+              throw new AgentEnvironmentError("Guest file could not be read.", undefined);
+            }
+            const controller = new AbortController();
+            const abort = () => controller.abort(options.signal?.reason);
+            options.signal?.addEventListener("abort", abort, { once: true });
+            using cleanup = new DisposableStack();
+            cleanup.defer(() => options.signal?.removeEventListener("abort", abort));
+            const timer = setTimeout(() => controller.abort(), GUEST_FILE_READ_TIMEOUT_MS);
+            cleanup.defer(() => clearTimeout(timer));
+
+            const chunks: Uint8Array[] = [];
+            let byteLength = 0;
+            let oversized = false;
+            const process = activeVm.vm.exec([
+              "/usr/bin/head",
+              "-c",
+              String(MAX_GUEST_FILE_BYTES + 1),
+              "--",
+              resolvedPath,
+            ], {
+              signal: controller.signal,
+              stdout: "pipe",
+              stderr: "ignore",
+            });
+            for await (const chunk of process.output()) {
+              if (chunk.stream !== "stdout") continue;
+              byteLength += chunk.data.byteLength;
+              if (byteLength > MAX_GUEST_FILE_BYTES) {
+                oversized = true;
+                continue;
+              }
+              chunks.push(chunk.data);
+            }
+            const result = await process;
+            if (oversized) {
+              throw new AgentEnvironmentError(
+                `Guest file exceeds the ${MAX_GUEST_FILE_BYTES}-byte read limit.`,
+                undefined,
+              );
+            }
+            if (!result.ok) {
+              throw new AgentEnvironmentError("Guest file could not be read.", undefined);
+            }
+            const content = new Uint8Array(byteLength);
+            let offset = 0;
+            for (const chunk of chunks) {
+              content.set(chunk, offset);
+              offset += chunk.byteLength;
+            }
+            return content;
+          },
+          catch: (cause) =>
+            cause instanceof AgentEnvironmentError
+              ? cause
+              : new AgentEnvironmentError("Guest file could not be read.", cause),
+        }));
+        if (read._tag === "Failure") {
+          if (options.signal?.aborted) return yield* aborted(options.signal.reason);
+          return yield* Effect.failCause(read.cause);
+        }
+        return read.value;
       },
     );
     const access: AgentEnvironment["access"] = Effect.fn("AgentEnvironment.access")(
       function* (path) {
         const activeVm = yield* getVm;
         yield* Effect.tryPromise({
-          try: () => activeVm.vm.fs.access(resolveAgentPath(path)),
+          try: async () => {
+            const result = await activeVm.vm.exec([
+              "/usr/bin/test",
+              "-e",
+              resolveAgentPath(path),
+            ]);
+            if (!result.ok) {
+              throw new AgentEnvironmentError("Guest file could not be accessed.", undefined);
+            }
+          },
           catch: (cause) => new AgentEnvironmentError("Guest file could not be accessed.", cause),
         });
       },
@@ -392,10 +489,15 @@ function makeGondolinEnvironment(
       function* (path, content) {
         const activeVm = yield* getVm;
         yield* Effect.tryPromise({
-          try: () =>
-            activeVm.vm.fs.writeFile(resolveAgentPath(path), content, {
-              encoding: "utf8",
-            }),
+          try: async () => {
+            const result = await activeVm.vm.exec(
+              ["/usr/bin/tee", "--", resolveAgentPath(path)],
+              { stdin: content, stdout: "ignore" },
+            );
+            if (!result.ok) {
+              throw new AgentEnvironmentError("Guest file could not be written.", undefined);
+            }
+          },
           catch: (cause) => new AgentEnvironmentError("Guest file could not be written.", cause),
         });
       },
@@ -405,7 +507,17 @@ function makeGondolinEnvironment(
     )(function* (path) {
       const activeVm = yield* getVm;
       yield* Effect.tryPromise({
-        try: () => activeVm.vm.fs.mkdir(resolveAgentPath(path), { recursive: true }),
+        try: async () => {
+          const result = await activeVm.vm.exec([
+            "/usr/bin/mkdir",
+            "-p",
+            "--",
+            resolveAgentPath(path),
+          ]);
+          if (!result.ok) {
+            throw new AgentEnvironmentError("Guest directory could not be created.", undefined);
+          }
+        },
         catch: (cause) => new AgentEnvironmentError("Guest directory could not be created.", cause),
       });
     });
@@ -427,65 +539,23 @@ function makeGondolinEnvironment(
         }
       });
 
-    const checkpoint: AgentEnvironment["checkpoint"] = (checkpointPath) =>
-      gate.withPermit(Effect.suspend(() => {
-        if (!isAbsolute(checkpointPath)) {
-          return Effect.fail(
-            new AgentEnvironmentCheckpointError(
-              "The checkpoint path must be absolute.",
-              undefined,
-              false,
-            ),
-          );
-        }
-        if (closed || !running) {
-          return Effect.fail(
-            new AgentEnvironmentCheckpointError(
-              "The agent environment is not running.",
-              undefined,
-              false,
-            ),
-          );
-        }
-        const activeVm = running.vm;
-        closed = true;
-        running = undefined;
-        return Effect.tryPromise({
-          try: async () => {
-            await activeVm.checkpoint(checkpointPath);
-            const loaded = VmCheckpoint.load(checkpointPath);
-            if (loaded.path !== resolve(checkpointPath)) {
-              throw new AgentEnvironmentError(
-                "Gondolin returned a checkpoint at an unexpected path.",
-                undefined,
-              );
-            }
-            if (loaded.guestAssetBuildId !== guestImage.gondolinBuildId) {
-              throw new AgentEnvironmentError(
-                "The checkpoint guest build ID does not match the pinned image.",
-                undefined,
-              );
-            }
-            return checkpointDetails(loaded);
-          },
-          catch: (cause) =>
-            new AgentEnvironmentCheckpointError(
-              "The Gondolin VM could not be checkpointed.",
-              cause,
-              true,
-            ),
-        });
-      }));
-
     const close = gate.withPermit(
       Effect.suspend(() => {
         if (closed) return Effect.void;
-        closed = true;
+        closing = true;
         const activeVm = running;
-        running = undefined;
-        return activeVm
-          ? closeVm(activeVm.vm, "The Gondolin VM could not be closed.")
-          : Effect.void;
+        if (activeVm === undefined) {
+          closed = true;
+          return Effect.void;
+        }
+        return closeVm(activeVm.vm, rootDiskPath, "The Gondolin VM could not be closed.").pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              closed = true;
+              running = undefined;
+            })
+          ),
+        );
       }),
     );
 
@@ -500,7 +570,7 @@ function makeGondolinEnvironment(
       writeFile,
       makeDirectory,
       detectImageMimeType,
-      checkpoint,
+      stop: close,
     };
   });
 }
@@ -523,53 +593,26 @@ export function createOpenOrbGondolinSandboxOptions(
   };
 }
 
-function loadCheckpoint(
-  expected: AgentEnvironmentCheckpoint,
-  guestImage: GuestImage,
-): VmCheckpoint {
-  const checkpoint = VmCheckpoint.load(expected.path);
-  const actual = checkpointDetails(checkpoint);
-  if (
-    actual.guestAssetBuildId !== guestImage.gondolinBuildId ||
-    actual.guestAssetBuildId !== expected.guestAssetBuildId ||
-    actual.createdWithVmm !== expected.createdWithVmm ||
-    actual.compatibleVmm.length !== expected.compatibleVmm.length ||
-    actual.compatibleVmm.some((backend, index) => backend !== expected.compatibleVmm[index])
-  ) {
-    throw new AgentEnvironmentError(
-      "The checkpoint metadata does not match runner metadata.",
-      undefined,
-    );
-  }
-  return checkpoint;
-}
-
-function checkpointDetails(checkpoint: VmCheckpoint): AgentEnvironmentCheckpoint {
-  const data = checkpoint.toJSON();
-  const createdWithVmm = checkpointBackend(data.createdWithVmm);
-  const compatibleVmm = data.compatibleVmm?.map(checkpointBackend).filter(
-    (backend): backend is AgentEnvironmentBackend => backend !== undefined,
-  ) ?? [];
-  if (data.snapshotKind !== "disk" || compatibleVmm.length === 0) {
-    throw new AgentEnvironmentError("The Gondolin checkpoint metadata is invalid.", undefined);
-  }
-  return {
-    path: checkpoint.path,
-    guestAssetBuildId: checkpoint.guestAssetBuildId,
-    ...(createdWithVmm === undefined ? {} : { createdWithVmm }),
-    compatibleVmm,
-  };
-}
-
-function checkpointBackend(value: unknown): AgentEnvironmentBackend | undefined {
-  return value === "qemu" || value === "krun" ? value : undefined;
-}
-
-function closeVm(vm: VM, message: string): Effect.Effect<void, AgentEnvironmentError> {
+function closeVm(
+  vm: VM,
+  rootDiskPath: string,
+  message: string,
+): Effect.Effect<void, AgentEnvironmentError> {
   return Effect.tryPromise({
     try: () => vm.close(),
     catch: (cause) => new AgentEnvironmentError(message, cause),
-  });
+  }).pipe(
+    Effect.andThen(
+      fromLegacyResult(
+        assertPersistentRootDiskDetached(rootDiskPath),
+        (cause) =>
+          new AgentEnvironmentError(
+            "The persistent root disk could not be confirmed detached.",
+            cause,
+          ),
+      ),
+    ),
+  );
 }
 
 function fromLegacyResult<A, E>(

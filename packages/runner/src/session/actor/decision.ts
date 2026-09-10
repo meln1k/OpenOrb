@@ -78,10 +78,6 @@ function logCommittedLifecycle(event: SessionEvent, state: SessionState): Effect
       name = "actor.restoration-failed";
       failed = true;
       break;
-    case "checkpoint.interrupted":
-      name = "checkpoint.failed";
-      failed = true;
-      break;
     default:
       return Effect.void;
   }
@@ -91,7 +87,6 @@ function logCommittedLifecycle(event: SessionEvent, state: SessionState): Effect
       sessionId: state.data.id,
       runnerId: state.data.runnerId,
       transition: event.type,
-      ...(event.type === "checkpoint.interrupted" ? { trigger: "unknown" } : {}),
     }),
   );
 }

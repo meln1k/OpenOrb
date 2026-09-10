@@ -100,20 +100,6 @@ export interface CheckPrerequisitesOptions {
   fetch?: typeof fetch;
 }
 
-export interface CheckpointCandidateCapacityReport {
-  ok: boolean;
-  diskFreeMiB: number;
-  candidateSizeMiB: number;
-  errors: string[];
-}
-
-export interface CheckCheckpointCandidateCapacityOptions {
-  workingDirectory: string;
-  rootfsPath: string;
-  inspectFile?: (path: string) => Promise<{ size: number; isFile: boolean }>;
-  getFileSystemStats?: (path: string) => Promise<{ bavail: bigint; bsize: bigint }>;
-}
-
 export async function checkRunnerPrerequisites(
   options: CheckPrerequisitesOptions = {},
 ): Promise<PrerequisiteReport> {
@@ -252,30 +238,6 @@ export async function checkRunnerPrerequisites(
     errors,
     warnings,
   };
-}
-
-export async function checkCheckpointCandidateCapacity(
-  options: CheckCheckpointCandidateCapacityOptions,
-): Promise<CheckpointCandidateCapacityReport> {
-  const inspectFile = options.inspectFile ?? (async (path) => {
-    const info = await Deno.lstat(path);
-    return { size: info.size, isFile: info.isFile && !info.isSymlink };
-  });
-  const getFileSystemStats = options.getFileSystemStats ??
-    ((path: string) => readFileSystemStats(path, { bigint: true }));
-  const rootfs = await inspectFile(options.rootfsPath);
-  const fileSystem = await getFileSystemStats(options.workingDirectory);
-  const diskFreeMiB = toSafeMiB(fileSystem.bavail * fileSystem.bsize);
-  const candidateSizeMiB = Math.ceil(rootfs.size / MIB_BYTES);
-  const errors: string[] = [];
-  if (!rootfs.isFile) {
-    errors.push("The verified guest root filesystem is not a regular file.");
-  } else if (diskFreeMiB < candidateSizeMiB) {
-    errors.push(
-      `Runner data directory has ${diskFreeMiB} MiB free, but a checkpoint candidate may require ${candidateSizeMiB} MiB. Free disk space before starting the runner.`,
-    );
-  }
-  return { ok: errors.length === 0, diskFreeMiB, candidateSizeMiB, errors };
 }
 
 async function inspectExecutable(

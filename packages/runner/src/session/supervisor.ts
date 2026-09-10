@@ -35,6 +35,7 @@ import {
   RunnerSessionStore,
   type RunnerSessionStoreError,
 } from "./store.ts";
+import { assertPersistentRootDiskDetached } from "../environment/gondolin/persistent-root-disk.ts";
 
 export interface SessionSupervisorOptions {
   readonly runnerId: RunnerId;
@@ -495,6 +496,19 @@ export function makeSessionSupervisor(
               return {
                 ok: false,
                 message: "Wait for active session work to finish before deleting the session.",
+              } as const;
+            }
+          }
+          const rootDiskPath = yield* store.getSessionRootDiskPath(sessionId).pipe(Effect.option);
+          if (Option.isSome(rootDiskPath)) {
+            const [, attachmentError] = yield* Effect.promise(() =>
+              assertPersistentRootDiskDetached(rootDiskPath.value)
+            );
+            if (attachmentError !== undefined) {
+              return {
+                ok: false,
+                message:
+                  "The session root disk may still be attached to a VM, so its storage was preserved.",
               } as const;
             }
           }

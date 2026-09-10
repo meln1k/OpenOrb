@@ -25,7 +25,10 @@ Deno.test("runner source keeps Pi construction and tools behind the audited boun
 
   assertEquals(defaultLoaderUsers, []);
   assertEquals(agentSessionFactories, ["packages/runner/src/harness/pi/session.ts"]);
-  assertEquals(hostProcessUsers, ["packages/runner/src/runtime/prerequisites.ts"]);
+  assertEquals(hostProcessUsers, [
+    "packages/runner/src/environment/gondolin/persistent-root-disk.ts",
+    "packages/runner/src/runtime/prerequisites.ts",
+  ]);
 
   const factory = await Deno.readTextFile("packages/runner/src/harness/pi/session.ts");
   assertStringIncludes(factory, "SettingsManager.inMemory(");

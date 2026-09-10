@@ -1,7 +1,6 @@
 import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
 
 import {
-  checkCheckpointCandidateCapacity,
   type CheckPrerequisitesOptions,
   checkRunnerPrerequisites,
 } from "@/src/runtime/prerequisites.ts";
@@ -188,31 +187,6 @@ Deno.test("checks host resources, data-directory writes, and gateway health", as
   assertMatch(report.errors.join("\n"), /smallest OpenOrb VM requires 2048 MiB/);
   assertMatch(report.errors.join("\n"), /owned by the runner service user with mode 0700/);
   assertMatch(report.errors.join("\n"), /gateway.*unreachable or unhealthy/i);
-});
-
-Deno.test("requires free space for a full checkpoint candidate", async () => {
-  const passing = await checkCheckpointCandidateCapacity({
-    workingDirectory: "/runner",
-    rootfsPath: "/runner/images/mvp-6/x64/rootfs.ext4",
-    inspectFile: () => Promise.resolve({ size: 2560 * 1024 * 1024, isFile: true }),
-    getFileSystemStats: () => Promise.resolve({ bavail: 4096n, bsize: 1024n * 1024n }),
-  });
-  assertEquals(passing, {
-    ok: true,
-    diskFreeMiB: 4096,
-    candidateSizeMiB: 2560,
-    errors: [],
-  });
-
-  const failing = await checkCheckpointCandidateCapacity({
-    workingDirectory: "/runner",
-    rootfsPath: "/runner/images/mvp-6/x64/rootfs.ext4",
-    inspectFile: () => Promise.resolve({ size: 2560 * 1024 * 1024, isFile: true }),
-    getFileSystemStats: () => Promise.resolve({ bavail: 2048n, bsize: 1024n * 1024n }),
-  });
-  assertEquals(failing.ok, false);
-  assertMatch(failing.errors.join("\n"), /2048 MiB free/);
-  assertMatch(failing.errors.join("\n"), /may require 2560 MiB/);
 });
 
 function linuxHost(overrides: CheckPrerequisitesOptions = {}): CheckPrerequisitesOptions {

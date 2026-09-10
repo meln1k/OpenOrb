@@ -213,8 +213,8 @@ function SessionDeletionControl(
         <AlertDialogHeader>
           <AlertDialogTitle id={titleId}>Delete session?</AlertDialogTitle>
           <AlertDialogDescription id={descriptionId}>
-            This permanently deletes the Pi conversation, workspace, checkpoints, snapshots, and
-            logs for this session. This cannot be undone.
+            This permanently deletes the Pi conversation, VM disk, snapshots, and logs for this
+            session. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <form

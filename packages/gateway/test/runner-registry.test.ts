@@ -684,10 +684,10 @@ Deno.test("Wake routes only the recovery offered by the runner snapshot", () =>
     const probe = yield* makeProbe();
     yield* connectRunner(url, probe);
     yield* publishSnapshot(probe, [snapshot(SESSION_1, undefined, "error", [{
-      category: "checkpoint-publish",
+      category: "vm-stop",
       severity: "failure",
-      message: "The VM stopped before its checkpoint could be published.",
-      recovery: "start-clean-vm",
+      message: "The VM stopped before its root disk could be synchronized.",
+      recovery: "restart-environment",
     }])]);
     yield* waitUntil(
       () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
@@ -709,14 +709,14 @@ Deno.test("Wake routes only the recovery offered by the runner snapshot", () =>
     const accepted = yield* gateway.wakeSession({
       workspaceId: WORKSPACE_ID,
       sessionId: SESSION_1,
-      payload: { modelRuntime, recovery: "start-clean-vm" },
+      payload: { modelRuntime, recovery: "restart-environment" },
     });
     assertEquals(accepted.status, "accepted");
     assertEquals(probe.wakeRequests, [
       decode(WakeSessionPayload)({
         sessionId: SESSION_1,
         modelRuntime,
-        recovery: "start-clean-vm",
+        recovery: "restart-environment",
       }),
     ]);
   }))));

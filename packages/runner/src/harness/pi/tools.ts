@@ -68,7 +68,7 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
       ...read,
       execute(_id, params, signal, _onUpdate, context) {
         return executePiRead(
-          readOperations,
+          createReadOperations(environment, signal),
           { ...params, path: resolveAgentPath(params.path) },
           signal,
           context.model?.input.includes("image") ?? true,
@@ -89,9 +89,13 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
       ...edit,
       execute(_id, params, signal) {
         const resolvedParams = { ...params, path: resolveAgentPath(params.path) };
+        const activeEditOperations: EditOperations = {
+          ...editOperations,
+          readFile: createReadOperations(environment, signal).readFile,
+        };
         return withFileMutation(
           resolvedParams.path,
-          () => executePiEdit(editOperations, resolvedParams, signal),
+          () => executePiEdit(activeEditOperations, resolvedParams, signal),
         );
       },
       // Pi falls back to its built-in edit renderer by tool name. Keep that renderer for
@@ -221,12 +225,16 @@ async function executePiWrite(
   };
 }
 
-function createReadOperations(environment: AgentEnvironment): ReadOperations {
+function createReadOperations(
+  environment: AgentEnvironment,
+  signal?: AbortSignal,
+): ReadOperations {
   return {
     readFile: (path) =>
-      Effect.runPromise(environment.readFile(resolveAgentPath(path))).then((bytes) =>
-        Buffer.from(bytes)
-      ),
+      Effect.runPromise(environment.readFile(
+        resolveAgentPath(path),
+        signal === undefined ? {} : { signal },
+      )).then((bytes) => Buffer.from(bytes)),
     access: (path) => Effect.runPromise(environment.access(resolveAgentPath(path))),
     detectImageMimeType: (path) =>
       Effect.runPromise(environment.detectImageMimeType(resolveAgentPath(path))),

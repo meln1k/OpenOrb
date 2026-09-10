@@ -29,19 +29,15 @@ Deno.test("creates a fresh guest placeholder and a scoped Git credential helper"
   assertEquals(firstEnvironment.GH_HOST, "github.com");
   assertEquals(firstEnvironment.GH_PROMPT_DISABLED, "1");
   assertEquals(firstEnvironment.GIT_TERMINAL_PROMPT, "0");
-  assertEquals(firstEnvironment.GIT_CONFIG_COUNT, "6");
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_0, "safe.directory");
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_0, "/workspace");
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_1, "safe.directory");
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_1, "/workspace/*");
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_2, "user.name");
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_2, GIT_AUTHOR.name);
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_3, "user.email");
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_3, GIT_AUTHOR.email);
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_4, `credential.${REPOSITORY_URL}.helper`);
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_4, "!gh auth git-credential");
-  assertEquals(firstEnvironment.GIT_CONFIG_KEY_5, `credential.${REPOSITORY_URL}.useHttpPath`);
-  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_5, "true");
+  assertEquals(firstEnvironment.GIT_CONFIG_COUNT, "4");
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_0, "user.name");
+  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_0, GIT_AUTHOR.name);
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_1, "user.email");
+  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_1, GIT_AUTHOR.email);
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_2, `credential.${REPOSITORY_URL}.helper`);
+  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_2, "!gh auth git-credential");
+  assertEquals(firstEnvironment.GIT_CONFIG_KEY_3, `credential.${REPOSITORY_URL}.useHttpPath`);
+  assertEquals(firstEnvironment.GIT_CONFIG_VALUE_3, "true");
   assertEquals(first.allowWebSockets, false);
   assertEquals(first.dns, { mode: "synthetic" });
 });
@@ -139,24 +135,20 @@ Deno.test("supports an unauthenticated public policy without exposing GH_TOKEN",
   const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL });
   const environment = environmentOf(options.env);
   assertEquals(environment.GH_TOKEN, undefined);
-  assertEquals(environment.GIT_CONFIG_COUNT, "4");
-  assertEquals(environment.GIT_CONFIG_KEY_0, "safe.directory");
-  assertEquals(environment.GIT_CONFIG_VALUE_0, "/workspace");
-  assertEquals(environment.GIT_CONFIG_KEY_1, "safe.directory");
-  assertEquals(environment.GIT_CONFIG_VALUE_1, "/workspace/*");
-  assertEquals(environment.GIT_CONFIG_KEY_2, "user.name");
-  assertEquals(environment.GIT_CONFIG_VALUE_2, GIT_AUTHOR.name);
-  assertEquals(environment.GIT_CONFIG_KEY_3, "user.email");
-  assertEquals(environment.GIT_CONFIG_VALUE_3, GIT_AUTHOR.email);
-  assertEquals(environment.GIT_CONFIG_KEY_4, undefined);
+  assertEquals(environment.GIT_CONFIG_COUNT, "2");
+  assertEquals(environment.GIT_CONFIG_KEY_0, "user.name");
+  assertEquals(environment.GIT_CONFIG_VALUE_0, GIT_AUTHOR.name);
+  assertEquals(environment.GIT_CONFIG_KEY_1, "user.email");
+  assertEquals(environment.GIT_CONFIG_VALUE_1, GIT_AUTHOR.email);
+  assertEquals(environment.GIT_CONFIG_KEY_2, undefined);
 });
 
 Deno.test("credential helper remains scoped to the canonical repository after origin changes", () => {
   const environment = environmentOf(
     githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN }).env,
   );
-  assertEquals(environment.GIT_CONFIG_KEY_4, `credential.${REPOSITORY_URL}.helper`);
-  assertEquals(environment.GIT_CONFIG_KEY_5, `credential.${REPOSITORY_URL}.useHttpPath`);
+  assertEquals(environment.GIT_CONFIG_KEY_2, `credential.${REPOSITORY_URL}.helper`);
+  assertEquals(environment.GIT_CONFIG_KEY_3, `credential.${REPOSITORY_URL}.useHttpPath`);
   assert(
     !Object.values(environment).some((value) => value.includes(MODIFIED_REPOSITORY_URL)),
     "a modified origin received a credential-helper configuration",

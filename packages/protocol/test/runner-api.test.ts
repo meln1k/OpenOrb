@@ -221,13 +221,13 @@ Deno.test("one SessionEvent schema validates durable and ephemeral wire payloads
 
 Deno.test("session issues are categorized, bounded, and carry explicit recovery", () => {
   const issue = Schema.decodeUnknownSync(SessionIssue)({
-    category: "checkpoint-publish",
+    category: "vm-stop",
     severity: "failure",
-    message: "The checkpoint could not be published.",
+    message: "The VM disk could not be synchronized.",
     diagnostics: "safe bounded diagnostics",
-    recovery: "resume-prior-checkpoint",
+    recovery: "restart-environment",
   });
-  assertEquals(issue.recovery, "resume-prior-checkpoint");
+  assertEquals(issue.recovery, "restart-environment");
   assertEquals(
     Schema.decodeUnknownSync(SessionIssues)(Array(MAX_SESSION_ISSUES).fill(issue)).length,
     MAX_SESSION_ISSUES,

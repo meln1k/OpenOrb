@@ -64,8 +64,8 @@ Deno.test("operations documentation records the recovery contract and release pi
       "PUBLIC_URL=https://openorb.example.com",
       "no persistent local application volume",
       "no durable gateway files",
-      "non-self-contained",
-      "mutated in place",
+      "persistent root disk",
+      "mutates the persistent root disk in place",
       "Contents: Read and write",
       "opencode-go/deepseek-v4-flash",
       "Deno / standalone runner denort",
@@ -86,7 +86,7 @@ Deno.test("operations documentation records the recovery contract and release pi
   const rootConfiguration = await Deno.readTextFile("deno.json");
   const runnerConfiguration = await Deno.readTextFile("packages/runner/deno.json");
   assert(release.includes('id: "mvp-6"'));
-  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 16"));
+  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 17"));
   for (const pin of ["2.9.5", "0.12.0", "0.85.1", "3.0.0-beta.10"]) {
     assert(
       operations.includes(pin) &&
@@ -111,9 +111,9 @@ Deno.test("release guide and workflows preserve acceptance traceability and secr
       "DefaultResourceLoader",
       "Hostile `.pi` resources/settings",
       "All Pi file and shell tools execute through Gondolin",
-      "Real Git and model credentials",
+      "Git and model credentials remain mediated and do not appear in logs or tool output",
       "GH_TOKEN",
-      "Path traversal and escaping symlinks",
+      "remain in the guest namespace and cannot access runner-host files",
     ]
   ) {
     assertStringIncludes(guide, invariant);

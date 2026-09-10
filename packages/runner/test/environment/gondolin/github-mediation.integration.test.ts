@@ -6,7 +6,7 @@ import { SessionId } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Schema, Scope } from "effect";
 
 import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
-import { createGondolinAgentEnvironment } from "@/src/environment/gondolin/layer.ts";
+import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin/layer.ts";
 import { createOpenOrbPiSession, type OpenOrbPiSession } from "@/src/harness/pi/session.ts";
 import { createPiTools } from "@/src/harness/pi/tools.ts";
 import {
@@ -46,16 +46,15 @@ Deno.test({
   ignore: !RUN_GONDOLIN_TESTS,
   async fn() {
     const temporaryDirectory = await Deno.makeTempDir();
-    const workspacePath = `${temporaryDirectory}/workspace`;
-    await Deno.mkdir(workspacePath);
-    const monitor = new LinuxHostGitProcessMonitor(workspacePath);
+    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
+    const monitor = new LinuxHostGitProcessMonitor(temporaryDirectory);
     let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
     let runtime: AgentEnvironment | undefined;
     let pi: OpenOrbPiSession | undefined;
 
     try {
       opened = await openRuntime({
-        workspacePath,
+        rootDiskPath,
         guestImage: await installLocalGuestImage(temporaryDirectory),
         sessionLabel: "openorb public GitHub integration test",
         github: { repositoryUrl: PUBLIC_REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
@@ -124,7 +123,7 @@ Deno.test({
       }
 
       const hostMarkerPath = await installHostileGitMetadata(
-        `${workspacePath}/repository`,
+        runtime,
         temporaryDirectory,
       );
       await bash.execute("hostile-git-metadata", {
@@ -140,7 +139,7 @@ Deno.test({
       pi?.session.dispose();
       if (opened) await opened.close();
       const findings = await monitor.stop();
-      assertEquals(findings, [], `native host Git touched the session workspace: ${findings}`);
+      assertEquals(findings, [], `native host Git touched the session storage: ${findings}`);
       await Deno.remove(temporaryDirectory, { recursive: true });
     }
   },
@@ -156,9 +155,8 @@ Deno.test({
     const token = PRIVATE_TOKEN!;
     const repository = parseRepositoryIdentity(repositoryUrl);
     const temporaryDirectory = await Deno.makeTempDir();
-    const workspacePath = `${temporaryDirectory}/workspace`;
-    await Deno.mkdir(workspacePath);
-    const monitor = new LinuxHostGitProcessMonitor(workspacePath);
+    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
+    const monitor = new LinuxHostGitProcessMonitor(temporaryDirectory);
     let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
     let runtime: AgentEnvironment | undefined;
     let pi: OpenOrbPiSession | undefined;
@@ -167,7 +165,7 @@ Deno.test({
 
     try {
       opened = await openRuntime({
-        workspacePath,
+        rootDiskPath,
         guestImage: await installLocalGuestImage(temporaryDirectory),
         sessionLabel: "openorb private GitHub integration test",
         github: { repositoryUrl, gitAuthor: GIT_AUTHOR, token },
@@ -254,8 +252,6 @@ Deno.test({
         Error,
       );
       assert(!wrongHostError.message.includes(token), "the real token appeared in an error");
-      await assertTreeDoesNotContain(workspacePath, token);
-
       await bash.execute("delete-test-branch", {
         command: `git -C repository push ${shellQuote(repositoryUrl)} ${
           shellQuote(`:refs/heads/${branch}`)
@@ -285,7 +281,7 @@ Deno.test({
           } finally {
             await Deno.remove(temporaryDirectory, { recursive: true });
           }
-          assertEquals(findings, [], `native host Git touched the session workspace: ${findings}`);
+          assertEquals(findings, [], `native host Git touched the session storage: ${findings}`);
         }
       }
     }
@@ -302,19 +298,18 @@ Deno.test({
     const token = PRIVATE_TOKEN!;
     const modelApiKey = REAL_MODEL_API_KEY!;
     const temporaryDirectory = await Deno.makeTempDir();
-    const workspacePath = `${temporaryDirectory}/workspace`;
+    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const branch = `openorb-agent-push-${crypto.randomUUID()}`;
     const firstFile = `.openorb-agent-push-first-${crypto.randomUUID()}`;
     const secondFile = `.openorb-agent-push-second-${crypto.randomUUID()}`;
-    await Deno.mkdir(workspacePath);
-    const monitor = new LinuxHostGitProcessMonitor(workspacePath);
+    const monitor = new LinuxHostGitProcessMonitor(temporaryDirectory);
     let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
     let pi: OpenOrbPiSession | undefined;
     let pushed = false;
 
     try {
       opened = await openRuntime({
-        workspacePath,
+        rootDiskPath,
         guestImage: await installLocalGuestImage(temporaryDirectory),
         sessionLabel: "openorb real agent GitHub push test",
         github: { repositoryUrl, gitAuthor: GIT_AUTHOR, token },
@@ -387,8 +382,6 @@ Deno.test({
       const transcript = JSON.stringify(pi.session.sessionManager.getBranch());
       assert(!transcript.includes("--force"));
       assert(!/git(?:\s|\\n)+push[^"]*(?:\s|\\n)+-f(?:\s|\\n|")/.test(transcript));
-      await assertTreeDoesNotContain(workspacePath, token);
-
       await bash.execute("delete-agent-test-branch", {
         command: `git push ${shellQuote(repositoryUrl)} ${shellQuote(`:refs/heads/${branch}`)}`,
         timeout: 120,
@@ -420,7 +413,7 @@ Deno.test({
           } finally {
             await Deno.remove(temporaryDirectory, { recursive: true });
           }
-          assertEquals(findings, [], `native host Git touched the session workspace: ${findings}`);
+          assertEquals(findings, [], `native host Git touched the session storage: ${findings}`);
         }
       }
     }
@@ -458,14 +451,20 @@ async function createPiSession(
 }
 
 async function openRuntime(
-  options: Parameters<typeof createGondolinAgentEnvironment>[0],
+  options: Parameters<ReturnType<typeof makeGondolinAgentEnvironmentProvider>["make"]>[0] & {
+    readonly guestImage: Parameters<typeof makeGondolinAgentEnvironmentProvider>[0];
+    readonly softwareEmulation?: boolean;
+  },
 ) {
   const scope = await Effect.runPromise(Scope.make());
+  const config = { ...options, ...gondolinTestEnvironmentOptions() };
+  const provider = makeGondolinAgentEnvironmentProvider(
+    config.guestImage,
+    config.softwareEmulation,
+  );
+  await Effect.runPromise(provider.initializeRootDisk(config.rootDiskPath));
   const runtime = await Effect.runPromise(
-    createGondolinAgentEnvironment({
-      ...options,
-      ...gondolinTestEnvironmentOptions(),
-    }).pipe(Effect.provideService(Scope.Scope, scope)),
+    provider.make(config).pipe(Effect.provideService(Scope.Scope, scope)),
   );
   return {
     runtime,
@@ -495,78 +494,50 @@ function parseRepositoryIdentity(repositoryUrl: string) {
 }
 
 async function installHostileGitMetadata(
-  repositoryPath: string,
+  runtime: AgentEnvironment,
   temporaryDirectory: string,
 ): Promise<string> {
   const markerPath = `${temporaryDirectory}/host-git-marker`;
-  const hostileCommandPath = `${repositoryPath}/hostile-host-git`;
-  await Deno.writeTextFile(
+  const hostileCommandPath = "/workspace/repository/hostile-host-git";
+  await Effect.runPromise(runtime.writeFile(
     hostileCommandPath,
-    `#!/bin/sh\nprintf hostile-host-git > ${shellQuote(markerPath)}\nprintf '{}\\n'\n`,
-    { mode: 0o700 },
+    `#!/bin/sh\nmkdir -p ${shellQuote(temporaryDirectory)}\nprintf hostile-host-git > ${
+      shellQuote(markerPath)
+    }\nprintf '{}\\n'\n`,
+  ));
+  const configured = await Effect.runPromise(runtime.run(
+    [
+      "/bin/sh",
+      "-lc",
+      [
+        `chmod 700 ${shellQuote(hostileCommandPath)}`,
+        `printf %s ${
+          shellQuote(
+            `\n[core]\n\tfsmonitor = ${hostileCommandPath}\n[diff "openorb-hostile"]\n\tcommand = ${hostileCommandPath}\n`,
+          )
+        } >> /workspace/repository/.git/config`,
+      ].join("\n"),
+    ],
+  ));
+  assertEquals(configured.exitCode, 0);
+  await Effect.runPromise(
+    runtime.writeFile("repository/.gitattributes", "* diff=openorb-hostile\n"),
   );
-  await Deno.writeTextFile(
-    `${repositoryPath}/.git/config`,
-    `\n[core]\n\tfsmonitor = ${hostileCommandPath}\n[diff "openorb-hostile"]\n\tcommand = ${hostileCommandPath}\n`,
-    { append: true },
+  await Effect.runPromise(
+    runtime.writeFile("repository/hostile-diff-target", "changed\n"),
   );
-  await Deno.writeTextFile(`${repositoryPath}/.gitattributes`, "* diff=openorb-hostile\n");
-  await Deno.writeTextFile(`${repositoryPath}/hostile-diff-target`, "changed\n");
   return markerPath;
 }
 
-async function assertTreeDoesNotContain(root: string, secret: string): Promise<void> {
-  const needle = new TextEncoder().encode(secret);
-  for await (const path of regularFiles(root)) {
-    assert(!await fileContains(path, needle), "the real token appeared in guest workspace bytes");
-  }
-}
-
-async function* regularFiles(root: string): AsyncGenerator<string> {
-  for await (const entry of Deno.readDir(root)) {
-    const path = `${root}/${entry.name}`;
-    if (entry.isDirectory) yield* regularFiles(path);
-    else if (entry.isFile) yield path;
-  }
-}
-
-async function fileContains(path: string, needle: Uint8Array): Promise<boolean> {
-  const file = await Deno.open(path, { read: true });
-  const buffer = new Uint8Array(64 * 1024 + needle.byteLength - 1);
-  let retained = 0;
-  try {
-    while (true) {
-      const read = await file.read(buffer.subarray(retained));
-      if (read === null) return false;
-      const length = retained + read;
-      if (indexOfBytes(buffer.subarray(0, length), needle) >= 0) return true;
-      retained = Math.min(needle.byteLength - 1, length);
-      buffer.copyWithin(0, length - retained, length);
-    }
-  } finally {
-    file.close();
-  }
-}
-
-function indexOfBytes(haystack: Uint8Array, needle: Uint8Array): number {
-  outer: for (let offset = 0; offset <= haystack.byteLength - needle.byteLength; offset++) {
-    for (let index = 0; index < needle.byteLength; index++) {
-      if (haystack[offset + index] !== needle[index]) continue outer;
-    }
-    return offset;
-  }
-  return -1;
-}
-
 class LinuxHostGitProcessMonitor {
-  readonly #workspacePath: string;
+  readonly #sessionPath: string;
   readonly #findings = new Set<string>();
   #running?: Promise<void>;
   #error?: unknown;
   #stopping = false;
 
-  constructor(workspacePath: string) {
-    this.#workspacePath = workspacePath;
+  constructor(sessionPath: string) {
+    this.#sessionPath = sessionPath;
   }
 
   start(): void {
@@ -605,17 +576,17 @@ class LinuxHostGitProcessMonitor {
       const [, pid, command, argumentsAndEnvironment] = match;
       if (!pid || !command || basename(command) !== "git") continue;
 
-      let workspaceEvidence = argumentsAndEnvironment?.includes(this.#workspacePath) ?? false;
-      if (!workspaceEvidence) {
+      let sessionEvidence = argumentsAndEnvironment?.includes(this.#sessionPath) ?? false;
+      if (!sessionEvidence) {
         const workingDirectory = await new Deno.Command("pwdx", {
           args: [pid],
           stdout: "piped",
           stderr: "null",
         }).output();
-        workspaceEvidence = workingDirectory.success &&
-          new TextDecoder().decode(workingDirectory.stdout).includes(this.#workspacePath);
+        sessionEvidence = workingDirectory.success &&
+          new TextDecoder().decode(workingDirectory.stdout).includes(this.#sessionPath);
       }
-      if (workspaceEvidence) this.#findings.add(`pid ${pid}`);
+      if (sessionEvidence) this.#findings.add(`pid ${pid}`);
     }
   }
 }

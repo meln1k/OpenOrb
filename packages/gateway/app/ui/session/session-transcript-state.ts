@@ -788,9 +788,9 @@ function sessionStageLabel(
     case "setup":
       return "Running setup";
     case "resuming":
-      return "Resuming checkpoint";
-    case "checkpointing":
-      return "Creating checkpoint";
+      return "Restarting environment";
+    case "stopping":
+      return "Stopping VM";
     case "running":
       return "Agent running";
     case "ready":

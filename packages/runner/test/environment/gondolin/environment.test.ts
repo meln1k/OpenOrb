@@ -5,13 +5,13 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionId } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Logger, Schema, Scope } from "effect";
 
 import {
-  createGondolinAgentEnvironment,
   createOpenOrbGondolinSandboxOptions,
+  makeGondolinAgentEnvironmentProvider,
+  MAX_GUEST_FILE_BYTES,
   OPENORB_GUEST_MARKER,
 } from "@/src/environment/gondolin/layer.ts";
 import { resolveAgentPath } from "@/src/environment/agent-environment.ts";
@@ -28,8 +28,6 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const CONVERSATION_PROJECTION = {
   activate: () => Effect.succeed({ update() {}, dispose() {} }),
 };
-// SAFETY: The custom edit executor does not inspect Pi's extension context.
-const TOOL_CONTEXT = {} as ExtensionContext;
 
 Deno.test("Linux Gondolin VMs expose host CPU virtualization through KVM", () => {
   const options = createOpenOrbGondolinSandboxOptions("/guest-image");
@@ -97,10 +95,9 @@ Deno.test({
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {
     const temporaryDirectory = await Deno.makeTempDir();
-    const workspacePath = `${temporaryDirectory}/workspace`;
-    await Deno.mkdir(workspacePath);
+    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const opened = await openRuntime({
-      workspacePath,
+      rootDiskPath,
       guestImage: await installLocalGuestImage(temporaryDirectory),
       sessionLabel: "openorb output observer failure test",
       cpuCount: 2,
@@ -136,6 +133,28 @@ Deno.test({
       );
       assertEquals(result.exitCode, 0);
       assertEquals(output, "retained");
+
+      assertEquals(
+        (await Effect.runPromise(runtime.run([
+          "/usr/bin/truncate",
+          "-s",
+          String(MAX_GUEST_FILE_BYTES + 1),
+          "/tmp/openorb-oversized-read",
+        ]))).exitCode,
+        0,
+      );
+      for (const path of ["/dev/zero", "/tmp/openorb-oversized-read"]) {
+        await assertRejects(
+          () =>
+            withWatchdog(
+              Effect.runPromise(runtime.readFile(path)),
+              5_000,
+              `Guest read of ${path} did not settle`,
+            ),
+          Error,
+          "Guest file could not be read",
+        );
+      }
     } finally {
       await opened.close();
       await Deno.remove(temporaryDirectory, { recursive: true });
@@ -148,10 +167,9 @@ Deno.test({
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {
     const temporaryDirectory = await Deno.makeTempDir();
-    const workspacePath = `${temporaryDirectory}/workspace`;
-    await Deno.mkdir(workspacePath);
+    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const opened = await openRuntime({
-      workspacePath,
+      rootDiskPath,
       guestImage: await installLocalGuestImage(temporaryDirectory),
       sessionLabel: `openorb session ${SESSION_ID}`,
       sessionId: SESSION_ID,
@@ -451,19 +469,15 @@ Deno.test({
 });
 
 Deno.test({
-  name: "disk checkpoints preserve root and workspace state but not tmpfs or processes",
+  name: "the stable root disk survives explicit stop, scope close, and VM reopen",
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {
     const temporaryDirectory = await Deno.makeTempDir();
-    const workspacePath = `${temporaryDirectory}/workspace`;
-    const firstCheckpointPath = `${temporaryDirectory}/checkpoint-first.qcow2`;
-    const secondCheckpointPath = `${temporaryDirectory}/checkpoint-second.qcow2`;
-    await Deno.mkdir(workspacePath);
-    const guestImage = await installLocalGuestImage(temporaryDirectory);
+    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const runtimeOptions = {
-      workspacePath,
-      guestImage,
-      sessionLabel: "openorb checkpoint cycle test",
+      rootDiskPath,
+      guestImage: await installLocalGuestImage(temporaryDirectory),
+      sessionLabel: "openorb persistent root disk test",
       cpuCount: 2,
       memoryMiB: 2 * 1024,
       ...gondolinTestEnvironmentOptions(),
@@ -471,122 +485,69 @@ Deno.test({
     let opened = await openRuntime(runtimeOptions);
 
     try {
-      const prepared = await Effect.runPromise(opened.runtime.run([
+      const written = await Effect.runPromise(opened.runtime.run([
         "/bin/bash",
         "-lc",
         [
           "set -eu",
-          "printf root-one >/opt/openorb-checkpoint-root",
-          "printf workspace-one >/workspace/openorb-checkpoint-workspace",
-          "printf temporary >/tmp/openorb-checkpoint-tmp",
-          "printf root-tmpfs >/root/openorb-checkpoint-root-tmpfs",
-          "printf log-tmpfs >/var/log/openorb-checkpoint-log",
-          "bash -c 'exec -a openorb-checkpoint-process sleep 300' >/dev/null 2>&1 &",
-          "printf %s $! >/workspace/openorb-checkpoint-pid",
+          "printf persistent-root >/opt/persistent-root",
+          "printf persistent-workspace >/workspace/persistent-workspace",
+          "printf temporary >/tmp/persistent-tmpfs",
+          "printf root-tmpfs >/root/persistent-tmpfs",
+          "printf log-tmpfs >/var/log/persistent-tmpfs",
+          "bash -c 'exec -a openorb-persistent-process sleep 300' >/dev/null 2>&1 &",
+          "printf %s $! >/workspace/persistent-process-pid",
+          "sync -f /opt/persistent-root",
+          "sync -f /workspace/persistent-workspace",
         ].join("\n"),
       ]));
-      assertEquals(prepared.exitCode, 0);
-      const editBeforeCheckpoint = createPiTools(opened.runtime).find((tool) =>
-        tool.name === "edit"
-      );
-      assert(editBeforeCheckpoint);
-      await editBeforeCheckpoint.execute(
-        "edit-before-checkpoint",
-        {
-          path: "/opt/openorb-checkpoint-root",
-          edits: [{ oldText: "root-one", newText: "root-before-resume" }],
-        },
-        undefined,
-        undefined,
-        TOOL_CONTEXT,
-      );
-      const firstCheckpoint = await Effect.runPromise(
-        opened.runtime.checkpoint(firstCheckpointPath),
-      );
-      assertEquals(firstCheckpoint.path, firstCheckpointPath);
-      assertEquals(firstCheckpoint.guestAssetBuildId, guestImage.gondolinBuildId);
-      assert(firstCheckpoint.compatibleVmm.length > 0);
-      await Effect.runPromise(Effect.flip(opened.runtime.run(["/bin/true"])));
-      await opened.close();
+      assertEquals(written.exitCode, 0);
+      const rootDiskBeforeStop = await Deno.lstat(rootDiskPath);
+      assert(rootDiskBeforeStop.isFile && !rootDiskBeforeStop.isSymlink);
 
+      await Effect.runPromise(opened.runtime.stop);
+      await Effect.runPromise(opened.runtime.stop);
       await assertRejects(
-        () =>
-          Effect.runPromise(Effect.scoped(createGondolinAgentEnvironment({
-            ...runtimeOptions,
-            resumeCheckpoint: {
-              ...firstCheckpoint,
-              guestAssetBuildId: crypto.randomUUID(),
-            },
-          }))),
+        () => Effect.runPromise(opened.runtime.run(["/bin/true"])),
         Error,
-        "checkpoint could not be resumed",
+        "agent environment is closed",
       );
+      await opened.close();
+      assertEquals((await Deno.lstat(rootDiskPath)).ino, rootDiskBeforeStop.ino);
 
-      opened = await openRuntime({ ...runtimeOptions, resumeCheckpoint: firstCheckpoint });
-      const resumed = await Effect.runPromise(opened.runtime.run([
-        "/bin/bash",
-        "-lc",
-        [
-          "set -eu",
-          'test "$(cat /opt/openorb-checkpoint-root)" = root-before-resume',
-          'test "$(cat /workspace/openorb-checkpoint-workspace)" = workspace-one',
-          "test ! -e /tmp/openorb-checkpoint-tmp",
-          "test ! -e /root/openorb-checkpoint-root-tmpfs",
-          "test ! -e /var/log/openorb-checkpoint-log",
-          "pid=$(cat /workspace/openorb-checkpoint-pid)",
-          "test ! -r /proc/$pid/cmdline || ! tr '\\0' ' ' </proc/$pid/cmdline | grep -q openorb-checkpoint-process",
-        ].join("\n"),
-      ]));
-      assertEquals(resumed.exitCode, 0);
-      const editAfterCheckpoint = createPiTools(opened.runtime).find((tool) =>
-        tool.name === "edit"
-      );
-      assert(editAfterCheckpoint);
-      await editAfterCheckpoint.execute(
-        "edit-after-checkpoint",
-        {
-          path: "/opt/openorb-checkpoint-root",
-          edits: [{ oldText: "root-before-resume", newText: "root-after-resume" }],
-        },
-        undefined,
-        undefined,
-        TOOL_CONTEXT,
+      opened = await openRuntime(runtimeOptions);
+      assertEquals((await Deno.lstat(rootDiskPath)).ino, rootDiskBeforeStop.ino);
+      assertEquals(
+        new TextDecoder().decode(
+          await Effect.runPromise(opened.runtime.readFile("/opt/persistent-root")),
+        ),
+        "persistent-root",
       );
       assertEquals(
         new TextDecoder().decode(
-          await Effect.runPromise(opened.runtime.readFile("/opt/openorb-checkpoint-root")),
+          await Effect.runPromise(opened.runtime.readFile("persistent-workspace")),
         ),
-        "root-after-resume",
+        "persistent-workspace",
       );
-
-      const updated = await Effect.runPromise(opened.runtime.run([
+      const reopened = await Effect.runPromise(opened.runtime.run([
         "/bin/bash",
         "-lc",
         [
           "set -eu",
-          "printf root-two >/opt/openorb-checkpoint-root",
-          "printf workspace-two >/workspace/openorb-checkpoint-workspace",
-          "printf temporary-two >/tmp/openorb-checkpoint-tmp",
+          "test ! -e /tmp/persistent-tmpfs",
+          "test ! -e /root/persistent-tmpfs",
+          "test ! -e /var/log/persistent-tmpfs",
+          "pid=$(cat /workspace/persistent-process-pid)",
+          "test ! -r /proc/$pid/cmdline || ! tr '\\0' ' ' </proc/$pid/cmdline | grep -q openorb-persistent-process",
         ].join("\n"),
       ]));
-      assertEquals(updated.exitCode, 0);
-      const secondCheckpoint = await Effect.runPromise(
-        opened.runtime.checkpoint(secondCheckpointPath),
-      );
+      assertEquals(reopened.exitCode, 0);
       await opened.close();
-
-      opened = await openRuntime({ ...runtimeOptions, resumeCheckpoint: secondCheckpoint });
-      const resumedAgain = await Effect.runPromise(opened.runtime.run([
-        "/bin/bash",
-        "-lc",
-        [
-          "set -eu",
-          'test "$(cat /opt/openorb-checkpoint-root)" = root-two',
-          'test "$(cat /workspace/openorb-checkpoint-workspace)" = workspace-two',
-          "test ! -e /tmp/openorb-checkpoint-tmp",
-        ].join("\n"),
-      ]));
-      assertEquals(resumedAgain.exitCode, 0);
+      await assertRejects(
+        () => Effect.runPromise(opened.runtime.run(["/bin/true"])),
+        Error,
+        "agent environment is closed",
+      );
     } finally {
       await opened.close();
       await Deno.remove(temporaryDirectory, { recursive: true });
@@ -599,19 +560,16 @@ Deno.test({
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {
     const temporaryDirectory = await Deno.makeTempDir();
-    const workspacePath = `${temporaryDirectory}/workspace`;
+    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const hostSecretPath = `${temporaryDirectory}/host-secret`;
     const hostProcessMarker = `${temporaryDirectory}/host-process-marker`;
     const originalHostMarker = Deno.env.get("OPENORB_HOST_PROCESS_MARKER");
-    await Deno.mkdir(workspacePath);
     await Deno.writeTextFile(hostSecretPath, "runner-host-secret");
-    await Deno.symlink(hostSecretPath, `${workspacePath}/absolute-escape`);
-    await Deno.symlink("../host-secret", `${workspacePath}/relative-escape`);
     Deno.env.set("OPENORB_HOST_PROCESS_MARKER", hostProcessMarker);
 
     const guestImage = await installLocalGuestImage(temporaryDirectory);
     const opened = await openRuntime({
-      workspacePath,
+      rootDiskPath,
       guestImage,
       sessionLabel: "openorb Gondolin integration test",
       cpuCount: 2,
@@ -737,7 +695,10 @@ Deno.test({
       );
 
       await write.execute("write", { path: "nested/message.txt", content: "before\n" });
-      assertEquals(await Deno.readTextFile(`${workspacePath}/nested/message.txt`), "before\n");
+      assertEquals(
+        new TextDecoder().decode(await Effect.runPromise(runtime.readFile("nested/message.txt"))),
+        "before\n",
+      );
 
       const readResult = await read.execute("read", { path: "nested/message.txt" });
       assertEquals(readResult.content, [{ type: "text", text: "before\n" }]);
@@ -751,7 +712,10 @@ Deno.test({
         path: "index.html",
         edits: [{ oldText: "before", newText: "after" }],
       });
-      assertEquals(await Deno.readTextFile(`${workspacePath}/index.html`), "after\n");
+      assertEquals(
+        new TextDecoder().decode(await Effect.runPromise(runtime.readFile("index.html"))),
+        "after\n",
+      );
 
       // Host-shaped absolute paths remain in the guest namespace. The existing runner-host
       // file must neither satisfy the initial read nor receive the subsequent guest mutations.
@@ -778,17 +742,43 @@ Deno.test({
       });
       assertEquals(traversalRead.content, [{ type: "text", text: "guest root\n" }]);
 
-      for (const symlink of ["absolute-escape", "relative-escape"]) {
-        await assertRejects(() => read.execute("read-link", { path: symlink }));
-        await assertRejects(
-          () => write.execute("write-link", { path: symlink, content: "changed" }),
+      for (
+        const [symlink, target] of [
+          ["absolute-guest-link", hostSecretPath],
+          ["relative-guest-link", `..${hostSecretPath}`],
+        ] as const
+      ) {
+        assertEquals(
+          (await Effect.runPromise(runtime.run([
+            "/bin/ln",
+            "-s",
+            target,
+            `/workspace/${symlink}`,
+          ]))).exitCode,
+          0,
         );
-        await assertRejects(
-          () =>
-            edit.execute("edit-link", {
-              path: symlink,
-              edits: [{ oldText: "runner", newText: "guest" }],
-            }),
+      }
+
+      for (const symlink of ["absolute-guest-link", "relative-guest-link"]) {
+        await write.execute("reset-guest-target", {
+          path: hostSecretPath,
+          content: "guest before\n",
+        });
+        assertEquals(
+          (await read.execute("read-guest-link", { path: symlink })).content,
+          [{ type: "text", text: "guest before\n" }],
+        );
+        await write.execute("write-guest-link", {
+          path: symlink,
+          content: `${symlink} before\n`,
+        });
+        await edit.execute("edit-guest-link", {
+          path: symlink,
+          edits: [{ oldText: "before", newText: "after" }],
+        });
+        assertEquals(
+          (await read.execute("read-guest-target", { path: hostSecretPath })).content,
+          [{ type: "text", text: `${symlink} after\n` }],
         );
       }
       assertEquals(await Deno.readTextFile(hostSecretPath), "runner-host-secret");
@@ -813,14 +803,23 @@ Deno.test({
         "";
       assertStringIncludes(markerOutput, "firstsecond:1");
       assert(updates.some((update) => update.includes("first")), "Bash output did not stream");
-      assertEquals(await Deno.readTextFile(`${workspacePath}/guest-process-marker`), "guest");
+      assertEquals(
+        new TextDecoder().decode(
+          await Effect.runPromise(runtime.readFile("guest-process-marker")),
+        ),
+        "guest",
+      );
       await assertRejects(() => Deno.stat(hostProcessMarker), Deno.errors.NotFound);
 
-      const linkError = await assertRejects(
-        () => bash.execute("bash-link", { command: "cat relative-escape", timeout: 10 }),
-        Error,
+      const linkResult = await bash.execute(
+        "bash-link",
+        { command: "cat relative-guest-link", timeout: 10 },
       );
-      assert(!linkError.message.includes("runner-host-secret"));
+      assertStringIncludes(
+        linkResult.content[0]?.type === "text" ? linkResult.content[0].text : "",
+        "relative-guest-link after",
+      );
+      assertEquals(await Deno.readTextFile(hostSecretPath), "runner-host-secret");
 
       await assertRejects(
         () =>
@@ -832,9 +831,8 @@ Deno.test({
         "Command exited with code 124",
       );
       await new Promise((resolve) => setTimeout(resolve, 1_100));
-      await assertRejects(
-        () => Deno.stat(`${workspacePath}/timed-out-marker`),
-        Deno.errors.NotFound,
+      await Effect.runPromise(
+        Effect.flip(runtime.access("timed-out-marker")),
       );
       const afterTimeout = await bash.execute("bash-after-timeout", {
         command: "printf recovered",
@@ -873,14 +871,20 @@ Deno.test({
 });
 
 async function openRuntime(
-  options: Parameters<typeof createGondolinAgentEnvironment>[0],
+  options: Parameters<ReturnType<typeof makeGondolinAgentEnvironmentProvider>["make"]>[0] & {
+    readonly guestImage: Parameters<typeof makeGondolinAgentEnvironmentProvider>[0];
+    readonly softwareEmulation?: boolean;
+  },
 ) {
   const scope = await Effect.runPromise(Scope.make());
+  const config = { ...options, ...gondolinTestEnvironmentOptions() };
+  const provider = makeGondolinAgentEnvironmentProvider(
+    config.guestImage,
+    config.softwareEmulation,
+  );
+  await Effect.runPromise(provider.initializeRootDisk(config.rootDiskPath));
   const runtime = await Effect.runPromise(
-    createGondolinAgentEnvironment({
-      ...options,
-      ...gondolinTestEnvironmentOptions(),
-    }).pipe(Effect.provideService(Scope.Scope, scope)),
+    provider.make(config).pipe(Effect.provideService(Scope.Scope, scope)),
   );
   return {
     runtime,

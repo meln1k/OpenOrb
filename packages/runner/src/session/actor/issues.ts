@@ -54,7 +54,5 @@ export function currentRecovery(
   issues: readonly SessionIssue[],
 ): Exclude<SessionRecoveryAction, "none" | "retry-provisioning"> | undefined {
   const recovery = issues.findLast((issue) => issue.severity === "failure")?.recovery;
-  return recovery === "resume-prior-checkpoint" || recovery === "start-clean-vm"
-    ? recovery
-    : undefined;
+  return recovery === "restart-environment" ? recovery : undefined;
 }

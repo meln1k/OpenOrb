@@ -194,8 +194,9 @@ source_runner=(
 
 `doctor` checks architecture, kernel, the exact Deno/denort version, glibc, QEMU, optional KVM
 initialization, host resources, gateway health, data-directory ownership and free space, and the
-pinned checkpoint-compatible guest image. QEMU—not Deno—opens `/dev/kvm`. Fix every reported error
-before continuing; a KVM warning means sessions will use slower TCG software emulation.
+pinned guest image used by persistent session root disks. QEMU—not Deno—opens `/dev/kvm`. Fix every
+reported error before continuing; a KVM warning means sessions will use slower TCG software
+emulation.
 
 Copy the enrollment PSK from **Settings → Runners**, read it without echo, and run the matching
 foreground command:
@@ -244,5 +245,7 @@ sudo stat -c '%a %U %G %n' /var/lib/openorb-runner \
 ```
 
 The expected modes are `700` for the state directory and `600` for both identity files, all owned by
-`openorb-runner:openorb-runner`. Restarting the service preserves identity, sessions, and completed
-checkpoints in that directory regardless of which launch mode is active.
+`openorb-runner:openorb-runner`. Restarting the service preserves identity, Session Journals, and
+each session's persistent `root-disk.qcow2` regardless of which launch mode is active. A wake opens
+the same disk in a new VM and runs `.agents/resume`; RAM, processes, and tmpfs-backed guest paths do
+not return.

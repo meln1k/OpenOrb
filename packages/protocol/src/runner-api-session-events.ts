@@ -57,9 +57,7 @@ export const SessionIssueCategory = Schema.Literals([
   "clone",
   "setup",
   "resume-hook",
-  "checkpoint-create",
-  "checkpoint-publish",
-  "checkpoint-resume",
+  "vm-stop",
   "model",
   "report",
   "operation-uncertain",
@@ -71,14 +69,12 @@ export type SessionIssueCategory = typeof SessionIssueCategory.Type;
 export const SessionRecoveryAction = Schema.Literals([
   "none",
   "retry-provisioning",
-  "resume-prior-checkpoint",
-  "start-clean-vm",
+  "restart-environment",
 ]);
 export type SessionRecoveryAction = typeof SessionRecoveryAction.Type;
 
 export const SessionEnvironmentRecoveryMode = Schema.Literals([
-  "resume-prior-checkpoint",
-  "start-clean-vm",
+  "restart-environment",
 ]);
 export type SessionEnvironmentRecoveryMode = typeof SessionEnvironmentRecoveryMode.Type;
 
@@ -106,7 +102,7 @@ export const SessionProvisioningStage = Schema.Literals([
   "creating-branch",
   "setup",
   "resuming",
-  "checkpointing",
+  "stopping",
   "running",
   "ready",
   "stopped",

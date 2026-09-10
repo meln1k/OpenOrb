@@ -1,6 +1,5 @@
 import { orbSizeResources } from "@openorb/protocol";
 import type {
-  SessionEnvironmentRecoveryMode,
   SessionIssue,
   SessionIssueCategory,
   SessionModelRuntime,
@@ -8,6 +7,7 @@ import type {
 import { Effect, Exit, Scope } from "effect";
 
 import {
+  AGENT_WORKSPACE,
   type AgentEnvironment,
   AgentEnvironmentProvider,
 } from "../../environment/agent-environment.ts";
@@ -57,13 +57,7 @@ export interface ProvisioningSink {
 export interface SessionProvisioner {
   readonly restore: (
     metadata: RunnerSessionMetadata,
-    correlationId: string,
-  ) => Effect.Effect<RestoredEnvironment, SessionActorError, Scope.Scope>;
-  readonly recover: (
-    metadata: RunnerSessionMetadata,
-    mode: SessionEnvironmentRecoveryMode,
     githubToken: string | undefined,
-    modelRuntime: SessionModelRuntime,
     correlationId: string,
   ) => Effect.Effect<RestoredEnvironment, SessionActorError, Scope.Scope>;
   readonly provision: (
@@ -82,74 +76,19 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
   const store = yield* RunnerSessionStore;
   const environmentProvider = yield* AgentEnvironmentProvider;
 
-  const restore: SessionProvisioner["restore"] = (metadata, correlationId) =>
-    Effect.gen(function* () {
-      const issues: SessionIssue[] = [];
-      const workspacePath = yield* store.getSessionWorkspacePath(sessionId).pipe(
-        Effect.mapError(actorError),
-      );
-      const resources = orbSizeResources(metadata.definition.orbSize);
-      const environment = yield* environmentProvider.make({
-        workspacePath,
-        sessionLabel: `openorb session ${sessionId}`,
-        sessionId,
-        github: {
-          repositoryUrl: metadata.definition.repositoryUrl,
-          gitAuthor: metadata.definition.gitAuthor,
-        },
-        cpuCount: resources.cpuCount,
-        memoryMiB: resources.memoryMiB,
-      }).pipe(Effect.mapError(actorError));
-      if (metadata.checkoutState === "available") {
-        const setup = yield* reporter.runCommand(
-          environment,
-          [
-            "/bin/sh",
-            "-lc",
-            "if [ -x .agents/setup ]; then exec ./.agents/setup; fi",
-          ],
-          correlationId,
-          makeProvisioningLogBudget([]),
-        );
-        if (setup.exitCode !== 0) {
-          issues.push(makeSessionIssue({
-            category: "setup",
-            severity: "warning",
-            message:
-              ".agents/setup failed while restoring the runner process, but the Pi session remains available.",
-            diagnostics: commandDiagnostics(setup),
-            recovery: "none",
-          }));
-        }
-      }
-      return { environment, issues, release: Effect.void };
-    });
-
-  const recover: SessionProvisioner["recover"] = (
-    metadata,
-    mode,
-    githubToken,
-    modelRuntime,
-    correlationId,
-  ) => {
-    let recoveryScope: Scope.Closeable | undefined;
+  const restore: SessionProvisioner["restore"] = (metadata, githubToken, correlationId) => {
+    let restorationScope: Scope.Closeable | undefined;
     const operation = Effect.gen(function* () {
       const issues: SessionIssue[] = [];
-      const logBudget = makeProvisioningLogBudget([
-        githubToken,
-        modelRuntime.credential.value,
-      ]);
-      const checkpoint = mode === "resume-prior-checkpoint"
-        ? yield* store.readCurrentCheckpoint(sessionId).pipe(Effect.mapError(actorError))
-        : undefined;
-      const workspacePath = yield* store.getSessionWorkspacePath(sessionId).pipe(
+      const logBudget = makeProvisioningLogBudget([githubToken]);
+      const rootDiskPath = yield* store.getSessionRootDiskPath(sessionId).pipe(
         Effect.mapError(actorError),
       );
       const resources = orbSizeResources(metadata.definition.orbSize);
-      recoveryScope = yield* Scope.make();
-      yield* Effect.addFinalizer(() => Scope.close(recoveryScope!, Exit.void));
+      restorationScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(restorationScope!, Exit.void));
       const environment = yield* environmentProvider.make({
-        workspacePath,
+        rootDiskPath,
         sessionLabel: `openorb session ${sessionId}`,
         sessionId,
         github: {
@@ -159,65 +98,58 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
         },
         cpuCount: resources.cpuCount,
         memoryMiB: resources.memoryMiB,
-        ...(checkpoint === undefined ? {} : { resumeCheckpoint: checkpoint }),
       }).pipe(
-        Effect.provideService(Scope.Scope, recoveryScope),
+        Effect.provideService(Scope.Scope, restorationScope),
         Effect.mapError(actorError),
       );
       if (metadata.checkoutState === "available") {
-        if (mode === "start-clean-vm") {
-          yield* reporter.emitState(metadata, "setup", correlationId);
-        }
-        const hook = mode === "resume-prior-checkpoint" ? "resume" : "setup";
-        const result = yield* reporter.runCommand(
+        const resume = yield* reporter.runCommand(
           environment,
           [
             "/bin/sh",
             "-lc",
-            `if [ -x .agents/${hook} ]; then exec ./.agents/${hook}; fi`,
+            "if [ -x .agents/resume ]; then exec ./.agents/resume; fi",
           ],
           correlationId,
           logBudget,
         );
-        if (result.exitCode !== 0) {
+        if (resume.exitCode !== 0) {
           issues.push(makeSessionIssue({
-            category: mode === "resume-prior-checkpoint" ? "resume-hook" : "setup",
+            category: "resume-hook",
             severity: "warning",
-            message: mode === "resume-prior-checkpoint"
-              ? ".agents/resume failed, but the prompt can still run so Pi can diagnose or repair the project."
-              : ".agents/setup failed while starting a clean VM, but the recovered Pi session remains available.",
-            diagnostics: commandDiagnostics(result),
+            message:
+              ".agents/resume failed, but the prompt can still run so Pi can diagnose or repair the project.",
+            diagnostics: commandDiagnostics(resume),
             recovery: "none",
           }));
-          const reportFailure = reporter.emitLog(
+          yield* reporter.emitLog(
             correlationId,
             "stderr",
-            `.agents/${hook} exited with status ${result.exitCode}; continuing to Pi so it can repair the project.\n`,
-          );
-          yield* mode === "resume-prior-checkpoint"
-            ? reportFailure.pipe(Effect.ignore)
-            : reportFailure;
+            `.agents/resume exited with status ${resume.exitCode}; continuing to Pi so it can repair the project.\n`,
+          ).pipe(Effect.ignore);
         }
       }
-      return { environment, issues, release: Scope.close(recoveryScope, Exit.void) };
+      return {
+        environment,
+        issues,
+        release: Scope.close(restorationScope, Exit.void),
+      };
     });
     return operation.pipe(
-      Effect.onError(() => recoveryScope ? Scope.close(recoveryScope, Exit.void) : Effect.void),
+      Effect.onError(() =>
+        restorationScope ? Scope.close(restorationScope, Exit.void) : Effect.void
+      ),
       Effect.tapError((error) =>
-        mode === "resume-prior-checkpoint"
-          ? reporter.emitLog(
-            correlationId,
-            "stderr",
-            `Checkpoint resume failed: ${
-              redactedErrorMessage(
-                error,
-                [githubToken, modelRuntime.credential.value].filter(
-                  (value): value is string => value !== undefined,
-                ),
-              )
-            }\n`,
-          ).pipe(Effect.ignore)
-          : Effect.void
+        reporter.emitLog(
+          correlationId,
+          "stderr",
+          `Environment restart failed: ${
+            redactedErrorMessage(
+              error,
+              [githubToken].filter((value): value is string => value !== undefined),
+            )
+          }\n`,
+        ).pipe(Effect.ignore)
       ),
     );
   };
@@ -240,14 +172,21 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
     let metadata = initialMetadata;
     const operation = Effect.gen(function* () {
       yield* reporter.emitState(metadata, "starting-vm", correlationId);
-      const workspacePath = yield* store.getSessionWorkspacePath(sessionId).pipe(
+      const rootDiskPath = yield* store.getSessionRootDiskPath(sessionId).pipe(
         Effect.mapError(actorError),
       );
       const resources = orbSizeResources(metadata.definition.orbSize);
+      if (metadata.checkoutState === "pending") {
+        failureCategory = "runner-storage";
+        failureMessage = "The persistent root disk could not be initialized.";
+        yield* environmentProvider.initializeRootDisk(rootDiskPath).pipe(
+          Effect.mapError(actorError),
+        );
+      }
       failureCategory = "vm-start";
       failureMessage = "The Gondolin VM could not be started.";
       const environment = yield* environmentProvider.make({
-        workspacePath,
+        rootDiskPath,
         sessionLabel: `openorb session ${sessionId}`,
         sessionId,
         github: {
@@ -263,7 +202,16 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
       if (metadata.checkoutState === "pending") {
         failureCategory = "runner-storage";
         failureMessage = "The session workspace could not be prepared for cloning.";
-        yield* store.clearSessionWorkspace(sessionId).pipe(Effect.mapError(actorError));
+        const cleared = yield* reporter.runCommand(
+          environment,
+          ["/usr/bin/find", AGENT_WORKSPACE, "-mindepth", "1", "-delete"],
+          correlationId,
+          logBudget,
+        );
+        if (cleared.exitCode !== 0) {
+          failureDiagnostics = commandDiagnostics(cleared);
+          return yield* new SessionActorError(failureMessage, undefined);
+        }
         yield* reporter.emitState(metadata, "cloning", correlationId);
         const clone = yield* reporter.runCommand(
           environment,
@@ -396,7 +344,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
     );
   };
 
-  return { restore, recover, provision } satisfies SessionProvisioner;
+  return { restore, provision } satisfies SessionProvisioner;
 });
 
 function gitFailureCategory(

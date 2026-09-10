@@ -12,9 +12,7 @@ import type {
 } from "@openorb/protocol/runner-bulk-api";
 import { Context, Data, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 
-import type { AgentEnvironmentCheckpoint } from "../environment/agent-environment.ts";
 import { readPiSessionEvents } from "../harness/pi/history.ts";
-import { CHECKPOINT_FILE_PATTERN } from "./actor/events.ts";
 import { Journal } from "./persistent-actor/journal.ts";
 import { recoverSessionState, type RunnerSessionMetadata, sessionMetadata } from "./actor/state.ts";
 
@@ -22,7 +20,7 @@ export type { RunnerSessionMetadata } from "./actor/state.ts";
 
 const SESSIONS_DIRECTORY = "sessions";
 const SESSION_DELETIONS_DIRECTORY = "session-deletions";
-const CHECKPOINTS_DIRECTORY = "checkpoints";
+const ROOT_DISK_FILE = "root-disk.qcow2";
 
 const gitSnapshotStateSchema = Schema.Struct({
   snapshot: SessionGitSnapshot,
@@ -52,13 +50,6 @@ export interface RunnerSessionPiPaths {
   sessionFile: string;
 }
 
-export interface RunnerSessionCheckpointFile {
-  readonly file: string;
-  readonly path: string;
-}
-
-export type RunnerSessionCheckpointCandidate = RunnerSessionCheckpointFile;
-
 export interface RunnerSessionManifestError {
   sessionDirectory: string;
   message: string;
@@ -74,15 +65,9 @@ export type RunnerSessionStoreOperation =
   | "ensure-session-storage"
   | "remove-session-storage"
   | "read-metadata"
-  | "clear-workspace"
-  | "get-workspace-path"
+  | "get-root-disk-path"
+  | "sync-root-disk"
   | "get-pi-paths"
-  | "allocate-checkpoint"
-  | "validate-checkpoint"
-  | "discard-checkpoint"
-  | "cleanup-checkpoints"
-  | "inspect-checkpoint"
-  | "read-checkpoint"
   | "read-git-snapshot"
   | "write-git-snapshot"
   | "get-session-snapshot"
@@ -106,38 +91,15 @@ export interface RunnerSessionStore {
   readonly readMetadata: (
     sessionId: SessionId,
   ) => Effect.Effect<RunnerSessionMetadata, RunnerSessionStoreError>;
-  readonly clearSessionWorkspace: (
-    sessionId: SessionId,
-  ) => Effect.Effect<void, RunnerSessionStoreError>;
-  readonly getSessionWorkspacePath: (
+  readonly getSessionRootDiskPath: (
     sessionId: SessionId,
   ) => Effect.Effect<string, RunnerSessionStoreError>;
+  readonly syncSessionRootDisk: (
+    sessionId: SessionId,
+  ) => Effect.Effect<void, RunnerSessionStoreError>;
   readonly getSessionPiPaths: (
     sessionId: SessionId,
   ) => Effect.Effect<RunnerSessionPiPaths, RunnerSessionStoreError>;
-  readonly allocateCheckpoint: (
-    sessionId: SessionId,
-  ) => Effect.Effect<RunnerSessionCheckpointFile, RunnerSessionStoreError>;
-  readonly validateCheckpoint: (
-    sessionId: SessionId,
-    candidate: RunnerSessionCheckpointCandidate,
-    checkpoint: AgentEnvironmentCheckpoint,
-  ) => Effect.Effect<void, RunnerSessionStoreError>;
-  readonly discardCheckpoint: (
-    sessionId: SessionId,
-    file: string,
-  ) => Effect.Effect<void, RunnerSessionStoreError>;
-  readonly cleanupCheckpoints: (
-    sessionId: SessionId,
-    keepFile?: string,
-  ) => Effect.Effect<void, RunnerSessionStoreError>;
-  readonly checkpointExists: (
-    sessionId: SessionId,
-    file: string,
-  ) => Effect.Effect<boolean, RunnerSessionStoreError>;
-  readonly readCurrentCheckpoint: (
-    sessionId: SessionId,
-  ) => Effect.Effect<AgentEnvironmentCheckpoint, RunnerSessionStoreError>;
   readonly readGitSnapshot: (
     sessionId: SessionId,
   ) => Effect.Effect<SessionGitSnapshot, RunnerSessionStoreError>;
@@ -196,8 +158,6 @@ export function makeRunnerSessionStore(
     const sessionPath = (sessionId: SessionId) => paths.join(sessionsPath, sessionId);
     const sessionDeletionPath = (sessionId: SessionId) =>
       paths.join(sessionDeletionsPath, sessionId);
-    const checkpointsPath = (sessionId: SessionId) =>
-      paths.join(sessionPath(sessionId), CHECKPOINTS_DIRECTORY);
     const snapshotsPath = (sessionId: SessionId) => paths.join(sessionPath(sessionId), "snapshots");
     const fileSystem = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(Effect.mapError(sessionDataError));
@@ -265,49 +225,6 @@ export function makeRunnerSessionStore(
         return metadata;
       });
 
-    const allocateCheckpointValue = (
-      sessionId: SessionId,
-    ): Effect.Effect<RunnerSessionCheckpointFile, RunnerSessionDataError> =>
-      Effect.gen(function* () {
-        const directory = checkpointsPath(sessionId);
-        yield* ensurePrivateDirectory(fs, directory);
-        const file = `checkpoint-${crypto.randomUUID()}.qcow2`;
-        return { file, path: paths.join(directory, file) };
-      });
-
-    const validateCheckpointValue = (
-      sessionId: SessionId,
-      candidate: RunnerSessionCheckpointCandidate,
-      checkpoint: AgentEnvironmentCheckpoint,
-    ): Effect.Effect<void, RunnerSessionDataError> =>
-      Effect.gen(function* () {
-        if (
-          !CHECKPOINT_FILE_PATTERN.test(candidate.file) ||
-          candidate.path !== paths.join(checkpointsPath(sessionId), candidate.file) ||
-          checkpoint.path !== candidate.path
-        ) {
-          return yield* new RunnerSessionDataError(
-            `Session ${sessionId} checkpoint candidate path is invalid.`,
-          );
-        }
-        yield* assertRegularFile(fs, candidate.path, "Runner session checkpoint candidate");
-      });
-
-    const discardCheckpointValue = (
-      sessionId: SessionId,
-      file: string,
-    ): Effect.Effect<void, RunnerSessionDataError> =>
-      Effect.gen(function* () {
-        if (!CHECKPOINT_FILE_PATTERN.test(file)) {
-          return yield* new RunnerSessionDataError(
-            `Session ${sessionId} checkpoint file name is invalid.`,
-          );
-        }
-        yield* fs.remove(paths.join(checkpointsPath(sessionId), file), { force: true }).pipe(
-          Effect.mapError(sessionDataError),
-        );
-      });
-
     const inspectEntry = (entry: string): Effect.Effect<RunnerSessionManifest, never> => {
       return Effect.gen(function* () {
         const metadataResult = yield* Effect.result(
@@ -369,7 +286,7 @@ export function makeRunnerSessionStore(
           if (disposition === "existing") return disposition;
           return yield* Effect.gen(function* () {
             yield* Effect.forEach(
-              ["workspace", "pi", "logs", "snapshots", CHECKPOINTS_DIRECTORY],
+              ["pi", "logs", "snapshots"],
               (directory) =>
                 fileSystem(fs.makeDirectory(paths.join(path, directory), { mode: 0o700 })),
               { discard: true },
@@ -429,43 +346,34 @@ export function makeRunnerSessionStore(
           )),
       ),
 
-      clearSessionWorkspace: Effect.fn("RunnerSessionStore.clearSessionWorkspace")(
+      getSessionRootDiskPath: Effect.fn("RunnerSessionStore.getSessionRootDiskPath")(
         function* (sessionId: SessionId) {
           const metadata = yield* readMetadataValue(sessionId);
-          const workspacePath = paths.join(sessionPath(metadata.id), "workspace");
-          yield* assertDirectory(fs, workspacePath, "Runner session workspace");
-          const entries = yield* fs.readDirectory(workspacePath).pipe(
-            Effect.mapError(sessionDataError),
-          );
-          yield* Effect.forEach(
-            entries,
-            (entry) =>
-              fs.remove(paths.join(workspacePath, entry), { recursive: true }).pipe(
-                Effect.mapError(sessionDataError),
-              ),
-            { discard: true },
-          );
-        },
-        (effect, sessionId) =>
-          effect.pipe(Effect.mapError(
-            storeError(
-              "clear-workspace",
-              `Could not clear runner session ${sessionId} workspace`,
-            ),
-          )),
-      ),
-
-      getSessionWorkspacePath: Effect.fn("RunnerSessionStore.getSessionWorkspacePath")(
-        function* (sessionId: SessionId) {
-          const metadata = yield* readMetadataValue(sessionId);
-          const path = paths.join(sessionPath(metadata.id), "workspace");
-          yield* assertDirectory(fs, path, "Runner session workspace");
-          return yield* fileSystem(fs.realPath(path));
+          const directory = sessionPath(metadata.id);
+          yield* assertDirectory(fs, directory, "Runner session directory");
+          const realDirectory = yield* fileSystem(fs.realPath(directory));
+          return paths.join(realDirectory, ROOT_DISK_FILE);
         },
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(storeError(
-            "get-workspace-path",
-            `Could not access runner session ${sessionId} workspace`,
+            "get-root-disk-path",
+            `Could not access runner session ${sessionId} root disk`,
+          ))),
+      ),
+
+      syncSessionRootDisk: Effect.fn("RunnerSessionStore.syncSessionRootDisk")(
+        function* (sessionId: SessionId) {
+          const metadata = yield* readMetadataValue(sessionId);
+          const directory = sessionPath(metadata.id);
+          const rootDiskPath = paths.join(directory, ROOT_DISK_FILE);
+          yield* assertRegularFile(fs, rootDiskPath, "Runner session root disk");
+          yield* syncFile(fs, rootDiskPath);
+          yield* syncDirectory(fs, directory);
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(storeError(
+            "sync-root-disk",
+            `Could not sync runner session ${sessionId} root disk`,
           ))),
       ),
 
@@ -486,103 +394,6 @@ export function makeRunnerSessionStore(
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(
             storeError("get-pi-paths", `Could not access runner session ${sessionId} Pi storage`),
-          )),
-      ),
-
-      allocateCheckpoint: Effect.fn("RunnerSessionStore.allocateCheckpoint")(
-        function* (sessionId: SessionId) {
-          return yield* allocateCheckpointValue(sessionId);
-        },
-        (effect, sessionId) =>
-          effect.pipe(Effect.mapError(
-            storeError(
-              "allocate-checkpoint",
-              `Could not allocate runner session ${sessionId} checkpoint`,
-            ),
-          )),
-      ),
-
-      validateCheckpoint: Effect.fn("RunnerSessionStore.validateCheckpoint")(
-        function* (
-          sessionId: SessionId,
-          candidate: RunnerSessionCheckpointCandidate,
-          checkpoint: AgentEnvironmentCheckpoint,
-        ) {
-          yield* validateCheckpointValue(sessionId, candidate, checkpoint);
-        },
-        (effect, sessionId) =>
-          effect.pipe(Effect.mapError(
-            storeError(
-              "validate-checkpoint",
-              `Could not validate runner session ${sessionId} checkpoint`,
-            ),
-          )),
-      ),
-
-      discardCheckpoint: Effect.fn("RunnerSessionStore.discardCheckpoint")(
-        function* (sessionId: SessionId, file: string) {
-          yield* discardCheckpointValue(sessionId, file);
-        },
-        (effect, sessionId) =>
-          effect.pipe(Effect.mapError(
-            storeError(
-              "discard-checkpoint",
-              `Could not discard runner session ${sessionId} checkpoint`,
-            ),
-          )),
-      ),
-
-      cleanupCheckpoints: Effect.fn("RunnerSessionStore.cleanupCheckpoints")(
-        function* (sessionId: SessionId, keepFile?: string) {
-          yield* cleanupDirectory(
-            fs,
-            paths,
-            checkpointsPath(sessionId),
-            keepFile === undefined ? [] : [keepFile],
-          );
-        },
-        (effect, sessionId) =>
-          effect.pipe(Effect.mapError(
-            storeError(
-              "cleanup-checkpoints",
-              `Could not clean up runner session ${sessionId} checkpoints`,
-            ),
-          )),
-      ),
-
-      checkpointExists: Effect.fn("RunnerSessionStore.checkpointExists")(
-        function* (sessionId: SessionId, file: string) {
-          if (!CHECKPOINT_FILE_PATTERN.test(file)) {
-            return yield* new RunnerSessionDataError(
-              `Session ${sessionId} checkpoint file name is invalid.`,
-            );
-          }
-          return yield* regularFileExists(fs, paths.join(checkpointsPath(sessionId), file));
-        },
-        (effect, sessionId) =>
-          effect.pipe(Effect.mapError(
-            storeError(
-              "inspect-checkpoint",
-              `Could not inspect runner session ${sessionId} checkpoint`,
-            ),
-          )),
-      ),
-
-      readCurrentCheckpoint: Effect.fn("RunnerSessionStore.readCurrentCheckpoint")(
-        function* (sessionId: SessionId) {
-          const metadata = yield* readMetadataValue(sessionId);
-          if (!metadata.checkpoint) {
-            return yield* new RunnerSessionDataError(
-              `Session ${sessionId} has no published checkpoint.`,
-            );
-          }
-          const path = paths.join(checkpointsPath(sessionId), metadata.checkpoint.file);
-          yield* assertRegularFile(fs, path, "Runner session current checkpoint");
-          return checkpointFromMetadata(path, metadata.checkpoint);
-        },
-        (effect, sessionId) =>
-          effect.pipe(Effect.mapError(
-            storeError("read-checkpoint", `Could not read runner session ${sessionId} checkpoint`),
           )),
       ),
 
@@ -788,20 +599,6 @@ function snapshotFrom(
   });
 }
 
-function checkpointFromMetadata(
-  path: string,
-  checkpoint: NonNullable<RunnerSessionMetadata["checkpoint"]>,
-): AgentEnvironmentCheckpoint {
-  return {
-    path,
-    guestAssetBuildId: checkpoint.guestAssetBuildId,
-    ...(checkpoint.createdWithVmm === undefined
-      ? {}
-      : { createdWithVmm: checkpoint.createdWithVmm }),
-    compatibleVmm: checkpoint.compatibleVmm,
-  };
-}
-
 function cleanupDirectory(
   fs: FileSystem.FileSystem,
   paths: Path.Path,
@@ -943,24 +740,6 @@ function assertRegularFile(
   });
 }
 
-function regularFileExists(
-  fs: FileSystem.FileSystem,
-  path: string,
-): Effect.Effect<boolean, RunnerSessionDataError> {
-  return fs.stat(path).pipe(
-    Effect.matchEffect({
-      onFailure: (error) =>
-        error.reason._tag === "NotFound"
-          ? Effect.succeed(false)
-          : Effect.fail(sessionDataError(error)),
-      onSuccess: (info) =>
-        info.type === "File"
-          ? Effect.succeed(true)
-          : Effect.fail(new RunnerSessionDataError("Checkpoint must be a regular file.")),
-    }),
-  );
-}
-
 function syncDirectory(
   fs: FileSystem.FileSystem,
   path: string,
@@ -970,6 +749,16 @@ function syncDirectory(
       Effect.mapError(sessionDataError),
     );
     yield* directory.sync.pipe(Effect.mapError(sessionDataError));
+  }));
+}
+
+function syncFile(
+  fs: FileSystem.FileSystem,
+  path: string,
+): Effect.Effect<void, RunnerSessionDataError> {
+  return Effect.scoped(Effect.gen(function* () {
+    const file = yield* fs.open(path, { flag: "r" }).pipe(Effect.mapError(sessionDataError));
+    yield* file.sync.pipe(Effect.mapError(sessionDataError));
   }));
 }
 

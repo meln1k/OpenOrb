@@ -16,7 +16,7 @@ Deno.test("Gondolin VM phases distinguish active, sleeping, and lifecycle transi
   assertEquals(sessionVmPhaseForStage("created"), "starting");
   assertEquals(sessionVmPhaseForStage("starting-vm"), "starting");
   assertEquals(sessionVmPhaseForStage("resuming"), "waking");
-  assertEquals(sessionVmPhaseForStage("checkpointing"), "stopping");
+  assertEquals(sessionVmPhaseForStage("stopping"), "stopping");
   assertEquals(sessionVmPhaseForStage("running"), "active");
   assertEquals(sessionVmPhaseForStage("stopped"), "sleeping");
   assertEquals(isSessionVmTransitioning("waking"), true);

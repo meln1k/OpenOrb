@@ -28,15 +28,6 @@ export interface AgentEnvironmentCommandResult {
   readonly exitCode: number;
 }
 
-export type AgentEnvironmentBackend = "qemu" | "krun";
-
-export interface AgentEnvironmentCheckpoint {
-  readonly path: string;
-  readonly guestAssetBuildId: string;
-  readonly createdWithVmm?: AgentEnvironmentBackend;
-  readonly compatibleVmm: readonly AgentEnvironmentBackend[];
-}
-
 export interface AgentEnvironment {
   readonly run: (
     command: readonly string[],
@@ -46,7 +37,10 @@ export interface AgentEnvironment {
     command: string,
     options: AgentEnvironmentShellOptions,
   ) => Effect.Effect<AgentEnvironmentCommandResult, AgentEnvironmentError>;
-  readonly readFile: (path: string) => Effect.Effect<Uint8Array, AgentEnvironmentError>;
+  readonly readFile: (
+    path: string,
+    options?: { readonly signal?: AbortSignal },
+  ) => Effect.Effect<Uint8Array, AgentEnvironmentError>;
   readonly access: (path: string) => Effect.Effect<void, AgentEnvironmentError>;
   readonly writeFile: (
     path: string,
@@ -56,13 +50,11 @@ export interface AgentEnvironment {
   readonly detectImageMimeType: (
     path: string,
   ) => Effect.Effect<string | null, AgentEnvironmentError>;
-  readonly checkpoint: (
-    path: string,
-  ) => Effect.Effect<AgentEnvironmentCheckpoint, AgentEnvironmentCheckpointError>;
+  readonly stop: Effect.Effect<void, AgentEnvironmentError>;
 }
 
 export interface AgentEnvironmentOptions {
-  readonly workspacePath: string;
+  readonly rootDiskPath: string;
   readonly sessionLabel?: string;
   readonly sessionId?: string;
   readonly github?: {
@@ -75,10 +67,12 @@ export interface AgentEnvironmentOptions {
   };
   readonly cpuCount: number;
   readonly memoryMiB: number;
-  readonly resumeCheckpoint?: AgentEnvironmentCheckpoint;
 }
 
 export interface AgentEnvironmentProvider {
+  readonly initializeRootDisk: (
+    path: string,
+  ) => Effect.Effect<void, AgentEnvironmentError>;
   readonly make: (
     options: AgentEnvironmentOptions,
   ) => Effect.Effect<AgentEnvironment, AgentEnvironmentError, Scope.Scope>;
@@ -95,18 +89,6 @@ export class AgentEnvironmentError extends Data.TaggedError("AgentEnvironmentErr
 }> {
   constructor(message: string, cause: unknown) {
     super({ message, cause });
-  }
-}
-
-export class AgentEnvironmentCheckpointError extends Data.TaggedError(
-  "AgentEnvironmentCheckpointError",
-)<{
-  readonly message: string;
-  readonly cause: unknown;
-  readonly consumed: boolean;
-}> {
-  constructor(message: string, cause: unknown, consumed: boolean) {
-    super({ message, cause, consumed });
   }
 }
 

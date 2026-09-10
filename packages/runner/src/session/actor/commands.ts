@@ -8,16 +8,13 @@ import type {
   UpdateSessionGitFilePayload,
   WakeSessionPayload,
 } from "@openorb/protocol/runner-api";
-import type { Deferred } from "effect";
+import type { Deferred, Effect } from "effect";
 
-import type {
-  AgentEnvironment,
-  AgentEnvironmentCheckpoint,
-} from "../../environment/agent-environment.ts";
+import type { AgentEnvironment } from "../../environment/agent-environment.ts";
 import type { ActiveAgentRun } from "../../harness/agent-harness.ts";
 import type { SessionActorError } from "./actor-error.ts";
 import type { OpenAgentSession } from "./agent-runtime.ts";
-import type { RunnerSessionCheckpointCandidate, RunnerSessionMetadata } from "../store.ts";
+import type { RunnerSessionMetadata } from "../store.ts";
 
 export type PromptAcceptance =
   | { readonly ok: true; readonly runId: RunId; readonly mode: "started" | "follow-up" }
@@ -123,16 +120,6 @@ export type RestorationContinuation =
     readonly payload: PromptSessionPayload;
     readonly runId: RunId;
     readonly reply: Deferred.Deferred<PromptAcceptance>;
-  };
-
-export type RestorationRequest =
-  | {
-    readonly _tag: "ResumeCheckpoint";
-    readonly continuation: RestorationContinuation;
-  }
-  | {
-    readonly _tag: "StartCleanVm";
-    readonly continuation: Extract<RestorationContinuation, { readonly _tag: "Wake" }>;
   };
 
 export type RunCompletion =
@@ -250,17 +237,16 @@ export type InternalCommand =
   }
   | {
     readonly kind: "internal";
-    readonly _tag: "CheckpointCompleted";
-    readonly candidate: RunnerSessionCheckpointCandidate;
-    readonly checkpoint: AgentEnvironmentCheckpoint;
+    readonly _tag: "StopCompleted";
+    readonly stopId: string;
     readonly correlationId: string;
     readonly reply: Deferred.Deferred<StopAcceptance>;
   }
   | {
     readonly kind: "internal";
-    readonly _tag: "CheckpointFailed";
-    readonly candidate: RunnerSessionCheckpointCandidate;
-    readonly consumed: boolean;
+    readonly _tag: "StopFailed";
+    readonly stopId: string;
+    readonly environmentUsable: boolean;
     readonly agentSessionClosed: boolean;
     readonly correlationId: string;
     readonly issue: SessionIssue;
@@ -272,8 +258,9 @@ export type InternalCommand =
     readonly restorationId: string;
     readonly environment: AgentEnvironment;
     readonly agentSession: OpenAgentSession;
+    readonly release: Effect.Effect<void>;
     readonly correlationId: string;
-    readonly request: RestorationRequest;
+    readonly continuation: RestorationContinuation;
     readonly issues: readonly SessionIssue[];
   }
   | {
@@ -281,7 +268,7 @@ export type InternalCommand =
     readonly _tag: "RestorationFailed";
     readonly restorationId: string;
     readonly correlationId: string;
-    readonly request: RestorationRequest;
+    readonly continuation: RestorationContinuation;
     readonly issue: SessionIssue;
   }
   | {

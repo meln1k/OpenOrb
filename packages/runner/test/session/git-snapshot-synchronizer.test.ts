@@ -84,7 +84,7 @@ const ENVIRONMENT: AgentEnvironment = {
   writeFile: () => Effect.die("unexpected write"),
   makeDirectory: () => Effect.die("unexpected directory"),
   detectImageMimeType: () => Effect.die("unexpected image detection"),
-  checkpoint: () => Effect.die("unexpected checkpoint"),
+  stop: Effect.die("unexpected stop"),
 };
 
 Deno.test("Git Snapshot publication remains pending and retries unchanged content", async () => {

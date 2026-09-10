@@ -198,6 +198,35 @@ Deno.test("Pi Bash requires and forwards a positive timeout", async () => {
   );
 });
 
+Deno.test("Pi read and edit forward cancellation to guest file reads", async () => {
+  const environment = new MemoryAgentEnvironment([
+    ["/workspace/read.txt", "read\n"],
+    ["/workspace/edit.txt", "before\n"],
+  ]);
+  const tools = toolMap(environment);
+  const read = tools.get("read");
+  const edit = tools.get("edit");
+  assert(read && edit);
+  const controller = new AbortController();
+
+  await read.execute(
+    "read-with-signal",
+    { path: "read.txt" },
+    controller.signal,
+    undefined,
+    TOOL_CONTEXT,
+  );
+  await edit.execute(
+    "edit-with-signal",
+    { path: "edit.txt", edits: [{ oldText: "before", newText: "after" }] },
+    controller.signal,
+    undefined,
+    TOOL_CONTEXT,
+  );
+
+  assertEquals(environment.readSignals, [controller.signal, controller.signal]);
+});
+
 Deno.test("concurrent Pi edits to the same guest path are serialized", async () => {
   const firstRead = Promise.withResolvers<void>();
   const releaseFirstRead = Promise.withResolvers<void>();
@@ -254,6 +283,7 @@ function toolMap(environment: AgentEnvironment) {
 class MemoryAgentEnvironment implements AgentEnvironment {
   readonly files: Map<string, string>;
   readonly shellCalls: Array<{ command: string; timeoutSeconds: number }> = [];
+  readonly readSignals: Array<AbortSignal | undefined> = [];
   beforeRead: () => Promise<void> = () => Promise.resolve();
 
   constructor(files: Iterable<readonly [string, string]>) {
@@ -271,8 +301,9 @@ class MemoryAgentEnvironment implements AgentEnvironment {
       Effect.as({ exitCode: 0 }),
     );
   };
-  readFile: AgentEnvironment["readFile"] = (path) =>
+  readFile: AgentEnvironment["readFile"] = (path, options = {}) =>
     Effect.promise(async () => {
+      this.readSignals.push(options.signal);
       await this.beforeRead();
       const content = this.files.get(path);
       if (content === undefined) {
@@ -288,6 +319,5 @@ class MemoryAgentEnvironment implements AgentEnvironment {
     Effect.sync(() => this.files.set(path, content)).pipe(Effect.asVoid);
   makeDirectory: AgentEnvironment["makeDirectory"] = () => Effect.void;
   detectImageMimeType: AgentEnvironment["detectImageMimeType"] = () => Effect.succeed(null);
-  checkpoint: AgentEnvironment["checkpoint"] = () =>
-    Effect.die("checkpoint is not available in this test");
+  stop: AgentEnvironment["stop"] = Effect.die("stop is not available in this test");
 }

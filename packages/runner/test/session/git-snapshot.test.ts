@@ -16,7 +16,7 @@ import type {
   AgentEnvironment,
   AgentEnvironmentCommandOptions,
 } from "@/src/environment/agent-environment.ts";
-import { createGondolinAgentEnvironment } from "@/src/environment/gondolin/layer.ts";
+import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin/layer.ts";
 import { Journal } from "@/src/session/persistent-actor/journal.ts";
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
 import {
@@ -84,7 +84,7 @@ class GitSnapshotEnvironment implements AgentEnvironment {
 
   constructor(private readonly scenario: "states" | "bounds" = "states") {}
 
-  checkpoint: AgentEnvironment["checkpoint"] = () => Effect.die("unexpected checkpoint");
+  stop: AgentEnvironment["stop"] = Effect.die("unexpected stop");
 
   run: AgentEnvironment["run"] = (command, options = {}) => {
     this.commands.push([...command]);
@@ -374,12 +374,17 @@ Deno.test("Git Snapshot is generated through bounded direct guest commands", asy
       assert(command.includes("GIT_CONFIG_NOSYSTEM=1"));
       assert(command.includes("GIT_CONFIG_GLOBAL=/dev/null"));
       assert(command.includes("GIT_ATTR_NOSYSTEM=1"));
-      assert(command.includes("safe.directory=/workspace"));
       assert(command.includes("core.fsmonitor=false"));
       assert(command.includes("core.hooksPath=/dev/null"));
       assert(command.includes("diff.external="));
       assertEquals(command.some((part) => part.startsWith("GIT_DIR=")), false);
     }
+    assertEquals(
+      environment.commands.some((command) =>
+        command.some((argument) => argument.includes("safe.directory"))
+      ),
+      false,
+    );
     const stagedPatchCommand = gitCommands.find((command) =>
       command.includes("diff") && command.includes("--cached")
     );
@@ -548,12 +553,17 @@ Deno.test({
       ),
       CREATED_AT,
     ));
-    const workspacePath = await Effect.runPromise(store.getSessionWorkspacePath(SESSION_ID));
+    const rootDiskPath = await Effect.runPromise(store.getSessionRootDiskPath(SESSION_ID));
     const scope = await Effect.runPromise(Scope.make());
+    const guestImage = await installLocalGuestImage(workingDirectory);
+    const provider = makeGondolinAgentEnvironmentProvider(
+      guestImage,
+      gondolinTestEnvironmentOptions().softwareEmulation,
+    );
+    await Effect.runPromise(provider.initializeRootDisk(rootDiskPath));
     const runtime = await Effect.runPromise(
-      createGondolinAgentEnvironment({
-        workspacePath,
-        guestImage: await installLocalGuestImage(workingDirectory),
+      provider.make({
+        rootDiskPath,
         sessionLabel: "openorb hostile Git Snapshot test",
         github: {
           repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
@@ -561,7 +571,6 @@ Deno.test({
         },
         cpuCount: 1,
         memoryMiB: 1024,
-        ...gondolinTestEnvironmentOptions(),
       }).pipe(Effect.provideService(Scope.Scope, scope)),
     );
 

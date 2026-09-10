@@ -62,8 +62,7 @@ const continueSessionSchema = f.object({
 const retrySessionSchema = f.object({
   recovery: f.field(s.union([
     s.literal("retry-provisioning" as const),
-    s.literal("resume-prior-checkpoint" as const),
-    s.literal("start-clean-vm" as const),
+    s.literal("restart-environment" as const),
   ])),
 });
 
