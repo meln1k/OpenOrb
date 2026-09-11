@@ -19,6 +19,9 @@ stable path with an atomic hard link, and syncs the directory. Restore and recov
 existing disk and fail rather than recreate a missing one. Only one VM may attach the writable disk
 at a time.
 
+Gondolin expands the ext4 filesystem to the sparse disk's capacity during VM startup. The guest
+image provides `resize2fs` from `e2fsprogs` for this operation.
+
 Stop takes a final Git Snapshot, runs guest `/bin/sync`, closes Pi, and explicitly stops and closes
 the VM while retaining `root-disk.qcow2`. The runner then calls host `fsync` on that file and its
 session directory before appending `stop.completed` to the Session Journal. Wake creates a new VM

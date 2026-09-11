@@ -15,16 +15,15 @@ import type { ActiveAgentRun } from "../../harness/agent-harness.ts";
 import type { SessionActorError } from "./actor-error.ts";
 import type { OpenAgentSession } from "./agent-runtime.ts";
 import type { RunnerSessionMetadata } from "../store.ts";
+import type { GitFileUpdateAcceptance } from "../git-snapshot-coordinator.ts";
+
+export type { GitFileUpdateAcceptance } from "../git-snapshot-coordinator.ts";
 
 export type PromptAcceptance =
   | { readonly ok: true; readonly runId: RunId; readonly mode: "started" | "follow-up" }
   | { readonly ok: false; readonly message: string };
 
 export type AbortAcceptance =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly message: string };
-
-export type GitFileUpdateAcceptance =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string };
 

@@ -274,8 +274,8 @@ export function updateSessionGitFile(
     return updated ? { ok: true } : {
       ok: false,
       message: input.action === "stage"
-        ? "The file could not be staged. The latest Git Snapshot has been loaded."
-        : "The file could not be unstaged. The latest Git Snapshot has been loaded.",
+        ? "The file could not be staged. Git changes are being refreshed."
+        : "The file could not be unstaged. Git changes are being refreshed.",
     };
   }
 }
@@ -285,6 +285,7 @@ export function sameGitSnapshotContents(
   right: SessionGitSnapshot,
 ): boolean {
   return left.snapshotId === right.snapshotId &&
+    left.mutationRevision === right.mutationRevision &&
     left.completeness === right.completeness &&
     left.branch === right.branch &&
     left.head === right.head &&

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   DurableSessionEvent,
@@ -49,6 +49,13 @@ export type ClientRequestId = typeof ClientRequestId.Type;
 
 export const SessionCursor = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const RunnerRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+export const GitMutationRevision = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+).pipe(Schema.brand("GitMutationRevision"));
+export type GitMutationRevision = typeof GitMutationRevision.Type;
+const InitialGitMutationRevision = GitMutationRevision.make(0);
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -458,6 +465,10 @@ const SessionGitSections = Schema.Struct({
 export class SessionGitSnapshot extends Schema.Class<SessionGitSnapshot>("SessionGitSnapshot")(
   Schema.Struct({
     snapshotId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))),
+    mutationRevision: GitMutationRevision.pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed(InitialGitMutationRevision)),
+      Schema.withConstructorDefault(Effect.succeed(InitialGitMutationRevision)),
+    ),
     generatedAt: RunnerSessionCreatedAt,
     branch: Schema.optionalKey(SessionGitReference),
     head: Schema.optionalKey(SessionGitHead),
@@ -479,7 +490,9 @@ export class UpdateSessionGitFilePayload
 
 export class GitFileUpdateAccepted extends Schema.Class<GitFileUpdateAccepted>(
   "GitFileUpdateAccepted",
-)({}) {}
+)({
+  mutationRevision: GitMutationRevision,
+}) {}
 
 const DurableSessionEventDelivery = Schema.Struct({
   runId: Schema.NullOr(RunId),

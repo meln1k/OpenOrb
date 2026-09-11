@@ -5,6 +5,7 @@ import * as DenoPath from "@effect/platform-deno/DenoPath";
 import {
   AbortSessionPayload,
   GitAuthor,
+  GitMutationRevision,
   MAX_RPC_SESSION_EVENT_TEXT_BYTES,
   ProjectId,
   PromptSessionPayload,
@@ -19,6 +20,7 @@ import {
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Fiber, Layer, Logger, Schema, Stream } from "effect";
+import { TestClock } from "effect/testing";
 import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 
@@ -548,10 +550,12 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
   }
 });
 
-Deno.test("Stop rejects an active Git Snapshot and succeeds after it finishes", async () => {
+Deno.test("Stop waits for its final Git snapshot and excludes later heartbeat refreshes", async () => {
   const directory = await Deno.makeTempDir();
   const snapshotStarted = Promise.withResolvers<void>();
   const releaseSnapshot = Promise.withResolvers<void>();
+  const advanceHeartbeat = Promise.withResolvers<void>();
+  const heartbeatAdvanced = Promise.withResolvers<void>();
   try {
     const store = await makeStore(directory);
     const environment = new FakeEnvironment();
@@ -560,6 +564,10 @@ Deno.test("Stop rejects an active Git Snapshot and succeeds after it finishes", 
         cpuCount: 4,
         memoryMiB: 8192,
         createPiSession: createSettlingPiSession,
+        testClockAdvance: {
+          requested: advanceHeartbeat.promise,
+          completed: heartbeatAdvanced,
+        },
       },
       store,
       fakeEnvironmentProvider(environment),
@@ -569,31 +577,40 @@ Deno.test("Stop rejects an active Git Snapshot and succeeds after it finishes", 
         );
         await waitForState(store, "ready");
         await createRootDisk(directory, SESSION_ID);
+        const snapshotsBefore = environment.commands.filter((command) =>
+          command.includes("--porcelain=v2")
+        ).length;
         environment.gitSnapshotBlock = {
           started: snapshotStarted,
           release: releaseSnapshot,
         };
         const actor = requireActor(supervisor);
-        const update = Effect.runPromise(actor.updateGitFile(
-          Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
-            sessionId: SESSION_ID,
-            action: "stage",
-            path: "src/main.ts",
-          }),
-        ));
+        const stopped = Effect.runPromise(actor.stop(stopPayload()));
         await snapshotStarted.promise;
-        const rejected = await Effect.runPromise(actor.stop(stopPayload()));
-        assertEquals(rejected.ok, false);
+        assertEquals(environment.stopCalls, 0);
+        assertEquals(environment.commands.some((command) => command[0] === "/bin/sync"), false);
         assertEquals((await Effect.runPromise(supervisor.deleteSession(SESSION_ID))).ok, false);
 
+        advanceHeartbeat.resolve();
+        await heartbeatAdvanced.promise;
         environment.gitSnapshotBlock = undefined;
         releaseSnapshot.resolve();
-        assertEquals(await update, { ok: true });
-        assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
+        assertEquals(await stopped, { ok: true });
         assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "stopped");
+        assertEquals(
+          environment.commands.filter((command) => command.includes("--porcelain=v2")).length,
+          snapshotsBefore + 1,
+        );
+        const snapshotIndex = environment.commands.findLastIndex((command) =>
+          command.includes("--porcelain=v2")
+        );
+        const syncIndex = environment.commands.findIndex((command) => command[0] === "/bin/sync");
+        assert(snapshotIndex >= 0 && syncIndex > snapshotIndex);
+        assertEquals(environment.stopCalls, 1);
       },
     );
   } finally {
+    advanceHeartbeat.resolve();
     releaseSnapshot.resolve();
     await Deno.remove(directory, { recursive: true });
   }
@@ -961,7 +978,10 @@ Deno.test("SessionSupervisor records failed follow-ups and aborts only the activ
           action: "stage",
           path: "src/main.ts",
         });
-        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), { ok: true });
+        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), {
+          ok: true,
+          mutationRevision: GitMutationRevision.make(1),
+        });
         assert(runtime.commands.some((command) => command.includes("add")));
 
         const stale = Schema.decodeUnknownSync(AbortSessionPayload)({
@@ -1050,6 +1070,7 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
     ));
     const spawns: SessionActorInput[] = [];
     const updates: UpdateSessionGitFilePayload[] = [];
+    let mutationRevision = 0;
     const actor: SessionActor = {
       sessionId: SESSION_ID,
       activeRunId: undefined,
@@ -1062,7 +1083,10 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
       updateGitFile: (update) =>
         Effect.sync(() => {
           updates.push(update);
-          return { ok: true as const };
+          return {
+            ok: true as const,
+            mutationRevision: GitMutationRevision.make(++mutationRevision),
+          };
         }),
       awaitTermination: Effect.never,
       shutdown: Effect.void,
@@ -1095,7 +1119,10 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
       });
       const restored = yield* supervisor.findOrRestoreActor(SESSION_ID);
       assert(restored);
-      assertEquals(yield* restored.updateGitFile(update), { ok: true });
+      assertEquals(yield* restored.updateGitFile(update), {
+        ok: true,
+        mutationRevision: GitMutationRevision.make(1),
+      });
       assertEquals(updates, [update]);
       assertEquals(spawns.length, 2);
       assertEquals(spawns.map((spawn) => spawn.mode), ["reconcile", "restore"]);
@@ -1313,7 +1340,10 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
             ),
           ),
         ], { concurrency: "unbounded" }));
-        assertEquals(updated, { ok: true });
+        assertEquals(updated, {
+          ok: true,
+          mutationRevision: GitMutationRevision.make(1),
+        });
         assertEquals(woken, { ok: true });
         assertEquals(piCreations, 1);
 
@@ -1468,7 +1498,10 @@ Deno.test("failed Pi opens are visible and leave a Git-only restore retryable", 
         });
         assertEquals((await visibleWakeIssue).state.stage, "ready");
         assertEquals(piOpenAttempts, 1);
-        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), { ok: true });
+        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), {
+          ok: true,
+          mutationRevision: GitMutationRevision.make(1),
+        });
 
         const prompt = (text: string) =>
           Schema.decodeUnknownSync(PromptSessionPayload)({
@@ -1495,7 +1528,10 @@ Deno.test("failed Pi opens are visible and leave a Git-only restore retryable", 
         assert(issue);
         assertEquals(issue.diagnostics, undefined);
 
-        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), { ok: true });
+        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), {
+          ok: true,
+          mutationRevision: GitMutationRevision.make(2),
+        });
         const retry = await Effect.runPromise(
           actor.prompt(prompt("Retry")).pipe(Effect.timeout("1 second")),
         );
@@ -2192,8 +2228,14 @@ function makeStore(workingDirectory: string): Promise<TestStore> {
     Effect.gen(function* () {
       const journal = yield* Journal;
       const store = yield* RunnerSessionStore;
-      const session = makeSessionFixture(store, journal, RUNNER_ID);
-      return { ...store, journal, session };
+      let mutationRevision = 0;
+      const testStore = {
+        ...store,
+        advanceGitMutationRevision: () =>
+          Effect.sync(() => GitMutationRevision.make(++mutationRevision)),
+      };
+      const session = makeSessionFixture(testStore, journal, RUNNER_ID);
+      return { ...testStore, journal, session };
     }).pipe(Effect.provide(storeLive)),
   );
 }
@@ -2285,6 +2327,10 @@ async function withSupervisor(
   options: Omit<SessionSupervisorOptions, "runnerId"> & {
     readonly createPiSession?: CreateRawPiSession;
     readonly logs?: ReturnType<typeof Logger.formatStructured.log>[];
+    readonly testClockAdvance?: {
+      readonly requested: Promise<void>;
+      readonly completed: PromiseWithResolvers<void>;
+    };
   },
   store: TestStore,
   environmentProvider: AgentEnvironmentProvider,
@@ -2324,12 +2370,23 @@ async function withSupervisor(
           Effect.provideService(SessionActorFactory, actorFactory),
           Effect.provideService(SessionEvents, events),
         );
+        if (options.testClockAdvance !== undefined) {
+          const advance = options.testClockAdvance;
+          yield* Effect.forkScoped(Effect.gen(function* () {
+            yield* Effect.promise(() => advance.requested);
+            yield* TestClock.adjust("15 seconds");
+            advance.completed.resolve();
+          }));
+        }
         yield* Effect.promise(() => use(supervisor, events));
       }),
     ).pipe(Effect.provide(
-      options.logs === undefined ? Layer.empty : Logger.layer([
-        Logger.make((entry) => options.logs?.push(Logger.formatStructured.log(entry))),
-      ]),
+      Layer.merge(
+        options.logs === undefined ? Layer.empty : Logger.layer([
+          Logger.make((entry) => options.logs?.push(Logger.formatStructured.log(entry))),
+        ]),
+        options.testClockAdvance === undefined ? Layer.empty : TestClock.layer({}),
+      ),
     )),
   );
 }

@@ -116,6 +116,10 @@ export const sessionGitSnapshotSchema = object({
       "Expected a Git Snapshot identifier.",
     ),
   ),
+  mutationRevision: number().refine(
+    (value) => Number.isSafeInteger(value) && value >= 0,
+    "Expected a non-negative Git mutation revision.",
+  ),
   generatedAt: string(),
   branch: optional(sessionGitBranchSchema),
   head: optional(sessionGitHeadSchema),

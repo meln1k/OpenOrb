@@ -85,7 +85,7 @@ Deno.test("operations documentation records the recovery contract and release pi
   const protocol = await Deno.readTextFile("packages/protocol/src/runner-api-schemas.ts");
   const rootConfiguration = await Deno.readTextFile("deno.json");
   const runnerConfiguration = await Deno.readTextFile("packages/runner/deno.json");
-  assert(release.includes('id: "mvp-6"'));
+  assert(release.includes('id: "mvp-7"'));
   assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 17"));
   for (const pin of ["2.9.5", "0.12.0", "0.85.1", "3.0.0-beta.10"]) {
     assert(

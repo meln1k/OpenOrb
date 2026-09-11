@@ -5,6 +5,7 @@ import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
 import {
   AbortSessionAccepted,
   GitFileUpdateAccepted,
+  GitMutationRevision,
   PromptSessionAccepted,
   RUNNER_PROTOCOL_VERSION,
   RunnerCapacity,
@@ -605,7 +606,10 @@ Deno.test("Git file update RPC resolves and calls the session actor", () =>
       updateGitFile: (payload: unknown) =>
         Effect.sync(() => {
           updates.push(payload);
-          return { ok: true as const };
+          return {
+            ok: true as const,
+            mutationRevision: GitMutationRevision.make(7),
+          };
         }),
     };
     const supervisor = {
@@ -635,6 +639,9 @@ Deno.test("Git file update RPC resolves and calls the session actor", () =>
     assert(
       result.status === "accepted" && result.acknowledgement instanceof GitFileUpdateAccepted,
     );
+    if (result.status === "accepted") {
+      assertEquals(result.acknowledgement.mutationRevision, GitMutationRevision.make(7));
+    }
     assertEquals(updates.length, 1);
     assertEquals(
       updates[0],

@@ -247,7 +247,11 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
             ),
             Effect.flatMap((result) =>
               result.ok
-                ? Effect.succeed(new GitFileUpdateAccepted({}))
+                ? Effect.succeed(
+                  new GitFileUpdateAccepted({
+                    mutationRevision: result.mutationRevision,
+                  }),
+                )
                 : new GitFileUpdateRejected({
                   sessionId: payload.sessionId,
                   message: result.message,

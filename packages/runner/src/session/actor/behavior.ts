@@ -3,7 +3,7 @@ import type { SessionProvisioningStage } from "@openorb/protocol/runner-api";
 
 import { makeGitSnapshotCoordinator } from "../git-snapshot-coordinator.ts";
 import { makeGitSnapshotSynchronizer } from "../git-snapshot-synchronizer.ts";
-import { generateSessionGitSnapshotBundle } from "../git-snapshot.ts";
+import { generateSessionGitSnapshotBundle, updateSessionGitFile } from "../git-snapshot.ts";
 import type {
   CommandHandler,
   PersistentActorContext,
@@ -72,19 +72,27 @@ export function makeSessionBehavior(
         ),
       publishUpdated: (correlationId) => publish(correlationId, { type: "git.snapshot.updated" }),
     });
-    const requestGitSnapshot = Effect.gen(function* () {
-      const reply = yield* Deferred.make<void, unknown>();
-      if (!(yield* send({ kind: "internal", _tag: "RefreshGitSnapshot", reply }))) {
-        return yield* new SessionActorError("The session actor is unavailable.", undefined);
-      }
-      return yield* Deferred.await(reply);
+    const requestGitSnapshot = (wait: boolean) =>
+      Effect.gen(function* () {
+        const reply = yield* Deferred.make<void, unknown>();
+        if (!(yield* send({ kind: "internal", _tag: "RefreshGitSnapshot", reply }))) {
+          return yield* new SessionActorError("The session actor is unavailable.", undefined);
+        }
+        if (wait) yield* Deferred.await(reply);
+      });
+    const snapshotCoordinator = yield* makeGitSnapshotCoordinator({
+      sessionId,
+      advanceMutationRevision: store.advanceGitMutationRevision,
+      updateFile: updateSessionGitFile,
+      snapshots: gitSnapshots,
+      requestRefresh: requestGitSnapshot,
+      recordIssue: recordGitSnapshotIssue,
     });
-    const snapshotCoordinator = yield* makeGitSnapshotCoordinator(requestGitSnapshot);
     const agentRuntime = yield* makeSessionAgentRuntime(
       sessionId,
       input.metadata.definition,
       reporter,
-      snapshotCoordinator,
+      snapshotCoordinator.boundaries,
     );
     const run = makeSessionRun({ runtime, agentRuntime, reporter, decisions, send });
     const continuation = makeSessionContinuation({
@@ -102,8 +110,7 @@ export function makeSessionBehavior(
       store,
       runtime,
       agentRuntime,
-      gitSnapshots,
-      requestGitSnapshot,
+      git: snapshotCoordinator,
       send,
       emitState,
       decisions,

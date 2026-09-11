@@ -17,7 +17,7 @@ export type PreparedSessionChangeRow = {
   readonly label: string;
   readonly state: SessionChangeFileState;
   readonly startsSection: boolean;
-  readonly pending?: SessionChangeMutationPaths;
+  readonly pending?: SessionChangeMutationPaths & { readonly requestPending: boolean };
   readonly file: SessionGitFileData;
   readonly fileDiff?: FileDiffMetadata;
   readonly fallback: string;
@@ -30,6 +30,7 @@ export type PendingSessionChangeIntent = {
   readonly path: string;
   readonly previousPath?: string;
   readonly ambiguousDiff: boolean;
+  readonly acknowledgedRevision?: number;
   readonly row: PreparedSessionChangeRow;
 };
 
@@ -119,7 +120,10 @@ export function projectPendingSessionChanges(
 function optimisticSessionChangeRow(
   target: PreparedSessionChangeRow,
   state: SessionChangeFileState,
-  intent: Pick<PendingSessionChangeIntent, "path" | "previousPath">,
+  intent: Pick<
+    PendingSessionChangeIntent,
+    "path" | "previousPath" | "acknowledgedRevision"
+  >,
   ambiguousDiff: boolean,
 ): PreparedSessionChangeRow {
   const optimistic: PreparedSessionChangeRow = {
@@ -131,6 +135,7 @@ function optimisticSessionChangeRow(
     pending: {
       path: intent.path,
       ...(intent.previousPath === undefined ? {} : { previousPath: intent.previousPath }),
+      requestPending: intent.acknowledgedRevision === undefined,
     },
   };
   if (!ambiguousDiff) return optimistic;
@@ -163,7 +168,12 @@ export function filePreviousDisplayPath(file: SessionGitFileData): string | unde
 export function sessionChangeMutationPaths(
   row: PreparedSessionChangeRow,
 ): SessionChangeMutationPaths {
-  if (row.pending !== undefined) return row.pending;
+  if (row.pending !== undefined) {
+    return {
+      path: row.pending.path,
+      ...(row.pending.previousPath === undefined ? {} : { previousPath: row.pending.previousPath }),
+    };
+  }
   const previousPath = filePreviousPath(row.file);
   return {
     path: row.file.path,

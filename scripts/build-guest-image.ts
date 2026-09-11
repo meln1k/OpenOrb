@@ -17,7 +17,7 @@ import {
   parseGuestImageManifest,
 } from "@/packages/runner/src/environment/gondolin/guest-image/manifest.ts";
 
-export const GUEST_IMAGE_RELEASE_ID = "mvp-6";
+export const GUEST_IMAGE_RELEASE_ID = "mvp-7";
 export const GUEST_IMAGE_FILES = [
   "manifest.json",
   "vmlinuz-virt",

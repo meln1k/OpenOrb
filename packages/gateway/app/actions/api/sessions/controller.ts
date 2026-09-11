@@ -145,8 +145,7 @@ export default createController(routes.api.sessions, {
       if (updated.status !== "accepted") {
         return apiError(updated.message, updated.status === "rejected" ? 409 : 503);
       }
-      return new Response(null, {
-        status: 204,
+      return Response.json(updated.acknowledgement, {
         headers: { "Cache-Control": "no-store" },
       });
     },

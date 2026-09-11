@@ -9,6 +9,7 @@ import {
   DeleteSessionPayload,
   GitAuthor,
   GitFileUpdateAccepted,
+  GitMutationRevision,
   ProjectId,
   PromptSessionAccepted,
   ProvisionSessionPayload,
@@ -60,6 +61,7 @@ const SESSION_2 = "018f47f2-39b1-7b30-8000-000000000012";
 const PROJECT_ID = "018f47f2-39b1-7b30-8000-000000000021";
 const TOKEN = "openorb_runner_test-token";
 const GIT_AUTHOR = new GitAuthor({ name: "OpenOrb User", email: "user@example.com" });
+const GIT_MUTATION_REVISION = GitMutationRevision.make(7);
 
 const decode = Schema.decodeUnknownSync;
 const projectId = decode(ProjectId)(PROJECT_ID);
@@ -301,7 +303,7 @@ function handlers(probe: Probe) {
     "session.git-file.update": (request) =>
       Effect.sync(() => {
         probe.gitFileUpdateRequests.push(request);
-        return new GitFileUpdateAccepted({});
+        return new GitFileUpdateAccepted({ mutationRevision: GIT_MUTATION_REVISION });
       }),
     "session.watch": (request) =>
       Stream.unwrap(Effect.gen(function* () {
@@ -1105,6 +1107,9 @@ Deno.test("ready sessions route typed Git file updates to the pinned runner", ()
     assert(
       result.status === "accepted" && result.acknowledgement instanceof GitFileUpdateAccepted,
     );
+    if (result.status === "accepted") {
+      assertEquals(result.acknowledgement.mutationRevision, GIT_MUTATION_REVISION);
+    }
     assertEquals(probe.gitFileUpdateRequests, [
       Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
         sessionId: SESSION_1,

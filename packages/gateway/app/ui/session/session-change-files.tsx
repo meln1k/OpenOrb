@@ -244,7 +244,7 @@ function createSessionChangeHeader(
   actionButton.dataset.gitFileAction = action;
   actionButton.setAttribute("aria-label", `${actionLabel} ${file.displayPath}`);
   actionButton.title = `${actionLabel} ${file.displayPath}`;
-  if (row.pending) actionButton.setAttribute("aria-busy", "true");
+  if (row.pending?.requestPending) actionButton.setAttribute("aria-busy", "true");
 
   const idle = document.createElement("span");
   idle.dataset.slot = "git-file-action-idle";
@@ -254,7 +254,7 @@ function createSessionChangeHeader(
   const spinner = document.createElement("span");
   spinner.dataset.slot = "git-file-action-spinner";
   spinner.setAttribute("aria-hidden", "true");
-  spinner.hidden = !row.pending;
+  spinner.hidden = !row.pending?.requestPending;
   actionButton.append(spinner);
   header.append(actionButton);
   root.append(header);

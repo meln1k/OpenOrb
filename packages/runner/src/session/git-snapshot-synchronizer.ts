@@ -1,4 +1,4 @@
-import type { SessionGitSnapshot, SessionId } from "@openorb/protocol/runner-api";
+import { SessionGitSnapshot, type SessionId } from "@openorb/protocol/runner-api";
 import { Effect, Predicate } from "effect";
 
 import type { AgentEnvironment } from "../environment/agent-environment.ts";
@@ -36,8 +36,8 @@ export interface GitSnapshotSynchronizer {
   readonly refresh: (
     environment: AgentEnvironment,
     metadata: RunnerSessionMetadata,
-    correlationId: string,
   ) => Effect.Effect<SessionGitSnapshot, unknown>;
+  readonly publishPending: (correlationId: string) => Effect.Effect<void, unknown>;
 }
 
 export function makeGitSnapshotSynchronizer(
@@ -47,7 +47,6 @@ export function makeGitSnapshotSynchronizer(
     refresh: Effect.fn("GitSnapshotSynchronizer.refresh")(function* (
       environment: AgentEnvironment,
       metadata: RunnerSessionMetadata,
-      correlationId: string,
     ) {
       const current = yield* options.store.readGitSnapshotState(options.sessionId).pipe(
         Effect.match({
@@ -55,30 +54,45 @@ export function makeGitSnapshotSynchronizer(
           onSuccess: (state) => state,
         }),
       );
-      const generatedResult = yield* options.generate(environment, metadata).pipe(
-        Effect.catch(() => Effect.succeed({ snapshot: staleGitSnapshot(current?.snapshot) })),
+      const generation = yield* options.generate(environment, metadata).pipe(
+        Effect.match({
+          onFailure: () => ({
+            succeeded: false as const,
+            result: { snapshot: staleGitSnapshot(current?.snapshot) },
+          }),
+          onSuccess: (result) => ({ succeeded: true as const, result }),
+        }),
       );
       const generated: GeneratedSessionGitSnapshot = Predicate.hasProperty(
-          generatedResult,
+          generation.result,
           "snapshot",
         )
-        ? generatedResult
-        : { snapshot: generatedResult };
+        ? generation.result
+        : { snapshot: generation.result };
+      const mutationRevision = current?.mutationRevision ?? generated.snapshot.mutationRevision;
+      const snapshot = generation.succeeded
+        ? new SessionGitSnapshot({ ...generated.snapshot, mutationRevision })
+        : generated.snapshot;
       let state = current;
-      if (!state || !sameGitSnapshotContents(state.snapshot, generated.snapshot)) {
-        state = { snapshot: generated.snapshot, notificationPending: true };
+      if (!state || !sameGitSnapshotContents(state.snapshot, snapshot)) {
+        state = { snapshot, mutationRevision, notificationPending: true };
         yield* options.store.writeGitSnapshotState(
           options.sessionId,
           state,
           generated.patches,
         );
       }
+      return state.snapshot;
+    }),
+    publishPending: Effect.fn("GitSnapshotSynchronizer.publishPending")(function* (
+      correlationId: string,
+    ) {
+      let state = yield* options.store.readGitSnapshotState(options.sessionId);
       if (state.notificationPending) {
         yield* options.publishUpdated(correlationId);
         state = { ...state, notificationPending: false };
         yield* options.store.writeGitSnapshotState(options.sessionId, state);
       }
-      return state.snapshot;
     }),
   };
 }

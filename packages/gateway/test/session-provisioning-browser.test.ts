@@ -9,6 +9,7 @@ import {
 import {
   GitAuthor,
   GitFileUpdateAccepted,
+  GitMutationRevision,
   initialPromptPreview,
   RunnerSessionSnapshot,
   SessionGitSnapshot,
@@ -148,9 +149,10 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
       });
     }
     this.gitFileUpdates.push(input);
+    const mutationRevision = GitMutationRevision.make(this.gitFileUpdates.length);
     return Effect.succeed({
       status: "accepted" as const,
-      acknowledgement: new GitFileUpdateAccepted({}),
+      acknowledgement: new GitFileUpdateAccepted({ mutationRevision }),
     });
   }
 
@@ -701,9 +703,9 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         previousPath: exactPreviousPath,
       }),
     });
-    assertEquals(stagedChange.status, 204);
+    assertEquals(stagedChange.status, 200);
     assertEquals(stagedChange.headers.get("cache-control"), "no-store");
-    assertEquals(await stagedChange.text(), "");
+    assertEquals(await stagedChange.json(), { mutationRevision: 1 });
     const unstagedChange = await fetch(new URL(changesHref, server.baseUrl), {
       method: "POST",
       headers: { Accept: "application/json", Cookie: client.cookie },
@@ -713,8 +715,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         path: exactPath,
       }),
     });
-    assertEquals(unstagedChange.status, 204);
-    assertEquals(await unstagedChange.text(), "");
+    assertEquals(unstagedChange.status, 200);
+    assertEquals(await unstagedChange.json(), { mutationRevision: 2 });
     assertEquals(connections.gitFileUpdates, [
       {
         workspaceId: client.workspaceId,

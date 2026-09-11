@@ -9,7 +9,7 @@ import {
 } from "../../harness/agent-harness.ts";
 import { actorError, type SessionActorError } from "./actor-error.ts";
 import type { RunnerSessionDefinition } from "../definition.ts";
-import type { GitSnapshotCoordinator } from "../git-snapshot-coordinator.ts";
+import type { GitSnapshotBoundaries } from "../git-snapshot-coordinator.ts";
 import type { SessionReporter } from "./reporter.ts";
 import { RunnerSessionStore } from "../store.ts";
 
@@ -34,7 +34,7 @@ export const makeSessionAgentRuntime = Effect.fn("makeSessionAgentRuntime")(func
   sessionId: SessionId,
   definition: RunnerSessionDefinition,
   reporter: SessionReporter,
-  snapshotCoordinator: GitSnapshotCoordinator<unknown>,
+  snapshotCoordinator: GitSnapshotBoundaries<unknown>,
 ) {
   const store = yield* RunnerSessionStore;
   const harness = yield* AgentHarness;

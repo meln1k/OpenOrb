@@ -120,7 +120,7 @@ Deno.test("pending file intents optimistically move the latest logical file stat
 
   assertEquals(staged.length, 1);
   assertEquals(staged[0]?.state, "staged");
-  assertEquals(staged[0]?.pending, { path: "src/value.ts" });
+  assertEquals(staged[0]?.pending, { path: "src/value.ts", requestPending: true });
   assertStrictEquals(staged[0]?.fileDiff, unstaged.fileDiff);
 
   const optimisticStaged = staged[0];
@@ -135,7 +135,7 @@ Deno.test("pending file intents optimistically move the latest logical file stat
 
   assertEquals(latest.length, 1);
   assertEquals(latest[0]?.state, "unstaged");
-  assertEquals(latest[0]?.pending, { path: "src/value.ts" });
+  assertEquals(latest[0]?.pending, { path: "src/value.ts", requestPending: true });
 });
 
 Deno.test("pending intents do not present either half of a combined diff as authoritative", () => {

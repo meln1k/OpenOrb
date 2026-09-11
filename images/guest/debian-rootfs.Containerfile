@@ -54,6 +54,7 @@ RUN apt-get update \
         curl \
         dbus-x11 \
         dpkg-dev \
+        e2fsprogs \
         ffmpeg \
         file \
         findutils \

@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   GitAuthor,
+  GitMutationRevision,
   ModelReference,
   ProjectId,
   RunnerId,
@@ -87,56 +88,94 @@ const ENVIRONMENT: AgentEnvironment = {
   stop: Effect.die("unexpected stop"),
 };
 
-Deno.test("Git Snapshot publication remains pending and retries unchanged content", async () => {
+Deno.test("Git Snapshot publication remains pending and retries separately", async () => {
   const store = new MemoryGitSnapshotStore();
   const generation = new SnapshotGeneration();
   let attempts = 0;
+  const correlations: string[] = [];
   const synchronizer = makeGitSnapshotSynchronizer({
     sessionId: SESSION_ID,
     store,
     generate: generation.generate,
-    publishUpdated: () =>
+    publishUpdated: (correlationId) =>
       Effect.suspend(() => {
         attempts++;
+        correlations.push(correlationId);
         return attempts === 1 ? Effect.fail("publication failed") : Effect.void;
       }),
   });
 
-  await assertRejects(() =>
-    Effect.runPromise(synchronizer.refresh(ENVIRONMENT, METADATA, crypto.randomUUID()))
-  );
+  await Effect.runPromise(synchronizer.refresh(ENVIRONMENT, METADATA));
   const pending = store.state;
   if (!pending) throw new Error("Expected a stored Git Snapshot.");
   assertEquals(pending.notificationPending, true);
   assertEquals(store.writes, 1);
+  assertEquals(attempts, 0);
 
-  const synchronized = await Effect.runPromise(
-    synchronizer.refresh(ENVIRONMENT, METADATA, crypto.randomUUID()),
-  );
-  assertEquals(synchronized.generatedAt, pending.snapshot.generatedAt);
+  await assertRejects(() => Effect.runPromise(synchronizer.publishPending("first-publication")));
+  assertEquals(store.state?.notificationPending, true);
+  assertEquals(store.writes, 1);
+
+  await Effect.runPromise(synchronizer.publishPending("retry-publication"));
   assertEquals(store.state?.notificationPending, false);
+  assertEquals(attempts, 2);
+  assertEquals(store.writes, 2);
+  assertEquals(correlations, ["first-publication", "retry-publication"]);
+
+  await Effect.runPromise(synchronizer.publishPending("already-published"));
   assertEquals(attempts, 2);
   assertEquals(store.writes, 2);
 });
 
-Deno.test("Git Snapshot refresh failures retain useful data and recovery clears stale state", async () => {
+Deno.test("unchanged Git contents advance staged mutation coverage", async () => {
   const store = new MemoryGitSnapshotStore();
   const generation = new SnapshotGeneration();
-  let publications = 0;
   const synchronizer = makeGitSnapshotSynchronizer({
     sessionId: SESSION_ID,
     store,
     generate: generation.generate,
-    publishUpdated: () => Effect.sync(() => publications++).pipe(Effect.asVoid),
+    publishUpdated: () => Effect.void,
   });
 
-  const complete = await Effect.runPromise(
-    synchronizer.refresh(ENVIRONMENT, METADATA, crypto.randomUUID()),
-  );
+  const initial = await Effect.runPromise(synchronizer.refresh(ENVIRONMENT, METADATA));
+  const current = store.state;
+  if (!current) throw new Error("Expected a stored Git Snapshot.");
+  store.state = {
+    ...current,
+    mutationRevision: GitMutationRevision.make(1),
+    notificationPending: false,
+  };
+
+  const covered = await Effect.runPromise(synchronizer.refresh(ENVIRONMENT, METADATA));
+  assertEquals(covered.generatedAt, initial.generatedAt);
+  assertEquals(covered.sections, initial.sections);
+  assertEquals(covered.mutationRevision, GitMutationRevision.make(1));
+  assertEquals(store.state?.snapshot.mutationRevision, GitMutationRevision.make(1));
+  assertEquals(store.state?.mutationRevision, GitMutationRevision.make(1));
+  assertEquals(store.state?.notificationPending, true);
+  assertEquals(store.writes, 2);
+});
+
+Deno.test("failed Git inspection retains useful data without advancing mutation coverage", async () => {
+  const store = new MemoryGitSnapshotStore();
+  const generation = new SnapshotGeneration();
+  const synchronizer = makeGitSnapshotSynchronizer({
+    sessionId: SESSION_ID,
+    store,
+    generate: generation.generate,
+    publishUpdated: () => Effect.void,
+  });
+
+  const complete = await Effect.runPromise(synchronizer.refresh(ENVIRONMENT, METADATA));
+  const current = store.state;
+  if (!current) throw new Error("Expected a stored Git Snapshot.");
+  store.state = {
+    ...current,
+    mutationRevision: GitMutationRevision.make(2),
+    notificationPending: false,
+  };
   generation.fail = true;
-  const stale = await Effect.runPromise(
-    synchronizer.refresh(ENVIRONMENT, METADATA, crypto.randomUUID()),
-  );
+  const stale = await Effect.runPromise(synchronizer.refresh(ENVIRONMENT, METADATA));
   assertEquals(stale.generatedAt, complete.generatedAt);
   assertEquals(stale.branch, complete.branch);
   assertEquals(stale.head, complete.head);
@@ -144,15 +183,17 @@ Deno.test("Git Snapshot refresh failures retain useful data and recovery clears 
   assertEquals(stale.completeness, "incomplete");
   assertEquals(stale.stale, true);
   assertStringIncludes(stale.message ?? "", "last saved snapshot");
+  assertEquals(stale.mutationRevision, GitMutationRevision.make(0));
+  assertEquals(store.state?.snapshot.mutationRevision, GitMutationRevision.make(0));
+  assertEquals(store.state?.mutationRevision, GitMutationRevision.make(2));
 
   generation.fail = false;
-  const recovered = await Effect.runPromise(
-    synchronizer.refresh(ENVIRONMENT, METADATA, crypto.randomUUID()),
-  );
+  const recovered = await Effect.runPromise(synchronizer.refresh(ENVIRONMENT, METADATA));
   assertEquals(recovered.completeness, "complete");
   assertEquals(recovered.stale, false);
   assertEquals(recovered.message, undefined);
-  assertEquals(publications, 3);
+  assertEquals(recovered.mutationRevision, GitMutationRevision.make(2));
+  assertEquals(store.state?.mutationRevision, GitMutationRevision.make(2));
 });
 
 Deno.test("Git Snapshot refresh failure without prior data stores an empty stale snapshot", async () => {
@@ -166,11 +207,11 @@ Deno.test("Git Snapshot refresh failure without prior data stores an empty stale
     publishUpdated: () => Effect.void,
   });
 
-  const stale = await Effect.runPromise(
-    synchronizer.refresh(ENVIRONMENT, METADATA, crypto.randomUUID()),
-  );
+  const stale = await Effect.runPromise(synchronizer.refresh(ENVIRONMENT, METADATA));
   assertEquals(stale.completeness, "incomplete");
   assertEquals(stale.stale, true);
+  assertEquals(stale.mutationRevision, GitMutationRevision.make(0));
+  assertEquals(store.state?.mutationRevision, GitMutationRevision.make(0));
   assertEquals(stale.sections, {
     staged: { files: [], patch: "", truncated: false },
     unstaged: { files: [], patch: "", truncated: false },

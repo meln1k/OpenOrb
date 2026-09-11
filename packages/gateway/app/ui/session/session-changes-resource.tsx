@@ -25,6 +25,12 @@ import {
 } from "@/app/ui/session/session-page-controller.tsx";
 
 const errorResponseSchema = object({ error: string() }, { unknownKeys: "error" });
+const gitFileUpdateAcceptedSchema = object({
+  mutationRevision: number().refine(
+    (value) => Number.isSafeInteger(value) && value >= 0,
+    "Expected a non-negative Git mutation revision.",
+  ),
+}, { unknownKeys: "error" });
 const patchChunkSchema = object({
   snapshotId: string(),
   section: string(),
@@ -59,7 +65,6 @@ interface PatchLoad {
 
 interface PendingFileMutation extends PendingSessionChangeIntent {
   readonly key: string;
-  readonly settleAfterRefresh?: number;
 }
 
 interface QueuedFileMutation {
@@ -69,6 +74,11 @@ interface QueuedFileMutation {
   readonly path: string;
   readonly previousPath?: string;
   readonly resolve: () => void;
+}
+
+interface FileMutationLane {
+  active: QueuedFileMutation;
+  queued?: QueuedFileMutation;
 }
 
 export interface SessionChangesViewOwner {
@@ -83,8 +93,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   #connected = false;
   #confirmedChanges: PreparedSessionChanges | undefined;
   #mutationGeneration = 0;
-  #mutationWorkerActive = false;
-  readonly #mutationQueue: QueuedFileMutation[] = [];
+  readonly #mutationLanes = new Map<string, FileMutationLane>();
   readonly #pendingMutations = new Map<string, PendingFileMutation>();
   #projection: SessionChangesProjection = {
     loaded: undefined,
@@ -92,7 +101,6 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     operationError: undefined,
   };
   #patchLoad: PatchLoad | undefined;
-  #refreshGeneration = 0;
   #refreshInFlight = false;
   #refreshPending = true;
 
@@ -163,36 +171,44 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     this.#notify();
 
     const completion = Promise.withResolvers<void>();
-    this.#mutationQueue.push({
+    const mutation: QueuedFileMutation = {
       action,
       generation,
       key,
       ...request,
       resolve: completion.resolve,
-    });
-    void this.#drainMutationQueue();
+    };
+    const lane = this.#mutationLanes.get(key);
+    if (lane === undefined) {
+      const created = { active: mutation };
+      this.#mutationLanes.set(key, created);
+      void this.#drainMutationLane(key, created);
+    } else {
+      lane.queued?.resolve();
+      lane.queued = mutation;
+    }
     await completion.promise;
   }
 
-  async #drainMutationQueue(): Promise<void> {
-    if (this.#mutationWorkerActive) return;
-    this.#mutationWorkerActive = true;
+  async #drainMutationLane(key: string, lane: FileMutationLane): Promise<void> {
     // Keep browser-side cleanup parseable by Safari, which does not support `using`.
     try {
       while (!this.#signal.aborted) {
-        const mutation = this.#mutationQueue.shift();
-        if (mutation === undefined) return;
+        const mutation = lane.active;
         const current = this.#pendingMutations.get(mutation.key);
-        if (current !== undefined && current.generation !== mutation.generation) {
-          mutation.resolve();
-          continue;
+        if (current === undefined || current.generation === mutation.generation) {
+          await this.#sendFileMutation(mutation);
         }
-        await this.#sendFileMutation(mutation);
         mutation.resolve();
+        if (lane.queued === undefined) return;
+        lane.active = lane.queued;
+        delete lane.queued;
       }
     } finally {
-      this.#mutationWorkerActive = false;
-      for (const mutation of this.#mutationQueue.splice(0)) mutation.resolve();
+      lane.active.resolve();
+      lane.queued?.resolve();
+      if (this.#mutationLanes.get(key) === lane) this.#mutationLanes.delete(key);
+      if (!this.#signal.aborted && this.#mutationLanes.size === 0) void this.#requestRefresh();
     }
   }
 
@@ -219,7 +235,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
           operationError: "The Git index update could not reach the runner.",
         };
       }
-      this.#settleFileMutation(mutation);
+      this.#failFileMutation(mutation);
       return;
     } else if (!response.ok && this.#mutationIsCurrent(mutation)) {
       const [responseBody, bodyError] = await tryAsync(response.json(), () => true);
@@ -230,7 +246,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
             operationError: "The Git index could not be updated.",
           };
         }
-        this.#settleFileMutation(mutation);
+        this.#failFileMutation(mutation);
         return;
       } else if (!this.#signal.aborted && this.#mutationIsCurrent(mutation)) {
         this.#projection = {
@@ -238,23 +254,57 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
           operationError: errorMessage(responseBody),
         };
       }
+      this.#failFileMutation(mutation);
+      return;
     }
-    this.#settleFileMutation(mutation);
+    const [responseBody, bodyError] = await tryAsync(response.json(), () => true);
+    if (bodyError !== undefined) {
+      if (!this.#signal.aborted && this.#mutationIsCurrent(mutation)) {
+        this.#projection = {
+          ...this.#projection,
+          operationError: "The runner returned an invalid Git index update acknowledgement.",
+        };
+      }
+      this.#failFileMutation(mutation);
+      return;
+    }
+    const parsed = parseSafe(gitFileUpdateAcceptedSchema, responseBody);
+    if (!parsed.success) {
+      if (!this.#signal.aborted && this.#mutationIsCurrent(mutation)) {
+        this.#projection = {
+          ...this.#projection,
+          operationError: "The runner returned an invalid Git index update acknowledgement.",
+        };
+      }
+      this.#failFileMutation(mutation);
+      return;
+    }
+    this.#acknowledgeFileMutation(mutation, parsed.value.mutationRevision);
   }
 
-  #settleFileMutation(mutation: QueuedFileMutation): void {
+  #acknowledgeFileMutation(mutation: QueuedFileMutation, mutationRevision: number): void {
     if (this.#signal.aborted) return;
 
     const current = this.#pendingMutations.get(mutation.key);
     if (current?.generation === mutation.generation) {
       this.#pendingMutations.set(mutation.key, {
         ...current,
-        settleAfterRefresh: this.#refreshGeneration + 1,
+        acknowledgedRevision: mutationRevision,
       });
+      this.#projectConfirmedChanges();
+      this.#notify();
+    }
+  }
+
+  #failFileMutation(mutation: QueuedFileMutation): void {
+    if (this.#signal.aborted) return;
+
+    const current = this.#pendingMutations.get(mutation.key);
+    if (current?.generation === mutation.generation) {
+      this.#pendingMutations.delete(mutation.key);
     }
     this.#projectConfirmedChanges();
     this.#notify();
-    void this.#requestRefresh();
   }
 
   async #prepareSnapshotChanges(
@@ -293,7 +343,6 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   }
 
   async #refresh(): Promise<void> {
-    const refreshGeneration = ++this.#refreshGeneration;
     this.#projection = { ...this.#projection, loadError: undefined };
     if (this.#signal.aborted) return;
     const [response, requestError] = await tryAsync(
@@ -350,7 +399,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
       : snapshot;
     const preparation = await this.#prepareSnapshotChanges(displayedSnapshot);
     if (this.#signal.aborted) return;
-    if (!snapshot.stale) this.#retirePendingMutations(refreshGeneration);
+    if (!snapshot.stale) this.#retirePendingMutations(snapshot.mutationRevision);
     this.#recordPendingAmbiguities(preparation.changes);
     this.#confirmedChanges = preparation.changes;
     this.#projection = {
@@ -521,14 +570,12 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     }
   }
 
-  #retirePendingMutations(refreshGeneration: number): void {
+  #retirePendingMutations(snapshotRevision: number): void {
     for (const [key, mutation] of this.#pendingMutations) {
       if (
-        mutation.settleAfterRefresh !== undefined &&
-        mutation.settleAfterRefresh <= refreshGeneration
-      ) {
-        this.#pendingMutations.delete(key);
-      }
+        mutation.acknowledgedRevision !== undefined &&
+        mutation.acknowledgedRevision <= snapshotRevision
+      ) this.#pendingMutations.delete(key);
     }
   }
 

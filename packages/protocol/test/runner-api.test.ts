@@ -18,6 +18,7 @@ import {
   EphemeralSessionEvent,
   GitFileUpdateAccepted,
   type GitFileUpdateRejected,
+  GitMutationRevision,
   type GitSnapshotReadError,
   type HistoryReadError,
   MAX_SESSION_ISSUES,
@@ -434,6 +435,7 @@ Deno.test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse 
 });
 
 Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest", async () => {
+  const mutationRevision = GitMutationRevision.make(7);
   const identity = new RunnerIdentity({
     token: RUNNER_TOKEN,
     runnerId: RUNNER_ID,
@@ -496,7 +498,8 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
           },
         }),
       ),
-    "session.git-file.update": () => Effect.succeed(new GitFileUpdateAccepted({})),
+    "session.git-file.update": () =>
+      Effect.succeed(new GitFileUpdateAccepted({ mutationRevision })),
     "session.watch": () =>
       Stream.make({
         runId: null,
@@ -562,9 +565,9 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
         ?.path,
       "src/main.ts",
     );
-    assert(
-      (yield* client["session.git-file.update"](updatePayload)) instanceof GitFileUpdateAccepted,
-    );
+    const updateAccepted = yield* client["session.git-file.update"](updatePayload);
+    assert(updateAccepted instanceof GitFileUpdateAccepted);
+    assertEquals(updateAccepted.mutationRevision, mutationRevision);
     assertEquals(
       Array.from(
         yield* client["session.watch"](watchPayload).pipe(Stream.runCollect),
@@ -612,6 +615,7 @@ function gitSnapshot(overrides: {
   readonly unstagedPatch?: string;
 } = {}) {
   return {
+    mutationRevision: GitMutationRevision.make(0),
     generatedAt: "2026-08-23T12:00:00Z",
     branch: "openorb/session",
     head: "0123456789abcdef0123456789abcdef01234567",

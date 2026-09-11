@@ -4,6 +4,7 @@ import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import * as DenoPath from "@effect/platform-deno/DenoPath";
 import {
   GitAuthor,
+  GitMutationRevision,
   ProjectId,
   RunnerId,
   RunnerSessionSnapshot,
@@ -209,7 +210,11 @@ Deno.test("atomically stores private validated Git Snapshots outside the workspa
         },
       },
     });
-    const state = { snapshot, notificationPending: true };
+    const state = {
+      snapshot,
+      mutationRevision: GitMutationRevision.make(0),
+      notificationPending: true,
+    };
 
     await Effect.runPromise(store.writeGitSnapshotState(SESSION_ID, state, {
       snapshotId,
@@ -248,6 +253,58 @@ Deno.test("atomically stores private validated Git Snapshots outside the workspa
     );
     const invalid = await Effect.runPromise(Effect.flip(store.readGitSnapshot(SESSION_ID)));
     assertEquals(invalid.operation, "read-git-snapshot");
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("Git mutation revisions decode legacy state and survive store restarts", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const initial = await makeStore(workingDirectory);
+    await Effect.runPromise(initial.session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const snapshotId = Schema.decodeUnknownSync(SessionGitSnapshotId)("a".repeat(64));
+    await Effect.runPromise(
+      initial.store.writeGitSnapshotState(
+        SESSION_ID,
+        gitSnapshotState(snapshotId, "", false),
+      ),
+    );
+    const snapshotPath = join(
+      workingDirectory,
+      "sessions",
+      SESSION_ID,
+      "snapshots",
+      "git-snapshot.json",
+    );
+    // SAFETY: The test reads the JSON object that the typed store wrote immediately above.
+    const legacyState = JSON.parse(await Deno.readTextFile(snapshotPath)) as {
+      mutationRevision?: unknown;
+    };
+    delete legacyState.mutationRevision;
+    await Deno.writeTextFile(snapshotPath, `${JSON.stringify(legacyState)}\n`);
+
+    const legacyRestart = await makeStore(workingDirectory);
+    assertEquals(
+      (await Effect.runPromise(legacyRestart.store.readGitSnapshotState(SESSION_ID)))
+        .mutationRevision,
+      GitMutationRevision.make(0),
+    );
+    assertEquals(
+      await Effect.runPromise(legacyRestart.store.advanceGitMutationRevision(SESSION_ID)),
+      GitMutationRevision.make(1),
+    );
+
+    const durableRestart = await makeStore(workingDirectory);
+    assertEquals(
+      (await Effect.runPromise(durableRestart.store.readGitSnapshotState(SESSION_ID)))
+        .mutationRevision,
+      GitMutationRevision.make(1),
+    );
+    assertEquals(
+      await Effect.runPromise(durableRestart.store.advanceGitMutationRevision(SESSION_ID)),
+      GitMutationRevision.make(2),
+    );
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
   }
@@ -524,6 +581,7 @@ function gitSnapshotState(
         },
       },
     }),
+    mutationRevision: GitMutationRevision.make(0),
     notificationPending,
   };
 }

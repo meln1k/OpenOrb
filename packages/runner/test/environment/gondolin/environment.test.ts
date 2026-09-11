@@ -485,6 +485,26 @@ Deno.test({
     let opened = await openRuntime(runtimeOptions);
 
     try {
+      let filesystemSizeOutput = "";
+      const filesystemSize = await Effect.runPromise(opened.runtime.run([
+        "/usr/bin/stat",
+        "-f",
+        "-c",
+        "%b %S",
+        "/",
+      ], {
+        onOutput: (chunk) => Effect.sync(() => filesystemSizeOutput += chunk.text),
+      }));
+      assertEquals(filesystemSize.exitCode, 0);
+      const [blockCount = Number.NaN, blockSize = Number.NaN] = filesystemSizeOutput.trim()
+        .split(/\s+/)
+        .map(Number);
+      assert(
+        Number.isSafeInteger(blockCount) && Number.isSafeInteger(blockSize) &&
+          blockCount * blockSize >= 39 * 1024 ** 3,
+        `Expected at least 39 GiB of root filesystem capacity, got ${filesystemSizeOutput.trim()}`,
+      );
+
       const written = await Effect.runPromise(opened.runtime.run([
         "/bin/bash",
         "-lc",
@@ -613,7 +633,7 @@ Deno.test({
       const imageProbe = await bash.execute("guest-image", {
         command: [
           "set -eu",
-          'test "$(cat /etc/openorb-image-release)" = mvp-6',
+          'test "$(cat /etc/openorb-image-release)" = mvp-7',
           ". /etc/os-release",
           'test "$ID" = debian && test "$VERSION_ID" = 13',
           "test -x /usr/sbin/modprobe",
@@ -621,7 +641,7 @@ Deno.test({
             'nested_kvm_module=; if grep -qw svm /proc/cpuinfo; then nested_kvm_module=kvm_amd; elif grep -qw vmx /proc/cpuinfo; then nested_kvm_module=kvm_intel; fi; if [ "$(uname -m)" = x86_64 ]; then test -n "$nested_kvm_module"; modprobe "$nested_kvm_module"; test -c /dev/kvm; fi',
             "if test -c /dev/kvm; then python3 -c 'import fcntl, os; fd = os.open(\"/dev/kvm\", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12'; fi",
           ]),
-          'for command in agent-browser apt-get autoconf automake bash bun bunx bzip2 certutil corepack curl dpkg-buildpackage ffmpeg file find fzf g++ gcc gh git hg ip jq less lsof magick make modprobe node npm npx openssl patch perl ping pip pip3 pkg-config pnpm pnpx python python3 rg sed socat ssh svn tar time tmux unzip vim websocat wget xz yarn yarnpkg zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
+          'for command in agent-browser apt-get autoconf automake bash bun bunx bzip2 certutil corepack curl dpkg-buildpackage ffmpeg file find fzf g++ gcc gh git hg ip jq less lsof magick make modprobe node npm npx openssl patch perl ping pip pip3 pkg-config pnpm pnpx python python3 resize2fs rg sed socat ssh svn tar time tmux unzip vim websocat wget xz yarn yarnpkg zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
           "test -s /etc/ssl/certs/ca-certificates.crt",
           'for command in chromium chromium-browser google-chrome; do ! command -v "$command" >/dev/null; done',
           "test ! -e /root/.agent-browser/browsers",

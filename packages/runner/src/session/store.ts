@@ -1,4 +1,5 @@
 import {
+  GitMutationRevision,
   initialPromptPreview,
   RunnerId,
   RunnerSessionSnapshot,
@@ -24,6 +25,9 @@ const ROOT_DISK_FILE = "root-disk.qcow2";
 
 const gitSnapshotStateSchema = Schema.Struct({
   snapshot: SessionGitSnapshot,
+  mutationRevision: GitMutationRevision.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(GitMutationRevision.make(0))),
+  ),
   notificationPending: Schema.Boolean,
 });
 const GitSnapshotStateJson = Schema.fromJsonString(gitSnapshotStateSchema);
@@ -69,6 +73,7 @@ export type RunnerSessionStoreOperation =
   | "sync-root-disk"
   | "get-pi-paths"
   | "read-git-snapshot"
+  | "advance-git-mutation-revision"
   | "write-git-snapshot"
   | "get-session-snapshot"
   | "load-session-manifest";
@@ -106,6 +111,9 @@ export interface RunnerSessionStore {
   readonly readGitSnapshotState: (
     sessionId: SessionId,
   ) => Effect.Effect<RunnerSessionGitSnapshotState, RunnerSessionStoreError>;
+  readonly advanceGitMutationRevision: (
+    sessionId: SessionId,
+  ) => Effect.Effect<typeof GitMutationRevision.Type, RunnerSessionStoreError>;
   readonly writeGitSnapshotState: (
     sessionId: SessionId,
     state: RunnerSessionGitSnapshotState,
@@ -272,6 +280,58 @@ export function makeRunnerSessionStore(
         );
       });
 
+    const writeGitSnapshotValue = (
+      sessionId: SessionId,
+      state: RunnerSessionGitSnapshotState,
+      patches?: RunnerSessionGitSnapshotPatches,
+    ): Effect.Effect<void, RunnerSessionDataError> =>
+      Effect.gen(function* () {
+        const directory = snapshotsPath(sessionId);
+        yield* assertDirectory(fs, directory, "Runner session snapshots directory");
+        const parsed = yield* Schema.decodeUnknownEffect(gitSnapshotStateSchema)(
+          state,
+          strictSchemaOptions,
+        ).pipe(Effect.mapError(sessionDataError));
+        if (patches !== undefined) {
+          if (parsed.snapshot.snapshotId !== patches.snapshotId) {
+            return yield* sessionDataError(
+              new Error("Git Snapshot patch identity does not match its manifest."),
+            );
+          }
+          yield* Effect.all([
+            writeAtomicBytes(
+              fs,
+              paths,
+              paths.join(directory, gitPatchFile(patches.snapshotId, "staged")),
+              new TextEncoder().encode(patches.staged),
+            ),
+            writeAtomicBytes(
+              fs,
+              paths,
+              paths.join(directory, gitPatchFile(patches.snapshotId, "unstaged")),
+              new TextEncoder().encode(patches.unstaged),
+            ),
+          ], { concurrency: "unbounded", discard: true });
+        }
+        yield* writeGitSnapshotFile(
+          fs,
+          paths,
+          paths.join(directory, gitSnapshotFile),
+          parsed,
+        );
+        const snapshotId = parsed.snapshot.snapshotId;
+        yield* cleanupDirectory(
+          fs,
+          paths,
+          directory,
+          snapshotId === undefined ? [gitSnapshotFile] : [
+            gitSnapshotFile,
+            gitPatchFile(snapshotId, "staged"),
+            gitPatchFile(snapshotId, "unstaged"),
+          ],
+        );
+      });
+
     const store = RunnerSessionStore.of({
       ensureSessionStorage: Effect.fn("RunnerSessionStore.ensureSessionStorage")(
         function* (sessionId: SessionId) {
@@ -423,56 +483,33 @@ export function makeRunnerSessionStore(
           )),
       ),
 
+      advanceGitMutationRevision: Effect.fn("RunnerSessionStore.advanceGitMutationRevision")(
+        function* (sessionId: SessionId) {
+          const state = yield* readGitSnapshotValue(sessionId);
+          const nextValue = state.mutationRevision + 1;
+          if (!Number.isSafeInteger(nextValue)) {
+            return yield* sessionDataError(new Error("The Git mutation revision is exhausted."));
+          }
+          const mutationRevision = GitMutationRevision.make(nextValue);
+          yield* writeGitSnapshotValue(sessionId, { ...state, mutationRevision });
+          return mutationRevision;
+        },
+        (effect, sessionId) =>
+          effect.pipe(Effect.mapError(
+            storeError(
+              "advance-git-mutation-revision",
+              `Could not advance runner session ${sessionId} Git mutation revision`,
+            ),
+          )),
+      ),
+
       writeGitSnapshotState: Effect.fn("RunnerSessionStore.writeGitSnapshotState")(
         function* (
           sessionId: SessionId,
           state: RunnerSessionGitSnapshotState,
           patches?: RunnerSessionGitSnapshotPatches,
         ) {
-          const directory = snapshotsPath(sessionId);
-          yield* assertDirectory(fs, directory, "Runner session snapshots directory");
-          const parsed = yield* Schema.decodeUnknownEffect(gitSnapshotStateSchema)(
-            state,
-            strictSchemaOptions,
-          ).pipe(Effect.mapError(sessionDataError));
-          if (patches !== undefined) {
-            if (parsed.snapshot.snapshotId !== patches.snapshotId) {
-              return yield* sessionDataError(
-                new Error("Git Snapshot patch identity does not match its manifest."),
-              );
-            }
-            yield* Effect.all([
-              writeAtomicBytes(
-                fs,
-                paths,
-                paths.join(directory, gitPatchFile(patches.snapshotId, "staged")),
-                new TextEncoder().encode(patches.staged),
-              ),
-              writeAtomicBytes(
-                fs,
-                paths,
-                paths.join(directory, gitPatchFile(patches.snapshotId, "unstaged")),
-                new TextEncoder().encode(patches.unstaged),
-              ),
-            ], { concurrency: "unbounded", discard: true });
-          }
-          yield* writeGitSnapshotFile(
-            fs,
-            paths,
-            paths.join(directory, gitSnapshotFile),
-            parsed,
-          );
-          const snapshotId = parsed.snapshot.snapshotId;
-          yield* cleanupDirectory(
-            fs,
-            paths,
-            directory,
-            snapshotId === undefined ? [gitSnapshotFile] : [
-              gitSnapshotFile,
-              gitPatchFile(snapshotId, "staged"),
-              gitPatchFile(snapshotId, "unstaged"),
-            ],
-          );
+          yield* writeGitSnapshotValue(sessionId, state, patches);
         },
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(

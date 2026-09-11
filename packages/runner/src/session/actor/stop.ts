@@ -2,9 +2,8 @@ import type { SessionIssue } from "@openorb/protocol/runner-api";
 import { Clock, Deferred, Effect, type Scope } from "effect";
 
 import type { AgentEnvironment } from "../../environment/agent-environment.ts";
-import type { GitSnapshotSynchronizer } from "../git-snapshot-synchronizer.ts";
-import { updateSessionGitFile } from "../git-snapshot.ts";
-import type { RunnerSessionStore } from "../store.ts";
+import type { GitSnapshotCoordinator } from "../git-snapshot-coordinator.ts";
+import type { RunnerSessionMetadata, RunnerSessionStore } from "../store.ts";
 import { actorError, SessionActorError } from "./actor-error.ts";
 import type { OpenAgentSession, SessionAgentRuntime } from "./agent-runtime.ts";
 import type {
@@ -27,8 +26,7 @@ interface StopBehaviorOptions {
   readonly store: RunnerSessionStore;
   readonly runtime: SessionRuntime;
   readonly agentRuntime: SessionAgentRuntime;
-  readonly gitSnapshots: GitSnapshotSynchronizer;
-  readonly requestGitSnapshot: Effect.Effect<void, unknown>;
+  readonly git: GitSnapshotCoordinator;
   readonly send: (command: SessionCommand) => Effect.Effect<boolean>;
   readonly emitState: SessionReporter["emitState"];
   readonly decisions: SessionDecisions;
@@ -40,13 +38,11 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
     store,
     runtime,
     agentRuntime,
-    gitSnapshots,
-    requestGitSnapshot,
+    git,
     send,
     emitState,
   } = options;
-  const { none, persist, reply, fail } = options.decisions;
-  let gitOperationActive = false;
+  const { none, persist, reply } = options.decisions;
   let stopLog:
     | { readonly trigger: "idle" | "explicit"; readonly startedAt: number }
     | undefined;
@@ -78,7 +74,7 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
         message: "Wait for active session work to finish before deleting the session.",
       });
     }
-    if (gitOperationActive) {
+    if (git.busy()) {
       return Effect.succeed({
         ok: false,
         message:
@@ -123,12 +119,6 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
         message: "The session is not ready and idle.",
       }));
     }
-    if (gitOperationActive) {
-      return Effect.succeed(reply(command.reply, {
-        ok: false,
-        message: "Wait for the active Git Snapshot operation before stopping the session.",
-      }));
-    }
     const current = runtime.get();
     if (current.environment === undefined) {
       return Effect.succeed(reply(command.reply, {
@@ -168,6 +158,7 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
               Effect.forkScoped(stopReadySession(
                 current.environment!,
                 current.agentSession,
+                sessionMetadata(stopping),
                 stopId,
                 correlationId,
                 command.reply,
@@ -181,14 +172,17 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
   function stopReadySession(
     environment: AgentEnvironment,
     agentSession: OpenAgentSession | undefined,
+    metadata: RunnerSessionMetadata,
     stopId: string,
     correlationId: string,
     commandReply: Deferred.Deferred<StopAcceptance>,
-  ): Effect.Effect<void, never> {
+  ): Effect.Effect<void, never, Scope.Scope> {
     let environmentUsable = true;
     let agentSessionClosed = agentSession === undefined;
     return Effect.gen(function* () {
-      yield* requestGitSnapshot.pipe(Effect.mapError(actorError));
+      yield* git.quiesce({ environment, metadata, correlationId }).pipe(
+        Effect.mapError(actorError),
+      );
       const sync = yield* environment.run(["/bin/sync"]).pipe(Effect.mapError(actorError));
       if (sync.exitCode !== 0) {
         return yield* new SessionActorError(
@@ -272,7 +266,8 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
         issue: command.issue,
       },
       (failedState) =>
-        (command.agentSessionClosed ? runtime.clearAgentSession : Effect.void).pipe(
+        (command.environmentUsable ? git.open : Effect.void).pipe(
+          Effect.andThen(command.agentSessionClosed ? runtime.clearAgentSession : Effect.void),
           Effect.andThen(runtime.updateStatus(command.environmentUsable)),
           Effect.andThen(
             emitState(
@@ -305,12 +300,6 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
         ),
       ));
     }
-    if (gitOperationActive) {
-      return Effect.succeed(reply(
-        command.reply,
-        rejectGitFileUpdate("Wait for the active Git Snapshot operation to finish."),
-      ));
-    }
     const environment = runtime.get().environment;
     if (environment === undefined) {
       return Effect.succeed(reply(
@@ -320,30 +309,17 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
         ),
       ));
     }
-    const metadata = sessionMetadata(state);
-    const operation = updateSessionGitFile(environment, metadata, command.payload).pipe(
-      Effect.flatMap((result) =>
-        gitSnapshots.refresh(environment, metadata, crypto.randomUUID()).pipe(
-          Effect.as<GitFileUpdateAcceptance>(
-            result.ok ? { ok: true } : rejectGitFileUpdate(result.message),
-          ),
-          Effect.catch((error) =>
-            send({
-              kind: "internal",
-              _tag: "RecordIssue",
-              issue: gitSnapshotIssue(error),
-            }).pipe(
-              Effect.as(rejectGitFileUpdate(
-                "The Git index may have changed, but its refreshed Git Snapshot could not be saved.",
-              )),
-            )
-          ),
-        )
-      ),
-      Effect.flatMap((result) => Deferred.succeed(command.reply, result)),
-      Effect.asVoid,
-    );
-    return Effect.succeed(none(() => startGitOperation(operation)));
+    return Effect.succeed(none(() =>
+      git.open.pipe(Effect.andThen(git.enqueueMutation(
+        {
+          correlationId: crypto.randomUUID(),
+          environment,
+          metadata: sessionMetadata(state),
+        },
+        command.payload,
+        command.reply,
+      )))
+    ));
   }
 
   function refreshGitSnapshot(
@@ -353,44 +329,16 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
     const environment = runtime.get().environment;
     if (
       environment === undefined ||
-      (state.phase._tag !== "Ready" && state.phase._tag !== "Running" &&
-        state.phase._tag !== "Stopping")
+      (state.phase._tag !== "Ready" && state.phase._tag !== "Running")
     ) return reply(command.reply, undefined);
-    if (gitOperationActive) {
-      return fail(
-        command.reply,
-        new SessionActorError("A Git Snapshot operation is already active.", undefined),
-      );
-    }
     const correlationId = state.phase._tag === "Running" ? state.phase.runId : crypto.randomUUID();
-    const metadata = sessionMetadata(state);
     return none(() =>
-      startGitOperation(
-        gitSnapshots.refresh(environment, metadata, correlationId).pipe(
-          Effect.matchEffect({
-            onFailure: (error) =>
-              send({
-                kind: "internal",
-                _tag: "RecordIssue",
-                issue: gitSnapshotIssue(error),
-              }).pipe(
-                Effect.andThen(Deferred.fail(command.reply, error)),
-              ),
-            onSuccess: () => Deferred.succeed(command.reply, undefined),
-          }),
-          Effect.asVoid,
-        ),
-      )
+      git.open.pipe(Effect.andThen(git.enqueueRefresh({
+        correlationId,
+        environment,
+        metadata: sessionMetadata(state),
+      }, command.reply)))
     );
-  }
-
-  function startGitOperation(
-    operation: Effect.Effect<void, never>,
-  ): Effect.Effect<void, never, Scope.Scope> {
-    gitOperationActive = true;
-    return Effect.forkScoped(operation.pipe(
-      Effect.ensuring(Effect.sync(() => gitOperationActive = false)),
-    )).pipe(Effect.asVoid);
   }
 
   return { prepareDeletion, stop, complete, failed, updateGitFile, refreshGitSnapshot };
@@ -417,16 +365,5 @@ function stopIssue(environmentUsable: boolean, error: unknown): SessionIssue {
       "VM shutdown began, so the current environment cannot be reused. The persistent disk was preserved; restart the environment explicitly.",
     diagnostics: redactedErrorMessage(error, []),
     recovery: "restart-environment",
-  });
-}
-
-function gitSnapshotIssue(error: unknown): SessionIssue {
-  return makeSessionIssue({
-    category: "report",
-    severity: "warning",
-    message:
-      "The Git Snapshot could not be refreshed. The session remains available with its last saved snapshot.",
-    diagnostics: redactedErrorMessage(error, []),
-    recovery: "none",
   });
 }

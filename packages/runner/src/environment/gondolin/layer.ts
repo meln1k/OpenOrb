@@ -14,6 +14,7 @@ import { shellWaitTimeoutMs } from "./shell-timeout.ts";
 import {
   assertPersistentRootDiskDetached,
   initializePersistentRootDisk,
+  OPENORB_ROOT_DISK_SIZE,
   validatePersistentRootDisk,
 } from "./persistent-root-disk.ts";
 import {
@@ -155,6 +156,9 @@ function makeGondolinEnvironment(
             cpus: cpuCount,
             memory: `${memoryMiB}M`,
             ...githubOptions,
+            rootfs: {
+              size: OPENORB_ROOT_DISK_SIZE,
+            },
             sandbox: {
               ...createOpenOrbGondolinSandboxOptions(imagePath, softwareEmulation),
               rootDiskPath,
