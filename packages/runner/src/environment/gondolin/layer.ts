@@ -6,6 +6,11 @@ import type { Result } from "@openorb/result";
 
 import { type GuestImage, prepareGuestImageForVm } from "./guest-image/installer.ts";
 import {
+  initializeSessionRuntime,
+  readSessionGuestImage,
+  type SessionRuntimeOptions,
+} from "./guest-image/session-runtime.ts";
+import {
   createOpenOrbNetworkVmOptions,
   type OpenOrbGitHubMediationOptions,
 } from "./network-mediation.ts";
@@ -50,12 +55,21 @@ interface GondolinEnvironmentInternals extends AgentEnvironment {
 export function makeGondolinAgentEnvironmentProvider(
   guestImage: GuestImage,
   softwareEmulation = false,
+  sessionRuntimeOptions: SessionRuntimeOptions = {},
 ): AgentEnvironmentProvider {
   return AgentEnvironmentProvider.of({
     initializeRootDisk: (path) =>
       Effect.gen(function* () {
+        yield* fromLegacyResult(
+          initializeSessionRuntime(path, guestImage),
+          (cause) => new AgentEnvironmentError("The session runtime could not be recorded.", cause),
+        );
+        const pinnedImage = yield* fromLegacyResult(
+          readSessionGuestImage(path, guestImage, sessionRuntimeOptions),
+          (cause) => new AgentEnvironmentError("The session runtime could not be restored.", cause),
+        );
         const imagePath = yield* fromLegacyResult(
-          prepareGuestImageForVm(guestImage),
+          prepareGuestImageForVm(pinnedImage),
           (cause) => new AgentEnvironmentError("The guest image could not be prepared.", cause),
         );
         yield* fromLegacyResult(
@@ -69,7 +83,17 @@ export function makeGondolinAgentEnvironmentProvider(
         );
       }),
     make: (options) =>
-      createGondolinAgentEnvironment({ ...options, guestImage, softwareEmulation }),
+      Effect.gen(function* () {
+        const pinnedImage = yield* fromLegacyResult(
+          readSessionGuestImage(options.rootDiskPath, guestImage, sessionRuntimeOptions),
+          (cause) => new AgentEnvironmentError("The session runtime could not be restored.", cause),
+        );
+        return yield* createGondolinAgentEnvironment({
+          ...options,
+          guestImage: pinnedImage,
+          softwareEmulation,
+        });
+      }),
   });
 }
 
@@ -154,7 +178,10 @@ function makeGondolinEnvironment(
       const vm = yield* Effect.tryPromise({
         try: async () => {
           installGondolinTlsCompatibility();
-          const [, rootDiskError] = await validatePersistentRootDisk(rootDiskPath);
+          const [, rootDiskError] = await validatePersistentRootDisk(rootDiskPath, {
+            backingPath: imagePath.rootfsPath,
+            backingFormat: "raw",
+          });
           if (rootDiskError !== undefined) throw rootDiskError;
           const vmOptions: VMOptions = {
             sessionLabel,

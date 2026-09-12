@@ -110,12 +110,34 @@ renamed or reused.
 
 ## Runner installation and recovery
 
-At startup and during `doctor`, the runner selects the asset matching its host and installs it
-under:
+At startup and during `doctor`, the runner selects the default asset matching its host and installs
+it under:
 
 ```text
 <runner-working-directory>/images/<release-id>/<x64|arm64>/
 ```
+
+Before creating a session disk, the runner atomically records its image release, architecture, and
+manifest SHA-256 in a private `runtime.json` beside `root-disk.qcow2`. Restore uses that pinned
+runtime's kernel, initramfs, and backing rootfs, not the runner's current default. Changing the
+default affects only new sessions. Installed releases are retained indefinitely, including after
+session deletion; there is no automatic image garbage collection. Never remove a backing image while
+a VM is using it.
+
+Keep old immutable entries in `GUEST_IMAGE_RELEASES` when changing `GUEST_IMAGE_RELEASE`. This is
+the trusted catalog of runtimes supported by the runner's Gondolin integration; test retained
+runtimes when upgrading Gondolin. Missing old assets are downloaded from their catalog-pinned URLs
+and verified before use. Unknown releases, changed manifest identities, and architecture mismatches
+fail without substituting another image or modifying the session disk.
+
+Before accepting an existing disk during initialization or starting a VM, the runner inspects it
+with `qemu-img info`. It requires qcow2 with the pinned runtime's exact absolute backing-rootfs path
+and raw backing format. A disk paired with another runtime's reference fails without changing the
+disk or rebasing it automatically.
+
+This pre-release format has no legacy migration: sessions without `runtime.json` cannot resume. Keep
+that file and the image directories in whole-runner backups. Restore to the same absolute
+working-directory path because qcow2 backing paths are absolute; disk relocation is not supported.
 
 The runner requires a successful HTTPS response and checks the exact downloaded byte count and
 SHA-256 before extraction. Extraction uses an exact file allowlist and rejects absolute/traversal

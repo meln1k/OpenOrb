@@ -59,6 +59,14 @@ Deno.test("atomically publishes a private root overlay and preserves it on repea
       backingPath,
       backingFormat: "raw",
       createOverlay,
+      inspectImage: (path) => {
+        assertEquals(path, rootDiskPath);
+        return Promise.resolve(JSON.stringify({
+          format: "qcow2",
+          "backing-filename": backingPath,
+          "backing-filename-format": "raw",
+        }));
+      },
     });
     assertEquals(repeatedError, undefined);
     assertEquals(creations, 1);
@@ -132,6 +140,104 @@ Deno.test("rejects unsafe persistent root disk paths", async () => {
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
+});
+
+Deno.test("backing validation rejects inconsistent metadata without changing existing disks", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const path = join(directory, "root-disk.qcow2");
+    const backingPath = join(directory, "image-a.ext4");
+    await Deno.writeTextFile(path, "unchanged overlay", { mode: 0o644 });
+    const before = await Deno.stat(path);
+    const valid = {
+      format: "qcow2",
+      "backing-filename": backingPath,
+      "backing-filename-format": "raw",
+    };
+    for (
+      const metadata of [
+        { ...valid, "backing-filename": join(directory, "image-b.ext4") },
+        { ...valid, "backing-filename": "image-a.ext4" },
+        { ...valid, "backing-filename-format": "qcow2" },
+        { ...valid, format: "raw" },
+        { format: "qcow2" },
+      ]
+    ) {
+      const options = {
+        path,
+        backingPath,
+        backingFormat: "raw" as const,
+        inspectImage: () => Promise.resolve(JSON.stringify(metadata)),
+      };
+      const [, validationError] = await validatePersistentRootDisk(path, options);
+      assertStringIncludes(validationError?.message ?? "", "does not match");
+      const [, initializationError] = await initializePersistentRootDisk(options);
+      assertStringIncludes(initializationError?.message ?? "", "does not match");
+      assertEquals(await Deno.readTextFile(path), "unchanged overlay");
+      assertEquals((await Deno.stat(path)).mode, before.mode);
+      assertEquals((await Deno.stat(path)).ino, before.ino);
+    }
+    const [, inspectionError] = await validatePersistentRootDisk(path, {
+      backingPath,
+      backingFormat: "raw",
+      inspectImage: () => Promise.reject(new Error("inspection failed")),
+    });
+    assert(inspectionError);
+    assertEquals(await Deno.readTextFile(path), "unchanged overlay");
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test({
+  name: "real qcow2 backing validation accepts A and rejects a mismatched B runtime",
+  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
+  async fn() {
+    const directory = await Deno.makeTempDir();
+    try {
+      const path = join(directory, "root-disk.qcow2");
+      const imageA = join(directory, "image-a.ext4");
+      const imageB = join(directory, "image-b.ext4");
+      await Deno.writeFile(imageA, new Uint8Array(4096).fill(1));
+      await Deno.writeFile(imageB, new Uint8Array(4096).fill(2));
+      const [, creationError] = await initializePersistentRootDisk({
+        path,
+        backingPath: imageA,
+        backingFormat: "raw",
+      });
+      assertEquals(creationError, undefined);
+      const [, matchingError] = await validatePersistentRootDisk(path, {
+        backingPath: imageA,
+        backingFormat: "raw",
+      });
+      assertEquals(matchingError, undefined);
+      const [, retryError] = await initializePersistentRootDisk({
+        path,
+        backingPath: imageA,
+        backingFormat: "raw",
+      });
+      assertEquals(retryError, undefined);
+      await Deno.chmod(path, 0o644);
+      const before = await Deno.readFile(path);
+      const beforeInfo = await Deno.stat(path);
+      const [, mismatchError] = await validatePersistentRootDisk(path, {
+        backingPath: imageB,
+        backingFormat: "raw",
+      });
+      assertStringIncludes(mismatchError?.message ?? "", "does not match");
+      const [, initializationError] = await initializePersistentRootDisk({
+        path,
+        backingPath: imageB,
+        backingFormat: "raw",
+      });
+      assertStringIncludes(initializationError?.message ?? "", "does not match");
+      assertEquals(await Deno.readFile(path), before);
+      assertEquals((await Deno.stat(path)).mode, beforeInfo.mode);
+      assertEquals((await Deno.stat(path)).ino, beforeInfo.ino);
+    } finally {
+      await Deno.remove(directory, { recursive: true });
+    }
+  },
 });
 
 Deno.test("persistent root disk detachment waits for exclusive image access", async () => {

@@ -14,7 +14,7 @@ export interface GuestImageRelease {
   assets: Record<GuestImageArchitecture, GuestImageAssetRelease>;
 }
 
-export const GUEST_IMAGE_RELEASE: GuestImageRelease = {
+const MVP_7: GuestImageRelease = {
   id: "mvp-7",
   assets: {
     arm64: {
@@ -37,3 +37,8 @@ export const GUEST_IMAGE_RELEASE: GuestImageRelease = {
     },
   },
 };
+
+// Retain immutable entries when changing the default: existing session disks depend on them.
+// Every entry must remain compatible with this runner's Gondolin integration.
+export const GUEST_IMAGE_RELEASES: readonly GuestImageRelease[] = [MVP_7];
+export const GUEST_IMAGE_RELEASE = MVP_7;

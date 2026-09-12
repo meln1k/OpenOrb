@@ -45,6 +45,7 @@ export interface GuestImage {
   readonly releaseId: string;
   readonly architecture: GuestImageArchitecture;
   readonly gondolinBuildId: string;
+  readonly manifestSha256: string;
   readonly [VERIFIED_GUEST_IMAGE]: GuestImageRelease;
 }
 
@@ -265,6 +266,7 @@ async function verifyGuestImageValue(
     releaseId: release.id,
     architecture,
     gondolinBuildId: asset.gondolinBuildId,
+    manifestSha256: asset.manifestSha256,
     [VERIFIED_GUEST_IMAGE]: pinRelease(release),
   };
 }

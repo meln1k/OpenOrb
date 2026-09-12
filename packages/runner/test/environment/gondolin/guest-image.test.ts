@@ -11,6 +11,10 @@ import {
   prepareGuestImageForVm,
 } from "@/src/environment/gondolin/guest-image/installer.ts";
 import type { GuestImageRelease } from "@/src/environment/gondolin/guest-image/release.ts";
+import {
+  initializeSessionRuntime,
+  readSessionGuestImage,
+} from "@/src/environment/gondolin/guest-image/session-runtime.ts";
 
 const BUILD_ID = "0cc0ad9d-c995-58cb-8382-a9037aa2d4cc";
 const ASSET_CONTENTS = {
@@ -305,6 +309,120 @@ Deno.test("maps supported host architecture names", () => {
   assertEquals(currentGuestImageArchitecture("amd64"), "x64");
   assertEquals(currentGuestImageArchitecture("aarch64"), "arm64");
   assertEquals(currentGuestImageArchitecture("arm64"), "arm64");
+});
+
+Deno.test("sessions retain their runtime across default image upgrades and recover missing assets", async () => {
+  const fixture = await createImageFixture();
+  const workingDirectory = await Deno.makeTempDir();
+  const newRelease = { ...fixture.release, id: "test-2" };
+  const fetchImage = () => Promise.resolve(responseFor(fixture.archive));
+  try {
+    const oldImage = success(
+      await ensureGuestImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: fetchImage,
+      }),
+    );
+    const oldSession = join(workingDirectory, "old-session");
+    await Deno.mkdir(oldSession);
+    const oldDisk = join(oldSession, "root-disk.qcow2");
+    success(await initializeSessionRuntime(oldDisk, oldImage));
+    await Deno.writeTextFile(oldDisk, "preserved disk");
+    const originalPin = await Deno.readTextFile(join(oldSession, "runtime.json"));
+    assertEquals(JSON.parse(originalPin), {
+      version: 1,
+      releaseId: "test-1",
+      architecture: "x64",
+      manifestSha256: fixture.release.assets.x64.manifestSha256,
+    });
+    const newImage = success(
+      await ensureGuestImage({
+        workingDirectory,
+        architecture: "x64",
+        release: newRelease,
+        fetch: fetchImage,
+      }),
+    );
+    success(await initializeSessionRuntime(oldDisk, newImage));
+    const options = { releases: [fixture.release, newRelease], fetch: fetchImage };
+    const restored = success(
+      await readSessionGuestImage(oldDisk, newImage, {
+        ...options,
+        fetch: () => {
+          throw new Error("Retained images must not be downloaded.");
+        },
+      }),
+    );
+    assertEquals(restored.path, oldImage.path);
+    assertEquals(success(await prepareGuestImageForVm(restored)), {
+      kernelPath: join(oldImage.path, "vmlinuz-virt"),
+      initrdPath: join(oldImage.path, "initramfs.cpio.lz4"),
+      rootfsPath: join(oldImage.path, "rootfs.ext4"),
+    });
+    const newSession = join(workingDirectory, "new-session");
+    await Deno.mkdir(newSession);
+    const newDisk = join(newSession, "root-disk.qcow2");
+    success(await initializeSessionRuntime(newDisk, newImage));
+    assertEquals(success(await readSessionGuestImage(newDisk, newImage)).path, newImage.path);
+    await Deno.remove(oldImage.path, { recursive: true });
+    assertEquals(
+      success(await readSessionGuestImage(oldDisk, newImage, options)).path,
+      oldImage.path,
+    );
+    assertEquals(await Deno.readTextFile(oldDisk), "preserved disk");
+    assertEquals(await Deno.readTextFile(join(oldSession, "runtime.json")), originalPin);
+    assertEquals((await Deno.stat(join(oldSession, "runtime.json"))).mode! & 0o777, 0o600);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("missing or invalid session runtime never falls back to the default image", async () => {
+  const fixture = await createImageFixture();
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    const image = success(
+      await ensureGuestImage({
+        workingDirectory,
+        architecture: "x64",
+        release: fixture.release,
+        fetch: () => Promise.resolve(responseFor(fixture.archive)),
+      }),
+    );
+    const disk = join(workingDirectory, "root-disk.qcow2");
+    failure(await readSessionGuestImage(disk, image));
+    await Deno.writeTextFile(disk, "legacy disk");
+    failure(await initializeSessionRuntime(disk, image));
+    await assertRejects(
+      () => Deno.readTextFile(join(workingDirectory, "runtime.json")),
+      Deno.errors.NotFound,
+    );
+    const pin = {
+      version: 1,
+      releaseId: image.releaseId,
+      architecture: "x64",
+      manifestSha256: image.manifestSha256,
+    };
+    for (
+      const invalid of [
+        "{broken",
+        JSON.stringify({ ...pin, releaseId: "../../untrusted" }),
+        JSON.stringify({ ...pin, architecture: "arm64" }),
+        JSON.stringify({ ...pin, manifestSha256: "0".repeat(64) }),
+        JSON.stringify({ ...pin, version: 2 }),
+      ]
+    ) {
+      await Deno.writeTextFile(join(workingDirectory, "runtime.json"), invalid);
+      failure(await readSessionGuestImage(disk, image));
+      success(await initializeSessionRuntime(disk, image));
+      assertEquals(await Deno.readTextFile(join(workingDirectory, "runtime.json")), invalid);
+      assertEquals(await Deno.readTextFile(disk), "legacy disk");
+    }
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
 });
 
 function success<T, E>(result: Result<T, E>): T {
