@@ -1,4 +1,5 @@
 import { createHttpHooks, type VMOptions } from "@earendil-works/gondolin";
+import type { SessionEnvironmentSecret } from "@openorb/protocol/runner-api";
 import { err, ok, type Result, trySync } from "@openorb/result";
 
 const GITHUB_HOST = "github.com";
@@ -15,62 +16,76 @@ export interface OpenOrbGitHubMediationOptions {
   token?: string;
 }
 
-export type OpenOrbGitHubVmOptions = Pick<
+export interface OpenOrbNetworkMediationOptions {
+  readonly github?: OpenOrbGitHubMediationOptions;
+  readonly environmentSecrets?: readonly SessionEnvironmentSecret[];
+}
+
+export type OpenOrbNetworkVmOptions = Pick<
   VMOptions,
   "allowWebSockets" | "dns" | "env" | "httpHooks"
 >;
 
-export function createOpenOrbGitHubVmOptions(
-  options: OpenOrbGitHubMediationOptions,
-): Result<OpenOrbGitHubVmOptions, GitHubMediationError> {
-  const [, repositoryError] = validateCanonicalGitHubRepository(options.repositoryUrl);
-  if (repositoryError !== undefined) return err(repositoryError);
-  const authorError = validateGitAuthor(options.gitAuthor);
-  if (authorError !== undefined) return err(authorError);
-  const token = options.token;
+export function createOpenOrbNetworkVmOptions(
+  options: OpenOrbNetworkMediationOptions,
+): Result<OpenOrbNetworkVmOptions, NetworkMediationError> {
+  const github = options.github;
+  if (github !== undefined) {
+    const [, repositoryError] = validateCanonicalGitHubRepository(github.repositoryUrl);
+    if (repositoryError !== undefined) return err(repositoryError);
+    const authorError = validateGitAuthor(github.gitAuthor);
+    if (authorError !== undefined) return err(authorError);
+  }
+  const token = github?.token;
   if (
     token !== undefined && (token.length === 0 || token.length > 4096 || token.trim() !== token)
   ) {
     return err(
-      new GitHubMediationError(
+      new NetworkMediationError(
         "The GitHub token must be a non-empty trimmed value of at most 4096 characters.",
         undefined,
       ),
     );
   }
 
+  const secrets = Object.fromEntries([
+    ...(token === undefined
+      ? []
+      : [[GH_TOKEN_ENVIRONMENT_NAME, { hosts: [GITHUB_HOST, GITHUB_API_HOST], value: token }]]),
+    ...(options.environmentSecrets?.map((secret) =>
+      [
+        secret.name,
+        { hosts: secret.allowedHosts ?? ["*"], value: secret.value },
+      ] as const
+    ) ?? []),
+  ]);
   const [hooks, hooksError] = trySync(
     () =>
       createHttpHooks({
         blockInternalRanges: true,
-        ...(token === undefined ? {} : {
-          secrets: {
-            GH_TOKEN: {
-              hosts: [GITHUB_HOST, GITHUB_API_HOST],
-              value: token,
-            },
-          },
-        }),
+        ...(Object.keys(secrets).length === 0 ? {} : { secrets }),
       }),
-    (cause) => new GitHubMediationError("GitHub request mediation could not be created.", cause),
+    (cause) => new NetworkMediationError("Network request mediation could not be created.", cause),
   );
   if (hooksError !== undefined) return err(hooksError);
   const { env: secretEnvironment, httpHooks } = hooks;
 
   const env = {
     ...secretEnvironment,
-    GH_HOST: GITHUB_HOST,
-    GH_PROMPT_DISABLED: "1",
-    GIT_CONFIG_COUNT: token === undefined ? "2" : "4",
-    GIT_CONFIG_KEY_0: "user.name",
-    GIT_CONFIG_VALUE_0: options.gitAuthor.name,
-    GIT_CONFIG_KEY_1: "user.email",
-    GIT_CONFIG_VALUE_1: options.gitAuthor.email,
-    GIT_TERMINAL_PROMPT: "0",
-    ...(token === undefined ? {} : {
-      GIT_CONFIG_KEY_2: `credential.${options.repositoryUrl}.helper`,
+    ...(github === undefined ? {} : {
+      GH_HOST: GITHUB_HOST,
+      GH_PROMPT_DISABLED: "1",
+      GIT_CONFIG_COUNT: token === undefined ? "2" : "4",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: github.gitAuthor.name,
+      GIT_CONFIG_KEY_1: "user.email",
+      GIT_CONFIG_VALUE_1: github.gitAuthor.email,
+      GIT_TERMINAL_PROMPT: "0",
+    }),
+    ...(token === undefined || github === undefined ? {} : {
+      GIT_CONFIG_KEY_2: `credential.${github.repositoryUrl}.helper`,
       GIT_CONFIG_VALUE_2: "!gh auth git-credential",
-      GIT_CONFIG_KEY_3: `credential.${options.repositoryUrl}.useHttpPath`,
+      GIT_CONFIG_KEY_3: `credential.${github.repositoryUrl}.useHttpPath`,
       GIT_CONFIG_VALUE_3: "true",
     }),
   } satisfies Record<string, string>;
@@ -85,12 +100,12 @@ export function createOpenOrbGitHubVmOptions(
 
 function validateGitAuthor(
   author: OpenOrbGitHubMediationOptions["gitAuthor"],
-): GitHubMediationError | undefined {
+): NetworkMediationError | undefined {
   if (
     author.name.trim() !== author.name || author.name.length === 0 || author.name.length > 200 ||
     author.name.includes("\0")
   ) {
-    return new GitHubMediationError(
+    return new NetworkMediationError(
       "The Git author name must be a non-empty trimmed value of at most 200 characters.",
       undefined,
     );
@@ -99,14 +114,14 @@ function validateGitAuthor(
     author.email.trim() !== author.email || author.email.length > 254 ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(author.email)
   ) {
-    return new GitHubMediationError("Expected a valid Git author email.", undefined);
+    return new NetworkMediationError("Expected a valid Git author email.", undefined);
   }
   return undefined;
 }
 
 function validateCanonicalGitHubRepository(
   repositoryUrl: string,
-): Result<void, GitHubMediationError> {
+): Result<void, NetworkMediationError> {
   const [url, urlError] = trySync(
     () => new URL(repositoryUrl),
     (cause) => invalidRepositoryUrl(cause),
@@ -143,16 +158,18 @@ function validateCanonicalGitHubRepository(
   return ok(undefined);
 }
 
-export class GitHubMediationError extends Error {
+export class NetworkMediationError extends Error {
   constructor(message: string, override readonly cause: unknown) {
     super(message, { cause });
-    this.name = "GitHubMediationError";
+    this.name = "NetworkMediationError";
   }
 }
 
-function invalidRepositoryUrl(cause?: unknown): GitHubMediationError {
-  return new GitHubMediationError(
+function invalidRepositoryUrl(cause?: unknown): NetworkMediationError {
+  return new NetworkMediationError(
     "The GitHub repository URL must use the canonical https://github.com/OWNER/REPOSITORY.git form.",
     cause,
   );
 }
+
+const GH_TOKEN_ENVIRONMENT_NAME = "GH_TOKEN";

@@ -317,7 +317,7 @@ export function applySessionEvent(
         }
         : current;
     case "restoration.started":
-      return phase._tag === "Stopped" || phase._tag === "Failed"
+      return phase._tag === "Ready" || phase._tag === "Stopped" || phase._tag === "Failed"
         ? {
           data,
           phase: {

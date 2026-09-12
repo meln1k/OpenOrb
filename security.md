@@ -26,6 +26,11 @@ not leave an orphan Workspace or create another administrator.
 - Provider credentials remain on the gateway and trusted runner. GitHub operations receive a
   guest-visible placeholder that is substituted only for `github.com` and `api.github.com`; the real
   token must not enter guest files, environment values, process arguments, logs, or tool output.
+- Workspace generic secrets remain encrypted at rest and transient in runner commands. Gondolin
+  exposes only guest placeholders and substitutes real values in outbound HTTP headers. Configured
+  host patterns restrict substitution; omitting allowed hosts permits substitution for any public
+  HTTP(S) host and therefore permits guest code to exfiltrate that secret. Secret changes apply when
+  an Agent Environment next starts, not to an already-running VM.
 - Runners initiate one authenticated outbound connection to the gateway and require no inbound
   listener. Guest egress denies loopback, private, link-local, cloud-metadata, redirected, and
   DNS-rebinding targets while preserving guest-local loopback.

@@ -1,5 +1,6 @@
 import { orbSizeResources } from "@openorb/protocol";
 import type {
+  SessionEnvironmentSecret,
   SessionIssue,
   SessionIssueCategory,
   SessionModelRuntime,
@@ -58,11 +59,13 @@ export interface SessionProvisioner {
   readonly restore: (
     metadata: RunnerSessionMetadata,
     githubToken: string | undefined,
+    environmentSecrets: readonly SessionEnvironmentSecret[] | undefined,
     correlationId: string,
   ) => Effect.Effect<RestoredEnvironment, SessionActorError, Scope.Scope>;
   readonly provision: (
     initialMetadata: RunnerSessionMetadata,
     githubToken: string | undefined,
+    environmentSecrets: readonly SessionEnvironmentSecret[] | undefined,
     modelRuntime: SessionModelRuntime,
     correlationId: string,
     sink: ProvisioningSink,
@@ -76,11 +79,17 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
   const store = yield* RunnerSessionStore;
   const environmentProvider = yield* AgentEnvironmentProvider;
 
-  const restore: SessionProvisioner["restore"] = (metadata, githubToken, correlationId) => {
+  const restore: SessionProvisioner["restore"] = (
+    metadata,
+    githubToken,
+    environmentSecrets,
+    correlationId,
+  ) => {
     let restorationScope: Scope.Closeable | undefined;
+    const secretValues = environmentSecrets?.map((secret) => secret.value) ?? [];
     const operation = Effect.gen(function* () {
       const issues: SessionIssue[] = [];
-      const logBudget = makeProvisioningLogBudget([githubToken]);
+      const logBudget = makeProvisioningLogBudget([githubToken, ...secretValues]);
       const rootDiskPath = yield* store.getSessionRootDiskPath(sessionId).pipe(
         Effect.mapError(actorError),
       );
@@ -96,6 +105,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
           gitAuthor: metadata.definition.gitAuthor,
           ...(githubToken === undefined ? {} : { token: githubToken }),
         },
+        ...(environmentSecrets === undefined ? {} : { environmentSecrets }),
         cpuCount: resources.cpuCount,
         memoryMiB: resources.memoryMiB,
       }).pipe(
@@ -146,7 +156,9 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
           `Environment restart failed: ${
             redactedErrorMessage(
               error,
-              [githubToken].filter((value): value is string => value !== undefined),
+              [githubToken, ...secretValues].filter(
+                (value): value is string => value !== undefined,
+              ),
             )
           }\n`,
         ).pipe(Effect.ignore)
@@ -157,6 +169,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
   const provision: SessionProvisioner["provision"] = (
     initialMetadata,
     githubToken,
+    environmentSecrets,
     modelRuntime,
     correlationId,
     sink,
@@ -164,6 +177,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
     const logBudget = makeProvisioningLogBudget([
       githubToken,
       modelRuntime.credential.value,
+      ...(environmentSecrets?.map((secret) => secret.value) ?? []),
     ]);
     const issues: SessionIssue[] = [];
     let failureCategory: SessionIssueCategory = "runner-storage";
@@ -194,6 +208,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
           gitAuthor: metadata.definition.gitAuthor,
           ...(githubToken === undefined ? {} : { token: githubToken }),
         },
+        ...(environmentSecrets === undefined ? {} : { environmentSecrets }),
         cpuCount: resources.cpuCount,
         memoryMiB: resources.memoryMiB,
       }).pipe(Effect.mapError(actorError));

@@ -135,6 +135,7 @@ export function createModelProviderRepository(
           purpose: encryptedSecretPurposes.providerApiKey,
           key_version: encrypted.keyVersion,
           ciphertext: encrypted.ciphertext.toBase64(),
+          allowed_hosts: null,
           created_at: now,
           updated_at: now,
         };

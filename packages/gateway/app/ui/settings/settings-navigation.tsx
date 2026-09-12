@@ -7,7 +7,11 @@ import { media } from "@/app/ui/responsive.ts";
 export type SettingsSection = "providers" | "secrets" | "github" | "git-author" | "runners";
 export type SettingsModelProvider = { providerId: string; name: string; updatedAt: string };
 export type SettingsModelProviderOption = { id: string; name: string };
-export type SettingsSecret = { key: string; updatedAt: string };
+export type SettingsSecret = {
+  key: string;
+  allowedHosts?: readonly string[];
+  updatedAt: string;
+};
 export type SettingsGitHubCredential = { updatedAt: string };
 export type SettingsGitAuthor = { authorEmail: string; authorName: string; updatedAt: string };
 export type SettingsEnrollmentCommand = { command: string };

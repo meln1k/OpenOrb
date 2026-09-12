@@ -2,7 +2,7 @@ import { basename } from "node:path";
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { SessionId } from "@openorb/protocol/runner-api";
+import { SessionEnvironmentSecret, SessionId } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Schema, Scope } from "effect";
 
 import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
@@ -21,6 +21,7 @@ const GIT_AUTHOR = {
   name: "OpenOrb GitHub Integration Test",
   email: "openorb-github-integration@example.invalid",
 };
+const GENERIC_SECRET_VALUE = "gondolin-integration-secret-41cd";
 const RUN_GONDOLIN_TESTS = Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") === "1";
 const PRIVATE_REPOSITORY_URL = Deno.env.get("OPENORB_GITHUB_TEST_REPOSITORY");
 const PRIVATE_TOKEN = Deno.env.get("OPENORB_GITHUB_TEST_TOKEN");
@@ -39,6 +40,42 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
 const CONVERSATION_PROJECTION = {
   activate: () => Effect.succeed({ update() {}, dispose() {} }),
 };
+
+Deno.test({
+  name: "generic secrets are non-plaintext environment placeholders inside Gondolin",
+  ignore: !RUN_GONDOLIN_TESTS,
+  async fn() {
+    const temporaryDirectory = await Deno.makeTempDir();
+    let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
+
+    try {
+      opened = await openRuntime({
+        rootDiskPath: `${temporaryDirectory}/root-disk.qcow2`,
+        guestImage: await installLocalGuestImage(temporaryDirectory),
+        sessionLabel: "openorb generic secret integration test",
+        environmentSecrets: [
+          new SessionEnvironmentSecret({
+            name: "GONDOLIN_TEST_TOKEN",
+            value: GENERIC_SECRET_VALUE,
+            allowedHosts: ["example.com"],
+          }),
+        ],
+        cpuCount: 2,
+        memoryMiB: 2 * 1024,
+      });
+      const result = await Effect.runPromise(opened.runtime.run([
+        "/bin/sh",
+        "-c",
+        'test -n "$GONDOLIN_TEST_TOKEN" && test "$GONDOLIN_TEST_TOKEN" != ' +
+        shellQuote(GENERIC_SECRET_VALUE),
+      ]));
+      assertEquals(result.exitCode, 0);
+    } finally {
+      if (opened) await opened.close();
+      await Deno.remove(temporaryDirectory, { recursive: true });
+    }
+  },
+});
 
 Deno.test({
   name:

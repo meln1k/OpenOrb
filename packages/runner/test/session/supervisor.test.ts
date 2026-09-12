@@ -12,6 +12,7 @@ import {
   ProvisionSessionPayload,
   RunId,
   RunnerId,
+  SessionEnvironmentSecret,
   SessionId,
   type SessionIssueCategory,
   StopSessionPayload,
@@ -78,6 +79,20 @@ const MODEL_RUNTIME = {
   thinkingLevel: "high" as const,
   credential: { type: "api_key" as const, value: "model-secret" },
 };
+const ENVIRONMENT_SECRETS = [
+  new SessionEnvironmentSecret({
+    name: "DEPLOY_TOKEN",
+    value: "runner-environment-secret-c74a",
+    allowedHosts: ["api.example.com"],
+  }),
+];
+const UPDATED_ENVIRONMENT_SECRETS = [
+  new SessionEnvironmentSecret({
+    name: "DEPLOY_TOKEN",
+    value: "updated-runner-environment-secret-a19f",
+    allowedHosts: ["uploads.example.com"],
+  }),
+];
 const CREATED_AT = "2026-08-17T12:00:00Z";
 
 interface TestStore extends RunnerSessionStoreService {
@@ -389,9 +404,17 @@ Deno.test("manual Stop syncs the persistent root disk and wake restores the envi
       environmentProvider,
       async (supervisor) => {
         await Effect.runPromise(
-          supervisor.provision(createProvisionPayload("openorb/stop-wake-cycle-test")),
+          supervisor.provision({
+            ...createProvisionPayload("openorb/stop-wake-cycle-test"),
+            environmentSecrets: ENVIRONMENT_SECRETS,
+          }),
         );
         await waitForState(store, "ready");
+        assertEquals(environmentOptions[0]?.environmentSecrets, ENVIRONMENT_SECRETS);
+        assert(
+          !(await Deno.readTextFile(join(directory, "sessions", SESSION_ID, "events.jsonl")))
+            .includes(ENVIRONMENT_SECRETS[0]!.value),
+        );
         await createRootDisk(directory, SESSION_ID, "persistent root disk");
         const actor = requireActor(supervisor);
 
@@ -423,6 +446,8 @@ Deno.test("manual Stop syncs the persistent root disk and wake restores the envi
         );
         const woken = await Effect.runPromise(actor.wake(wakePayload(
           "continuation-github-token",
+          undefined,
+          ENVIRONMENT_SECRETS,
         )));
         assertEquals(woken, { ok: true });
         await waitForState(store, "ready");
@@ -434,6 +459,7 @@ Deno.test("manual Stop syncs the persistent root disk and wake restores the envi
           true,
         );
         assertEquals(environmentOptions[1]?.github?.token, "continuation-github-token");
+        assertEquals(environmentOptions[1]?.environmentSecrets, ENVIRONMENT_SECRETS);
         assertEquals(environmentOptions[1]?.rootDiskPath, environmentOptions[0]?.rootDiskPath);
         assertStringIncludes(
           environmentOptions[0]?.rootDiskPath ?? "",
@@ -1013,7 +1039,10 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
-    const payload = createProvisionPayload("openorb/restart-ready-test");
+    const payload = {
+      ...createProvisionPayload("openorb/restart-ready-test"),
+      environmentSecrets: ENVIRONMENT_SECRETS,
+    };
 
     await withSupervisor(
       {
@@ -1030,6 +1059,17 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
     );
 
     const restartedStore = await makeStore(directory);
+    const environmentOptions: AgentEnvironmentOptions[] = [];
+    const environmentProvider = AgentEnvironmentProvider.of({
+      initializeRootDisk: () => Effect.void,
+      make: (options) => {
+        environmentOptions.push(options);
+        return Effect.acquireRelease(
+          Effect.succeed(new FakeEnvironment()),
+          () => Effect.void,
+        );
+      },
+    });
     await withSupervisor(
       {
         cpuCount: 4,
@@ -1037,21 +1077,28 @@ Deno.test("SessionSupervisor reconstructs a ready durable session for continuati
         createPiSession: createSettlingPiSession,
       },
       restartedStore,
-      fakeEnvironmentProvider(new FakeEnvironment()),
+      environmentProvider,
       async (restarted) => {
         const prompt = Schema.decodeUnknownSync(PromptSessionPayload)({
           sessionId: SESSION_ID,
           clientRequestId: crypto.randomUUID(),
           prompt: "Continue after restart",
           modelRuntime: MODEL_RUNTIME,
+          environmentSecrets: UPDATED_ENVIRONMENT_SECRETS,
         });
         const actor = await Effect.runPromise(
           restarted.findOrRestoreActor(SESSION_ID),
         );
         assert(actor);
+        assertEquals(actor.active, false);
+        assertEquals(restarted.activeSessionCount(), 0);
+        assertEquals(environmentOptions, []);
         const accepted = await Effect.runPromise(actor.prompt(prompt));
         assert(accepted.ok);
         assertEquals(accepted.mode, "started");
+        await waitForState(restartedStore, "ready");
+        assertEquals(environmentOptions.length, 1);
+        assertEquals(environmentOptions[0]?.environmentSecrets, UPDATED_ENVIRONMENT_SECRETS);
       },
     );
   } finally {
@@ -1303,7 +1350,7 @@ Deno.test("SessionSupervisor restarts one crashed actor without replay and quara
   }
 });
 
-Deno.test("a Git-only restore handles concurrent Git update and wake credentials", async () => {
+Deno.test("a Git-only restore waits for wake credentials before starting an environment", async () => {
   const directory = await Deno.makeTempDir();
   try {
     const store = await makeStore(directory);
@@ -1321,38 +1368,46 @@ Deno.test("a Git-only restore handles concurrent Git update and wake credentials
       piCreations++;
       return createSettlingPiSession(options);
     };
+    const environmentOptions: AgentEnvironmentOptions[] = [];
+    const environmentProvider = AgentEnvironmentProvider.of({
+      initializeRootDisk: () => Effect.void,
+      make: (options) => {
+        environmentOptions.push(options);
+        return Effect.acquireRelease(
+          Effect.succeed(new FakeEnvironment()),
+          () => Effect.void,
+        );
+      },
+    });
 
     await withSupervisor(
       { cpuCount: 4, memoryMiB: 8192, createPiSession },
       store,
-      fakeEnvironmentProvider(new FakeEnvironment()),
+      environmentProvider,
       async (supervisor) => {
         const update = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
           sessionId: SESSION_ID,
           action: "stage",
           path: "src/main.ts",
         });
-        const [updated, woken] = await Effect.runPromise(Effect.all([
-          supervisor.findOrRestoreActor(SESSION_ID).pipe(
-            Effect.flatMap((actor) =>
-              actor ? actor.updateGitFile(update) : Effect.die("Git actor unavailable")
-            ),
-          ),
-          supervisor.findOrRestoreActor(SESSION_ID).pipe(
-            Effect.flatMap((actor) =>
-              actor ? actor.wake(wakePayload()) : Effect.die("Wake actor unavailable")
-            ),
-          ),
-        ], { concurrency: "unbounded" }));
-        assertEquals(updated, {
-          ok: true,
-          mutationRevision: GitMutationRevision.make(1),
-        });
-        assertEquals(woken, { ok: true });
-        assertEquals(piCreations, 1);
-
         const actor = await Effect.runPromise(supervisor.findOrRestoreActor(SESSION_ID));
         assert(actor);
+        assertEquals(actor.active, false);
+        assertEquals(environmentOptions, []);
+        assertEquals(await Effect.runPromise(actor.updateGitFile(update)), {
+          ok: false,
+          message: "Files cannot be staged or unstaged until the session environment is available.",
+        });
+        assertEquals(environmentOptions, []);
+        const woken = await Effect.runPromise(actor.wake(wakePayload(
+          undefined,
+          undefined,
+          UPDATED_ENVIRONMENT_SECRETS,
+        )));
+        assertEquals(woken, { ok: true });
+        assertEquals(piCreations, 1);
+        assertEquals(environmentOptions.length, 1);
+        assertEquals(environmentOptions[0]?.environmentSecrets, UPDATED_ENVIRONMENT_SECRETS);
 
         const prompt = (text: string) =>
           Schema.decodeUnknownSync(PromptSessionPayload)({
@@ -2189,12 +2244,14 @@ function promptPayload(prompt: string, githubToken?: string) {
 function wakePayload(
   githubToken?: string,
   recovery?: "restart-environment",
+  environmentSecrets?: readonly SessionEnvironmentSecret[],
 ) {
   return Schema.decodeUnknownSync(WakeSessionPayload)({
     sessionId: SESSION_ID,
     modelRuntime: MODEL_RUNTIME,
     ...(githubToken === undefined ? {} : { githubToken }),
     ...(recovery === undefined ? {} : { recovery }),
+    ...(environmentSecrets === undefined ? {} : { environmentSecrets }),
   });
 }
 

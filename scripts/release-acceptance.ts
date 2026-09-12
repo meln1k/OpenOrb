@@ -10,6 +10,8 @@ const POLL_INTERVAL_MS = 500;
 const INITIAL_FILE = "acceptance-initial.txt";
 const RESUMED_FILE = "acceptance-resumed.txt";
 const COMMIT_MESSAGE = "OpenOrb release acceptance";
+const GENERIC_SECRET_NAME = "ACCEPTANCE_GITHUB_TOKEN";
+const GENERIC_SECRET_HOST = "api.github.com";
 
 interface AcceptanceConfiguration {
   readonly githubRepository: string;
@@ -79,6 +81,7 @@ let runner: ManagedProcess | undefined;
 
 async function runAcceptance(): Promise<void> {
   const github = new GitHubClient(configuration.githubRepository, configuration.githubToken);
+  const repositoryIdentity = parseGitHubRepository(configuration.githubRepository);
   await using cleanup = new AsyncDisposableStack();
   cleanup.defer(() => Deno.remove(temporaryDirectory, { recursive: true }));
 
@@ -91,8 +94,8 @@ async function runAcceptance(): Promise<void> {
   cleanup.defer(() => github.deleteBranch(fixtureBranch));
   cleanup.defer(() => github.deleteBranch(sessionBranch));
   await github.createFixtureBranch(repository.default_branch, fixtureBranch, {
-    setup: setupScript(setupMarker),
-    resume: resumeScript(setupMarker, resumeMarker),
+    setup: setupScript(setupMarker, repositoryIdentity),
+    resume: resumeScript(setupMarker, resumeMarker, repositoryIdentity),
   });
   console.log(`[acceptance] created fixture branch ${fixtureBranch}`);
 
@@ -325,6 +328,17 @@ async function configureGateway(page: Page): Promise<void> {
   await githubDialog.getByRole("button", { name: "Save token" }).click();
   await waitForText(page.locator('[aria-labelledby="github-heading"]'), "Configured");
 
+  await page.goto(gatewayUrl(routes.app.settings.secrets.index.href()));
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const secretDialog = page.getByRole("dialog", { name: "Add secret" });
+  await secretDialog.getByLabel("Key").fill(GENERIC_SECRET_NAME);
+  await secretDialog.getByLabel("Secret value").fill(configuration.githubToken);
+  await secretDialog.getByLabel("Allowed hosts (optional)").fill(GENERIC_SECRET_HOST);
+  await secretDialog.getByRole("button", { name: "Save secret" }).click();
+  const storedSecrets = page.getByLabel("Stored generic secrets");
+  await waitForText(storedSecrets, GENERIC_SECRET_NAME);
+  await waitForText(storedSecrets, GENERIC_SECRET_HOST);
+
   await page.goto(gatewayUrl(routes.app.settings.gitAuthor.index.href()));
   await page.getByLabel("Name", { exact: true }).fill("OpenOrb Release Acceptance");
   await page.getByLabel("Email", { exact: true }).fill("release-acceptance@openorb.invalid");
@@ -462,9 +476,10 @@ async function waitForSessionDeletion(page: Page): Promise<void> {
   }, 90_000);
 }
 
-function setupScript(marker: string): string {
+function setupScript(marker: string, repository: GitHubRepositoryIdentity): string {
   return `#!/bin/sh
 set -eu
+${mediatedGenericSecretProbe(repository)}
 count_file=/opt/openorb-acceptance-setup-count
 count=0
 if [ -f "$count_file" ]; then count="$(cat "$count_file")"; fi
@@ -474,13 +489,30 @@ printf '%s\\n' '${marker}' > /opt/openorb-acceptance-setup-ok
 `;
 }
 
-function resumeScript(expectedSetupMarker: string, marker: string): string {
+function resumeScript(
+  expectedSetupMarker: string,
+  marker: string,
+  repository: GitHubRepositoryIdentity,
+): string {
   return `#!/bin/sh
 set -eu
+${mediatedGenericSecretProbe(repository)}
 test "$(cat /opt/openorb-acceptance-setup-count)" = "1"
 test "$(cat /opt/openorb-acceptance-setup-ok)" = '${expectedSetupMarker}'
 printf '%s\\n' '${marker}' > /opt/openorb-acceptance-resume-ok
 `;
+}
+
+function mediatedGenericSecretProbe(repository: GitHubRepositoryIdentity): string {
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${
+    encodeURIComponent(repository.repository)
+  }`;
+  return `test -n "$${GENERIC_SECRET_NAME}"
+curl --fail --silent --show-error \\
+  --header "Authorization: Bearer $${GENERIC_SECRET_NAME}" \\
+  --header 'Accept: application/vnd.github+json' \\
+  --header 'X-GitHub-Api-Version: 2022-11-28' \\
+  '${endpoint}' >/dev/null`;
 }
 
 class GitHubClient {

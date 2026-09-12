@@ -76,8 +76,10 @@ deno task dev:gateway
 ```
 
 Open <http://localhost:44100>, create the first administrator, then configure a model provider,
-GitHub, and a project. Open **Settings → Runners** and copy the gateway URL and enrollment PSK. In a
-second terminal, enroll the temporary development runner:
+GitHub, and a project. Optional generic secrets become placeholder environment variables in newly
+started Agent Environments. Set allowed hosts to restrict Gondolin's outbound HTTP-header
+substitution; leaving hosts blank allows any public host. Open **Settings → Runners** and copy the
+gateway URL and enrollment PSK. In a second terminal, enroll the temporary development runner:
 
 ```sh
 read -rsp 'Enrollment PSK: ' OPENORB_ENROLLMENT_PSK; printf '\n'

@@ -75,6 +75,7 @@ export function SecretsSettingsPage(
         dialogId={dialogId}
         secrets={handle.props.secrets.map((secret) => ({
           key: secret.key,
+          ...(secret.allowedHosts === undefined ? {} : { allowedHosts: secret.allowedHosts }),
           updatedAt: secret.updatedAt,
         }))}
       />

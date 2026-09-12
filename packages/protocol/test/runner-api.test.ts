@@ -41,6 +41,8 @@ import {
   type RunnerWatchError,
   type SessionConflict,
   type SessionCorrupt,
+  SessionEnvironmentSecret,
+  SessionEnvironmentSecrets,
   SessionEvent,
   SessionGitSnapshot,
   SessionId,
@@ -61,6 +63,7 @@ import {
 } from "@/src/runner-api.ts";
 import {
   MAX_RUNNER_RPC_FRAME_BYTES,
+  MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
@@ -124,11 +127,23 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
     orbSize: "medium",
     initialPrompt: "Implement the change.",
     modelRuntime: modelRuntime(),
+    environmentSecrets: [{
+      name: "SERVICE_TOKEN",
+      value: "service-secret",
+      allowedHosts: ["api.example.com", "*.service.example"],
+    }],
   });
   assertEquals(provision.sessionId, SESSION_ID);
   assertEquals(provision.mode, "create");
   if (provision.mode !== "create") throw new Error("Expected a create payload.");
   assertEquals(provision.workspaceId, WORKSPACE_ID);
+  assertEquals(provision.environmentSecrets, [
+    new SessionEnvironmentSecret({
+      name: "SERVICE_TOKEN",
+      value: "service-secret",
+      allowedHosts: ["api.example.com", "*.service.example"],
+    }),
+  ]);
   assertThrows(() =>
     Schema.decodeUnknownSync(ProvisionSessionPayload)({
       ...provision,
@@ -141,6 +156,27 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       gitAuthor: { name: "OpenOrb User", email: "not-an-email" },
     })
   );
+  for (
+    const environmentSecrets of [
+      [
+        { name: "GH_TOKEN", value: "collision" },
+      ],
+      [
+        { name: "SERVICE_TOKEN", value: "one" },
+        { name: "SERVICE_TOKEN", value: "two" },
+      ],
+      [
+        { name: "SERVICE_TOKEN", value: "secret", allowedHosts: ["https://api.example.com"] },
+      ],
+    ]
+  ) {
+    assertThrows(() =>
+      Schema.decodeUnknownSync(ProvisionSessionPayload)({
+        ...provision,
+        environmentSecrets,
+      })
+    );
+  }
 
   assertEquals(
     Schema.decodeUnknownSync(PromptSessionPayload)({
@@ -166,6 +202,60 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
     }).runId,
     RUN_ID,
   );
+});
+
+Deno.test("environment secrets reserve enough room for the RPC request envelope", () => {
+  const maximumLengthHost = (index: number) =>
+    `${index.toString(36).padStart(2, "0")}.${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${
+      "d".repeat(58)
+    }`;
+  const environmentSecrets = (hostCount: number) =>
+    Array.from({ length: 64 }, (_, secretIndex) => ({
+      name: `SERVICE_TOKEN_${secretIndex}`,
+      value: "x".repeat(4_096),
+      allowedHosts: Array.from(
+        { length: hostCount },
+        (_, hostIndex) => maximumLengthHost(hostIndex),
+      ),
+    }));
+
+  assertEquals(maximumLengthHost(0).length, 253);
+  const acceptedSecrets = Schema.decodeUnknownSync(SessionEnvironmentSecrets)(
+    environmentSecrets(31),
+  );
+  assert(
+    byteLength(JSON.stringify(acceptedSecrets)) < MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES,
+  );
+
+  const payload = Schema.decodeUnknownSync(PromptSessionPayload)({
+    sessionId: SESSION_ID,
+    clientRequestId: "\0".repeat(100),
+    prompt: "\0".repeat(32 * 1_024),
+    modelRuntime: {
+      model: `x/${"\\".repeat(510)}`,
+      thinkingLevel: "xhigh",
+      credential: { type: "api_key", value: "\0".repeat(4_096) },
+    },
+    githubToken: "\0".repeat(4_096),
+    environmentSecrets: acceptedSecrets,
+  });
+  const frame = {
+    _tag: "Request",
+    id: Number.MAX_SAFE_INTEGER,
+    tag: "session.prompt",
+    payload,
+    headers: [],
+    traceId: "f".repeat(32),
+    spanId: "f".repeat(16),
+    sampled: true,
+  };
+  assert(byteLength(JSON.stringify(frame)) <= MAX_RUNNER_RPC_FRAME_BYTES);
+
+  const oversizedSecrets = environmentSecrets(32);
+  const oversizedBytes = byteLength(JSON.stringify(oversizedSecrets));
+  assert(oversizedBytes > MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES);
+  assert(oversizedBytes < MAX_RUNNER_RPC_FRAME_BYTES);
+  assertThrows(() => Schema.decodeUnknownSync(SessionEnvironmentSecrets)(oversizedSecrets));
 });
 
 Deno.test("WatchSession events always state their run attribution", () => {

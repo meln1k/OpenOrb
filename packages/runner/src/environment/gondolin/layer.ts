@@ -6,9 +6,9 @@ import type { Result } from "@openorb/result";
 
 import { type GuestImage, prepareGuestImageForVm } from "./guest-image/installer.ts";
 import {
-  createOpenOrbGitHubVmOptions,
+  createOpenOrbNetworkVmOptions,
   type OpenOrbGitHubMediationOptions,
-} from "./github-mediation.ts";
+} from "./network-mediation.ts";
 import { installGondolinTlsCompatibility } from "./tls-compatibility.ts";
 import { shellWaitTimeoutMs } from "./shell-timeout.ts";
 import {
@@ -95,6 +95,7 @@ export function createGondolinAgentEnvironment(
         options.memoryMiB,
         options.sessionLabel,
         options.github,
+        options.environmentSecrets,
         options.sessionId,
         options.softwareEmulation,
       );
@@ -112,6 +113,7 @@ function makeGondolinEnvironment(
   memoryMiB: number,
   sessionLabel = `openorb ${basename(rootDiskPath)}`,
   github?: OpenOrbGitHubMediationOptions,
+  environmentSecrets?: AgentEnvironmentOptions["environmentSecrets"],
   sessionId?: string,
   softwareEmulation = false,
 ): Effect.Effect<GondolinEnvironmentInternals> {
@@ -132,10 +134,13 @@ function makeGondolinEnvironment(
         prepareGuestImageForVm(guestImage),
         (cause) => new AgentEnvironmentError("The guest image could not be prepared.", cause),
       );
-      const githubOptions = github
+      const networkOptions = github !== undefined || environmentSecrets !== undefined
         ? yield* fromLegacyResult(
-          Promise.resolve(createOpenOrbGitHubVmOptions(github)),
-          (cause) => new AgentEnvironmentError("GitHub mediation could not be configured.", cause),
+          Promise.resolve(createOpenOrbNetworkVmOptions({
+            ...(github === undefined ? {} : { github }),
+            ...(environmentSecrets === undefined ? {} : { environmentSecrets }),
+          })),
+          (cause) => new AgentEnvironmentError("Network mediation could not be configured.", cause),
         )
         : undefined;
       if (softwareEmulation && Deno.build.os === "linux") {
@@ -155,7 +160,7 @@ function makeGondolinEnvironment(
             sessionLabel,
             cpus: cpuCount,
             memory: `${memoryMiB}M`,
-            ...githubOptions,
+            ...networkOptions,
             rootfs: {
               size: OPENORB_ROOT_DISK_SIZE,
             },

@@ -8,6 +8,7 @@ import {
   SessionIssues,
 } from "./runner-api-session-events.ts";
 import {
+  MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES,
   MAX_SESSION_GIT_PATH_CHARACTERS,
   MAX_SESSION_GIT_SNAPSHOT_FILES,
   MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
@@ -19,7 +20,10 @@ import {
 } from "./runner-api-limits.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
-export const RUNNER_PROTOCOL_VERSION = 17;
+export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
+export const MAX_SESSION_SECRET_HOSTS = 32;
+export const MAX_SESSION_SECRET_HOST_CHARACTERS = 253;
+export const RUNNER_PROTOCOL_VERSION = 18;
 
 export * from "./runner-api-limits.ts";
 
@@ -202,6 +206,61 @@ const Secret = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(4_096),
 );
+const SessionEnvironmentSecretName = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  Schema.makeFilter((value) =>
+    isReservedSessionEnvironmentName(value)
+      ? "Environment secret names must not use OpenOrb's reserved variables."
+      : undefined
+  ),
+);
+const SessionSecretHost = Schema.String.check(
+  Schema.isTrimmed(),
+  Schema.isMinLength(1),
+  Schema.isMaxLength(MAX_SESSION_SECRET_HOST_CHARACTERS),
+  Schema.makeFilter((value) =>
+    isValidSessionSecretHost(value)
+      ? undefined
+      : "Expected a hostname or leading-wildcard hostname such as api.example.com or *.example.com."
+  ),
+);
+const SessionSecretHosts = Schema.Array(SessionSecretHost).check(
+  Schema.isMaxLength(MAX_SESSION_SECRET_HOSTS),
+  Schema.makeFilter((hosts) =>
+    new Set(hosts.map((host) => host.toLowerCase())).size === hosts.length
+      ? undefined
+      : "Environment secret host patterns must be unique."
+  ),
+  Schema.makeFilter((hosts) =>
+    !hosts.includes("*") || hosts.length === 1
+      ? undefined
+      : "The wildcard host must be the only environment secret host pattern."
+  ),
+);
+
+export class SessionEnvironmentSecret extends Schema.Class<SessionEnvironmentSecret>(
+  "SessionEnvironmentSecret",
+)({
+  name: SessionEnvironmentSecretName,
+  value: Secret,
+  allowedHosts: Schema.optionalKey(SessionSecretHosts),
+}) {}
+
+export const SessionEnvironmentSecrets = Schema.Array(SessionEnvironmentSecret).check(
+  Schema.isMaxLength(MAX_SESSION_ENVIRONMENT_SECRETS),
+  Schema.makeFilter((secrets) =>
+    new Set(secrets.map((secret) => secret.name)).size === secrets.length
+      ? undefined
+      : "Environment secret names must be unique."
+  ),
+  Schema.makeFilter((secrets) =>
+    utf8Length(JSON.stringify(secrets)) <= MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES
+      ? undefined
+      : `Environment secrets must fit within ${MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES} JSON bytes.`
+  ),
+);
 
 const GitAuthorName = Schema.String.check(
   Schema.isTrimmed(),
@@ -276,6 +335,7 @@ const CreateSessionPayload = Schema.Struct({
   initialPrompt: InitialPrompt,
   modelRuntime: SessionModelRuntime,
   githubToken: Schema.optionalKey(Secret),
+  environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
 });
 
 const RetrySessionPayload = Schema.Struct({
@@ -283,6 +343,7 @@ const RetrySessionPayload = Schema.Struct({
   sessionId: SessionId,
   modelRuntime: SessionModelRuntime,
   githubToken: Schema.optionalKey(Secret),
+  environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
 });
 
 export const ProvisionSessionPayload = Schema.Union([
@@ -307,6 +368,7 @@ export class PromptSessionPayload extends Schema.Class<PromptSessionPayload>(
   prompt: Prompt,
   modelRuntime: SessionModelRuntime,
   githubToken: Schema.optionalKey(Secret),
+  environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
 }) {}
 
 export class PromptSessionAccepted extends Schema.Class<PromptSessionAccepted>(
@@ -321,6 +383,7 @@ export class WakeSessionPayload extends Schema.Class<WakeSessionPayload>("WakeSe
   sessionId: SessionId,
   modelRuntime: SessionModelRuntime,
   githubToken: Schema.optionalKey(Secret),
+  environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
   recovery: Schema.optionalKey(SessionEnvironmentRecoveryMode),
 }) {}
 
@@ -603,6 +666,18 @@ function boundedString(minimumLength: number, maximumLength: number, label: stri
 
 function collapseWhitespace(value: string): string {
   return value.trim().replace(/\s+/gu, " ");
+}
+
+export function isReservedSessionEnvironmentName(value: string): boolean {
+  return value.startsWith("OPENORB_") || value === "GH_TOKEN" || value === "GH_HOST" ||
+    value === "GH_PROMPT_DISABLED" || value === "GIT_TERMINAL_PROMPT" ||
+    value === "GIT_CONFIG_COUNT" || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(value);
+}
+
+export function isValidSessionSecretHost(value: string): boolean {
+  return value.length <= MAX_SESSION_SECRET_HOST_CHARACTERS &&
+    /^(?:\*|(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)$/
+      .test(value);
 }
 
 function isCanonicalGitHubRepository(value: string): boolean {

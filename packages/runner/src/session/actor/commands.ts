@@ -2,6 +2,7 @@ import type {
   AbortSessionPayload,
   PromptSessionPayload,
   RunId,
+  SessionEnvironmentSecret,
   SessionIssue,
   SessionModelRuntime,
   StopSessionPayload,
@@ -56,6 +57,7 @@ export type SessionActorInput =
   | (SessionActorInputBase & {
     readonly mode: "create" | "retry";
     readonly githubToken?: string | undefined;
+    readonly environmentSecrets?: readonly SessionEnvironmentSecret[] | undefined;
     readonly modelRuntime: SessionModelRuntime;
   });
 
@@ -256,7 +258,6 @@ export type InternalCommand =
     readonly _tag: "RestorationCompleted";
     readonly restorationId: string;
     readonly environment: AgentEnvironment;
-    readonly agentSession: OpenAgentSession;
     readonly release: Effect.Effect<void>;
     readonly correlationId: string;
     readonly continuation: RestorationContinuation;

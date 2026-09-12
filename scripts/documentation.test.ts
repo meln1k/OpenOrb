@@ -86,7 +86,7 @@ Deno.test("operations documentation records the recovery contract and release pi
   const rootConfiguration = await Deno.readTextFile("deno.json");
   const runnerConfiguration = await Deno.readTextFile("packages/runner/deno.json");
   assert(release.includes('id: "mvp-7"'));
-  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 17"));
+  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 18"));
   for (const pin of ["2.9.5", "0.12.0", "0.85.1", "3.0.0-beta.10"]) {
     assert(
       operations.includes(pin) &&
@@ -98,7 +98,7 @@ Deno.test("operations documentation records the recovery contract and release pi
 
 Deno.test("release guide and workflows preserve acceptance traceability and secret policy", async () => {
   const guide = await Deno.readTextFile("docs/release-acceptance.md");
-  for (let criterion = 1; criterion <= 18; criterion += 1) {
+  for (let criterion = 1; criterion <= 19; criterion += 1) {
     assert(
       new RegExp(`^\\|\\s*${criterion}\\s*\\|`, "mu").test(guide),
       `release guide does not map release criterion ${criterion}`,
@@ -117,6 +117,19 @@ Deno.test("release guide and workflows preserve acceptance traceability and secr
     ]
   ) {
     assertStringIncludes(guide, invariant);
+  }
+
+  const acceptanceScript = await Deno.readTextFile("scripts/release-acceptance.ts");
+  for (
+    const assertion of [
+      "routes.app.settings.secrets.index.href()",
+      'GENERIC_SECRET_NAME = "ACCEPTANCE_GITHUB_TOKEN"',
+      'GENERIC_SECRET_HOST = "api.github.com"',
+      'getByRole("dialog", { name: "Add secret" })',
+      "mediatedGenericSecretProbe(repository)",
+    ]
+  ) {
+    assertStringIncludes(acceptanceScript, assertion);
   }
 
   const ci = await Deno.readTextFile(".github/workflows/ci.yml");

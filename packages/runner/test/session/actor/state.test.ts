@@ -220,6 +220,23 @@ Deno.test("stop lifecycle transitions a running session to stopped", () => {
   assertEquals(sessionMetadata(stopped).state, "stopped");
 });
 
+Deno.test("restoration can start from a ready durable phase", () => {
+  const ready = applyAll(readyEvents());
+  const restoring = applySessionEvent(ready, {
+    type: "restoration.started",
+    restorationId: OPERATION_ID,
+    continuation: { _tag: "Wake" },
+  });
+
+  assert(restoring);
+  assertEquals(restoring.phase, {
+    _tag: "Restoring",
+    restorationId: OPERATION_ID,
+    continuation: { _tag: "Wake" },
+  });
+  assertEquals(sessionMetadata(restoring).state, "stopped");
+});
+
 Deno.test("stop failure returns to ready while the environment remains available", () => {
   const stopping = applyAll([
     ...readyEvents(),

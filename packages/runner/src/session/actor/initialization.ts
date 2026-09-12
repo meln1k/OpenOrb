@@ -1,4 +1,9 @@
-import type { RunId, SessionIssue, SessionModelRuntime } from "@openorb/protocol/runner-api";
+import type {
+  RunId,
+  SessionEnvironmentSecret,
+  SessionIssue,
+  SessionModelRuntime,
+} from "@openorb/protocol/runner-api";
 import { Deferred, Effect, type Scope } from "effect";
 
 import type { AgentEnvironment } from "../../environment/agent-environment.ts";
@@ -13,11 +18,7 @@ import type {
 } from "./commands.ts";
 import type { PersistentSessionState, SessionDecision, SessionDecisions } from "./decision.ts";
 import type { SessionProvisioner } from "./provisioner.ts";
-import {
-  makeProvisioningLogBudget,
-  redactedErrorMessage,
-  type SessionReporter,
-} from "./reporter.ts";
+import { redactedErrorMessage, type SessionReporter } from "./reporter.ts";
 import type { SessionRuntime } from "./runtime.ts";
 import { sessionMetadata, type SessionState } from "./state.ts";
 import type { RunnerSessionMetadata } from "../store.ts";
@@ -103,6 +104,7 @@ export function makeSessionInitialization(options: SessionInitializationOptions)
       yield* Effect.forkScoped(provision(
         sessionMetadata(state),
         provisioningInput.githubToken,
+        provisioningInput.environmentSecrets,
         provisioningInput.modelRuntime,
         provisioningInput.correlationId,
       ));
@@ -205,7 +207,10 @@ export function makeSessionInitialization(options: SessionInitializationOptions)
     state: SessionState,
     initializationReply: Deferred.Deferred<void, SessionActorError>,
   ): Effect.Effect<SessionDecision, never, Scope.Scope> {
-    if (state.phase._tag === "Stopped" || state.phase._tag === "Failed") {
+    if (
+      state.phase._tag === "Ready" || state.phase._tag === "Stopped" ||
+      state.phase._tag === "Failed"
+    ) {
       return Effect.succeed(none(() =>
         runtime.updateStatus(false).pipe(
           Effect.andThen(startIdleLoop()),
@@ -214,37 +219,10 @@ export function makeSessionInitialization(options: SessionInitializationOptions)
         )
       ));
     }
-    if (state.phase._tag !== "Ready") {
-      return Effect.succeed(fail(
-        initializationReply,
-        new SessionActorError("The recovered session phase cannot be restored.", undefined),
-      ));
-    }
-    return provisioner.restore(sessionMetadata(state), undefined, input.correlationId).pipe(
-      Effect.map(({ environment, issues }) =>
-        none(() =>
-          runtime.setEnvironment(environment).pipe(
-            Effect.andThen(runtime.updateStatus(true)),
-            Effect.andThen(startIdleLoop()),
-            Effect.andThen(Effect.forEach(
-              issues,
-              (issue) => send({ kind: "internal", _tag: "RecordIssue", issue }),
-              { discard: true },
-            )),
-            Effect.andThen(Deferred.succeed(initializationReply, undefined)),
-            Effect.asVoid,
-          )
-        )
-      ),
-      Effect.catch((error) =>
-        Effect.succeed(failRestore(
-          input.correlationId,
-          makeProvisioningLogBudget([]),
-          error,
-          initializationReply,
-        ))
-      ),
-    );
+    return Effect.succeed(fail(
+      initializationReply,
+      new SessionActorError("The recovered session phase cannot be restored.", undefined),
+    ));
   }
 
   function provisioningUpdated(
@@ -389,15 +367,23 @@ export function makeSessionInitialization(options: SessionInitializationOptions)
   function provision(
     metadata: RunnerSessionMetadata,
     githubToken: string | undefined,
+    environmentSecrets: readonly SessionEnvironmentSecret[] | undefined,
     modelRuntime: SessionModelRuntime,
     correlationId: string,
   ) {
-    return provisioner.provision(metadata, githubToken, modelRuntime, correlationId, {
-      update: persistProvisioningUpdate,
-      environmentStarted: registerProvisioningEnvironment,
-      prepared: (result) => send({ kind: "internal", _tag: "ProvisioningPrepared", ...result }),
-      failed: (result) => send({ kind: "internal", _tag: "ProvisioningFailed", ...result }),
-    });
+    return provisioner.provision(
+      metadata,
+      githubToken,
+      environmentSecrets,
+      modelRuntime,
+      correlationId,
+      {
+        update: persistProvisioningUpdate,
+        environmentStarted: registerProvisioningEnvironment,
+        prepared: (result) => send({ kind: "internal", _tag: "ProvisioningPrepared", ...result }),
+        failed: (result) => send({ kind: "internal", _tag: "ProvisioningFailed", ...result }),
+      },
+    );
   }
 
   function failProvision(
@@ -409,25 +395,6 @@ export function makeSessionInitialization(options: SessionInitializationOptions)
     return persist(
       { type: "provisioning.failed", issue },
       (failedState) => reportFailure(failedState, correlationId, logBudget, error),
-    );
-  }
-
-  function failRestore(
-    correlationId: string,
-    logBudget: ProvisioningLogBudget,
-    error: SessionActorError,
-    initializationReply: Deferred.Deferred<void, SessionActorError>,
-  ): SessionDecision {
-    const issue = lostEnvironmentIssue(
-      "The runner could not restore the session environment. No prompt was dispatched.",
-    );
-    return persist(
-      { type: "restore.failed", issue },
-      (failedState) =>
-        reportFailure(failedState, correlationId, logBudget, error).pipe(
-          Effect.andThen(Deferred.succeed(initializationReply, undefined)),
-          Effect.asVoid,
-        ),
     );
   }
 

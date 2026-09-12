@@ -415,9 +415,10 @@ export function makeSessionSupervisor(
           : {
             metadata,
             mode: prepared.value.mode,
-            ...(payload.mode === "create" && payload.githubToken !== undefined
-              ? { githubToken: payload.githubToken }
-              : {}),
+            ...(payload.githubToken !== undefined ? { githubToken: payload.githubToken } : {}),
+            ...(payload.environmentSecrets === undefined
+              ? {}
+              : { environmentSecrets: payload.environmentSecrets }),
             modelRuntime: payload.modelRuntime,
             correlationId: crypto.randomUUID(),
             idleTimeoutMs,

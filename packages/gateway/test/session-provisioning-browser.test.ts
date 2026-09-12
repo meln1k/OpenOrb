@@ -12,6 +12,7 @@ import {
   GitMutationRevision,
   initialPromptPreview,
   RunnerSessionSnapshot,
+  SessionEnvironmentSecret,
   SessionGitSnapshot,
   SessionModelRuntime,
   StopSessionAccepted,
@@ -44,6 +45,8 @@ const GITHUB_TOKEN = "browser-provisioning-github-token";
 const MODEL_PROVIDER_KEY = "browser-provisioning-model-key";
 const CONTINUATION_MODEL_PROVIDER_KEY = "browser-continuation-model-key";
 const RETRY_MODEL_PROVIDER_KEY = "browser-provisioning-retry-model-key";
+const ENVIRONMENT_SECRET_VALUE = "browser-provisioning-environment-secret";
+const ENVIRONMENT_SECRET_HOSTS = ["api.example.com", "*.service.example"] as const;
 const PROVIDER_ID = "opencode-go";
 const MODEL = `${PROVIDER_ID}/deepseek-v4-flash`;
 const OPENAI_PROVIDER_ID = "openai";
@@ -377,6 +380,12 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     await store.saveGitHubCredential(client.workspaceId, GITHUB_TOKEN);
     await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
     await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+    await store.saveSecret(
+      client.workspaceId,
+      "DEPLOY_TOKEN",
+      ENVIRONMENT_SECRET_VALUE,
+      ENVIRONMENT_SECRET_HOSTS,
+    );
     const enrolled = await enrollRunner(store, client.workspaceId);
     connections.runnerId = enrolled.runnerId;
     connections.beforeAcceptance = async (input) => {
@@ -431,6 +440,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assert(projectControl !== -1 && projectControl < orbControl && orbControl < modelControl);
     assert(!createHtml.includes(GITHUB_TOKEN));
     assert(!createHtml.includes(MODEL_PROVIDER_KEY));
+    assert(!createHtml.includes(ENVIRONMENT_SECRET_VALUE));
 
     const composerSessionId = crypto.randomUUID();
     const response = await fetch(new URL(routes.app.sessions.create.href(), server.baseUrl), {
@@ -458,6 +468,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(location, routes.app.sessions.detail.href({ sessionId: provision.sessionId }));
     assertEquals(provision.runnerId, connections.runnerId);
     assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
+    assertEquals(provision.payload.environmentSecrets, [
+      new SessionEnvironmentSecret({
+        name: "DEPLOY_TOKEN",
+        value: ENVIRONMENT_SECRET_VALUE,
+        allowedHosts: ENVIRONMENT_SECRET_HOSTS,
+      }),
+    ]);
     assertEquals(
       provision.payload.gitAuthor,
       new GitAuthor({
@@ -492,7 +509,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const storedSecrets = await store.pool.query<{ ciphertext: string }>(
       "select ciphertext from encrypted_secrets",
     );
-    assertEquals(storedSecrets.rows.length, 2);
+    assertEquals(storedSecrets.rows.length, 3);
     assert(
       storedSecrets.rows.every((row: { ciphertext: string }) =>
         !row.ciphertext.includes(GITHUB_TOKEN)
@@ -501,6 +518,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assert(
       storedSecrets.rows.every((row: { ciphertext: string }) =>
         !row.ciphertext.includes(MODEL_PROVIDER_KEY)
+      ),
+    );
+    assert(
+      storedSecrets.rows.every((row: { ciphertext: string }) =>
+        !row.ciphertext.includes(ENVIRONMENT_SECRET_VALUE)
       ),
     );
 
@@ -593,6 +615,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(detailHtml, /data-session-events/);
     assert(!detailHtml.includes(GITHUB_TOKEN));
     assert(!detailHtml.includes(MODEL_PROVIDER_KEY));
+    assert(!detailHtml.includes(ENVIRONMENT_SECRET_VALUE));
     assertNotMatch(detailHtml, /<a href="\/app\/"[^>]*>[\s\S]*?Overview[\s\S]*?<\/a>/);
     assertNotMatch(
       detailHtml,
@@ -658,6 +681,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
           credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
         }),
         githubToken: GITHUB_TOKEN,
+        environmentSecrets: [
+          new SessionEnvironmentSecret({
+            name: "DEPLOY_TOKEN",
+            value: ENVIRONMENT_SECRET_VALUE,
+            allowedHosts: ENVIRONMENT_SECRET_HOSTS,
+          }),
+        ],
       },
     }]);
 
@@ -770,6 +800,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
           credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
         }),
         githubToken: GITHUB_TOKEN,
+        environmentSecrets: [
+          new SessionEnvironmentSecret({
+            name: "DEPLOY_TOKEN",
+            value: ENVIRONMENT_SECRET_VALUE,
+            allowedHosts: ENVIRONMENT_SECRET_HOSTS,
+          }),
+        ],
       },
     }]);
 
@@ -821,6 +858,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
           credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
         }),
         githubToken: GITHUB_TOKEN,
+        environmentSecrets: [
+          new SessionEnvironmentSecret({
+            name: "DEPLOY_TOKEN",
+            value: ENVIRONMENT_SECRET_VALUE,
+            allowedHosts: ENVIRONMENT_SECRET_HOSTS,
+          }),
+        ],
       },
     });
     const coldContinuation = await fetch(new URL(messageHref, server.baseUrl), {
@@ -844,6 +888,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
           credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
         }),
         githubToken: GITHUB_TOKEN,
+        environmentSecrets: [
+          new SessionEnvironmentSecret({
+            name: "DEPLOY_TOKEN",
+            value: ENVIRONMENT_SECRET_VALUE,
+            allowedHosts: ENVIRONMENT_SECRET_HOSTS,
+          }),
+        ],
       },
     });
 
@@ -900,6 +951,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(connections.prompts.length, 3);
     assertEquals(connections.prompts[2]?.payload.prompt, "Queue this follow-up");
     assertEquals(connections.prompts[2]?.payload.githubToken, GITHUB_TOKEN);
+    assertEquals(connections.prompts[2]?.payload.environmentSecrets, [
+      new SessionEnvironmentSecret({
+        name: "DEPLOY_TOKEN",
+        value: ENVIRONMENT_SECRET_VALUE,
+        allowedHosts: ENVIRONMENT_SECRET_HOSTS,
+      }),
+    ]);
 
     const abortHref = routes.app.sessions.abort.href({ sessionId: provision.sessionId });
     const missingAbortCsrf = await fetch(new URL(abortHref, server.baseUrl), {
@@ -1079,6 +1137,18 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         ...provision.payload.modelRuntime,
         credential: { type: "api_key", value: RETRY_MODEL_PROVIDER_KEY },
       }),
+    );
+    assertEquals(
+      retryProvision?.payload.mode === "retry"
+        ? retryProvision.payload.environmentSecrets
+        : undefined,
+      [
+        new SessionEnvironmentSecret({
+          name: "DEPLOY_TOKEN",
+          value: ENVIRONMENT_SECRET_VALUE,
+          allowedHosts: ENVIRONMENT_SECRET_HOSTS,
+        }),
+      ],
     );
 
     const abort = new AbortController();

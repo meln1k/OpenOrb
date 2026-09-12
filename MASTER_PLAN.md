@@ -1685,7 +1685,8 @@ Untrusted or constrained:
 - The session checkout and `.git` metadata are untrusted; native host Git never consumes them.
 - Every Git operation against a session checkout executes inside Gondolin, including status/diff while the VM is awake and clone/fetch/commit/push.
 - Stopped-session review uses a host-owned cached Git Snapshot generated inside Gondolin, not host Git.
-- Project secrets use Gondolin placeholder substitution scoped to allowed destinations.
+- Workspace generic secrets use Gondolin placeholder substitution. Allowed destinations are
+  optional; omission intentionally allows all public HTTP(S) hosts.
 - Pi uses an explicit allowlist-only `ResourceLoader`; `DefaultResourceLoader` is forbidden for untrusted workspaces.
 - Pi uses `SettingsManager.inMemory(...)` and never loads workspace or global Pi settings/packages.
 - No project context, prompt, skill, theme, package, extension, or system-prompt resource is host-discovered in the MVP.
@@ -1714,13 +1715,16 @@ The runner therefore constructs the `ResourceLoader` itself and returns only tru
 
 Project documentation remains accessible to the agent through Gondolin-backed file tools. This preserves the VM boundary: reading or executing a script associated with a repository skill happens inside Gondolin, never through host-side Pi discovery.
 
-### 27.5 Mediated project secrets
+### 27.5 Mediated workspace secrets
 
-Project secrets are centrally encrypted. When a VM needs them:
+Generic secrets are centrally encrypted and supplied to newly started Agent Environments in their
+Workspace. Project-scoped assignment remains deferred. When a VM needs them:
 
-- Runner generates guest placeholder values.
+- Gondolin generates guest placeholder environment-variable values.
 - Real values remain in host memory.
-- Gondolin substitutes only in supported outbound HTTP headers for configured hosts.
+- Gondolin substitutes only in supported outbound HTTP headers. Configured hosts restrict
+  substitution; an omitted host list permits substitution for any public HTTP(S) host and therefore
+  permits guest code to exfiltrate that secret.
 - Do not claim mediation works for arbitrary protocols or secrets embedded in request bodies.
 - Explicitly mapped TCP does not receive HTTP secret substitution.
 - SSH secrets use Gondolin’s SSH proxy, not environment injection.
@@ -2087,7 +2091,8 @@ A release is MVP-complete when all of the following are true:
 
 1. Gateway can be deployed persistently with HTTPS and a wildcard preview domain.
 2. User can create a password account, register a passkey, and recover with password.
-3. User can centrally configure a model API key, private Git credential, per-user Git author identity, project, and project secrets.
+3. User can centrally configure a model API key, private Git credential, per-user Git author identity,
+   project, and Workspace generic secrets with optional allowed hosts.
 4. A Linux runner behind NAT enrolls using only gateway URL and enrollment token.
 5. Runner reports free CPU/memory/disk and accepts a requested session size.
 6. User can override the automatic runner before the first message and cannot move the session afterward.

@@ -74,20 +74,27 @@ export default createController(routes.api.sessions, {
         ));
       if (!snapshot) return apiError("The pinned runner is offline.", 503);
 
-      const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] =
-        await sessionSpan("credentials.read", () =>
-          Promise.all([
-            context.services.store.getModelProviderApiKey(
-              workspaceId,
-              parseModelReference(snapshot.model).providerId,
-            ),
-            context.services.store.getGitHubToken(workspaceId),
-          ]));
+      const [
+        [modelApiKey, modelCredentialError],
+        [githubToken, gitCredentialError],
+        [environmentSecrets, environmentSecretError],
+      ] = await sessionSpan("credentials.read", () =>
+        Promise.all([
+          context.services.store.getModelProviderApiKey(
+            workspaceId,
+            parseModelReference(snapshot.model).providerId,
+          ),
+          context.services.store.getGitHubToken(workspaceId),
+          context.services.store.getEnvironmentSecrets(workspaceId),
+        ]));
       if (modelCredentialError !== undefined) {
         return apiError("The saved model provider credential could not be read.", 500);
       }
       if (gitCredentialError !== undefined) {
         return apiError("The saved GitHub credential could not be read.", 500);
+      }
+      if (environmentSecretError !== undefined) {
+        return apiError("The saved environment secrets could not be read.", 500);
       }
       if (modelApiKey === null) {
         return apiError("Reconfigure this session's model provider before continuing.", 409);
@@ -101,6 +108,7 @@ export default createController(routes.api.sessions, {
             payload: {
               modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
               ...(githubToken === null ? {} : { githubToken }),
+              ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
               ...(parsed.value.recovery === undefined ? {} : { recovery: parsed.value.recovery }),
             },
           }),

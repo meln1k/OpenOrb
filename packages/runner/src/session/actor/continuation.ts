@@ -1,4 +1,4 @@
-import type { RunId, SessionIssue } from "@openorb/protocol/runner-api";
+import type { RunId, SessionIssue, WakeSessionPayload } from "@openorb/protocol/runner-api";
 import { Deferred, Effect, type Scope } from "effect";
 
 import type { SessionAgentRuntime } from "./agent-runtime.ts";
@@ -81,10 +81,11 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
     }
     const current = runtime.get();
     if (current.environment === undefined) {
-      return Effect.succeed(reply(command.reply, {
-        ok: false,
-        message: "The session environment could not be restored.",
-      }));
+      return Effect.succeed(beginRestoration(
+        state,
+        { _tag: "Wake", payload: command.payload, reply: command.reply },
+        crypto.randomUUID(),
+      ));
     }
     if (current.agentSession !== undefined) {
       return Effect.succeed(reply(command.reply, { ok: true }));
@@ -219,10 +220,16 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
     }
     const environment = runtime.get().environment;
     if (environment === undefined) {
-      return Effect.succeed(reply(command.reply, {
-        ok: false,
-        message: "The session environment is unavailable.",
-      }));
+      return Effect.succeed(beginRestoration(
+        state,
+        {
+          _tag: "Prompt",
+          payload: command.payload,
+          runId,
+          reply: command.reply,
+        },
+        runId,
+      ));
     }
     return Effect.succeed(run.request(
       environment,
@@ -261,19 +268,9 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
                 Effect.andThen(provisioner.restore(
                   sessionMetadata(state),
                   continuation.payload.githubToken,
+                  continuation.payload.environmentSecrets,
                   correlationId,
                 )),
-                Effect.flatMap(({ environment, issues, release }) =>
-                  agentRuntime.open(environment, continuation.payload.modelRuntime).pipe(
-                    Effect.map((agentSession) => ({
-                      environment,
-                      agentSession,
-                      issues,
-                      release,
-                    })),
-                    Effect.onError(() => release),
-                  )
-                ),
                 Effect.matchEffect({
                   onFailure: (error) =>
                     send({
@@ -284,23 +281,18 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
                       continuation,
                       issue: restorationIssue(error, continuation),
                     }),
-                  onSuccess: ({ environment, agentSession, issues, release }) =>
+                  onSuccess: ({ environment, issues, release }) =>
                     send({
                       kind: "internal",
                       _tag: "RestorationCompleted",
                       restorationId,
                       environment,
-                      agentSession,
                       release,
                       correlationId,
                       continuation,
                       issues,
                     }).pipe(
-                      Effect.flatMap((sent) =>
-                        sent
-                          ? Effect.void
-                          : agentRuntime.close(agentSession).pipe(Effect.andThen(release))
-                      ),
+                      Effect.flatMap((sent) => sent ? Effect.void : release),
                     ),
                 }),
                 Effect.asVoid,
@@ -332,8 +324,7 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
     const continuation = command.continuation;
     if (!matchesRestoration(state, command.restorationId, continuation)) {
       return none(() =>
-        agentRuntime.close(command.agentSession).pipe(
-          Effect.andThen(command.release),
+        command.release.pipe(
           Effect.andThen(rejectContinuation(
             continuation,
             "The completed restoration no longer matches the active operation.",
@@ -348,7 +339,7 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
         issues: command.issues,
       },
       (next) =>
-        runtime.setSession(command.environment, command.agentSession).pipe(
+        runtime.setEnvironment(command.environment).pipe(
           Effect.andThen(runtime.updateStatus(true)),
           Effect.andThen(
             emitState(sessionMetadata(next), "ready", command.correlationId).pipe(
@@ -357,14 +348,25 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
           ),
           Effect.andThen(
             continuation._tag === "Wake"
-              ? Deferred.succeed(continuation.reply, { ok: true }).pipe(Effect.asVoid)
+              ? send({
+                kind: "command",
+                _tag: "Wake",
+                payload: withoutRecovery(continuation.payload),
+                reply: continuation.reply,
+              }).pipe(
+                Effect.flatMap((sent) =>
+                  sent ? Effect.void : rejectContinuation(
+                    continuation,
+                    "The session actor became unavailable while waking.",
+                  )
+                ),
+              )
               : run.start(
                 command.environment,
                 continuation.payload.modelRuntime,
                 continuation.runId,
                 continuation.payload.prompt,
                 { _tag: "Prompt", reply: continuation.reply },
-                command.agentSession,
               ),
           ),
         ),
@@ -441,6 +443,7 @@ function restorationIssue(error: unknown, continuation: RestorationContinuation)
   const secrets = [
     continuation.payload.modelRuntime.credential.value,
     ...(continuation.payload.githubToken === undefined ? [] : [continuation.payload.githubToken]),
+    ...(continuation.payload.environmentSecrets?.map((secret) => secret.value) ?? []),
   ];
   return makeSessionIssue({
     category: "vm-start",
@@ -465,4 +468,9 @@ function matchesRestoration(
   return state.phase.continuation._tag === "Wake" ||
     state.phase.continuation.runId ===
       (continuation as Extract<RestorationContinuation, { readonly _tag: "Prompt" }>).runId;
+}
+
+function withoutRecovery(payload: WakeSessionPayload): WakeSessionPayload {
+  const { recovery: _, ...rest } = payload;
+  return rest;
 }

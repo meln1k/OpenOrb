@@ -53,6 +53,7 @@ export const encryptedSecrets = table({
     purpose: c.text().notNull(),
     key_version: c.integer().notNull(),
     ciphertext: c.text().notNull(),
+    allowed_hosts: c.text().nullable(),
     created_at: c.text().notNull(),
     updated_at: c.text().notNull(),
   },

@@ -170,6 +170,7 @@ export function createGitConfigurationRepository(
           purpose: encryptedSecretPurposes.gitCredential,
           key_version: encrypted.keyVersion,
           ciphertext: encrypted.ciphertext.toBase64(),
+          allowed_hosts: null,
           created_at: now,
           updated_at: now,
         };

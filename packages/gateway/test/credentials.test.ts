@@ -6,7 +6,12 @@ import {
   assertNotEquals,
   assertNotMatch,
 } from "@std/assert";
-import type { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
+import {
+  MAX_SESSION_ENVIRONMENT_SECRETS,
+  MAX_SESSION_SECRET_HOST_CHARACTERS,
+  type UserId,
+  type WorkspaceId,
+} from "@openorb/protocol/runner-api";
 import { array, number, object, parse, string } from "remix/data-schema";
 
 import { ModelProviderCredentialReadError } from "@/app/data/model-provider-repository.ts";
@@ -311,14 +316,31 @@ Deno.test("generic secrets remain independent from model provider credentials", 
         intent: "save-secret",
         key: GENERIC_SECRET_KEY,
         value: GENERIC_SECRET_VALUE,
+        allowedHosts: "api.example.com, *.service.example",
       },
     );
     assertEquals(saveResponse.status, 303);
     assertEquals(saveResponse.headers.get("location"), SECRETS_SETTINGS_PATH);
 
-    assertEquals((await client.store.listSecrets(client.workspaceId)).map((secret) => secret.key), [
-      GENERIC_SECRET_KEY,
-    ]);
+    assertEquals(await client.store.listSecrets(client.workspaceId), [{
+      key: GENERIC_SECRET_KEY,
+      keyVersion: 1,
+      allowedHosts: ["api.example.com", "*.service.example"],
+      createdAt: (await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY))!.createdAt,
+      updatedAt: (await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY))!.updatedAt,
+    }]);
+    const [environmentSecrets, environmentSecretError] = await client.store.getEnvironmentSecrets(
+      client.workspaceId,
+    );
+    assertEquals(environmentSecretError, undefined);
+    assertEquals(
+      environmentSecrets?.map(({ name, value, allowedHosts }) => ({ name, value, allowedHosts })),
+      [{
+        name: GENERIC_SECRET_KEY,
+        value: GENERIC_SECRET_VALUE,
+        allowedHosts: ["api.example.com", "*.service.example"],
+      }],
+    );
     assertEquals(
       (await client.store.listModelProviderCredentials(client.workspaceId)).map((credential) =>
         credential.providerId
@@ -340,6 +362,7 @@ Deno.test("generic secrets remain independent from model provider credentials", 
 
     const page = await credentialsPage(client, SECRETS_SETTINGS_PATH);
     assertMatch(page, new RegExp(GENERIC_SECRET_KEY));
+    assertMatch(page, /api\.example\.com, \*\.service\.example/);
     assertNotMatch(page, new RegExp(GENERIC_SECRET_VALUE));
     assertNotMatch(page, new RegExp(OPENCODE_VALUE));
 
@@ -361,6 +384,134 @@ Deno.test("generic secrets remain independent from model provider credentials", 
     );
     assertEquals(deleteResponse.status, 303);
     assertEquals(await client.store.listSecrets(client.workspaceId), []);
+  } finally {
+    await client.server.close();
+    await client.store.close();
+  }
+});
+
+Deno.test("generic secrets enforce protocol host boundaries", async () => {
+  const client = await createAuthenticatedClient();
+  try {
+    const wildcardResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "save-secret",
+      key: GENERIC_SECRET_KEY,
+      value: GENERIC_SECRET_VALUE,
+      allowedHosts: "",
+    });
+    assertEquals(wildcardResponse.status, 303);
+    assertEquals(
+      (await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY))?.allowedHosts,
+      undefined,
+    );
+
+    const maximumLengthHost = [
+      "a".repeat(63),
+      "b".repeat(63),
+      "c".repeat(63),
+      "d".repeat(61),
+    ].join(".");
+    assertEquals(maximumLengthHost.length, MAX_SESSION_SECRET_HOST_CHARACTERS);
+    const maximumLengthResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "save-secret",
+      key: "MAXIMUM_HOST_TOKEN",
+      value: "maximum-host-secret",
+      allowedHosts: maximumLengthHost,
+    });
+    assertEquals(maximumLengthResponse.status, 303);
+
+    const excessiveLengthResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "save-secret",
+      key: "EXCESSIVE_HOST_TOKEN",
+      value: "excessive-host-secret",
+      allowedHosts: `${maximumLengthHost}e`,
+    });
+    assertEquals(excessiveLengthResponse.status, 400);
+    assertMatch(await excessiveLengthResponse.text(), /at most 253 characters/);
+    assertEquals(await client.store.getSecret(client.workspaceId, "EXCESSIVE_HOST_TOKEN"), null);
+
+    const invalidResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "save-secret",
+      key: "OTHER_TOKEN",
+      value: "other-secret",
+      allowedHosts: "https://api.example.com/path",
+    });
+    assertEquals(invalidResponse.status, 400);
+    assertMatch(await invalidResponse.text(), /Enter at most 32 hostnames/);
+    assertEquals(await client.store.getSecret(client.workspaceId, "OTHER_TOKEN"), null);
+  } finally {
+    await client.server.close();
+    await client.store.close();
+  }
+});
+
+Deno.test("generic secrets enforce the protocol count while allowing updates", async () => {
+  const client = await createAuthenticatedClient();
+  try {
+    for (let index = 0; index < MAX_SESSION_ENVIRONMENT_SECRETS; index++) {
+      const result = await client.store.saveSecret(
+        client.workspaceId,
+        `SERVICE_TOKEN_${index}`,
+        `service-secret-${index}`,
+      );
+      assertEquals(result.status, "saved");
+    }
+
+    assertEquals(
+      await client.store.saveSecret(
+        client.workspaceId,
+        "DIRECT_OVERFLOW_TOKEN",
+        "direct-overflow-secret",
+      ),
+      { status: "limit-exceeded" },
+    );
+    const overflowResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "save-secret",
+      key: "FORM_OVERFLOW_TOKEN",
+      value: "form-overflow-secret",
+      allowedHosts: "api.example.com",
+    });
+    assertEquals(overflowResponse.status, 400);
+    assertMatch(await overflowResponse.text(), /at most 64 generic secrets/);
+    assertEquals(await client.store.getSecret(client.workspaceId, "FORM_OVERFLOW_TOKEN"), null);
+
+    const updateResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "save-secret",
+      key: "SERVICE_TOKEN_0",
+      value: "updated-service-secret",
+      allowedHosts: "api.example.com",
+    });
+    assertEquals(updateResponse.status, 303);
+    assertEquals((await client.store.listSecrets(client.workspaceId)).length, 64);
+  } finally {
+    await client.server.close();
+    await client.store.close();
+  }
+});
+
+Deno.test("generic secrets reject aggregate RPC frame overflow", async () => {
+  const client = await createAuthenticatedClient();
+  try {
+    const escapedValue = "\0".repeat(4_096);
+    for (let index = 0; index < 31; index++) {
+      const result = await client.store.saveSecret(
+        client.workspaceId,
+        `ESCAPED_TOKEN_${index}`,
+        escapedValue,
+      );
+      assertEquals(result.status, "saved");
+    }
+
+    const overflowResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "save-secret",
+      key: "ESCAPED_TOKEN_31",
+      value: escapedValue,
+      allowedHosts: "",
+    });
+    assertEquals(overflowResponse.status, 400);
+    assertMatch(await overflowResponse.text(), /too large to send to a runner/);
+    assertEquals(await client.store.getSecret(client.workspaceId, "ESCAPED_TOKEN_31"), null);
+    assertEquals((await client.store.listSecrets(client.workspaceId)).length, 31);
   } finally {
     await client.server.close();
     await client.store.close();

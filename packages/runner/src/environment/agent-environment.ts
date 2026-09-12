@@ -1,4 +1,5 @@
 import { Context, Data, type Effect, type Scope } from "effect";
+import type { SessionEnvironmentSecret } from "@openorb/protocol/runner-api";
 import { fileURLToPath } from "node:url";
 import { posix } from "node:path";
 
@@ -65,6 +66,7 @@ export interface AgentEnvironmentOptions {
     };
     readonly token?: string;
   };
+  readonly environmentSecrets?: readonly SessionEnvironmentSecret[];
   readonly cpuCount: number;
   readonly memoryMiB: number;
 }

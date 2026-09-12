@@ -127,10 +127,12 @@ export default createController(routes.app.sessions, {
       const [
         [githubToken, gitCredentialError],
         [modelApiKey, modelCredentialError],
+        [environmentSecrets, environmentSecretError],
         gitAuthor,
       ] = await Promise.all([
         store.getGitHubToken(workspaceId),
         store.getModelProviderApiKey(workspaceId, providerId),
+        store.getEnvironmentSecrets(workspaceId),
         store.getGitAuthorConfiguration(context.auth.identity.userId),
       ]);
       if (gitCredentialError !== undefined) {
@@ -145,6 +147,14 @@ export default createController(routes.app.sessions, {
         return await renderCreateError(
           context,
           "The saved model provider credential could not be read.",
+          500,
+          submitted,
+        );
+      }
+      if (environmentSecretError !== undefined) {
+        return await renderCreateError(
+          context,
+          "The saved environment secrets could not be read.",
           500,
           submitted,
         );
@@ -186,6 +196,7 @@ export default createController(routes.app.sessions, {
             initialPrompt: parsed.value.initialPrompt,
             modelRuntime: sessionModelRuntime(parsed.value.model, modelApiKey),
             ...(githubToken ? { githubToken } : {}),
+            ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
           },
         }),
         { signal: context.request.signal },
@@ -237,14 +248,18 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      const [[modelApiKey, modelCredentialError], [githubToken, gitCredentialError]] = await Promise
-        .all([
-          context.services.store.getModelProviderApiKey(
-            workspaceId,
-            parseModelReference(snapshot.model).providerId,
-          ),
-          context.services.store.getGitHubToken(workspaceId),
-        ]);
+      const [
+        [modelApiKey, modelCredentialError],
+        [githubToken, gitCredentialError],
+        [environmentSecrets, environmentSecretError],
+      ] = await Promise.all([
+        context.services.store.getModelProviderApiKey(
+          workspaceId,
+          parseModelReference(snapshot.model).providerId,
+        ),
+        context.services.store.getGitHubToken(workspaceId),
+        context.services.store.getEnvironmentSecrets(workspaceId),
+      ]);
       if (modelCredentialError !== undefined) {
         return await sessionCommandError(
           context,
@@ -256,6 +271,13 @@ export default createController(routes.app.sessions, {
         return await sessionCommandError(
           context,
           "The saved GitHub credential could not be read.",
+          500,
+        );
+      }
+      if (environmentSecretError !== undefined) {
+        return await sessionCommandError(
+          context,
+          "The saved environment secrets could not be read.",
           500,
         );
       }
@@ -275,6 +297,7 @@ export default createController(routes.app.sessions, {
             prompt: parsed.value.prompt,
             modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
             ...(githubToken === null ? {} : { githubToken }),
+            ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
           },
         }),
         { signal: context.request.signal },
@@ -431,14 +454,18 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      const [[githubToken, gitCredentialError], [modelApiKey, modelCredentialError]] = await Promise
-        .all([
-          context.services.store.getGitHubToken(workspaceId),
-          context.services.store.getModelProviderApiKey(
-            workspaceId,
-            parseModelReference(snapshot.model).providerId,
-          ),
-        ]);
+      const [
+        [githubToken, gitCredentialError],
+        [modelApiKey, modelCredentialError],
+        [environmentSecrets, environmentSecretError],
+      ] = await Promise.all([
+        context.services.store.getGitHubToken(workspaceId),
+        context.services.store.getModelProviderApiKey(
+          workspaceId,
+          parseModelReference(snapshot.model).providerId,
+        ),
+        context.services.store.getEnvironmentSecrets(workspaceId),
+      ]);
       if (gitCredentialError !== undefined) {
         return await renderDetailPage(
           context,
@@ -450,6 +477,13 @@ export default createController(routes.app.sessions, {
         return await renderDetailPage(
           context,
           "The saved model provider credential could not be read.",
+          500,
+        );
+      }
+      if (environmentSecretError !== undefined) {
+        return await renderDetailPage(
+          context,
+          "The saved environment secrets could not be read.",
           500,
         );
       }
@@ -471,6 +505,7 @@ export default createController(routes.app.sessions, {
               mode: "retry",
               modelRuntime,
               ...(githubToken ? { githubToken } : {}),
+              ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
             },
           }),
           { signal: context.request.signal },
@@ -483,6 +518,7 @@ export default createController(routes.app.sessions, {
               modelRuntime,
               recovery,
               ...(githubToken ? { githubToken } : {}),
+              ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
             },
           }),
           { signal: context.request.signal },
