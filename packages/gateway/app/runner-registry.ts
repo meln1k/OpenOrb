@@ -1053,7 +1053,10 @@ const stopSession = Effect.fn("RunnerRegistry.stopSession")(
       registry,
       input.workspaceId,
       input.sessionId,
-      (snapshot) => snapshot.state === "ready" ? undefined : "The session is not ready and idle.",
+      (snapshot) =>
+        snapshot.state === "ready" || snapshot.state === "running"
+          ? undefined
+          : "The session cannot be stopped right now.",
     );
     if (routed.status === "unavailable") return unavailable(routed.message);
     if (routed.status === "rejected") {

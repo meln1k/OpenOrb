@@ -58,6 +58,7 @@ session-owned root disk. _Avoid_: Workspace Runtime
 reopened by each new VM. It includes the Project Checkout and other non-tmpfs guest state, but not
 RAM, processes, or tmpfs-backed paths. _Avoid_: Workspace disk, host checkout
 
-**Stop**: The durability boundary that records a final Git Snapshot, syncs the guest filesystem,
-closes the Agent Harness, stops the VM without deleting its Persistent Root Disk, syncs that disk on
-the host, and journals completion. _Avoid_: Shutdown, suspend
+**Stop**: The durability boundary that cancels and closes an active Agent Run when necessary,
+records a final Git Snapshot, syncs the guest filesystem, closes the Agent Harness, stops the VM
+without deleting its Persistent Root Disk, syncs that disk on the host, and journals completion.
+_Avoid_: Shutdown, suspend

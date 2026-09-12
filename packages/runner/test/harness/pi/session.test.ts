@@ -38,7 +38,7 @@ Deno.test("trusted prompt requires an explicit request and pins safe Git destina
   assert(SYSTEM_PROMPT.includes("Pi runs in the trusted OpenOrb runner"));
   assert(SYSTEM_PROMPT.includes("cannot access the runner host"));
   assert(SYSTEM_PROMPT.includes("Do not attempt to stop or restart the VM yourself"));
-  assert(SYSTEM_PROMPT.includes("only after agent and tool activity has finished"));
+  assert(SYSTEM_PROMPT.includes("explicit Stop cancels active agent and tool activity"));
   assert(SYSTEM_PROMPT.includes("but not RAM or running processes"));
   assert(SYSTEM_PROMPT.includes(".agents/resume"));
   assert(SYSTEM_PROMPT.includes("only when the user explicitly requests that operation"));

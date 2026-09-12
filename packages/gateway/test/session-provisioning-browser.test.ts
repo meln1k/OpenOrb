@@ -871,6 +871,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       runningHtml,
       /<button(?=[^>]*aria-label="Stop active turn")(?![^>]*disabled)[^>]*>/,
     );
+    assertMatch(
+      runningHtml,
+      /<button(?=[^>]*aria-label="Stop Gondolin VM")(?![^>]*disabled)[^>]*>/,
+    );
     assertNotMatch(runningHtml, /aria-label="Send prompt"/);
     assertNotMatch(runningHtml, />Abort<\/button>/);
     const busyStop = await fetch(new URL(stopHref, server.baseUrl), {
@@ -879,9 +883,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       headers: { Cookie: client.cookie },
       body: new URLSearchParams({ _csrf: csrfFrom(runningHtml) }),
     });
-    assertEquals(busyStop.status, 409);
-    assertMatch(await busyStop.text(), /Abort the active Pi run before stopping/);
-    assertEquals(connections.stops.length, 1);
+    assertEquals(busyStop.status, 303);
+    assertEquals(connections.stops.length, 2);
     const busyContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -983,7 +986,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(offlineStop.status, 503);
     assertEquals(await offlineStop.json(), { error: "The pinned runner is offline." });
-    assertEquals(connections.stops.length, 1);
+    assertEquals(connections.stops.length, 2);
     const offlineWake = await fetch(new URL(wakeHref, server.baseUrl), {
       method: "POST",
       headers: { Accept: "application/json", Cookie: client.cookie },

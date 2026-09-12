@@ -723,7 +723,7 @@ Deno.test("Wake routes only the recovery offered by the runner snapshot", () =>
     ]);
   }))));
 
-Deno.test("Stop routes only ready sessions to the pinned runner", () =>
+Deno.test("Stop routes ready and running sessions to the pinned runner", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const { gateway, url } = yield* makeHarness();
     const probe = yield* makeProbe();
@@ -754,8 +754,11 @@ Deno.test("Stop routes only ready sessions to the pinned runner", () =>
       "running snapshot missing",
     );
     const busy = yield* gateway.stopSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 });
-    assertEquals(busy.status, "rejected");
-    assertEquals(probe.stopRequests.length, 1);
+    assertEquals(busy.status, "accepted");
+    assertEquals(probe.stopRequests, [
+      decode(StopSessionPayload)({ sessionId: SESSION_1 }),
+      decode(StopSessionPayload)({ sessionId: SESSION_1 }),
+    ]);
   }))));
 
 Deno.test("session deletion removes routes and cleans stale updates", () =>

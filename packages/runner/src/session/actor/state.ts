@@ -354,7 +354,7 @@ export function applySessionEvent(
         }
         : current;
     case "stop.started":
-      return phase._tag === "Ready"
+      return phase._tag === "Ready" || phase._tag === "Running"
         ? {
           data: {
             ...data,

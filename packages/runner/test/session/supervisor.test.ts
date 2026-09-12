@@ -472,12 +472,14 @@ Deno.test("manual Stop syncs the persistent root disk and wake restores the envi
   }
 });
 
-Deno.test("Stop rejects active Pi work and the shortened idle timeout stops after it settles", async () => {
+Deno.test("explicit Stop cancels active Pi work while idle Stop leaves it running", async () => {
   const directory = await Deno.makeTempDir();
   const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
   const continuationStarted = Promise.withResolvers<void>();
   const releaseContinuation = Promise.withResolvers<void>();
   let promptCalls = 0;
+  let clearCalls = 0;
+  let abortCalls = 0;
   const createPiSession: CreateRawPiSession = () =>
     Effect.succeed({
       session: {
@@ -493,8 +495,12 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
           }
         },
         followUp: () => Promise.resolve(),
-        clearQueue: () => ({ steering: [], followUp: [] }),
+        clearQueue: () => {
+          clearCalls++;
+          return { steering: [], followUp: [] };
+        },
         abort: () => {
+          abortCalls++;
           releaseContinuation.resolve();
           return Promise.resolve();
         },
@@ -530,12 +536,10 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
         await delay(150);
         assertEquals((await Effect.runPromise(store.readMetadata(SESSION_ID))).state, "running");
         assertEquals(environment.stopCalls, 0);
-        const rejected = await Effect.runPromise(actor.stop(stopPayload()));
-        assertEquals(rejected.ok, false);
-        assertEquals(logs.filter((log) => String(log.message).startsWith("stop.")), []);
-
-        releaseContinuation.resolve();
+        assertEquals([clearCalls, abortCalls], [0, 0]);
+        assertEquals(await Effect.runPromise(actor.stop(stopPayload())), { ok: true });
         await waitForState(store, "stopped");
+        assertEquals([clearCalls, abortCalls], [1, 1]);
         assertEquals(environment.stopCalls, 1);
         await waitForActorInactive(actor);
         assertEquals(supervisor.activeSessionCount(), 0);
@@ -543,7 +547,7 @@ Deno.test("Stop rejects active Pi work and the shortened idle timeout stops afte
     );
     const stops = logs.filter((log) => String(log.message).startsWith("stop."));
     assertEquals(stops.map((log) => log.message), ["stop.started", "stop.completed"]);
-    assert(stops.every((log) => log.annotations.trigger === "idle"));
+    assert(stops.every((log) => log.annotations.trigger === "explicit"));
   } finally {
     releaseContinuation.resolve();
     await Deno.remove(directory, { recursive: true });

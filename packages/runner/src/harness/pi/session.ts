@@ -69,7 +69,7 @@ export function createOpenOrbSystemPrompt(
     `- Relative paths resolve from ${OPENORB_GUEST_WORKSPACE}. Absolute paths refer to the guest filesystem.`,
     `- ${OPENORB_GUEST_WORKSPACE} contains the persistent repository checkout and is the only guest path included in Git change review.`,
     "- OpenOrb manages the VM lifecycle. Do not attempt to stop or restart the VM yourself.",
-    "- OpenOrb may stop the VM only after agent and tool activity has finished. It reopens the persistent root disk before dispatching another prompt.",
+    "- An explicit Stop cancels active agent and tool activity before stopping the VM. OpenOrb reopens the persistent root disk before dispatching another prompt.",
     `- A successful stop and resume preserves the guest root disk, ${OPENORB_GUEST_WORKSPACE}, and the Pi conversation, but not RAM or running processes.`,
     "- Temporary filesystems, including /root, /tmp, and /var/log, do not survive stop and resume.",
     "- Do not rely on background processes surviving stop and resume. If the project provides an executable .agents/resume hook, OpenOrb runs it before dispatching the next prompt.",

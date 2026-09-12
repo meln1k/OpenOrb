@@ -201,12 +201,14 @@ for (const origin of ["provisioning", "ready"] as const) {
   }
 }
 
-Deno.test("stop lifecycle transitions a ready session to stopped", () => {
-  const ready = applyAll([
+Deno.test("stop lifecycle transitions a running session to stopped", () => {
+  const running = applyAll([
     ...readyEvents(),
+    { type: "run.requested", runId: RUN_ID, issues: [] },
+    { type: "run.started", runId: RUN_ID, acceptedAt: "2026-08-17T12:15:00Z" },
     { type: "issue.recorded", issue: retryStopIssue },
   ]);
-  const stopping = applySessionEvent(ready, { type: "stop.started", stopId: STOP_ID });
+  const stopping = applySessionEvent(running, { type: "stop.started", stopId: STOP_ID });
   assert(stopping);
   assertEquals(stopping.phase, { _tag: "Stopping", stopId: STOP_ID });
   assertEquals(stopping.data.issues, []);

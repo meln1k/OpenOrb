@@ -22,10 +22,11 @@ at a time.
 Gondolin expands the ext4 filesystem to the sparse disk's capacity during VM startup. The guest
 image provides `resize2fs` from `e2fsprogs` for this operation.
 
-Stop takes a final Git Snapshot, runs guest `/bin/sync`, closes Pi, and explicitly stops and closes
-the VM while retaining `root-disk.qcow2`. The runner then calls host `fsync` on that file and its
-session directory before appending `stop.completed` to the Session Journal. Wake creates a new VM
-over the same disk and runs `.agents/resume` before continuing.
+An explicit Stop first cancels an active Agent Run and closes Pi. Stop then takes a final Git
+Snapshot, runs guest `/bin/sync`, and explicitly stops and closes the VM while retaining
+`root-disk.qcow2`. The runner then calls host `fsync` on that file and its session directory before
+appending `stop.completed` to the Session Journal. Wake creates a new VM over the same disk and runs
+`.agents/resume` before continuing.
 
 If the runner restarts while a Session is `Stopping`, it cannot prove that guest sync and VM exit
 finished. The Session therefore enters a failed state offering the explicit `restart-environment`

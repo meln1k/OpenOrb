@@ -898,8 +898,10 @@ Use Pi’s fully settled event when available. Do not sleep on a low-level `turn
 
 - One sparse 40 GiB `root-disk.qcow2` exists at a stable path in each Session directory.
 - `/workspace` and all other non-tmpfs root-disk paths persist on that disk.
-- Stop runs a final Git Snapshot and guest `/bin/sync`, closes Pi, then explicitly stops and closes
-  the VM without deleting the disk.
+- An explicit Stop cancels an active Agent Run and closes Pi before collecting the final Git
+  Snapshot.
+- An idle Stop runs a final Git Snapshot and guest `/bin/sync` before closing Pi. Both paths then
+  explicitly stop and close the VM without deleting the disk.
 - The runner calls host `fsync` on the disk and Session directory before journaling
   `stop.completed`.
 - A runner interrupted in `Stopping` cannot confirm guest sync and VM exit, so it preserves the

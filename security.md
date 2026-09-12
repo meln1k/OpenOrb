@@ -53,9 +53,10 @@ durability guarantee still depends on the runner filesystem and physical storage
 `fsync` correctly.
 
 The root disk always has the stable session path `root-disk.qcow2`. Its initial sparse 40 GiB file
-is file-synced and atomically published before first use. Stop records a final Git Snapshot, runs
-guest `/bin/sync`, closes Pi, and explicitly stops and closes the VM without deleting the disk. The
-runner then calls host `fsync` on `root-disk.qcow2` and its session directory before journaling
+is file-synced and atomically published before first use. An explicit Stop cancels an active Agent
+Run and closes Pi before recording the final Git Snapshot; an idle Stop has no active work to
+cancel. Stop then runs guest `/bin/sync` and explicitly stops and closes the VM without deleting the
+disk. The runner calls host `fsync` on `root-disk.qcow2` and its session directory before journaling
 `stop.completed`.
 
 After a runner interruption in `Stopping`, reconciliation cannot prove that the guest sync and VM

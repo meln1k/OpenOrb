@@ -188,7 +188,11 @@ function phaseForProjection(projection: SessionPageProjection): SessionVmPhase {
 }
 
 function actionForState(state: SessionState): VmAction | undefined {
-  return state === "stopped" ? "start" : state === "ready" ? "stop" : undefined;
+  return state === "stopped"
+    ? "start"
+    : state === "ready" || state === "running"
+    ? "stop"
+    : undefined;
 }
 
 function actionReachedTarget(action: VmAction, state: SessionState): boolean {

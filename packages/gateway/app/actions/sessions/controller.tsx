@@ -341,12 +341,10 @@ export default createController(routes.app.sessions, {
       if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
       }
-      if (snapshot.state !== "ready") {
+      if (snapshot.state !== "ready" && snapshot.state !== "running") {
         return await sessionCommandError(
           context,
-          snapshot.state === "running"
-            ? "Abort the active Pi run before stopping the session."
-            : "The session is not ready and idle.",
+          "The session cannot be stopped right now.",
           409,
         );
       }

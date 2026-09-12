@@ -107,16 +107,23 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
     state: SessionState,
     command: Extract<ActorCommand, { readonly _tag: "Stop" }>,
   ): Effect.Effect<SessionDecision> {
-    if (state.phase._tag === "Running" || state.phase._tag === "StartingRun") {
+    if (state.phase._tag === "StartingRun") {
       return Effect.succeed(reply(command.reply, {
         ok: false,
-        message: "Abort the active Pi run before stopping the session.",
+        message: "The agent run is still starting.",
       }));
     }
-    if (state.phase._tag !== "Ready") {
+    const stoppingActiveRun = state.phase._tag === "Running";
+    if (state.phase._tag !== "Ready" && !stoppingActiveRun) {
       return Effect.succeed(reply(command.reply, {
         ok: false,
         message: "The session is not ready and idle.",
+      }));
+    }
+    if (command.idle && stoppingActiveRun) {
+      return Effect.succeed(reply(command.reply, {
+        ok: false,
+        message: "The session is not idle.",
       }));
     }
     const current = runtime.get();
@@ -126,6 +133,9 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
         message: "The session environment is unavailable.",
       }));
     }
+    const abortActiveRun = stoppingActiveRun && current.activeRun !== undefined
+      ? current.activeRun.run.abort.pipe(Effect.ignore)
+      : Effect.void;
     return Effect.gen(function* () {
       if (command.idle) {
         const now = yield* Clock.currentTimeMillis;
@@ -162,6 +172,8 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
                 stopId,
                 correlationId,
                 command.reply,
+                stoppingActiveRun,
+                abortActiveRun,
               )).pipe(Effect.asVoid),
             ),
           ),
@@ -176,10 +188,17 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
     stopId: string,
     correlationId: string,
     commandReply: Deferred.Deferred<StopAcceptance>,
+    stoppingActiveRun: boolean,
+    abortActiveRun: Effect.Effect<void>,
   ): Effect.Effect<void, never, Scope.Scope> {
     let environmentUsable = true;
     let agentSessionClosed = agentSession === undefined;
     return Effect.gen(function* () {
+      if (stoppingActiveRun && agentSession !== undefined) {
+        yield* abortActiveRun;
+        yield* agentRuntime.close(agentSession);
+        agentSessionClosed = true;
+      }
       yield* git.quiesce({ environment, metadata, correlationId }).pipe(
         Effect.mapError(actorError),
       );
@@ -190,7 +209,7 @@ export function makeStopBehavior(options: StopBehaviorOptions) {
           undefined,
         );
       }
-      if (agentSession !== undefined) {
+      if (!agentSessionClosed && agentSession !== undefined) {
         yield* agentRuntime.close(agentSession);
         agentSessionClosed = true;
       }
