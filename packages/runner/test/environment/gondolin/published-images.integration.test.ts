@@ -11,32 +11,9 @@ import {
 import {
   GUEST_IMAGE_RELEASE,
   type GuestImageRelease,
+  MVP_7,
 } from "@/src/environment/gondolin/guest-image/release.ts";
 import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin/layer.ts";
-
-const MVP_5: GuestImageRelease = {
-  id: "mvp-5",
-  assets: {
-    arm64: {
-      gondolinArchitecture: "aarch64",
-      gondolinBuildId: "63090235-6080-5dd3-ac23-516a3f2435a8",
-      manifestSha256: "2b479497365f057b9c7367a836936921e148715fa37908841d2539f3f4679edb",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-5/gondolin-image-openorb-guest-mvp-5-aarch64.tar.gz",
-      sizeBytes: 816_776_397,
-      sha256: "6e48c41b22e3082d2bb1a889af84c108737abcb53f329bcdbe3e389291eb4665",
-    },
-    x64: {
-      gondolinArchitecture: "x86_64",
-      gondolinBuildId: "02e784cb-e063-5138-b1c4-334e8a3307a9",
-      manifestSha256: "8f876ae487fd8c8fd640fafcb5658596db8185fdcce8e3c0ea748856219031a2",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-5/gondolin-image-openorb-guest-mvp-5-x86_64.tar.gz",
-      sizeBytes: 838_270_875,
-      sha256: "3c94f55880898993ccc9dc62818218a874b41e1b2b37fb61bdcbbdc3dff99cbe",
-    },
-  },
-};
 
 const MVP_6: GuestImageRelease = {
   id: "mvp-6",
@@ -62,12 +39,12 @@ const MVP_6: GuestImageRelease = {
   },
 };
 
-const RELEASES = [MVP_5, GUEST_IMAGE_RELEASE] as const;
+const RELEASES = [MVP_7, GUEST_IMAGE_RELEASE] as const;
 const MEMORY_MIB = 4096;
 const textDecoder = new TextDecoder();
 
 Deno.test({
-  name: "published MVP images verify current persistence and expose old compatibility limits",
+  name: "published mvp-7 sessions remain pinned when release-1 becomes the default",
   ignore: Deno.env.get("OPENORB_RUN_PUBLISHED_IMAGE_TESTS") !== "1" ||
     Deno.build.os !== "linux" || Deno.build.arch !== "x86_64",
   sanitizeOps: false,
@@ -75,16 +52,19 @@ Deno.test({
   async fn() {
     const workingDirectory = await Deno.makeTempDir({ prefix: "openorb-published-images-" });
     try {
-      const oldImage = await install(workingDirectory, MVP_5);
+      const oldImage = await install(workingDirectory, MVP_7);
       const newImage = await install(workingDirectory, GUEST_IMAGE_RELEASE);
-      assertEquals(oldImage.releaseId, "mvp-5");
-      assertEquals(newImage.releaseId, "mvp-7");
+      assertEquals(oldImage.releaseId, "mvp-7");
+      assertEquals(newImage.releaseId, "release-1");
 
       const oldDisk = join(workingDirectory, "sessions", "old", "root-disk.qcow2");
       await Deno.mkdir(join(workingDirectory, "sessions", "old"), { recursive: true });
       const oldProvider = makeGondolinAgentEnvironmentProvider(oldImage, true);
       await Effect.runPromise(oldProvider.initializeRootDisk(oldDisk));
-      await expectMissingResize2fs(oldProvider, oldDisk);
+      await useEnvironment(oldProvider, oldDisk, async (environment) => {
+        await assertGuestIdentity(environment, "mvp-7");
+        await writeMarkers(environment, "old-image-marker");
+      });
       const oldBacking = await backingFilename(oldDisk);
       assertEquals(oldBacking, join(oldImage.path, "rootfs.ext4"));
 
@@ -95,21 +75,24 @@ Deno.test({
       });
       await Effect.runPromise(upgradedProvider.initializeRootDisk(oldDisk));
       assertEquals(await backingFilename(oldDisk), oldBacking);
-      await expectMissingResize2fs(upgradedProvider, oldDisk);
+      await useEnvironment(upgradedProvider, oldDisk, async (environment) => {
+        await assertGuestIdentity(environment, "mvp-7");
+        await assertMarkers(environment, "old-image-marker");
+      });
       await assertInstalledImage(oldImage.path);
 
       const newDisk = join(workingDirectory, "sessions", "new", "root-disk.qcow2");
       await Deno.mkdir(join(workingDirectory, "sessions", "new"), { recursive: true });
       await Effect.runPromise(upgradedProvider.initializeRootDisk(newDisk));
       await useEnvironment(upgradedProvider, newDisk, async (environment) => {
-        await assertGuestIdentity(environment, "mvp-7");
+        await assertGuestIdentity(environment, "release-1");
         await writeMarkers(environment, "new-image-marker");
       });
       const restartedProvider = makeGondolinAgentEnvironmentProvider(newImage, true, {
         releases: RELEASES,
       });
       await useEnvironment(restartedProvider, newDisk, async (environment) => {
-        await assertGuestIdentity(environment, "mvp-7");
+        await assertGuestIdentity(environment, "release-1");
         await assertMarkers(environment, "new-image-marker");
       });
 
@@ -244,21 +227,6 @@ async function useEnvironment(
     await Effect.runPromise(opened.environment.stop);
   } finally {
     await Effect.runPromise(Scope.close(opened.scope, Exit.void));
-  }
-}
-
-async function expectMissingResize2fs(provider: Provider, rootDiskPath: string): Promise<void> {
-  const scope = await Effect.runPromise(Scope.make());
-  try {
-    const result = await Effect.runPromiseExit(
-      provider.make(environmentOptions(rootDiskPath)).pipe(
-        Effect.provideService(Scope.Scope, scope),
-      ),
-    );
-    assert(Exit.isFailure(result));
-    assertStringIncludes(Cause.pretty(result.cause), "rootfs.size requires resize2fs");
-  } finally {
-    await Effect.runPromise(Scope.close(scope, Exit.void));
   }
 }
 

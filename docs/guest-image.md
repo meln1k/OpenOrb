@@ -1,8 +1,8 @@
 # Guest image release process
 
 Each OpenOrb guest-image release contains immutable Gondolin assets for every supported runner
-architecture. The runner uses the published Debian-based `mvp-7` release. An OpenOrb release ID is
-not derived from the Gondolin package version or either architecture-specific Gondolin build ID.
+architecture. The runner uses the published Debian-based `release-1` release. An OpenOrb release ID
+is not derived from the Gondolin package version or either architecture-specific Gondolin build ID.
 
 The guest userspace is Debian 13 and provides an Amp-orb-like development command line: Git and
 GitHub CLI; GCC/G++, Make, Autoconf, Automake, and pkg-config; Python/pip; Node.js/npm, Corepack,
@@ -31,7 +31,11 @@ Gondolin configurations. The visible root filesystem comes from the OpenOrb Debi
 root. Gondolin then runs its own minimal `/init`, not Debian systemd. At x86-64 boot, that init
 decompresses the selected KVM module and its dependencies before Debian `kmod` loads them because
 the Alpine kernel modules use gzip compression that Debian's `modprobe` cannot load directly with
-this kernel configuration.
+this kernel configuration. OpenOrb removes the duplicate kernel, config, and System.map from the
+early initramfs and retains only `af_packet`, `virtio_blk`, `virtio_console`, `virtio_mmio`,
+`virtio_pci`, `virtio_rng`, `virtio_net`, `ext4`, `fuse`, and their module dependencies there. The
+complete matching module tree remains in the Debian rootfs for nested KVM and runtime module
+loading.
 
 ## Build
 
@@ -57,13 +61,14 @@ Gondolin to export it into the VM rootfs and create the boot assets. It is a tru
 the OCI and Gondolin builders require broad read, write, environment, network, and subprocess
 access. Do not run an unreviewed Containerfile or build configuration with these permissions.
 
-The `mvp-7` x86-64 asset passed root-filesystem resizing and persistent-disk reopen checks on a
-native AMD KVM host. Both architecture assets passed manifest, architecture, file-type,
-rootfs-content, size, and checksum verification. ARM64 was built through registered QEMU userspace
-emulation; native ARM64 KVM smoke coverage was explicitly waived because no native ARM64 release
-host was available.
+The `release-1` x86-64 asset passed a 2 GiB KVM microVM boot through DHCP, rootfs mount, virtio
+control port startup, and nested-KVM initialization on a native AMD host. The earlier `mvp-7` assets
+passed manifest, architecture, file-type, rootfs-content, size, and checksum verification on both
+architectures, including root-filesystem resizing and persistent-disk reopen checks on x86-64. ARM64
+was built through registered QEMU userspace emulation; native ARM64 KVM smoke coverage was
+explicitly waived because no native ARM64 release host was available.
 
-Each invocation writes unpacked assets under `dist/guest-image/mvp-7/<gondolin-arch>/`, a
+Each invocation writes unpacked assets under `dist/guest-image/release-1/<gondolin-arch>/`, a
 deterministically ordered archive under `dist/guest-image/`, and a neighboring `.json` metadata
 file. The final stdout line is the same metadata in compact JSON. It contains the OpenOrb release
 ID, architecture-specific Gondolin build ID, normalized manifest SHA-256, archive filename, exact

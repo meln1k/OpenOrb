@@ -633,7 +633,7 @@ Deno.test({
       const imageProbe = await bash.execute("guest-image", {
         command: [
           "set -eu",
-          'test "$(cat /etc/openorb-image-release)" = mvp-7',
+          'test "$(cat /etc/openorb-image-release)" = release-1',
           ". /etc/os-release",
           'test "$ID" = debian && test "$VERSION_ID" = 13',
           "test -x /usr/sbin/modprobe",

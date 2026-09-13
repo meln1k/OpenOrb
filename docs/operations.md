@@ -14,14 +14,14 @@ revision. Protocol version **17** is source-owned and is not a separately upgrad
 
 The exact runtime and application pins in this release graph are:
 
-| Component                              | Pin                                          |
-| -------------------------------------- | -------------------------------------------- |
-| Deno / standalone runner denort        | 2.9.5                                        |
-| Gondolin                               | 0.12.0                                       |
-| OpenOrb guest image                    | `mvp-7` (Debian snapshot `20260803T000000Z`) |
-| Pi AI / Pi coding-agent direct imports | 0.85.1                                       |
-| Remix                                  | 3.0.0-beta.10                                |
-| Runner protocol                        | 17                                           |
+| Component                              | Pin                                              |
+| -------------------------------------- | ------------------------------------------------ |
+| Deno / standalone runner denort        | 2.9.5                                            |
+| Gondolin                               | 0.12.0                                           |
+| OpenOrb guest image                    | `release-1` (Debian snapshot `20260803T000000Z`) |
+| Pi AI / Pi coding-agent direct imports | 0.85.1                                           |
+| Remix                                  | 3.0.0-beta.10                                    |
+| Runner protocol                        | 17                                               |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
 build IDs, hashes, sizes, and immutable URLs are in

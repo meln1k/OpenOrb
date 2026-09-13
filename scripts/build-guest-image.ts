@@ -16,8 +16,9 @@ import {
   type GuestImageManifest,
   parseGuestImageManifest,
 } from "@/packages/runner/src/environment/gondolin/guest-image/manifest.ts";
+import { pruneInitramfsRoot, repackInitramfs } from "@/scripts/prune-initramfs.ts";
 
-export const GUEST_IMAGE_RELEASE_ID = "mvp-7";
+export const GUEST_IMAGE_RELEASE_ID = "release-1";
 export const GUEST_IMAGE_FILES = [
   "manifest.json",
   "vmlinuz-virt",
@@ -117,6 +118,19 @@ if (import.meta.main) {
   }
   await buildGuestRootfsImage(architecture, config.oci);
 
+  const buildDirectory = join(repositoryRoot, "dist", "guest-image");
+  await Deno.mkdir(buildDirectory, { recursive: true });
+  const workDirectory = await Deno.makeTempDir({
+    dir: buildDirectory,
+    prefix: `.openorb-${GUEST_IMAGE_RELEASE_ID}-${architecture}-`,
+  });
+  await using cleanup = new AsyncDisposableStack();
+  cleanup.defer(async () => {
+    await Deno.remove(workDirectory, { recursive: true }).catch((cause) => {
+      if (!(cause instanceof Deno.errors.NotFound)) throw cause;
+    });
+  });
+
   const [, removeError] = await tryAsync(
     Deno.remove(outputDirectory, { recursive: true }),
     (cause) =>
@@ -129,9 +143,23 @@ if (import.meta.main) {
   const result = await buildAssets(config, {
     outputDir: outputDirectory,
     configDir: dirname(configPath),
+    workDir: workDirectory,
   });
 
-  const manifest = await normalizeManifest(result.manifestPath);
+  const initramfsRoot = join(workDirectory, "initramfs-root");
+  const initramfsPath = join(outputDirectory, "initramfs.cpio.lz4");
+  const pruneResult = await pruneInitramfsRoot(initramfsRoot);
+  await repackInitramfs(initramfsRoot, initramfsPath);
+  console.error(
+    `Pruned initramfs modules from ${pruneResult.moduleFilesBefore} files ` +
+      `(${formatBytes(pruneResult.moduleBytesBefore)}) to ${pruneResult.moduleFilesAfter} files ` +
+      `(${formatBytes(pruneResult.moduleBytesAfter)}); removed ${
+        formatBytes(pruneResult.removedBootBytes)
+      } ` +
+      `from /boot.`,
+  );
+
+  const manifest = await normalizeManifest(result.manifestPath, initramfsPath);
   if (!verifyAssets(outputDirectory)) {
     throw new Error(`Gondolin rejected the built guest image at ${outputDirectory}.`);
   }
@@ -233,14 +261,58 @@ async function buildGuestRootfsImage(
   }
 }
 
-async function normalizeManifest(path: string): Promise<GuestImageManifest> {
+async function normalizeManifest(
+  path: string,
+  initramfsPath: string,
+): Promise<GuestImageManifest> {
   const manifest = parseGuestImageManifest(
     JSON.parse(await Deno.readTextFile(path)),
   );
-  requiredBuildId(manifest);
+  const originalBuildId = requiredBuildId(manifest);
+  const derivedBuildId = computeGondolinBuildId(manifest);
+  if (originalBuildId !== derivedBuildId) {
+    throw new Error(
+      `Gondolin build ID ${originalBuildId} does not match its asset checksums (${derivedBuildId}).`,
+    );
+  }
+  manifest.checksums.initramfs = (await inspectFile(initramfsPath)).sha256;
+  manifest.buildId = computeGondolinBuildId(manifest);
   manifest.buildTime = REPRODUCIBLE_BUILD_TIME;
   await Deno.writeTextFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
+}
+
+function computeGondolinBuildId(manifest: GuestImageManifest): string {
+  const parts = [
+    "gondolin-asset-build",
+    `kernel=${manifest.checksums.kernel}`,
+    `initramfs=${manifest.checksums.initramfs}`,
+    `rootfs=${manifest.checksums.rootfs}`,
+  ];
+  if (manifest.checksums.krunKernel !== undefined) {
+    parts.push(`krunKernel=${manifest.checksums.krunKernel}`);
+  }
+  if (manifest.checksums.krunInitrd !== undefined) {
+    parts.push(`krunInitrd=${manifest.checksums.krunInitrd}`);
+  }
+  parts.push(`arch=${manifest.config.arch}`);
+  return uuidV5(parts.join("\n"), "7b6ed0c0-7e7f-4c2a-8b2d-0bf3d5be9d52");
+}
+
+function uuidV5(name: string, namespace: string): string {
+  const namespaceBytes = Uint8Array.fromHex(namespace.replaceAll("-", ""));
+  const digest = createHash("sha1").update(namespaceBytes).update(name).digest();
+  const bytes = Uint8Array.from(digest.subarray(0, 16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toHex();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${
+    hex.slice(20)
+  }`;
+}
+
+function formatBytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
 }
 
 function requiredBuildId(manifest: GuestImageManifest): string {
