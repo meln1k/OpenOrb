@@ -1,4 +1,4 @@
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { InMemoryCredentialStore, type OAuthCredential } from "@earendil-works/pi-ai";
 import { parseModelReference } from "@openorb/protocol";
 import type {
   DurableSessionEvent,
@@ -154,10 +154,11 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
         return Promise.resolve();
       },
     };
+    const credentials = new InMemoryCredentialStore();
     const modelRuntime = yield* Effect.tryPromise({
       try: () =>
         ModelRuntime.create({
-          credentials: new InMemoryCredentialStore(),
+          credentials,
           modelsPath: null,
           allowModelNetwork: true,
           refreshOnCreate: false,
@@ -166,11 +167,7 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
     });
     const { providerId, modelId } = parseModelReference(options.modelRuntime.model);
     yield* Effect.tryPromise({
-      try: () =>
-        modelRuntime.setRuntimeApiKey(
-          providerId,
-          options.modelRuntime.credential.value,
-        ),
+      try: () => updatePiCredential(credentials, options.modelRuntime),
       catch: (cause) => new AgentHarnessError("Could not configure the Pi model runtime.", cause),
     });
     const model = modelRuntime.getModel(
@@ -196,7 +193,7 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
       activeConversation.update(Result.getOrElse(projected, () => undefined));
     });
 
-    return yield* Effect.tryPromise({
+    const created = yield* Effect.tryPromise({
       try: () =>
         (dependencies.createAgentSession ?? createAgentSession)({
           cwd: OPENORB_GUEST_WORKSPACE,
@@ -214,8 +211,34 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
     }).pipe(
       Effect.onError(() => Effect.sync(activeConversation.dispose)),
     );
+    return {
+      ...created,
+      updateModelRuntime: (runtime: SessionModelRuntime) =>
+        updatePiCredential(credentials, runtime),
+    };
   },
 );
+
+function updatePiCredential(
+  credentials: InMemoryCredentialStore,
+  modelRuntime: SessionModelRuntime,
+): Promise<void> {
+  const { providerId } = parseModelReference(modelRuntime.model);
+  return credentials.modify(
+    providerId,
+    () =>
+      Promise.resolve(
+        modelRuntime.credential.type === "api_key"
+          ? { type: "api_key", key: modelRuntime.credential.value }
+          : {
+            type: "oauth",
+            access: modelRuntime.credential.value,
+            refresh: "",
+            expires: Number.MAX_SAFE_INTEGER,
+          } satisfies OAuthCredential,
+      ),
+  ).then(() => {});
+}
 
 /** Decorates Pi's real manager so observers only see entries after synchronous persistence returns. */
 export function observeSessionManagerPersistence(

@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertNotMatch } from "@std/assert";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, SessionManager } from "@earendil-works/pi-coding-agent";
 import { SessionId } from "@openorb/protocol/runner-api";
@@ -235,6 +235,52 @@ Deno.test("the factory allowlists supplied tools without enabling Pi host tools"
       assert(!result.session.systemPrompt.includes("Pi documentation"));
       assert(!(await Deno.readTextFile(sessionFile)).includes(MODEL_RUNTIME.credential.value));
       assertEquals(await pathExists(`${agentDirectory}/auth.json`), false);
+    } finally {
+      result.session.dispose();
+    }
+  } finally {
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("the factory installs and rotates OpenAI Codex access tokens in memory", async () => {
+  const temporaryDirectory = await Deno.makeTempDir();
+  const initialToken = "initial-chatgpt-access-token";
+  const rotatedToken = "rotated-chatgpt-access-token";
+  try {
+    const sessionFile = `${temporaryDirectory}/session.jsonl`;
+    const agentDirectory = `${temporaryDirectory}/pi-agent`;
+    await Deno.writeTextFile(sessionFile, "");
+    const result = await Effect.runPromise(Effect.scoped(createOpenOrbPiSession({
+      sessionId: SESSION_ID,
+      runnerSessionFile: sessionFile,
+      runnerAgentDirectory: agentDirectory,
+      repositoryUrl: REPOSITORY_URL,
+      branchName: BRANCH_NAME,
+      modelRuntime: {
+        model: "openai-codex/gpt-5.4",
+        thinkingLevel: "high",
+        credential: { type: "access_token", value: initialToken },
+      },
+      tools: [],
+      conversationProjection: CONVERSATION_PROJECTION,
+    })));
+    try {
+      assertEquals(
+        (await result.session.modelRuntime.getAuth("openai-codex"))?.auth.apiKey,
+        initialToken,
+      );
+      await result.updateModelRuntime({
+        model: "openai-codex/gpt-5.4",
+        thinkingLevel: "high",
+        credential: { type: "access_token", value: rotatedToken },
+      });
+      assertEquals(
+        (await result.session.modelRuntime.getAuth("openai-codex"))?.auth.apiKey,
+        rotatedToken,
+      );
+      assertEquals(await pathExists(`${agentDirectory}/auth.json`), false);
+      assertNotMatch(await Deno.readTextFile(sessionFile), /chatgpt-access-token/);
     } finally {
       result.session.dispose();
     }

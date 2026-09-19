@@ -124,13 +124,16 @@ interface ReconciliationProbe {
   block: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
 }
 
-const makeProbe = Effect.fn(function* (token = TOKEN) {
+const makeProbe = Effect.fn(function* (
+  token = TOKEN,
+  protocolVersion = RUNNER_PROTOCOL_VERSION,
+) {
   const probe: Probe = {
     identity: decode(RunnerIdentity)({
       token,
       runnerId: RUNNER_ID,
       runnerVersion: "test-1",
-      protocolVersion: RUNNER_PROTOCOL_VERSION,
+      protocolVersion,
     }),
     runnerEvents: yield* Queue.unbounded<typeof RunnerStateEvent.Type>(),
     identifyCalls: 0,
@@ -459,7 +462,7 @@ Deno.test("gateway lifecycle logs admission, state changes, cleanup retries and 
   assert(logs.every((log) => log.annotations.component === "openorb-gateway"));
 });
 
-Deno.test("valid identity and complete snapshot admit; invalid token closes 4401 without watch", () =>
+Deno.test("valid identity admits; invalid token and previous protocol close 4401 without watch", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const harness = yield* makeHarness();
     const valid = yield* makeProbe();
@@ -485,6 +488,14 @@ Deno.test("valid identity and complete snapshot admit; invalid token closes 4401
     yield* connectRunner(harness.url, invalid);
     assertEquals(yield* Deferred.await(invalid.closeCode), PERMANENT_REJECTION_CLOSE_CODE);
     assertEquals(invalid.watchCalls, 0);
+
+    const previousProtocol = yield* makeProbe(TOKEN, RUNNER_PROTOCOL_VERSION - 1);
+    yield* connectRunner(harness.url, previousProtocol);
+    assertEquals(
+      yield* Deferred.await(previousProtocol.closeCode),
+      PERMANENT_REJECTION_CLOSE_CODE,
+    );
+    assertEquals(previousProtocol.watchCalls, 0);
   }))));
 
 Deno.test("revocation wins atomically over in-flight control admission", () =>

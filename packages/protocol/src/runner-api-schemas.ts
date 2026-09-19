@@ -23,7 +23,7 @@ export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
 export const MAX_SESSION_SECRET_HOSTS = 32;
 export const MAX_SESSION_SECRET_HOST_CHARACTERS = 253;
-export const RUNNER_PROTOCOL_VERSION = 18;
+export const RUNNER_PROTOCOL_VERSION = 19;
 
 export * from "./runner-api-limits.ts";
 
@@ -284,10 +284,16 @@ export class GitAuthor extends Schema.Class<GitAuthor>("GitAuthor")({
 export class SessionModelRuntime extends Schema.Class<SessionModelRuntime>("SessionModelRuntime")({
   model: ModelReference,
   thinkingLevel: ThinkingLevel,
-  credential: Schema.Struct({
-    type: Schema.Literal("api_key"),
-    value: Secret,
-  }),
+  credential: Schema.Union([
+    Schema.Struct({
+      type: Schema.Literal("api_key"),
+      value: Secret,
+    }),
+    Schema.Struct({
+      type: Schema.Literal("access_token"),
+      value: Secret,
+    }),
+  ]),
 }) {}
 
 export const SessionRepositoryUrl = Schema.String.check(

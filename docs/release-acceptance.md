@@ -154,7 +154,7 @@ schema tests, and the review below keep deferred surfaces out of the release:
   secret assignment, resource reservation/scoring, archives, retention workflows, centrally managed
   agent profiles, HA, migration, and telemetry-platform integration remain absent.
 - The standalone Linux runner artifact added for the release path is not a browser terminal or a new
-  runner transport; it speaks the version-18 WebSocket/RPC protocol.
+  runner transport; it speaks the version-19 WebSocket/RPC protocol.
 - One persistent `root-disk.qcow2` per Session and `.agents/resume` are supported. RAM/process or
   tmpfs restoration, services, leases, disk history, and Session portability remain absent.
 

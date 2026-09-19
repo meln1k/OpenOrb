@@ -4,6 +4,7 @@ export const encryptedSecretPurposes = {
   genericSecret: "generic-secret",
   gitCredential: "git-credential",
   providerApiKey: "provider-api-key",
+  providerOAuth: "provider-oauth",
 } as const;
 
 export const workspaces = table({
@@ -69,6 +70,7 @@ export const modelProviderCredentials = table({
       .references("workspaces", "id", "model_provider_credentials_workspace_fk")
       .onDelete("cascade"),
     provider_id: c.text().notNull(),
+    credential_type: c.text().notNull(),
     encrypted_secret_id: c
       .uuid()
       .notNull()

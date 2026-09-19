@@ -1,4 +1,4 @@
-import { modelReferenceSchema, orbSizeSchema, parseModelReference } from "@openorb/protocol";
+import { modelReferenceSchema, orbSizeSchema } from "@openorb/protocol";
 import {
   GitAuthor,
   isSafeGitReference,
@@ -23,7 +23,8 @@ import type { AppContext } from "@/app/router.ts";
 import { selectRunnerForWorkspace } from "@/app/runner-selection.ts";
 import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
-import { isModelReference, sessionModelRuntime } from "@/app/model-provider-catalog.ts";
+import { isModelReference } from "@/app/model-provider-catalog.ts";
+import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
 import type { SessionComposerValues } from "@/app/ui/session-composer.tsx";
 import { currentSessionRecovery } from "@/app/utils/session-recovery.ts";
 
@@ -110,8 +111,6 @@ export default createController(routes.app.sessions, {
           submitted,
         );
       }
-      const { providerId } = parseModelReference(parsed.value.model);
-
       const runnerId = parsed.value.runnerId.trim() || undefined;
       const selected = await selectRunnerForWorkspace(
         workspaceId,
@@ -126,12 +125,17 @@ export default createController(routes.app.sessions, {
 
       const [
         [githubToken, gitCredentialError],
-        [modelApiKey, modelCredentialError],
+        [modelRuntime, modelCredentialError],
         [environmentSecrets, environmentSecretError],
         gitAuthor,
       ] = await Promise.all([
         store.getGitHubToken(workspaceId),
-        store.getModelProviderApiKey(workspaceId, providerId),
+        resolveSessionModelRuntime(
+          workspaceId,
+          parsed.value.model,
+          store,
+          context.services.openAICodexAuthorization,
+        ),
         store.getEnvironmentSecrets(workspaceId),
         store.getGitAuthorConfiguration(context.auth.identity.userId),
       ]);
@@ -159,7 +163,7 @@ export default createController(routes.app.sessions, {
           submitted,
         );
       }
-      if (modelApiKey === null) {
+      if (modelRuntime === null) {
         return await renderCreateError(
           context,
           "Configure the selected model provider before starting a session.",
@@ -194,7 +198,7 @@ export default createController(routes.app.sessions, {
             }),
             orbSize: parsed.value.orbSize,
             initialPrompt: parsed.value.initialPrompt,
-            modelRuntime: sessionModelRuntime(parsed.value.model, modelApiKey),
+            modelRuntime,
             ...(githubToken ? { githubToken } : {}),
             ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
           },
@@ -249,13 +253,15 @@ export default createController(routes.app.sessions, {
       }
 
       const [
-        [modelApiKey, modelCredentialError],
+        [modelRuntime, modelCredentialError],
         [githubToken, gitCredentialError],
         [environmentSecrets, environmentSecretError],
       ] = await Promise.all([
-        context.services.store.getModelProviderApiKey(
+        resolveSessionModelRuntime(
           workspaceId,
-          parseModelReference(snapshot.model).providerId,
+          snapshot.model,
+          context.services.store,
+          context.services.openAICodexAuthorization,
         ),
         context.services.store.getGitHubToken(workspaceId),
         context.services.store.getEnvironmentSecrets(workspaceId),
@@ -281,7 +287,7 @@ export default createController(routes.app.sessions, {
           500,
         );
       }
-      if (modelApiKey === null) {
+      if (modelRuntime === null) {
         return await sessionCommandError(
           context,
           "Reconfigure this session's model provider before continuing.",
@@ -295,7 +301,7 @@ export default createController(routes.app.sessions, {
           sessionId,
           payload: {
             prompt: parsed.value.prompt,
-            modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
+            modelRuntime,
             ...(githubToken === null ? {} : { githubToken }),
             ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
           },
@@ -456,13 +462,15 @@ export default createController(routes.app.sessions, {
 
       const [
         [githubToken, gitCredentialError],
-        [modelApiKey, modelCredentialError],
+        [modelRuntime, modelCredentialError],
         [environmentSecrets, environmentSecretError],
       ] = await Promise.all([
         context.services.store.getGitHubToken(workspaceId),
-        context.services.store.getModelProviderApiKey(
+        resolveSessionModelRuntime(
           workspaceId,
-          parseModelReference(snapshot.model).providerId,
+          snapshot.model,
+          context.services.store,
+          context.services.openAICodexAuthorization,
         ),
         context.services.store.getEnvironmentSecrets(workspaceId),
       ]);
@@ -487,14 +495,13 @@ export default createController(routes.app.sessions, {
           500,
         );
       }
-      if (modelApiKey === null) {
+      if (modelRuntime === null) {
         return await renderDetailPage(
           context,
           "Reconfigure this session's model provider before retrying.",
           409,
         );
       }
-      const modelRuntime = sessionModelRuntime(snapshot.model, modelApiKey);
       const recovered = recovery === "retry-provisioning"
         ? await Effect.runPromise(
           context.services.runnerConnections.provisionSession({

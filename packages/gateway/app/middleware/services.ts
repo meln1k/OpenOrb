@@ -1,6 +1,10 @@
 import { createContextKey, type Middleware } from "remix/router";
 
 import type { Store } from "@/app/data/store.ts";
+import {
+  createOpenAICodexAuthorizationService,
+  type OpenAICodexAuthorizationService,
+} from "@/app/openai-codex-authorization.ts";
 import type { RunnerRegistryService } from "@/app/runner-registry.ts";
 import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
 import { Effect, Stream } from "effect";
@@ -13,6 +17,7 @@ export interface LoginRateLimiter {
 export interface AppServices {
   readonly store: Store;
   readonly runnerConnections: RunnerRegistryService;
+  readonly openAICodexAuthorization: OpenAICodexAuthorizationService;
   readonly loginRateLimiter: LoginRateLimiter;
   readonly runnerEnrollmentRateLimiter: LoginRateLimiter;
 }
@@ -33,10 +38,14 @@ export function provideAppServices(services: AppServices): Middleware<{
 export function createAppServices(
   store: Store,
   runnerConnections: RunnerRegistryService = disconnectedRunnerRegistry,
+  openAICodexAuthorization: OpenAICodexAuthorizationService = createOpenAICodexAuthorizationService(
+    store,
+  ),
 ): AppServices {
   return {
     store,
     runnerConnections,
+    openAICodexAuthorization,
     loginRateLimiter: new TokenBucketRateLimiter({
       tokensPerSecond: 1 / (3 * 60),
       burst: 5,

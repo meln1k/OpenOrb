@@ -1,4 +1,3 @@
-import { parseModelReference } from "@openorb/protocol";
 import { MAX_SESSION_GIT_PATH_CHARACTERS, SessionId } from "@openorb/protocol/runner-api";
 import { SessionGitPatchSection, SessionGitSnapshotId } from "@openorb/protocol/runner-bulk-api";
 import { requireAuth } from "remix/middleware/auth";
@@ -18,7 +17,7 @@ import {
   sessionStage,
 } from "./telemetry.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
-import { sessionModelRuntime } from "@/app/model-provider-catalog.ts";
+import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
 import { routes } from "@/app/routes.ts";
 import { Effect, Option, Schema } from "effect";
 
@@ -75,14 +74,16 @@ export default createController(routes.api.sessions, {
       if (!snapshot) return apiError("The pinned runner is offline.", 503);
 
       const [
-        [modelApiKey, modelCredentialError],
+        [modelRuntime, modelCredentialError],
         [githubToken, gitCredentialError],
         [environmentSecrets, environmentSecretError],
       ] = await sessionSpan("credentials.read", () =>
         Promise.all([
-          context.services.store.getModelProviderApiKey(
+          resolveSessionModelRuntime(
             workspaceId,
-            parseModelReference(snapshot.model).providerId,
+            snapshot.model,
+            context.services.store,
+            context.services.openAICodexAuthorization,
           ),
           context.services.store.getGitHubToken(workspaceId),
           context.services.store.getEnvironmentSecrets(workspaceId),
@@ -96,7 +97,7 @@ export default createController(routes.api.sessions, {
       if (environmentSecretError !== undefined) {
         return apiError("The saved environment secrets could not be read.", 500);
       }
-      if (modelApiKey === null) {
+      if (modelRuntime === null) {
         return apiError("Reconfigure this session's model provider before continuing.", 409);
       }
 
@@ -106,7 +107,7 @@ export default createController(routes.api.sessions, {
             workspaceId,
             sessionId,
             payload: {
-              modelRuntime: sessionModelRuntime(snapshot.model, modelApiKey),
+              modelRuntime,
               ...(githubToken === null ? {} : { githubToken }),
               ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
               ...(parsed.value.recovery === undefined ? {} : { recovery: parsed.value.recovery }),

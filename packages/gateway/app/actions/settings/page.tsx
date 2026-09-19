@@ -34,6 +34,10 @@ interface SettingsLayoutProps {
 
 export function ProvidersSettingsPage(
   handle: Handle<{
+    chatGPTAuthorization:
+      | { userCode: string; verificationUri: string; intervalSeconds: number }
+      | undefined;
+    chatGPTCredential: Pick<ModelProviderCredential, "updatedAt"> | undefined;
     csrfToken: string;
     error: string | undefined;
     providerOptions: readonly ModelProviderOption[];
@@ -45,6 +49,8 @@ export function ProvidersSettingsPage(
     <SettingsLayout activeSection="providers" error={handle.props.error}>
       <ModelProviders
         actionHref={routes.app.settings.providers.action.href()}
+        chatGPTAuthorization={handle.props.chatGPTAuthorization}
+        chatGPTCredential={handle.props.chatGPTCredential ?? null}
         csrfToken={handle.props.csrfToken}
         dialogId={dialogId}
         providerOptions={[...handle.props.providerOptions]}

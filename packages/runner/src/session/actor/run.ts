@@ -129,6 +129,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     return Effect.gen(function* () {
       const agentSession = existingAgentSession ??
         (openedAgentSession = yield* agentRuntime.open(environment, modelRuntime));
+      yield* agentRuntime.updateModelRuntime(agentSession, modelRuntime);
       const run = yield* agentSession.session.start(prompt).pipe(Effect.mapError(actorError));
       const acceptedAt = DateTime.formatIso(yield* DateTime.now);
       yield* send({
@@ -321,13 +322,21 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
       }));
     }
     const followUpId = crypto.randomUUID();
+    const agentSession = runtime.get().agentSession;
+    if (agentSession === undefined) {
+      return Effect.succeed(reply(command.reply, {
+        ok: false,
+        message: "That agent run is unavailable.",
+      }));
+    }
     return Effect.succeed(persist({
       type: "follow-up.requested",
       runId: activeRun.runId,
       followUpId,
     }, () =>
       Effect.forkScoped(
-        activeRun.run.followUp(command.payload.prompt).pipe(
+        agentRuntime.updateModelRuntime(agentSession, command.payload.modelRuntime).pipe(
+          Effect.andThen(activeRun.run.followUp(command.payload.prompt)),
           Effect.matchEffect({
             onFailure: () =>
               send({

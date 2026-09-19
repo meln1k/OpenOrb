@@ -32,6 +32,7 @@
     "npm:@earendil-works/pi-coding-agent@0.85.1": "0.85.1",
     "npm:@effect/language-service@*": "0.87.2",
     "npm:@effect/language-service@~0.87.2": "0.87.2",
+    "npm:@effect/platform-deno@*": "4.0.0-beta.107_effect@4.0.0-rc.112",
     "npm:@effect/platform-deno@4.0.0-rc.112": "4.0.0-rc.112_effect@4.0.0-rc.112",
     "npm:@effect/platform-node@4.0.0-rc.112": "4.0.0-rc.112_effect@4.0.0-rc.112_redis@6.2.1__@opentelemetry+api@1.9.0_@opentelemetry+api@1.9.0",
     "npm:@opentelemetry/api@1.9.0": "1.9.0",
@@ -39,6 +40,7 @@
     "npm:@pierre/diffs@^1.3.6": "1.3.6_react@19.2.8_react-dom@19.2.8__react@19.2.8",
     "npm:@remix-run/csrf-middleware@*": "0.1.8",
     "npm:@remix-run/data-schema@0.3.0": "0.3.0",
+    "npm:effect@*": "3.22.2",
     "npm:effect@4.0.0-rc.112": "4.0.0-rc.112",
     "npm:lucide@1.31.0": "1.31.0",
     "npm:marked@18.0.5": "18.0.5",
@@ -514,6 +516,18 @@
       "integrity": "sha512-CfiSoaVQO8pZgaMZGw5VvMvRGybsJ2LaSDoLYaqiVGvo/YYPYVR2GzUKY0h1NtIweq/+SQ5XLrvtzPIttWQ0GQ==",
       "bin": true
     },
+    "@effect/platform-deno@4.0.0-beta.107_effect@4.0.0-rc.112": {
+      "integrity": "sha512-3IbUxtHT5MoRaVg3Ycc/N46/gX4PNIRv5dShbeVXm1n90LQL1eU0oeWwfWUCCXiCPYrciYyhineClp9TXj7X+Q==",
+      "dependencies": [
+        "@db/redis@npm:@jsr/db__redis@0.41.2",
+        "@effect/platform-node-shared",
+        "@std/fs@npm:@jsr/std__fs@1.0.24",
+        "@std/media-types@npm:@jsr/std__media-types@1.1.0",
+        "@std/path@npm:@jsr/std__path@1.1.6",
+        "@std/streams@npm:@jsr/std__streams@1.1.2",
+        "effect@4.0.0-rc.112"
+      ]
+    },
     "@effect/platform-deno@4.0.0-rc.112_effect@4.0.0-rc.112": {
       "integrity": "sha512-3BO1bpKep8A4ve39pNxOcJkhJ79p+hamCFL/5qdoqY5Fb2dTzbw9gS/Jwpnyv3Lcv9wgZlfxWVsnSfqxgu958w==",
       "dependencies": [
@@ -523,14 +537,14 @@
         "@std/media-types@npm:@jsr/std__media-types@1.1.0",
         "@std/path@npm:@jsr/std__path@1.1.6",
         "@std/streams@npm:@jsr/std__streams@1.1.2",
-        "effect"
+        "effect@4.0.0-rc.112"
       ]
     },
     "@effect/platform-node-shared@4.0.0-rc.112_effect@4.0.0-rc.112": {
       "integrity": "sha512-ttjz0xKamFN7vL8pNDYVwddJLjZvqKePc05djlz2VcdaKbLsnYbtMnL1rbOfHgEnIUSHGh7FkjaN4DM1Ov81sQ==",
       "dependencies": [
         "@types/ws",
-        "effect",
+        "effect@4.0.0-rc.112",
         "ws"
       ]
     },
@@ -538,7 +552,7 @@
       "integrity": "sha512-/BMAcdNGQQskLmI0Zoa95KfTZkr9HV9N4NSxaSrusG6GeW6Ulp9KvZ+Rlaiw8lnOt43CXjFLdfll5/k5rxL4hQ==",
       "dependencies": [
         "@effect/platform-node-shared",
-        "effect",
+        "effect@4.0.0-rc.112",
         "mime",
         "redis",
         "undici@8.10.2"
@@ -2172,10 +2186,17 @@
         "safe-buffer"
       ]
     },
+    "effect@3.22.2": {
+      "integrity": "sha512-fm1CQXCs7GTMwpadZxwU5rnAb2bN6mbQpknq/pXBGCzSKkosNYb9k0wsoL0TfB10rSa5xOEZJjo77u/KLXSANg==",
+      "dependencies": [
+        "@standard-schema/spec",
+        "fast-check@3.23.2"
+      ]
+    },
     "effect@4.0.0-rc.112": {
       "integrity": "sha512-wXxwuh1Ywnv4cPRM3Wfa0vDwuOHnZ1TsTgHJkG9XgzND6inhBH9n1vBxhg3iIXOia/OrpmvVmd3lrD4vq6bF3A==",
       "dependencies": [
-        "fast-check",
+        "fast-check@4.9.0",
         "msgpackr"
       ]
     },
@@ -2251,10 +2272,16 @@
     "extend@3.0.2": {
       "integrity": "sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g=="
     },
+    "fast-check@3.23.2": {
+      "integrity": "sha512-h5+1OzzfCC3Ef7VbtKdcv7zsstUQwUDlYpUTvjeUsJAssPgLn7QzbboPtL5ro04Mq0rPOsMzl7q5hIbRs2wD1A==",
+      "dependencies": [
+        "pure-rand@6.1.0"
+      ]
+    },
     "fast-check@4.9.0": {
       "integrity": "sha512-7ms6T7SybUev/PQITciI0yLM2pOSFy5zpG8Ty7tQofcVaQUvrMXp6CBwqF6fThLCLOrfBtuHAtwq6Yu4XPCllg==",
       "dependencies": [
-        "pure-rand"
+        "pure-rand@8.4.2"
       ]
     },
     "fast-sha256@1.3.0": {
@@ -2871,6 +2898,9 @@
         "long"
       ],
       "scripts": true
+    },
+    "pure-rand@6.1.0": {
+      "integrity": "sha512-bVWawvoZoBYpp6yIoQtQXHZjmz35RSVHnUOTefl8Vcjr8snTPY1wnpSPMWekcFwbxI6gtmT7rSYPFvz71ldiOA=="
     },
     "pure-rand@8.4.2": {
       "integrity": "sha512-vvuOGgcuPJAirlHvuQw1TrOiw7ptaIXXmIbNuiNOY6lNGJJH49PQ1Kj4nd783nPdQhQdicgOjVI2yI/9BD6/Ng=="

@@ -34,6 +34,8 @@ export const assetServer = createAssetServer({
     "packages/gateway/app/ui/session/session-transcript-state.ts",
     "packages/gateway/app/ui/session/session-vm-control.tsx",
     "packages/gateway/app/ui/session/session-vm-state.ts",
+    "packages/gateway/app/ui/settings/model-providers.tsx",
+    "packages/gateway/app/ui/settings/settings-shared.ts",
     "packages/gateway/app/ui/shell.tsx",
     "packages/gateway/app/routes.ts",
     "packages/protocol/src/browser-session-git-snapshot.ts",

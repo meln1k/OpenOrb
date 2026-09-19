@@ -88,7 +88,7 @@ Deno.test("operations documentation records the recovery contract and release pi
   assert(release.includes('id: "mvp-7"'));
   assert(release.includes('id: "release-1"'));
   assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_1"));
-  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 18"));
+  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 19"));
   for (const pin of ["2.9.5", "0.12.0", "0.85.1", "3.0.0-beta.10"]) {
     assert(
       operations.includes(pin) &&

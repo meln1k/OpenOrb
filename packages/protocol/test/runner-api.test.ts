@@ -114,7 +114,6 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       protocolVersion: RUNNER_PROTOCOL_VERSION,
     })
   );
-
   const provision = Schema.decodeUnknownSync(ProvisionSessionPayload)({
     mode: "create",
     sessionId: SESSION_ID,
@@ -201,6 +200,27 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       runId: RUN_ID,
     }).runId,
     RUN_ID,
+  );
+});
+
+Deno.test("session model runtime accepts only explicit credential transports", () => {
+  const accessToken = Schema.decodeUnknownSync(SessionModelRuntime)({
+    ...modelRuntime(),
+    credential: { type: "access_token", value: "short-lived-access" },
+  });
+  assertEquals(accessToken.credential, {
+    type: "access_token",
+    value: "short-lived-access",
+  });
+  assertThrows(() =>
+    Schema.decodeUnknownSync(SessionModelRuntime)({
+      ...modelRuntime(),
+      credential: {
+        type: "oauth",
+        access: "access",
+        refresh: "refresh-must-not-cross-the-protocol",
+      },
+    })
   );
 });
 

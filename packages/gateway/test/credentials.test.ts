@@ -6,6 +6,7 @@ import {
   assertNotEquals,
   assertNotMatch,
 } from "@std/assert";
+import type { OAuthAuth, OAuthCredential } from "@earendil-works/pi-ai";
 import {
   MAX_SESSION_ENVIRONMENT_SECRETS,
   MAX_SESSION_SECRET_HOST_CHARACTERS,
@@ -16,6 +17,13 @@ import { array, number, object, parse, string } from "remix/data-schema";
 
 import { ModelProviderCredentialReadError } from "@/app/data/model-provider-repository.ts";
 import { createAppServices } from "@/app/middleware/services.ts";
+import {
+  createOpenAICodexAuthorizationService,
+  type OpenAICodexAuthorizationOptions,
+  type OpenAICodexAuthorizationService,
+} from "@/app/openai-codex-authorization.ts";
+import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
+import { OPENAI_CODEX_PROVIDER_ID } from "@/app/model-provider-catalog.ts";
 import { createAppRouter } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
 import { importMasterKey } from "@/app/utils/master-key.ts";
@@ -62,6 +70,7 @@ function csrfFrom(html: string): string {
 }
 
 interface AuthenticatedClient {
+  authorization: OpenAICodexAuthorizationService;
   store: Awaited<ReturnType<typeof createTestStore>>;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
@@ -69,9 +78,17 @@ interface AuthenticatedClient {
   workspaceId: WorkspaceId;
 }
 
-async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+async function createAuthenticatedClient(
+  authorizationOptions?: OpenAICodexAuthorizationOptions,
+): Promise<AuthenticatedClient> {
   const store = await createTestStore();
-  const router = createAppRouter(createAppServices(store));
+  const authorization = createOpenAICodexAuthorizationService(store, authorizationOptions);
+  const router = createAppRouter(createAppServices(store, undefined, authorization));
   const server = await createTestServer((request) => router.fetch(request));
 
   try {
@@ -109,6 +126,7 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
     assert(user);
     assertNotEquals<string>(user.userId, user.workspaceId);
     return {
+      authorization,
       store,
       server,
       cookie: cookieFrom(loginResponse),
@@ -145,6 +163,22 @@ async function submitCredentialsForm(
     headers: { Cookie: client.cookie },
     body: new URLSearchParams({ _csrf: csrfFrom(page), ...form }),
   });
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for the expected state.");
 }
 
 Deno.test("configures Pi providers without exposing or keying records by API key", async () => {
@@ -295,6 +329,205 @@ Deno.test("configures Pi providers without exposing or keying records by API key
         .rows[0]?.count,
       1,
     );
+  } finally {
+    await client.server.close();
+    await client.store.close();
+  }
+});
+
+Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and disconnects locally", async () => {
+  const credential = {
+    type: "oauth" as const,
+    access: "chatgpt-access-token-91e4b0",
+    refresh: "chatgpt-refresh-token-5c7e12",
+    expires: Date.now() + 3_600_000,
+  };
+  const loginCompletions = [deferred<OAuthCredential>(), deferred<OAuthCredential>()];
+  const loginSignals: AbortSignal[] = [];
+  let loginCalls = 0;
+  let revokeCalls = 0;
+  const oauth: OAuthAuth = {
+    name: "Test OpenAI Codex OAuth",
+    async login(interaction) {
+      const selected = await interaction.prompt({
+        type: "select",
+        message: "Choose login",
+        options: [{ id: "device_code", label: "Device code" }],
+      });
+      assertEquals(selected, "device_code");
+      const call = loginCalls++;
+      loginSignals.push(interaction.signal);
+      interaction.notify({
+        type: "device_code",
+        userCode: call === 0 ? "ABCD-EFGH" : "WXYZ-1234",
+        verificationUri: "https://auth.openai.com/codex/device",
+        intervalSeconds: 1,
+      });
+      return await loginCompletions[call]!.promise;
+    },
+    refresh: (current) => Promise.resolve(current),
+    toAuth: (current) => Promise.resolve({ apiKey: current.access }),
+  };
+  const client = await createAuthenticatedClient({
+    oauth,
+    revoke: (current) => {
+      revokeCalls++;
+      assertEquals(current.access, credential.access);
+      return Promise.reject(new Error("revocation unavailable"));
+    },
+  });
+  try {
+    const initial = await credentialsPage(client);
+    assertMatch(initial, /ChatGPT subscription/);
+    assertMatch(initial, /Sign in with ChatGPT/);
+    assertMatch(initial, /OpenAI Codex/);
+    assertNotMatch(initial, /value="openai-codex"/);
+
+    const start = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "start-chatgpt",
+    });
+    assertEquals(start.status, 303);
+    const pendingPage = await credentialsPage(client);
+    assertMatch(pendingPage, /ABCD-EFGH/);
+    assertMatch(pendingPage, /Waiting for authorization/);
+    assertMatch(pendingPage, /https:\/\/auth\.openai\.com\/codex\/device/);
+
+    const pending = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "poll-chatgpt",
+    });
+    assertEquals(pending.status, 200);
+    loginCompletions[0]!.resolve(credential);
+    await waitFor(async () =>
+      (await client.store.getModelProviderCredential(client.workspaceId, OPENAI_CODEX_PROVIDER_ID))
+        ?.credentialType === "oauth"
+    );
+    const complete = await fetch(new URL(PROVIDERS_SETTINGS_PATH, client.server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(pendingPage),
+        intent: "poll-chatgpt",
+      }),
+    });
+    assertEquals(complete.status, 303);
+    assertEquals(
+      await client.authorization.resolveAccessToken(client.workspaceId),
+      credential.access,
+    );
+
+    const connectedPage = await credentialsPage(client);
+    assertMatch(connectedPage, /Connected · updated/);
+    assertNotMatch(connectedPage, new RegExp(credential.access));
+    assertNotMatch(connectedPage, new RegExp(credential.refresh));
+    const stored = (await client.store.pool.query<{
+      purpose: string;
+      credential_type: string;
+      ciphertext: string;
+    }>(
+      `select es.purpose, mpc.credential_type, es.ciphertext
+         from model_provider_credentials mpc
+         join encrypted_secrets es on es.id = mpc.encrypted_secret_id
+        where mpc.workspace_id = $1 and mpc.provider_id = $2`,
+      [client.workspaceId, OPENAI_CODEX_PROVIDER_ID],
+    )).rows[0];
+    assert(stored);
+    assertEquals(stored.purpose, "provider-oauth");
+    assertEquals(stored.credential_type, "oauth");
+    assertNotMatch(stored.ciphertext, new RegExp(credential.access));
+    assertNotMatch(stored.ciphertext, new RegExp(credential.refresh));
+
+    const reconnect = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "start-chatgpt",
+    });
+    assertEquals(reconnect.status, 303);
+    assertEquals(
+      await client.authorization.resolveAccessToken(client.workspaceId),
+      credential.access,
+    );
+    const cancel = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "cancel-chatgpt",
+    });
+    assertEquals(cancel.status, 303);
+    assert(loginSignals[1]?.aborted);
+
+    const disconnect = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "disconnect-chatgpt",
+    });
+    assertEquals(disconnect.status, 303);
+    assertEquals(revokeCalls, 1);
+    assertEquals(
+      await client.store.getModelProviderCredential(
+        client.workspaceId,
+        OPENAI_CODEX_PROVIDER_ID,
+      ),
+      null,
+    );
+  } finally {
+    await client.server.close();
+    await client.store.close();
+  }
+});
+
+Deno.test("ChatGPT runtime refreshes rotation once and sends only the access token", async () => {
+  const expired = {
+    type: "oauth" as const,
+    access: "expired-access-token",
+    refresh: "rotating-refresh-token",
+    expires: 1_800_000_000_000,
+  };
+  const rotated = {
+    type: "oauth" as const,
+    access: "fresh-access-token",
+    refresh: "fresh-refresh-token",
+    expires: 1_800_003_600_000,
+  };
+  let refreshCalls = 0;
+  const oauth: OAuthAuth = {
+    name: "Test OpenAI Codex OAuth",
+    login: () => Promise.reject(new Error("not used")),
+    refresh: (current) => {
+      refreshCalls++;
+      assertEquals(current, expired);
+      return Promise.resolve(rotated);
+    },
+    toAuth: (current) => Promise.resolve({ apiKey: current.access }),
+  };
+  const client = await createAuthenticatedClient({ oauth, revoke: () => Promise.resolve() });
+  try {
+    await client.store.saveModelProviderOAuthCredential(
+      client.workspaceId,
+      OPENAI_CODEX_PROVIDER_ID,
+      expired,
+    );
+    const [runtime, error] = await resolveSessionModelRuntime(
+      client.workspaceId,
+      "openai-codex/gpt-5.2-codex",
+      client.store,
+      client.authorization,
+      () => 1_800_000_000_000,
+    );
+    assertEquals(error, undefined);
+    assertEquals(runtime?.credential, { type: "access_token", value: rotated.access });
+    assertNotMatch(JSON.stringify(runtime), new RegExp(rotated.refresh));
+    assertEquals(
+      await client.authorization.resolveAccessToken(
+        client.workspaceId,
+        1_800_000_001_000,
+      ),
+      rotated.access,
+    );
+
+    const [reused, reuseError] = await resolveSessionModelRuntime(
+      client.workspaceId,
+      "openai-codex/gpt-5.2-codex",
+      client.store,
+      client.authorization,
+      () => 1_800_000_001_000,
+    );
+    assertEquals(reuseError, undefined);
+    assertEquals(reused?.credential, { type: "access_token", value: rotated.access });
+    assertEquals(refreshCalls, 1);
   } finally {
     await client.server.close();
     await client.store.close();

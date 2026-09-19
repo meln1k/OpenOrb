@@ -2,6 +2,8 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { DEFAULT_SESSION_THINKING_LEVEL, modelReference } from "@openorb/protocol";
 import { SessionModelRuntime } from "@openorb/protocol/runner-api";
 
+export const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
+
 export interface ModelProviderOption {
   id: string;
   name: string;
@@ -16,10 +18,16 @@ export interface ModelOption {
 }
 
 const MODEL_PROVIDERS = builtinProviders()
+  .filter((provider) =>
+    provider.auth.apiKey !== undefined || provider.id === OPENAI_CODEX_PROVIDER_ID
+  )
+  .sort((left, right) => left.name.localeCompare(right.name));
+
+const API_KEY_MODEL_PROVIDERS = MODEL_PROVIDERS
   .filter((provider) => provider.auth.apiKey !== undefined)
   .sort((left, right) => left.name.localeCompare(right.name));
 
-export const MODEL_PROVIDER_OPTIONS: readonly ModelProviderOption[] = MODEL_PROVIDERS
+export const MODEL_PROVIDER_OPTIONS: readonly ModelProviderOption[] = API_KEY_MODEL_PROVIDERS
   .map((provider) => ({ id: provider.id, name: provider.name }))
   .sort((left, right) => left.name.localeCompare(right.name));
 
@@ -51,13 +59,16 @@ export function modelContextWindow(value: string): number | undefined {
 }
 
 export function modelProviderName(providerId: string): string {
-  return MODEL_PROVIDER_OPTIONS.find((provider) => provider.id === providerId)?.name ?? providerId;
+  return MODEL_PROVIDERS.find((provider) => provider.id === providerId)?.name ?? providerId;
 }
 
-export function sessionModelRuntime(model: string, apiKey: string): SessionModelRuntime {
+export function sessionModelRuntime(
+  model: string,
+  credential: SessionModelRuntime["credential"],
+): SessionModelRuntime {
   return new SessionModelRuntime({
     model,
     thinkingLevel: DEFAULT_SESSION_THINKING_LEVEL,
-    credential: { type: "api_key", value: apiKey },
+    credential,
   });
 }

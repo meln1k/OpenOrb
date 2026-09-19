@@ -27,6 +27,10 @@ export interface SessionAgentRuntime {
     run: ActiveAgentRun,
     runId: RunId,
   ) => Effect.Effect<void, SessionActorError>;
+  readonly updateModelRuntime: (
+    session: OpenAgentSession,
+    modelRuntime: SessionModelRuntime,
+  ) => Effect.Effect<void, SessionActorError>;
   readonly close: (session: OpenAgentSession) => Effect.Effect<void>;
 }
 
@@ -97,6 +101,8 @@ export const makeSessionAgentRuntime = Effect.fn("makeSessionAgentRuntime")(func
   return {
     open,
     consume,
+    updateModelRuntime: (session, modelRuntime) =>
+      session.session.updateModelRuntime(modelRuntime).pipe(Effect.mapError(actorError)),
     close: (session) => Scope.close(session.scope, Exit.void),
   } satisfies SessionAgentRuntime;
 });

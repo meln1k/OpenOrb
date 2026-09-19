@@ -33,7 +33,16 @@ export interface RawPiSession {
 
 export type CreateRawPiSession = (
   options: OpenOrbPiSessionOptions,
-) => Effect.Effect<{ session: RawPiSession }, AgentHarnessError, Scope.Scope>;
+) => Effect.Effect<
+  {
+    session: RawPiSession;
+    updateModelRuntime?: (
+      modelRuntime: AgentHarnessOpenOptions["modelRuntime"],
+    ) => Promise<void>;
+  },
+  AgentHarnessError,
+  Scope.Scope
+>;
 
 type RawRunItem =
   | { readonly _tag: "Event"; readonly event: AgentSessionEvent }
@@ -109,16 +118,28 @@ function openPiSession(
         }),
     );
     const raw = created.session;
+    const modelCredentials = [options.modelRuntime.credential.value];
 
     return {
-      start: (input) => startPiRun(raw, options.modelRuntime, input, scope),
+      updateModelRuntime: (next) =>
+        Effect.tryPromise({
+          try: async () => {
+            await created.updateModelRuntime?.(next);
+            if (!modelCredentials.includes(next.credential.value)) {
+              modelCredentials.push(next.credential.value);
+            }
+          },
+          catch: (cause) =>
+            new AgentHarnessError("Could not update the Pi model credential.", cause),
+        }),
+      start: (input) => startPiRun(raw, modelCredentials, input, scope),
     };
   });
 }
 
 function startPiRun(
   raw: RawPiSession,
-  modelRuntime: AgentHarnessOpenOptions["modelRuntime"],
+  modelCredentials: readonly string[],
   input: string,
   scope: Scope.Scope,
 ): Effect.Effect<ActiveAgentRun, AgentHarnessError> {
@@ -132,7 +153,7 @@ function startPiRun(
 
     let finalModelError: AgentHarnessError | undefined;
     const normalize = makePiEventNormalizer({
-      secrets: [modelRuntime.credential.value],
+      secrets: modelCredentials,
       publishLive: (event) =>
         Queue.offer(output, { _tag: "Event", event }).pipe(
           Effect.asVoid,

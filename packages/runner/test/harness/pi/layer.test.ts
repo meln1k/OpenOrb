@@ -74,6 +74,71 @@ Deno.test("Pi harness exposes a finite, ordered, lossless run stream", async () 
   assertEquals(disposed, true);
 });
 
+Deno.test("Pi harness updates access tokens in memory and redacts every rotation", async () => {
+  const freshToken = "fresh-chatgpt-access-token";
+  const configured: string[] = [];
+  const events = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    let listener: (event: AgentSessionEvent) => void = () => {};
+    const harness = makePiAgentHarness({
+      conversationProjection: CONVERSATION_PROJECTION,
+      create: () =>
+        Effect.succeed({
+          updateModelRuntime: (runtime) => {
+            configured.push(runtime.credential.value);
+            return Promise.resolve();
+          },
+          session: {
+            isIdle: true,
+            subscribe(next: (event: AgentSessionEvent) => void) {
+              listener = next;
+              return () => listener = () => {};
+            },
+            prompt(_input: string, options?: { preflightResult?: (success: boolean) => void }) {
+              options?.preflightResult?.(true);
+              listener({
+                type: "auto_retry_start",
+                attempt: 1,
+                maxAttempts: 1,
+                delayMs: 0,
+                errorMessage: `Authorization failed for ${freshToken}`,
+              });
+              return Promise.resolve();
+            },
+            followUp: () => Promise.resolve(),
+            clearQueue: () => ({ steering: [], followUp: [] }),
+            abort: () => Promise.resolve(),
+            dispose() {},
+          },
+        }),
+    });
+    const session = yield* harness.open({
+      sessionId: SESSION_ID,
+      environment: EMPTY_ENVIRONMENT,
+      git: {
+        repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
+        branchName: "openorb/pi-layer-test",
+      },
+      modelRuntime: MODEL_RUNTIME,
+      state: { sessionFile: "/state/session", agentDirectory: "/state/agent" },
+    });
+    yield* session.updateModelRuntime({
+      ...MODEL_RUNTIME,
+      credential: { type: "access_token", value: freshToken },
+    });
+    const run = yield* session.start("Inspect");
+    return yield* Stream.runCollect(run.events);
+  })));
+
+  assertEquals(configured, [freshToken]);
+  assertEquals(Array.from(events), [{
+    type: "model.retry.started",
+    attempt: 1,
+    maxAttempts: 1,
+    delayMs: 0,
+    errorMessage: "Authorization failed for [REDACTED]",
+  }]);
+});
+
 Deno.test("Pi harness atomically clears queued follow-ups before aborting", async () => {
   const operations: string[] = [];
   const completed = Promise.withResolvers<void>();

@@ -32,6 +32,9 @@ export interface ActiveAgentRun {
 }
 
 export interface AgentHarnessSession {
+  readonly updateModelRuntime: (
+    modelRuntime: SessionModelRuntime,
+  ) => Effect.Effect<void, AgentHarnessError>;
   readonly start: (input: string) => Effect.Effect<ActiveAgentRun, AgentHarnessError>;
 }
 
