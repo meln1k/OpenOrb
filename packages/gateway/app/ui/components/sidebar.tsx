@@ -1,6 +1,15 @@
-import { clientEntry, css, type Handle, type Props, type RemixNode } from "remix/ui";
+import {
+  clientEntry,
+  css,
+  type Handle,
+  link,
+  type NavigationOptions,
+  type Props,
+  type RemixNode,
+} from "remix/ui";
 
 import { media } from "@/app/ui/responsive.ts";
+import { Spinner } from "@/app/ui/components/progress.tsx";
 import {
   Collapsible,
   CollapsibleContent,
@@ -439,16 +448,30 @@ export interface SidebarMenuButtonProps {
   disabled?: boolean;
   href?: string;
   icon?: RemixNode;
+  navigation?: NavigationOptions;
+  pending?: boolean;
 }
 
 export function SidebarMenuButton(handle: Handle<SidebarMenuButtonProps>) {
   return () => {
-    const { active, badge, children, command, commandFor, disabled, href, icon } = handle.props;
+    const {
+      active,
+      badge,
+      children,
+      command,
+      commandFor,
+      disabled,
+      href,
+      icon,
+      navigation,
+      pending,
+    } = handle.props;
     const content = (
       <>
         {icon}
         <span mix={menuTextStyle}>{children}</span>
         {badge ? <span mix={menuBadgeStyle}>{badge}</span> : null}
+        {pending ? <Spinner aria-hidden="true" mix={menuPendingSpinnerStyle} /> : null}
       </>
     );
 
@@ -457,9 +480,11 @@ export function SidebarMenuButton(handle: Handle<SidebarMenuButtonProps>) {
         <a
           href={href}
           aria-current={active ? "page" : undefined}
+          aria-busy={pending ? "true" : undefined}
           data-active={active ? "true" : "false"}
+          data-pending={pending ? "true" : undefined}
           data-slot="sidebar-menu-button"
-          mix={menuButtonStyle}
+          mix={[menuButtonStyle, link(href, navigation)]}
         >
           {content}
         </a>
@@ -782,6 +807,11 @@ const menuButtonStyle = css({
   "&[data-active='true']": { fontWeight: 500 },
   "&[aria-disabled='true']": { opacity: 0.55 },
   "& > svg": { flexShrink: 0 },
+});
+const menuPendingSpinnerStyle = css({
+  width: "12px",
+  height: "12px",
+  marginLeft: "auto",
 });
 const disclosureTriggerStyle = css({
   "& > [data-slot='sidebar-disclosure-chevron']": { marginLeft: "auto" },

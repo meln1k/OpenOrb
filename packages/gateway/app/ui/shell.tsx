@@ -1,4 +1,4 @@
-import { css, type Handle, type RemixNode } from "remix/ui";
+import { clientEntry, css, type Handle, navigate, type RemixNode } from "remix/ui";
 
 import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
 import { routes } from "@/app/routes.ts";
@@ -37,11 +37,12 @@ import {
   SidebarMenuItem,
   SidebarMobile,
   SidebarTrigger,
+  Spinner,
 } from "@/app/ui/components/index.ts";
 import { media } from "@/app/ui/responsive.ts";
 import { SessionComposer, type SessionComposerProps } from "@/app/ui/session-composer.tsx";
 
-export interface AppShellLayoutProps {
+export type AppShellLayoutProps = {
   activeSection?: "projects";
   activeSessionId?: string;
   children?: RemixNode;
@@ -55,137 +56,287 @@ export interface AppShellLayoutProps {
   title: string;
   topBarAccessory?: RemixNode;
   topBarTitle?: string;
-}
+  workspace?: RemixNode;
+};
 
 const MOBILE_SIDEBAR_ID = "openorb-mobile-sidebar";
 const NEW_SESSION_DIALOG_ID = "openorb-new-session";
+export const SESSION_WORKSPACE_FRAME = "session-workspace";
 
 export function AppShellLayout(handle: Handle<AppShellLayoutProps>) {
   return () => (
-    <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
-      <SidebarMobile id={MOBILE_SIDEBAR_ID}>
-        <AppNavigation
+    <AppShellNavigation
+      activeSection={handle.props.activeSection}
+      activeSessionId={handle.props.activeSessionId}
+      composer={
+        <SessionComposer
+          {...handle.props.composer}
           csrfToken={handle.props.csrfToken}
-          activeSection={handle.props.activeSection}
-          activeSessionId={handle.props.activeSessionId}
-          sessions={handle.props.sessions}
+          dialogId={NEW_SESSION_DIALOG_ID}
         />
-      </SidebarMobile>
-      <ResizablePanelGroup orientation="horizontal" mix={shellPanelGroupStyle}>
-        <ResizablePanel
-          data-side="left"
-          defaultSize="256px"
-          minSize="192px"
-          maxSize="480px"
-          mix={desktopSidebarPanelStyle}
-        >
-          <SidebarDesktop>
-            <AppNavigation
-              csrfToken={handle.props.csrfToken}
-              activeSection={handle.props.activeSection}
-              activeSessionId={handle.props.activeSessionId}
-              sessions={handle.props.sessions}
-            />
-          </SidebarDesktop>
-        </ResizablePanel>
-        <ResizableHandle
-          aria-label="Resize primary navigation"
-          data-side="left"
-          withHandle
-          mix={desktopSidebarHandleStyle}
-        />
-        <ResizablePanel minSize="360px" mix={shellContentPanelStyle}>
-          <SidebarInset
-            aria-label="Authenticated gateway"
-            data-has-right-sidebar={handle.props.rightSidebar ? "true" : undefined}
-          >
-            <header mix={topBarStyle}>
-              <div mix={topBarContentStyle}>
-                <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
-                {handle.props.topBarTitle
-                  ? (
-                    <>
-                      <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-                      <h1 data-top-bar-title mix={topBarTitleStyle}>
-                        {handle.props.topBarTitle}
-                      </h1>
-                    </>
-                  )
-                  : handle.props.eyebrow
-                  ? (
-                    <>
-                      <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-                      <Breadcrumb>
-                        <BreadcrumbList>
-                          <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
-                            <BreadcrumbLink href={routes.app.index.href()}>
-                              Gateway
-                            </BreadcrumbLink>
-                          </BreadcrumbItem>
-                          <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
-                          <BreadcrumbItem>
-                            <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
-                          </BreadcrumbItem>
-                        </BreadcrumbList>
-                      </Breadcrumb>
-                    </>
-                  )
-                  : null}
-                {handle.props.topBarAccessory}
-              </div>
-            </header>
-            <div mix={contentStyle}>
-              {handle.props.heading
-                ? (
-                  <header mix={pageHeaderStyle}>
-                    <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
-                    {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
-                  </header>
-                )
-                : null}
-              {handle.props.children}
-            </div>
-          </SidebarInset>
-        </ResizablePanel>
-        {handle.props.rightSidebar
-          ? (
-            <>
-              <ResizableHandle
-                aria-label="Resize session changes"
-                data-side="right"
-                withHandle
-                mix={desktopSidebarHandleStyle}
-              />
-              <ResizablePanel
-                data-side="right"
-                defaultSize="clamp(400px, 38vw, 560px)"
-                minSize="320px"
-                maxSize="720px"
-                mix={desktopSidebarPanelStyle}
-              >
-                <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
-              </ResizablePanel>
-            </>
-          )
-          : null}
-      </ResizablePanelGroup>
-      <SessionComposer
-        {...handle.props.composer}
-        csrfToken={handle.props.csrfToken}
-        dialogId={NEW_SESSION_DIALOG_ID}
-      />
-    </SidebarLayout>
+      }
+      csrfToken={handle.props.csrfToken}
+      sessions={handle.props.sessions}
+      workspace={handle.props.workspace ?? <AppWorkspaceLayout {...handle.props} />}
+    />
   );
 }
 
-function AppNavigation(
-  handle: Handle<{
-    csrfToken: string;
-    activeSection: AppShellLayoutProps["activeSection"];
-    activeSessionId: string | undefined;
-    sessions: SessionCatalogEntry[];
-  }>,
-) {
+type SessionNavigationItem = {
+  id: string;
+  initialPromptPreview: string;
+};
+
+type AppShellNavigationProps = {
+  activeSection: "projects" | undefined;
+  activeSessionId: string | undefined;
+  composer: RemixNode;
+  csrfToken: string;
+  sessions: SessionNavigationItem[];
+  workspace: RemixNode;
+};
+
+export const AppShellNavigation = clientEntry<AppShellNavigationProps>(
+  import.meta.url,
+  function AppShellNavigation(handle: Handle<AppShellNavigationProps>) {
+    let selectedSessionId = handle.props.activeSessionId;
+    let pendingSessionId: string | undefined;
+    let navigationGeneration = 0;
+    let activeSessionNavigation: { generation: number; sessionId: string } | undefined;
+    let restoring = false;
+
+    function sessionForUrl(url: string) {
+      const destination = new URL(url);
+      return handle.props.sessions.find((session) => {
+        const href = new URL(
+          routes.app.sessions.detail.href({ sessionId: session.id }),
+          destination,
+        );
+        return href.pathname === destination.pathname && href.search === destination.search;
+      });
+    }
+
+    function setPendingSession(sessionId: string | undefined) {
+      if (pendingSessionId === sessionId) return;
+      pendingSessionId = sessionId;
+      void handle.update();
+    }
+
+    function replaceWorkspace(content: RemixNode) {
+      const frame = handle.frames.get(SESSION_WORKSPACE_FRAME);
+      if (frame) void frame.replace(content);
+    }
+
+    if ("navigation" in globalThis) {
+      const navigation = globalThis.navigation;
+      navigation.addEventListener("navigate", (event) => {
+        const generation = ++navigationGeneration;
+        const session = sessionForUrl(event.destination.url);
+        if (!session || !handle.frames.get(SESSION_WORKSPACE_FRAME)) {
+          activeSessionNavigation = undefined;
+          restoring = false;
+          setPendingSession(undefined);
+          return;
+        }
+
+        if (restoring && session.id !== selectedSessionId) restoring = false;
+        activeSessionNavigation = { generation, sessionId: session.id };
+        const mobileSidebar = document.getElementById(MOBILE_SIDEBAR_ID);
+        if (mobileSidebar?.matches(":popover-open")) mobileSidebar.hidePopover();
+        setPendingSession(session.id);
+        replaceWorkspace(<SessionWorkspaceLoading title={sessionName(session)} />);
+      }, { signal: handle.signal });
+      navigation.addEventListener("navigatesuccess", () => {
+        const completed = activeSessionNavigation;
+        if (!completed || completed.generation !== navigationGeneration) return;
+        activeSessionNavigation = undefined;
+        selectedSessionId = completed.sessionId;
+        pendingSessionId = undefined;
+        restoring = false;
+        void handle.update();
+      }, { signal: handle.signal });
+      navigation.addEventListener("navigateerror", () => {
+        const failed = activeSessionNavigation;
+        if (!failed) return;
+
+        // The failed transition remains exposed during navigateerror dispatch. Defer recovery and
+        // use the generation to ignore failures superseded by any later navigation.
+        setTimeout(() => {
+          if (
+            handle.signal.aborted ||
+            navigationGeneration !== failed.generation ||
+            activeSessionNavigation?.generation !== failed.generation
+          ) return;
+
+          activeSessionNavigation = undefined;
+          const committed = handle.props.sessions.find((session) =>
+            session.id === selectedSessionId
+          );
+          if (!committed || restoring) {
+            restoring = false;
+            pendingSessionId = undefined;
+            replaceWorkspace(<SessionWorkspaceLoadError />);
+            void handle.update();
+            return;
+          }
+
+          restoring = true;
+          setPendingSession(committed.id);
+          void navigate(routes.app.sessions.detail.href({ sessionId: committed.id }), {
+            history: "replace",
+            target: SESSION_WORKSPACE_FRAME,
+            src: routes.app.sessions.frame.href({ sessionId: committed.id }),
+          }).catch(() => {
+            // The navigateerror listener owns the bounded recovery UI. Consume the matching promise
+            // rejection so the same handled navigation failure is not reported as unhandled.
+          });
+        }, 0);
+      }, { signal: handle.signal });
+    }
+
+    return () => (
+      <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
+        <SidebarMobile id={MOBILE_SIDEBAR_ID}>
+          <AppNavigation
+            csrfToken={handle.props.csrfToken}
+            activeSection={handle.props.activeSection}
+            selectedSessionId={pendingSessionId ?? selectedSessionId}
+            pendingSessionId={pendingSessionId}
+            sessions={handle.props.sessions}
+          />
+        </SidebarMobile>
+        <ResizablePanelGroup orientation="horizontal" mix={shellPanelGroupStyle}>
+          <ResizablePanel
+            data-side="left"
+            defaultSize="256px"
+            minSize="192px"
+            maxSize="480px"
+            mix={desktopSidebarPanelStyle}
+          >
+            <SidebarDesktop>
+              <AppNavigation
+                csrfToken={handle.props.csrfToken}
+                activeSection={handle.props.activeSection}
+                selectedSessionId={pendingSessionId ?? selectedSessionId}
+                pendingSessionId={pendingSessionId}
+                sessions={handle.props.sessions}
+              />
+            </SidebarDesktop>
+          </ResizablePanel>
+          {handle.props.workspace}
+        </ResizablePanelGroup>
+        {handle.props.composer}
+      </SidebarLayout>
+    );
+  },
+);
+
+export interface AppWorkspaceLayoutProps {
+  children?: RemixNode;
+  copy?: string;
+  eyebrow?: string;
+  heading?: string;
+  rightSidebar?: RemixNode;
+  topBarAccessory?: RemixNode;
+  topBarTitle?: string;
+}
+
+export function AppWorkspaceLayout(handle: Handle<AppWorkspaceLayoutProps>) {
+  return () => (
+    <>
+      <ResizableHandle
+        aria-label="Resize primary navigation"
+        data-side="left"
+        withHandle
+        mix={desktopSidebarHandleStyle}
+      />
+      <ResizablePanel minSize="360px" mix={shellContentPanelStyle}>
+        <SidebarInset
+          aria-label="Authenticated gateway"
+          data-has-right-sidebar={handle.props.rightSidebar ? "true" : undefined}
+        >
+          <header mix={topBarStyle}>
+            <div mix={topBarContentStyle}>
+              <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
+              {handle.props.topBarTitle
+                ? (
+                  <>
+                    <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                    <h1 data-top-bar-title mix={topBarTitleStyle}>
+                      {handle.props.topBarTitle}
+                    </h1>
+                  </>
+                )
+                : handle.props.eyebrow
+                ? (
+                  <>
+                    <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                    <Breadcrumb>
+                      <BreadcrumbList>
+                        <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
+                          <BreadcrumbLink href={routes.app.index.href()}>
+                            Gateway
+                          </BreadcrumbLink>
+                        </BreadcrumbItem>
+                        <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
+                        <BreadcrumbItem>
+                          <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
+                        </BreadcrumbItem>
+                      </BreadcrumbList>
+                    </Breadcrumb>
+                  </>
+                )
+                : null}
+              {handle.props.topBarAccessory}
+            </div>
+          </header>
+          <div mix={contentStyle}>
+            {handle.props.heading
+              ? (
+                <header mix={pageHeaderStyle}>
+                  <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
+                  {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
+                </header>
+              )
+              : null}
+            {handle.props.children}
+          </div>
+        </SidebarInset>
+      </ResizablePanel>
+      {handle.props.rightSidebar
+        ? (
+          <>
+            <ResizableHandle
+              aria-label="Resize session changes"
+              data-side="right"
+              withHandle
+              mix={desktopSidebarHandleStyle}
+            />
+            <ResizablePanel
+              data-side="right"
+              defaultSize="clamp(400px, 38vw, 560px)"
+              minSize="320px"
+              maxSize="720px"
+              mix={desktopSidebarPanelStyle}
+            >
+              <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
+            </ResizablePanel>
+          </>
+        )
+        : null}
+    </>
+  );
+}
+
+type AppNavigationProps = {
+  csrfToken: string;
+  activeSection: AppShellLayoutProps["activeSection"];
+  selectedSessionId: string | undefined;
+  pendingSessionId: string | undefined;
+  sessions: SessionNavigationItem[];
+};
+
+function AppNavigation(handle: Handle<AppNavigationProps>) {
   return () => (
     <>
       <SidebarHeader>
@@ -221,10 +372,15 @@ function AppNavigation(
               <SidebarMenuItem key={session.id}>
                 <SidebarMenuButton
                   href={routes.app.sessions.detail.href({ sessionId: session.id })}
-                  active={handle.props.activeSessionId === session.id}
+                  navigation={{
+                    target: SESSION_WORKSPACE_FRAME,
+                    src: routes.app.sessions.frame.href({ sessionId: session.id }),
+                  }}
+                  active={handle.props.selectedSessionId === session.id}
+                  pending={handle.props.pendingSessionId === session.id}
                   icon={<Icon name="message" />}
                 >
-                  {session.initialPromptPreview || "Untitled session"}
+                  {sessionName(session)}
                 </SidebarMenuButton>
               </SidebarMenuItem>
             ))}
@@ -285,6 +441,34 @@ function AppNavigation(
       </SidebarFooter>
     </>
   );
+}
+
+export function SessionWorkspaceLoading(handle: Handle<{ title: string }>) {
+  return () => (
+    <AppWorkspaceLayout topBarTitle={handle.props.title}>
+      <div role="status" mix={sessionLoadingStyle}>
+        <Spinner aria-hidden="true" />
+        Loading session…
+      </div>
+    </AppWorkspaceLayout>
+  );
+}
+
+export function SessionWorkspaceLoadError(
+  handle: Handle<{ message?: string; title?: string }>,
+) {
+  return () => (
+    <AppWorkspaceLayout topBarTitle={handle.props.title ?? "Session unavailable"}>
+      <div role="alert" mix={sessionLoadingStyle}>
+        {handle.props.message ??
+          "The previous session could not be restored. Reload the page to try again."}
+      </div>
+    </AppWorkspaceLayout>
+  );
+}
+
+function sessionName(session: SessionNavigationItem): string {
+  return session.initialPromptPreview || "Untitled session";
 }
 
 const appThemeAliasesStyle = css({
@@ -467,6 +651,15 @@ const contentStyle = css({
   minWidth: 0,
   padding: "0 16px 16px",
   [media.md]: { padding: "0 24px 24px" },
+});
+const sessionLoadingStyle = css({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "10px",
+  flex: 1,
+  color: "var(--muted-foreground)",
+  fontSize: "14px",
 });
 const pageHeaderStyle = css({ display: "grid", gap: "6px", maxWidth: "720px" });
 const pageHeadingStyle = css({

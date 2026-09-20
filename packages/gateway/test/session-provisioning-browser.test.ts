@@ -584,6 +584,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(detailHtml, /<span>Repository<\/span>/);
     assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-detail-client\.tsx/);
     assertMatch(detailHtml, /"exportName":"SessionDetailClient"/);
+    assertStringIncludes(detailHtml, 'data-rmx-target="session-workspace"');
+    assertStringIncludes(
+      detailHtml,
+      `data-rmx-src="${routes.app.sessions.frame.href({ sessionId: provision.sessionId })}"`,
+    );
     assertMatch(
       detailHtml,
       /<link data-rmx(?:-module-preload)? rel="modulepreload" href="\/assets\/app\/ui\/session\/session-detail-client\.tsx" \/>/,
@@ -618,6 +623,38 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assert(!detailHtml.includes(GITHUB_TOKEN));
     assert(!detailHtml.includes(MODEL_PROVIDER_KEY));
     assert(!detailHtml.includes(ENVIRONMENT_SECRET_VALUE));
+
+    const frame = await fetch(
+      new URL(
+        routes.app.sessions.frame.href({ sessionId: provision.sessionId }),
+        server.baseUrl,
+      ),
+      { headers: { Cookie: client.cookie } },
+    );
+    assertEquals(frame.status, 200);
+    const frameHtml = await frame.text();
+    assertMatch(frameHtml, /aria-label="Session changes"/);
+    assertNotMatch(frameHtml, /aria-label="Primary navigation"/);
+
+    const anonymousFrame = await fetch(
+      new URL(
+        routes.app.sessions.frame.href({ sessionId: provision.sessionId }),
+        server.baseUrl,
+      ),
+    );
+    assertEquals(anonymousFrame.status, 401);
+
+    const missingFrame = await fetch(
+      new URL(
+        routes.app.sessions.frame.href({ sessionId: "00000000-0000-4000-8000-000000000000" }),
+        server.baseUrl,
+      ),
+      { headers: { Cookie: client.cookie } },
+    );
+    assertEquals(missingFrame.status, 404);
+    const missingFrameHtml = await missingFrame.text();
+    assertStringIncludes(missingFrameHtml, 'role="alert"');
+    assertStringIncludes(missingFrameHtml, "This session no longer exists.");
     assertNotMatch(detailHtml, /<a href="\/app\/"[^>]*>[\s\S]*?Overview[\s\S]*?<\/a>/);
     assertNotMatch(
       detailHtml,

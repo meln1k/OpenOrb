@@ -6,29 +6,17 @@ import { SessionDetailClient } from "@/app/ui/session/session-detail-client.tsx"
 Deno.test("session detail defaults mobile navigation to the agent view", async () => {
   const html = await renderToString(
     <SessionDetailClient
-      composer={{
-        projects: [],
-        models: [],
-        hasConfiguredRunner: true,
-        hasConnectedRunner: true,
-      }}
       contextWindow={1_000}
       csrfToken="csrf-token"
       error={undefined}
       initialState="ready"
       initialIssues={[]}
-      session={{
-        id: "session-id",
-        projectId: "project-id",
-        createdAt: "2026-01-01T00:00:00Z",
-        initialPromptPreview: "Mobile session tabs",
-      }}
-      sidebarSessions={[]}
+      sessionId="session-id"
+      sessionName="Mobile session tabs"
     />,
   );
 
   assertStringIncludes(html, 'role="tablist" aria-label="Session views"');
-  assertStringIncludes(html, '"exportName":"SidebarMobileSwipeBehavior"');
   assertMatch(
     html,
     /id="([^"]+)-agent-tab"[^>]+role="tab" aria-selected="true" aria-controls="\1-agent-panel" tabindex="0"/,
@@ -52,24 +40,13 @@ Deno.test("session detail defaults mobile navigation to the agent view", async (
 Deno.test("session composer replaces send with stop during an active turn", async () => {
   const html = await renderToString(
     <SessionDetailClient
-      composer={{
-        projects: [],
-        models: [],
-        hasConfiguredRunner: true,
-        hasConnectedRunner: true,
-      }}
       contextWindow={1_000}
       csrfToken="csrf-token"
       error={undefined}
       initialState="running"
       initialIssues={[]}
-      session={{
-        id: "session-id",
-        projectId: "project-id",
-        createdAt: "2026-01-01T00:00:00Z",
-        initialPromptPreview: "Active session",
-      }}
-      sidebarSessions={[]}
+      sessionId="session-id"
+      sessionName="Active session"
     />,
   );
 

@@ -3,6 +3,7 @@ import { serveDir } from "@std/http/file-server";
 import { fromFileUrl } from "@std/path";
 import { auth, createSessionAuthScheme } from "remix/middleware/auth";
 import { formData } from "remix/middleware/form-data";
+import { render } from "remix/middleware/render";
 import { session } from "remix/middleware/session";
 import { createRouter, type Middleware, type RouterContext } from "remix/router";
 
@@ -21,9 +22,9 @@ import settingsRunnersController from "@/app/actions/settings/runners/controller
 import settingsSecretsController from "@/app/actions/settings/secrets/controller.tsx";
 import apiRunnersController from "@/app/actions/api/runners/controller.ts";
 import apiSessionsController from "@/app/actions/api/sessions/controller.ts";
+import { assetServer } from "@/app/assets.ts";
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { type AppServices, AppServicesKey, provideAppServices } from "@/app/middleware/services.ts";
-import { render } from "@/app/middleware/render.tsx";
 import { routes } from "@/app/routes.ts";
 import {
   BROWSER_SESSION_MAX_AGE_SECONDS,
@@ -83,7 +84,7 @@ export function createAppRouter(
           }),
         ],
       }),
-      render(),
+      render({ assets: assetServer }),
     ],
   });
 

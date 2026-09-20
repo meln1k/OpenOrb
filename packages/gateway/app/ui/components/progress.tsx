@@ -1,5 +1,14 @@
 import { css, type Handle, type Props } from "remix/ui";
 
+export type SpinnerProps = Omit<Props<"span">, "children">;
+
+export function Spinner(handle: Handle<SpinnerProps>) {
+  return () => {
+    const { mix, ...props } = handle.props;
+    return <span {...props} data-slot="spinner" mix={[spinnerStyle, mix]} />;
+  };
+}
+
 export type ProgressProps = Omit<Props<"div">, "children"> & {
   max?: number;
   value: number;
@@ -35,6 +44,19 @@ export function Progress(handle: Handle<ProgressProps>) {
 }
 
 const progressStyle = css({ width: "100%" });
+
+const spinnerStyle = css({
+  display: "inline-block",
+  flexShrink: 0,
+  width: "16px",
+  height: "16px",
+  border: "2px solid color-mix(in srgb, currentColor 25%, transparent)",
+  borderTopColor: "currentColor",
+  borderRadius: "999px",
+  animation: "openorb-spinner-spin 700ms linear infinite",
+  "@keyframes openorb-spinner-spin": { to: { transform: "rotate(360deg)" } },
+  "@media (prefers-reduced-motion: reduce)": { animation: "none" },
+});
 
 const progressTrackStyle = css({
   width: "100%",

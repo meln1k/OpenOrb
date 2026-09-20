@@ -16,6 +16,7 @@ export const routes = route({
       index: get("/"),
       create: post("/"),
       detail: get(":sessionId"),
+      frame: get(":sessionId/frame"),
       message: post(":sessionId/messages"),
       abort: post(":sessionId/abort"),
       stop: post(":sessionId/stop"),

@@ -6,6 +6,7 @@ const clientEntries = [
   "packages/gateway/app/assets/client.ts",
   "packages/gateway/app/ui/session/session-composer-behavior.tsx",
   "packages/gateway/app/ui/session/session-detail-client.tsx",
+  "packages/gateway/app/ui/shell.tsx",
   "packages/gateway/app/ui/settings/model-providers.tsx",
   "node_modules/.deno/remix@3.0.0-rc.3/node_modules/remix/dist/ui/button.js",
 ];

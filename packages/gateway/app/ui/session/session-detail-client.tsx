@@ -1,9 +1,7 @@
 import { clientEntry, css, type Handle, on } from "remix/ui";
 import type { SessionIssue } from "@openorb/protocol/browser-session-events";
 
-import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
 import { routes } from "@/app/routes.ts";
-import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import { media } from "@/app/ui/responsive.ts";
 import { SessionChangesPanel } from "@/app/ui/session/session-changes-panel.tsx";
 import { SessionChangesScope } from "@/app/ui/session/session-changes-resource.tsx";
@@ -11,7 +9,7 @@ import { SessionPageScope } from "@/app/ui/session/session-page-controller.tsx";
 import { SessionTranscript } from "@/app/ui/session/session-transcript.tsx";
 import type { SessionState } from "@/app/ui/session/session-transcript-state.ts";
 import { SessionVmControl } from "@/app/ui/session/session-vm-control.tsx";
-import { AppShellLayout } from "@/app/ui/shell.tsx";
+import { AppWorkspaceLayout } from "@/app/ui/shell.tsx";
 import {
   AlertDialog,
   AlertDialogDescription,
@@ -22,27 +20,31 @@ import {
   Icon,
 } from "@/app/ui/components/index.ts";
 
-type SerializableData<Value> = Value extends readonly (infer Item)[] ? SerializableData<Item>[]
-  : Value extends object ? { [Key in keyof Value]: SerializableData<Value[Key]> }
-  : Value;
-
 type SessionMobileView = "agent" | "changes";
 
+type SessionIssueData = {
+  category: SessionIssue["category"];
+  diagnostics?: string;
+  message: string;
+  recovery: SessionIssue["recovery"];
+  severity: SessionIssue["severity"];
+};
+
 export type SessionDetailClientProps = {
-  readonly composer: SerializableData<SessionComposerData>;
   readonly contextWindow: number;
   readonly csrfToken: string;
   readonly error: string | undefined;
   readonly initialState: SessionState;
-  readonly initialIssues: SerializableData<readonly SessionIssue[]>;
-  readonly session: SerializableData<SessionCatalogEntry>;
-  readonly sidebarSessions: SerializableData<SessionCatalogEntry[]>;
+  readonly initialIssues: SessionIssueData[];
+  readonly sessionId: string;
+  readonly sessionName: string;
 };
 
 export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
   import.meta.url,
   function SessionDetailClient(handle: Handle<SessionDetailClientProps>) {
     let mobileView: SessionMobileView = "agent";
+    let committedTitle: string | undefined;
     const agentTabId = `${handle.id}-agent-tab`;
     const agentPanelId = `${handle.id}-agent-panel`;
     const changesTabId = `${handle.id}-changes-tab`;
@@ -76,39 +78,42 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
     }
 
     return () => {
-      const sessionName = handle.props.session.initialPromptPreview || "Untitled session";
+      const title = `${handle.props.sessionName} · OpenOrb`;
+      if (title !== committedTitle && "document" in globalThis) {
+        handle.queueTask((signal) => {
+          if (signal.aborted) return;
+          document.title = title;
+          committedTitle = title;
+        });
+      }
+
       const sessionPage = (
         <SessionPageScope
-          key={handle.props.session.id}
+          key={handle.props.sessionId}
           csrfToken={handle.props.csrfToken}
           initialState={handle.props.initialState}
           initialIssues={handle.props.initialIssues}
-          sessionId={handle.props.session.id}
+          sessionId={handle.props.sessionId}
         >
           <SessionChangesScope
             csrfToken={handle.props.csrfToken}
-            sessionId={handle.props.session.id}
+            sessionId={handle.props.sessionId}
           >
-            <AppShellLayout
-              activeSessionId={handle.props.session.id}
-              composer={handle.props.composer}
-              csrfToken={handle.props.csrfToken}
-              sessions={handle.props.sidebarSessions}
-              title={`${sessionName} · OpenOrb`}
+            <AppWorkspaceLayout
               topBarAccessory={
                 <div mix={topBarActionsStyle}>
                   <SessionVmControl
                     csrfToken={handle.props.csrfToken}
-                    sessionId={handle.props.session.id}
+                    sessionId={handle.props.sessionId}
                   />
                   <SessionDeletionControl
                     csrfToken={handle.props.csrfToken}
-                    sessionId={handle.props.session.id}
+                    sessionId={handle.props.sessionId}
                   />
                 </div>
               }
-              topBarTitle={sessionName}
-              rightSidebar={<SessionChangesPanel sessionId={handle.props.session.id} />}
+              topBarTitle={handle.props.sessionName}
+              rightSidebar={<SessionChangesPanel sessionId={handle.props.sessionId} />}
             >
               <div data-session-mobile-layout mix={mobileLayoutStyle}>
                 <nav aria-label="Session views" mix={mobileTabsStyle}>
@@ -160,7 +165,7 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
                   <SessionTranscript
                     contextWindow={handle.props.contextWindow}
                     csrfToken={handle.props.csrfToken}
-                    sessionId={handle.props.session.id}
+                    sessionId={handle.props.sessionId}
                   />
                 </section>
                 <section
@@ -173,14 +178,14 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
                   {mobileView === "changes"
                     ? (
                       <SessionChangesPanel
-                        sessionId={handle.props.session.id}
+                        sessionId={handle.props.sessionId}
                         variant="content"
                       />
                     )
                     : null}
                 </section>
               </div>
-            </AppShellLayout>
+            </AppWorkspaceLayout>
           </SessionChangesScope>
         </SessionPageScope>
       );

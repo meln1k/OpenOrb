@@ -16,7 +16,7 @@ import { redirect } from "remix/response/redirect";
 import { Effect, Schema } from "effect";
 
 import { AppPage } from "@/app/actions/app/page.tsx";
-import { SessionDetailPage } from "@/app/actions/sessions/page.tsx";
+import { SessionDetailFrame, SessionDetailPage } from "@/app/actions/sessions/page.tsx";
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import type { AppContext } from "@/app/router.ts";
@@ -26,6 +26,7 @@ import { loadSessionComposerData } from "@/app/session-composer-data.ts";
 import { isModelReference } from "@/app/model-provider-catalog.ts";
 import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
 import type { SessionComposerValues } from "@/app/ui/session-composer.tsx";
+import { SessionWorkspaceLoadError } from "@/app/ui/shell.tsx";
 import { currentSessionRecovery } from "@/app/utils/session-recovery.ts";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
@@ -214,6 +215,10 @@ export default createController(routes.app.sessions, {
 
     async detail(context) {
       return await renderDetailPage(context);
+    },
+
+    async frame(context) {
+      return await renderDetailFrame(context);
     },
 
     async message(context) {
@@ -600,6 +605,25 @@ async function renderDetailPage(
     context.services.store.listSessionCatalogEntries(workspaceId),
   ]);
   if (!session) return new Response("Session not found.", { status: 404 });
+  return context.render(
+    <SessionDetailPage
+      composer={composer}
+      csrfToken={getCsrfToken(context)}
+      frameSrc={error === undefined ? undefined : sessionErrorFrameHref(sessionId, error)}
+      session={session}
+      sidebarSessions={sidebarSessions}
+    />,
+    { status },
+  );
+}
+
+async function renderDetailFrame(context: SessionDetailContext) {
+  const workspaceId = context.auth.identity.workspaceId;
+  const sessionId = parseSessionId(context.params.sessionId);
+  if (!sessionId) return renderMissingSessionFrame(context);
+  const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+  if (!session) return renderMissingSessionFrame(context);
+  const error = new URL(context.request.url).searchParams.get("error") || undefined;
   const [runnerId, snapshot] = await Promise.all([
     Effect.runPromise(context.services.runnerConnections.getSessionRunner(workspaceId, sessionId)),
     Effect.runPromise(
@@ -607,17 +631,29 @@ async function renderDetailPage(
     ),
   ]);
   return context.render(
-    <SessionDetailPage
-      composer={composer}
+    <SessionDetailFrame
       csrfToken={getCsrfToken(context)}
-      session={session}
-      runnerId={runnerId}
-      snapshot={snapshot}
-      sidebarSessions={sidebarSessions}
       error={error}
+      runnerId={runnerId}
+      session={session}
+      snapshot={snapshot}
     />,
-    { status },
   );
+}
+
+function renderMissingSessionFrame(context: SessionDetailContext) {
+  return context.render(
+    <SessionWorkspaceLoadError
+      message="This session no longer exists. Choose another session from the sidebar."
+      title="Session not found"
+    />,
+    { status: 404 },
+  );
+}
+
+function sessionErrorFrameHref(sessionId: string, error: string): string {
+  const href = routes.app.sessions.frame.href({ sessionId });
+  return `${href}?${new URLSearchParams({ error })}`;
 }
 
 function parseSessionId(value: string): string | null {
