@@ -55,6 +55,12 @@ Deno.test({
     try {
       await page.goto(server.baseUrl.href);
       await page.locator("#composer").waitFor({ state: "attached" });
+      assertEquals(
+        await page.locator("#composer form").evaluate((form) =>
+          form.hasAttribute("data-rmx-document")
+        ),
+        true,
+      );
       await page.getByRole("button", { name: "New session", exact: true }).click();
       const prompt = page.getByRole("textbox", { name: "Initial prompt" });
       assertEquals(await prompt.evaluate((element) => element === document.activeElement), true);

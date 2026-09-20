@@ -64,7 +64,12 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
       data-slot="session-composer"
       mix={dialogStyle}
     >
-      <form method="post" action={routes.app.sessions.create.href()} mix={formStyle}>
+      <form
+        method="post"
+        action={routes.app.sessions.create.href()}
+        data-rmx-document
+        mix={formStyle}
+      >
         <input type="hidden" name="_csrf" value={csrfToken} />
         <input type="hidden" name="runnerId" value="" />
         <input type="hidden" name="ref" value={ref} />

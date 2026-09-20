@@ -307,6 +307,7 @@ Deno.test("session composer creates a new server-assigned session on each submis
     const form = composer[1]!.match(/<form[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/);
     assert(form, "expected the session creation form");
     assertEquals(form[1], routes.app.sessions.create.href());
+    assertStringIncludes(composer[1]!, "data-rmx-document");
 
     // Preserve SSR hidden fields, as a submission without SessionComposerBehavior would.
     const body = new URLSearchParams();
