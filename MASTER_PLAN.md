@@ -998,13 +998,14 @@ returned by the guest.
 6. Git inside Gondolin creates the session working branch.
 7. Runner stores base commit, branch, and remote metadata in a host-owned file outside the workspace; these values are untrusted data, not trusted instructions.
 
-Default branch pattern:
+By default, the working branch is the Project's default ref. The user may instead provide a custom
+branch name, for example:
 
 ```text
 openorb/<sanitized-session-name>-<short-session-id>
 ```
 
-The user may provide a custom branch name. It can change until its first successful push and is fixed afterward.
+The branch can change until its first successful push and is fixed afterward.
 
 ### 17.3 Controlled Git operations
 

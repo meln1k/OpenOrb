@@ -430,6 +430,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(createHtml, /aria-label="Runner"/);
     assertNotMatch(createHtml, /name="sessionId"/);
     assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="runnerId"[^>]*value=""/);
+    assertMatch(createHtml, /<input[^>]*name="ref"[^>]*value="main"/);
+    assertMatch(createHtml, /<input[^>]*name="branchName"[^>]*value="main"/);
     assertMatch(createHtml, /aria-label="Orb size"/);
     assertMatch(createHtml, /aria-keyshortcuts="Enter"/);
     assertMatch(createHtml, /deepseek-v4-flash/);

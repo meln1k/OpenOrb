@@ -209,7 +209,7 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
       projectId: PROJECT_ID,
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
       ref: "main",
-      branchName: "openorb/session-supervisor-test",
+      branchName: "main",
       gitAuthor: GIT_AUTHOR,
       orbSize: "small",
       initialPrompt: "Inspect the repository",
@@ -238,6 +238,12 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
           ["/usr/bin/timeout", "--signal=KILL"],
           ["/usr/bin/timeout", "--signal=KILL"],
           ["/usr/bin/timeout", "--signal=KILL"],
+        ]);
+        assertEquals(runtime.commands[3], [
+          "/usr/bin/git",
+          "switch",
+          "-C",
+          "main",
         ]);
 
         const prompt = Schema.decodeUnknownSync(PromptSessionPayload)({

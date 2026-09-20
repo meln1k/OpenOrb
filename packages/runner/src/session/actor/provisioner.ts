@@ -283,7 +283,7 @@ export const makeSessionProvisioner = Effect.fn("makeSessionProvisioner")(functi
           failureMessage = "Git could not create the session branch.";
           const branch = yield* reporter.runCommand(
             environment,
-            ["/usr/bin/git", "switch", "-c", metadata.definition.branchName],
+            ["/usr/bin/git", "switch", "-C", metadata.definition.branchName],
             correlationId,
             logBudget,
           );

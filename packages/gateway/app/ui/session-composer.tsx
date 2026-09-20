@@ -52,7 +52,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
     "";
   const selectedOrbSize = values?.orbSize || DEFAULT_ORB_SIZE;
   const ref = values?.ref ?? firstProject?.defaultRef ?? "main";
-  const branchName = values?.branchName ?? "openorb/session";
+  const branchName = values?.branchName ?? ref;
   const canSubmit = projects.length > 0 && models.length > 0 && hasConnectedRunner;
 
   return () => (
