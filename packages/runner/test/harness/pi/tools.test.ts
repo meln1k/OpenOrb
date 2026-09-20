@@ -1,6 +1,8 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import type { EditToolDetails, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Effect } from "effect";
+import { SessionArtifact, SessionArtifactId } from "@openorb/protocol/runner-bulk-api";
+import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
+import { Effect, Schema } from "effect";
 
 import {
   type AgentEnvironment,
@@ -276,8 +278,86 @@ Deno.test("concurrent Pi edits to the same guest path are serialized", async () 
   assertEquals(environment.files.get("/workspace/index.html"), "third\n");
 });
 
+Deno.test("Pi publishes allowlisted media with transcript Markdown", async () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+  const artifactId = Schema.decodeUnknownSync(SessionArtifactId)(
+    "01989d78-65ee-7f6a-a97e-0f16ad134c11",
+  );
+  let requestedMaxBytes: number | undefined;
+  const environment = binaryEnvironment((path, options) => {
+    assertEquals(path, "/workspace/.openorb/artifacts/result.png");
+    requestedMaxBytes = options?.maxBytes;
+    return png;
+  });
+  const tools = new Map(
+    createPiTools(environment, (input) => {
+      assertEquals(input, {
+        fileName: "result.png",
+        mediaType: "image/png",
+        bytes: png,
+      });
+      return Promise.resolve(
+        new SessionArtifact({
+          id: artifactId,
+          fileName: input.fileName,
+          mediaType: input.mediaType,
+          byteLength: input.bytes.byteLength,
+        }),
+      );
+    }).map((tool) => [tool.name, tool]),
+  );
+  const publish = tools.get("publish_media");
+  assert(publish);
+
+  const result = await publish.execute(
+    "publish",
+    { path: ".openorb/artifacts/result.png", description: "Build result" },
+    undefined,
+    undefined,
+    TOOL_CONTEXT,
+  );
+
+  assertEquals(requestedMaxBytes, MAX_SESSION_ARTIFACT_BYTES);
+  assertEquals(result.content, [{
+    type: "text",
+    text:
+      `Published image result.png.\nUse this exact Markdown in your response:\n![Build result](openorb-artifact:image:${artifactId})`,
+  }]);
+
+  await assertRejects(
+    () =>
+      publish.execute(
+        "outside",
+        { path: "/workspace/private.png", description: "Private" },
+        undefined,
+        undefined,
+        TOOL_CONTEXT,
+      ),
+    Error,
+    "Published media must be stored under /workspace/.openorb/artifacts.",
+  );
+});
+
 function toolMap(environment: AgentEnvironment) {
   return new Map(createPiTools(environment).map((tool) => [tool.name, tool]));
+}
+
+function binaryEnvironment(
+  read: (
+    path: string,
+    options?: { readonly signal?: AbortSignal; readonly maxBytes?: number },
+  ) => Uint8Array,
+): AgentEnvironment {
+  return {
+    run: () => Effect.die("run is not available in this test"),
+    runShell: () => Effect.die("runShell is not available in this test"),
+    readFile: (path, options) => Effect.sync(() => read(path, options)),
+    access: () => Effect.void,
+    writeFile: () => Effect.die("writeFile is not available in this test"),
+    makeDirectory: () => Effect.void,
+    detectImageMimeType: () => Effect.succeed(null),
+    stop: Effect.die("stop is not available in this test"),
+  };
 }
 
 class MemoryAgentEnvironment implements AgentEnvironment {

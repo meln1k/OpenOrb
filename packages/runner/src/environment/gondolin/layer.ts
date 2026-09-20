@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import { VM, type VMOptions } from "@earendil-works/gondolin";
 import { Effect, Layer, type Scope, Semaphore } from "effect";
 import type { Result } from "@openorb/result";
+import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
 
 import { type GuestImage, prepareGuestImageForVm } from "./guest-image/installer.ts";
 import {
@@ -434,6 +435,12 @@ function makeGondolinEnvironment(
     const readFile: AgentEnvironment["readFile"] = Effect.fn("AgentEnvironment.readFile")(
       function* (path, options = {}) {
         if (options.signal?.aborted) return yield* aborted(options.signal.reason);
+        const maxBytes = options.maxBytes ?? MAX_GUEST_FILE_BYTES;
+        if (
+          !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_SESSION_ARTIFACT_BYTES
+        ) {
+          return yield* new AgentEnvironmentError("Guest file read limit is invalid.", undefined);
+        }
         const activeVm = yield* getVm;
         const resolvedPath = resolveAgentPath(path);
         const read = yield* Effect.exit(Effect.tryPromise({
@@ -456,18 +463,18 @@ function makeGondolinEnvironment(
             const process = activeVm.vm.exec([
               "/usr/bin/head",
               "-c",
-              String(MAX_GUEST_FILE_BYTES + 1),
+              String(maxBytes + 1),
               "--",
               resolvedPath,
             ], {
               signal: controller.signal,
               stdout: "pipe",
-              stderr: "ignore",
+              stderr: "pipe",
             });
             for await (const chunk of process.output()) {
               if (chunk.stream !== "stdout") continue;
               byteLength += chunk.data.byteLength;
-              if (byteLength > MAX_GUEST_FILE_BYTES) {
+              if (byteLength > maxBytes) {
                 oversized = true;
                 continue;
               }
@@ -476,7 +483,7 @@ function makeGondolinEnvironment(
             const result = await process;
             if (oversized) {
               throw new AgentEnvironmentError(
-                `Guest file exceeds the ${MAX_GUEST_FILE_BYTES}-byte read limit.`,
+                `Guest file exceeds the ${maxBytes}-byte read limit.`,
                 undefined,
               );
             }
@@ -491,10 +498,11 @@ function makeGondolinEnvironment(
             }
             return content;
           },
-          catch: (cause) =>
-            cause instanceof AgentEnvironmentError
+          catch: (cause) => {
+            return cause instanceof AgentEnvironmentError
               ? cause
-              : new AgentEnvironmentError("Guest file could not be read.", cause),
+              : new AgentEnvironmentError("Guest file could not be read.", cause);
+          },
         }));
         if (read._tag === "Failure") {
           if (options.signal?.aborted) return yield* aborted(options.signal.reason);

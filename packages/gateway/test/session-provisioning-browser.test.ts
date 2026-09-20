@@ -7,6 +7,11 @@ import {
 } from "@std/assert";
 
 import {
+  SessionArtifact,
+  SessionArtifactChunk,
+  SessionArtifactId,
+} from "@openorb/protocol/runner-bulk-api";
+import {
   GitAuthor,
   GitFileUpdateAccepted,
   GitMutationRevision,
@@ -28,6 +33,7 @@ import type {
   OperationResult,
   PromptSessionInput,
   ProvisionSessionInput,
+  ReadSessionArtifactChunkInput,
   RunnerLiveState,
   RunnerRegistryService,
   StopSessionInput,
@@ -57,6 +63,10 @@ const GIT_AUTHOR = {
   authorEmail: "browser-provisioning@example.com",
 };
 const INITIAL_PROMPT = "  Inspect\nthis repository and explain the architecture.  ";
+const ARTIFACT_ID = Schema.decodeUnknownSync(SessionArtifactId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c20",
+);
+const ARTIFACT_BYTES = new TextEncoder().encode("0123456789");
 
 class BrowserTestRunnerConnections implements RunnerRegistryService {
   runnerId = "";
@@ -86,6 +96,34 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     return Effect.succeed({
       status: "unavailable" as const,
       message: "Bulk patches are unavailable in this fixture.",
+    });
+  }
+
+  readSessionArtifactChunk(input: ReadSessionArtifactChunkInput) {
+    if (
+      input.workspaceId !== this.workspaceId || input.sessionId !== this.sessionId ||
+      input.artifactId !== ARTIFACT_ID || input.offset > ARTIFACT_BYTES.byteLength
+    ) {
+      return Effect.succeed({
+        status: "unavailable" as const,
+        message: "Published media is unavailable in this fixture.",
+      });
+    }
+    return Effect.sync(() => {
+      const bytes = ARTIFACT_BYTES.subarray(input.offset, input.offset + 4);
+      return {
+        status: "accepted" as const,
+        acknowledgement: new SessionArtifactChunk({
+          artifact: new SessionArtifact({
+            id: ARTIFACT_ID,
+            fileName: "preview.mp4",
+            mediaType: "video/mp4",
+            byteLength: ARTIFACT_BYTES.byteLength,
+          }),
+          offset: input.offset,
+          bytes,
+        }),
+      };
     });
   }
 
@@ -529,6 +567,12 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       ),
     );
 
+    const pendingDetail = await fetch(new URL(location, server.baseUrl), {
+      headers: { Cookie: client.cookie },
+    });
+    assertEquals(pendingDetail.status, 200);
+    assertStringIncludes(await pendingDetail.text(), "Connecting to the orb");
+
     const olderSessionId = crypto.randomUUID();
     const newerSessionId = crypto.randomUUID();
     const [additionalCatalog] = await store.reconcileSessionManifestEntries(client.workspaceId, [
@@ -691,6 +735,35 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(gitSnapshot.sections.staged.files, []);
     assertEquals(gitSnapshot.sections.unstaged.files, []);
     assertEquals("summary" in gitSnapshot, false);
+
+    const artifactHref = routes.api.sessions.artifact.href({
+      sessionId: provision.sessionId,
+      artifactId: ARTIFACT_ID,
+    });
+    const artifactResponse = await fetch(new URL(artifactHref, server.baseUrl), {
+      headers: { Cookie: client.cookie },
+    });
+    assertEquals(artifactResponse.status, 200);
+    assertEquals(artifactResponse.headers.get("content-type"), "video/mp4");
+    assertEquals(artifactResponse.headers.get("accept-ranges"), "bytes");
+    assertEquals(artifactResponse.headers.get("x-content-type-options"), "nosniff");
+    assertEquals(new Uint8Array(await artifactResponse.arrayBuffer()), ARTIFACT_BYTES);
+
+    const rangeResponse = await fetch(new URL(artifactHref, server.baseUrl), {
+      headers: { Cookie: client.cookie, Range: "bytes=3-7" },
+    });
+    assertEquals(rangeResponse.status, 206);
+    assertEquals(rangeResponse.headers.get("content-range"), "bytes 3-7/10");
+    assertEquals(rangeResponse.headers.get("content-length"), "5");
+    assertEquals(new TextDecoder().decode(await rangeResponse.arrayBuffer()), "34567");
+
+    const invalidRange = await fetch(new URL(artifactHref, server.baseUrl), {
+      headers: { Cookie: client.cookie, Range: "bytes=20-30" },
+    });
+    assertEquals(invalidRange.status, 416);
+    assertEquals(invalidRange.headers.get("content-range"), "bytes */10");
+    const anonymousArtifact = await fetch(new URL(artifactHref, server.baseUrl));
+    assertEquals(anonymousArtifact.status, 401);
 
     const wakeHref = routes.api.sessions.wake.href({ sessionId: provision.sessionId });
     const anonymousWake = await fetch(new URL(wakeHref, server.baseUrl), {

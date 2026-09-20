@@ -1,10 +1,13 @@
 import { Lexer, type MarkedOptions, type MarkedToken, type Token, type Tokens } from "marked";
 import { css, type Handle, type RemixNode } from "remix/ui";
 
+import { routes } from "@/app/routes.ts";
+
 const markdownOptions = { gfm: true, breaks: false } satisfies MarkedOptions;
 
 export interface AssistantMarkdownProps {
   readonly completed: boolean;
+  readonly sessionId: string;
   readonly text: string;
 }
 
@@ -22,6 +25,7 @@ export function AssistantMarkdown(handle: Handle<AssistantMarkdownProps>) {
         {blocks.map((token, index) => (
           <MarkdownBlockView
             key={`block:${index}`}
+            sessionId={handle.props.sessionId}
             token={asBuiltInMarkedToken(token)}
           />
         ))}
@@ -34,6 +38,7 @@ export function AssistantMarkdown(handle: Handle<AssistantMarkdownProps>) {
 }
 
 interface MarkdownBlockProps {
+  readonly sessionId: string;
   readonly token: MarkedToken;
 }
 
@@ -45,26 +50,26 @@ function MarkdownBlockView(handle: Handle<MarkdownBlockProps>) {
         data-markdown-kind={handle.props.token.type}
         mix={markdownBlockStyle}
       >
-        {renderBlockToken(handle.props.token, "content")}
+        {renderBlockToken(handle.props.token, "content", handle.props.sessionId)}
       </div>
     );
   };
 }
 
-function renderBlockTokens(tokens: readonly Token[], path: string): RemixNode[] {
+function renderBlockTokens(tokens: readonly Token[], path: string, sessionId: string): RemixNode[] {
   return tokens.map((token, index) =>
-    renderBlockToken(asBuiltInMarkedToken(token), `${path}:${index}`)
+    renderBlockToken(asBuiltInMarkedToken(token), `${path}:${index}`, sessionId)
   );
 }
 
-function renderBlockToken(token: MarkedToken, key: string): RemixNode {
+function renderBlockToken(token: MarkedToken, key: string, sessionId: string): RemixNode {
   switch (token.type) {
     case "space":
       return null;
     case "def":
       return null;
     case "blockquote":
-      return <blockquote key={key}>{renderBlockTokens(token.tokens, key)}</blockquote>;
+      return <blockquote key={key}>{renderBlockTokens(token.tokens, key, sessionId)}</blockquote>;
     case "code":
       return (
         <pre key={key} data-language={token.lang}>
@@ -72,7 +77,7 @@ function renderBlockToken(token: MarkedToken, key: string): RemixNode {
         </pre>
       );
     case "heading":
-      return renderHeading(token.depth, renderInlineTokens(token.tokens, key), key);
+      return renderHeading(token.depth, renderInlineTokens(token.tokens, key, sessionId), key);
     case "hr":
       return <hr key={key} />;
     case "html":
@@ -84,40 +89,52 @@ function renderBlockToken(token: MarkedToken, key: string): RemixNode {
         )
         : token.raw;
     case "list": {
-      const items = renderListItems(token.items, key);
+      const items = renderListItems(token.items, key, sessionId);
       return token.ordered
         ? <ol key={key} start={token.start === "" ? undefined : token.start}>{items}</ol>
         : <ul key={key}>{items}</ul>;
     }
     case "paragraph":
-      return <p key={key}>{renderInlineTokens(token.tokens, key)}</p>;
+      return <p key={key}>{renderInlineTokens(token.tokens, key, sessionId)}</p>;
     case "table":
-      return renderTable(token.header, token.rows, key);
+      return renderTable(token.header, token.rows, key, sessionId);
     case "text":
-      return token.tokens ? renderInlineTokens(token.tokens, key) : token.text;
+      return token.tokens ? renderInlineTokens(token.tokens, key, sessionId) : token.text;
     default:
-      return renderInlineToken(token, key);
+      return renderInlineToken(token, key, sessionId);
   }
 }
 
-function renderListItems(items: readonly Tokens.ListItem[], path: string): RemixNode[] {
+function renderListItems(
+  items: readonly Tokens.ListItem[],
+  path: string,
+  sessionId: string,
+): RemixNode[] {
   return items.map((item, index) => {
     const itemKey = `${path}:item:${index}`;
     return (
       <li key={itemKey} data-task-list-item={item.task ? "true" : undefined}>
-        {renderListItemTokens(item.tokens, itemKey)}
+        {renderListItemTokens(item.tokens, itemKey, sessionId)}
       </li>
     );
   });
 }
 
-function renderListItemTokens(tokens: readonly Token[], path: string): RemixNode[] {
+function renderListItemTokens(
+  tokens: readonly Token[],
+  path: string,
+  sessionId: string,
+): RemixNode[] {
   return tokens.map((candidate, index) => {
     const key = `${path}:block:${index}`;
     const token = asBuiltInMarkedToken(candidate);
     return token.type === "text"
-      ? <p key={key}>{token.tokens ? renderInlineTokens(token.tokens, key) : token.text}</p>
-      : renderBlockToken(token, key);
+      ? (
+        <p key={key}>
+          {token.tokens ? renderInlineTokens(token.tokens, key, sessionId) : token.text}
+        </p>
+      )
+      : renderBlockToken(token, key, sessionId);
   });
 }
 
@@ -125,6 +142,7 @@ function renderTable(
   header: readonly Tokens.TableCell[],
   rows: readonly (readonly Tokens.TableCell[])[],
   key: string,
+  sessionId: string,
 ): RemixNode {
   return (
     <div
@@ -136,7 +154,7 @@ function renderTable(
           <tr>
             {header.map((cell, index) => (
               <th key={`${key}:head:${index}`} style={{ textAlign: cell.align ?? undefined }}>
-                {renderInlineTokens(cell.tokens, `${key}:head:${index}`)}
+                {renderInlineTokens(cell.tokens, `${key}:head:${index}`, sessionId)}
               </th>
             ))}
           </tr>
@@ -149,7 +167,11 @@ function renderTable(
                   key={`${key}:row:${rowIndex}:cell:${cellIndex}`}
                   style={{ textAlign: cell.align ?? undefined }}
                 >
-                  {renderInlineTokens(cell.tokens, `${key}:row:${rowIndex}:cell:${cellIndex}`)}
+                  {renderInlineTokens(
+                    cell.tokens,
+                    `${key}:row:${rowIndex}:cell:${cellIndex}`,
+                    sessionId,
+                  )}
                 </td>
               ))}
             </tr>
@@ -160,13 +182,17 @@ function renderTable(
   );
 }
 
-function renderInlineTokens(tokens: readonly Token[], path: string): RemixNode[] {
+function renderInlineTokens(
+  tokens: readonly Token[],
+  path: string,
+  sessionId: string,
+): RemixNode[] {
   return tokens.map((token, index) =>
-    renderInlineToken(asBuiltInMarkedToken(token), `${path}:inline:${index}`)
+    renderInlineToken(asBuiltInMarkedToken(token), `${path}:inline:${index}`, sessionId)
   );
 }
 
-function renderInlineToken(token: MarkedToken, key: string): RemixNode {
+function renderInlineToken(token: MarkedToken, key: string, sessionId: string): RemixNode {
   switch (token.type) {
     case "br":
       return <br key={key} />;
@@ -183,14 +209,46 @@ function renderInlineToken(token: MarkedToken, key: string): RemixNode {
     case "codespan":
       return <code key={key}>{token.text}</code>;
     case "del":
-      return <del key={key}>{renderInlineTokens(token.tokens, key)}</del>;
+      return <del key={key}>{renderInlineTokens(token.tokens, key, sessionId)}</del>;
     case "em":
-      return <em key={key}>{renderInlineTokens(token.tokens, key)}</em>;
+      return <em key={key}>{renderInlineTokens(token.tokens, key, sessionId)}</em>;
     case "escape":
       return token.text;
     case "html":
       return token.raw;
     case "image": {
+      const artifact = publishedArtifactReference(token.href);
+      if (artifact !== undefined) {
+        const href = routes.api.sessions.artifact.href({
+          sessionId,
+          artifactId: artifact.id,
+        });
+        return artifact.kind === "image"
+          ? (
+            <a
+              key={key}
+              href={href}
+              title={token.title ?? undefined}
+              target="_blank"
+              rel="noreferrer"
+              data-published-media="image"
+            >
+              <img src={href} alt={token.text} loading="lazy" />
+            </a>
+          )
+          : (
+            <video
+              key={key}
+              src={href}
+              title={token.text || token.title || undefined}
+              controls
+              preload="metadata"
+              data-published-media="video"
+            >
+              <a href={href} target="_blank" rel="noreferrer">Download video</a>
+            </video>
+          );
+      }
       const href = safeLinkHref(token.href);
       const label = token.text.trim().length > 0 ? `Image: ${token.text}` : "Image";
       return href === undefined ? label : (
@@ -206,7 +264,7 @@ function renderInlineToken(token: MarkedToken, key: string): RemixNode {
       );
     }
     case "link": {
-      const content = renderInlineTokens(token.tokens, key);
+      const content = renderInlineTokens(token.tokens, key, sessionId);
       const href = safeLinkHref(token.href);
       return href === undefined ? content : (
         <a
@@ -221,12 +279,26 @@ function renderInlineToken(token: MarkedToken, key: string): RemixNode {
       );
     }
     case "strong":
-      return <strong key={key}>{renderInlineTokens(token.tokens, key)}</strong>;
+      return <strong key={key}>{renderInlineTokens(token.tokens, key, sessionId)}</strong>;
     case "text":
-      return token.tokens ? renderInlineTokens(token.tokens, key) : token.text;
+      return token.tokens ? renderInlineTokens(token.tokens, key, sessionId) : token.text;
     default:
       return token.raw;
   }
+}
+
+function publishedArtifactReference(
+  href: string,
+): { readonly kind: "image" | "video"; readonly id: string } | undefined {
+  const match =
+    /^openorb-artifact:(image|video):([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
+      .exec(href);
+  if (match === null) return undefined;
+  const kind = match[1];
+  const id = match[2];
+  return (kind === "image" || kind === "video") && id !== undefined
+    ? { kind, id: id.toLowerCase() }
+    : undefined;
 }
 
 function asBuiltInMarkedToken(token: Token): MarkedToken {
@@ -318,6 +390,20 @@ const markdownStyle = css({
     fontSize: "0.9em",
   },
   "& a": { color: "var(--primary)", textUnderlineOffset: "3px" },
+  "& [data-published-media]": {
+    display: "block",
+    width: "fit-content",
+    maxWidth: "100%",
+  },
+  "& img, & video": {
+    display: "block",
+    maxWidth: "100%",
+    maxHeight: "70vh",
+    background: "var(--muted)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-md)",
+  },
+  "& video": { width: "min(100%, 860px)" },
   "& hr": { width: "100%", margin: 0, border: 0, borderTop: "1px solid var(--border)" },
   "& [data-markdown-table-scroll]": { maxWidth: "100%", overflowX: "auto" },
   "& table": {

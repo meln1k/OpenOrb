@@ -48,6 +48,7 @@ import {
   runRunnerRpc,
 } from "../../src/connection/rpc.ts";
 import { runRunnerBulkRpc } from "../../src/connection/bulk-rpc.ts";
+import { SessionArtifactStore } from "../../src/session/artifact-store.ts";
 import { SessionEvents, type SessionStateChange } from "../../src/session/events.ts";
 import { RunnerSessionStore } from "../../src/session/store.ts";
 import { SessionSupervisor } from "../../src/session/supervisor.ts";
@@ -179,6 +180,7 @@ Deno.test("bulk Git patches cross the separate SchemaBinary channel as native by
     );
     const bulk = yield* runRunnerBulkRpc(options).pipe(
       Effect.provideService(RunnerSessionStore, store),
+      Effect.provideService(SessionArtifactStore, unexpectedArtifactStore),
       Effect.exit,
       Effect.forkScoped,
     );
@@ -916,6 +918,7 @@ Deno.test("launched runner bulk RPC layer terminates after permanent close 4401"
       runnerOptions(harness.url, "openorb_runner_rejected"),
     ).pipe(
       Effect.provideService(RunnerSessionStore, store),
+      Effect.provideService(SessionArtifactStore, unexpectedArtifactStore),
       Effect.exit,
       Effect.forkScoped,
     );
@@ -962,6 +965,11 @@ function provideRunnerServices(
       Effect.provideService(SessionEvents, events),
     );
 }
+
+const unexpectedArtifactStore = SessionArtifactStore.of({
+  publish: () => Effect.die("unexpected artifact publish"),
+  readChunk: () => Effect.die("unexpected artifact read"),
+});
 
 const pollUntil = (predicate: Effect.Effect<boolean>, message: string) =>
   Effect.gen(function* () {

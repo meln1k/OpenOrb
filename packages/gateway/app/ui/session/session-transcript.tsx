@@ -235,12 +235,12 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
                     <p data-conversation-placeholder mix={emptyConversationStyle}>
                       {sessionState === "offline"
                         ? "Conversation history is unavailable while the pinned runner is offline."
-                        : "Waiting for the initial prompt to reach Pi…"}
+                        : "Connecting to the orb"}
                     </p>
                   </MessageScrollerItem>
                 )
                 : transcriptState.entries.map((entry) =>
-                  renderTranscriptEntry(entry, currentActivityId)
+                  renderTranscriptEntry(entry, currentActivityId, handle.props.sessionId)
                 )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
@@ -392,7 +392,11 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   };
 }
 
-function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number | undefined) {
+function renderTranscriptEntry(
+  entry: TranscriptEntry,
+  activeActivityId: number | undefined,
+  sessionId: string,
+) {
   if (!("role" in entry)) {
     const active = entry.id === activeActivityId;
     return (
@@ -481,7 +485,15 @@ function renderTranscriptEntry(entry: TranscriptEntry, activeActivityId: number 
                 </Marker>
               )
               : null}
-            {hasText ? <AssistantMarkdown text={entry.text} completed={entry.completed} /> : null}
+            {hasText
+              ? (
+                <AssistantMarkdown
+                  text={entry.text}
+                  completed={entry.completed}
+                  sessionId={sessionId}
+                />
+              )
+              : null}
           </article>
         </MessageScrollerItem>
       );

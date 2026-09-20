@@ -47,6 +47,10 @@ Environment root disk. _Avoid_: Host workspace, mounted workspace
 status and staged and unstaged patches, cached by the runner independently of the Agent
 Environment's lifecycle. _Avoid_: Git report, Diff Snapshot
 
+**Published Media**: An immutable image or video that the Agent Harness copies from the designated
+guest artifact directory into private, Session-owned runner storage for display in the transcript.
+_Avoid_: Attachment, guest file, external embed
+
 **Agent Environment**: The live isolated compute capabilities and Project Checkout available to an
 Agent Harness during an Agent Run, independent of how the underlying compute was created or
 restored. _Avoid_: Workspace Runtime, VM

@@ -3,6 +3,9 @@ import { renderToString } from "remix/ui/server";
 
 import { AssistantMarkdown } from "@/app/ui/session/session-markdown.tsx";
 
+const SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c10";
+const ARTIFACT_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c11";
+
 Deno.test("renders the complete current source through Marked while streaming", async () => {
   const paragraph = await renderMarkdown("Candidate heading", false);
   assertStringIncludes(paragraph, 'data-markdown-kind="paragraph"');
@@ -121,6 +124,31 @@ Deno.test("lets Marked resolve reference links from the complete current source"
   assertNotMatch(completed, /<img\b/);
 });
 
+Deno.test("renders only published session media inline", async () => {
+  const html = await renderMarkdown(
+    `![Build result](openorb-artifact:image:${ARTIFACT_ID})
+
+![Demo](openorb-artifact:video:${ARTIFACT_ID})
+
+![Invalid](openorb-artifact:image:not-an-id)
+
+![Remote](https://example.com/tracker.png)`,
+    true,
+  );
+
+  const href = `/api/sessions/${SESSION_ID}/artifacts/${ARTIFACT_ID}`;
+  assertStringIncludes(html, `data-published-media="image"`);
+  assertStringIncludes(html, `<img src="${href}" alt="Build result" loading="lazy" />`);
+  assertStringIncludes(html, `data-published-media="video"`);
+  assertStringIncludes(html, `<video src="${href}" title="Demo" controls preload="metadata"`);
+  assertEquals(html.match(/<img\b/g)?.length, 1);
+  assertEquals(html.match(/<video\b/g)?.length, 1);
+  assertStringIncludes(html, "Image: Invalid");
+  assertStringIncludes(html, ">Image: Remote</a>");
+});
+
 async function renderMarkdown(text: string, completed: boolean): Promise<string> {
-  return await renderToString(<AssistantMarkdown text={text} completed={completed} />);
+  return await renderToString(
+    <AssistantMarkdown text={text} completed={completed} sessionId={SESSION_ID} />,
+  );
 }

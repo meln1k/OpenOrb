@@ -7,10 +7,14 @@ import * as RpcTest from "effect/unstable/rpc/RpcTest";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 
 import {
+  ReadSessionArtifactChunkPayload,
   ReadSessionGitPatchChunk,
   ReadSessionGitPatchChunkPayload,
   RunnerBulkApi,
   runnerBulkRpcSerializationLayer,
+  SessionArtifact,
+  SessionArtifactChunk,
+  SessionArtifactId,
   SessionGitPatchChunk,
   SessionGitSnapshotId,
 } from "@/src/runner-bulk-api.ts";
@@ -33,6 +37,9 @@ const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "018f47f2-39b1-7b30-8000-000000000011",
 );
 const SNAPSHOT_ID = Schema.decodeUnknownSync(SessionGitSnapshotId)("a".repeat(64));
+const ARTIFACT_ID = Schema.decodeUnknownSync(SessionArtifactId)(
+  "018f47f2-39b1-7b30-8000-000000000012",
+);
 
 Deno.test("bulk patch chunks remain independently frame-bounded", () => {
   const valid = new SessionGitPatchChunk({
@@ -116,6 +123,19 @@ Deno.test("RunnerBulkApi grants one patch chunk per request", async () => {
         }),
       );
     },
+    "session.artifact.read-chunk": (request) =>
+      Effect.succeed(
+        new SessionArtifactChunk({
+          artifact: new SessionArtifact({
+            id: request.artifactId,
+            fileName: "preview.png",
+            mediaType: "image/png",
+            byteLength: 5,
+          }),
+          offset: request.offset,
+          bytes: new TextEncoder().encode("media"),
+        }),
+      ),
   });
   const program = Effect.scoped(Effect.gen(function* () {
     const client = yield* RpcTest.makeClient(RunnerBulkApi).pipe(Effect.provide(handlers));
@@ -133,6 +153,15 @@ Deno.test("RunnerBulkApi grants one patch chunk per request", async () => {
       }),
     );
     assertEquals(new TextDecoder().decode(chunk.bytes), "chunk");
+    const artifact = yield* client["session.artifact.read-chunk"](
+      new ReadSessionArtifactChunkPayload({
+        sessionId: SESSION_ID,
+        artifactId: ARTIFACT_ID,
+        offset: 0,
+      }),
+    );
+    assertEquals(artifact.artifact.mediaType, "image/png");
+    assertEquals(new TextDecoder().decode(artifact.bytes), "media");
     assertEquals(reads, 1);
   }));
   // SAFETY: RpcTest supplies the complete in-memory client protocol and all handlers above.

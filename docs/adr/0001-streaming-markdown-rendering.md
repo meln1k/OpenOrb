@@ -45,8 +45,10 @@ current source, independent of how transport deltas were batched.
 - Raw HTML is always escaped. Scriptable markup is never mounted.
 - Links allow relative and fragment destinations plus `http`, `https`, and `mailto`; unsafe or
   obfuscated schemes are rejected. External links do not gain opener access.
-- Images do not create `<img>` elements; they render as labeled safe links. Task-list controls are
-  disabled. Code is displayed but not executed.
+- Ordinary Markdown images do not create `<img>` elements; they render as labeled safe links. Opaque
+  `openorb-artifact` references created by the runner's publish tool render through the
+  authenticated Session media route as `<img>` or `<video>`. Task-list controls are disabled. Code
+  is displayed but not executed.
 - Code and table containers own horizontal overflow so streaming content cannot widen the session
   page.
 
@@ -82,4 +84,5 @@ path is preferred unless measurement shows complete-response parsing to be a rea
 
 Tests must cover progressive paragraphs, long incomplete structured blocks, grammar cases where
 appended text reinterprets multiple earlier tokens, standard GFM references, raw-HTML and URL
-safety, and code/table overflow at representative desktop and mobile widths.
+safety, published-media references, and code/table overflow at representative desktop and mobile
+widths.

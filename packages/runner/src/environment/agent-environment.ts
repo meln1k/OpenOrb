@@ -40,7 +40,7 @@ export interface AgentEnvironment {
   ) => Effect.Effect<AgentEnvironmentCommandResult, AgentEnvironmentError>;
   readonly readFile: (
     path: string,
-    options?: { readonly signal?: AbortSignal },
+    options?: { readonly signal?: AbortSignal; readonly maxBytes?: number },
   ) => Effect.Effect<Uint8Array, AgentEnvironmentError>;
   readonly access: (path: string) => Effect.Effect<void, AgentEnvironmentError>;
   readonly writeFile: (

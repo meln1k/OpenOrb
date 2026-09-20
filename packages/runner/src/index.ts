@@ -3,6 +3,7 @@ import { runRunnerRpc } from "./connection/rpc.ts";
 import { ensureGuestImage } from "./environment/gondolin/guest-image/installer.ts";
 import { gondolinAgentEnvironmentProviderLayer } from "./environment/gondolin/layer.ts";
 import { piAgentHarnessLayer } from "./harness/pi/layer.ts";
+import { sessionArtifactStoreLayer } from "./session/artifact-store.ts";
 import { createRunnerCapacityReporter } from "./runtime/capacity.ts";
 import { enrollRunner } from "./runtime/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "./runtime/identity.ts";
@@ -226,11 +227,14 @@ export async function main(
         runnerId: identity.runnerId,
       }).pipe(Layer.provideMerge(sessionJournalLive));
       const sessionEventsLive = sessionEventsLayer.pipe(Layer.provideMerge(sessionStoreLive));
+      const sessionArtifactsLive = sessionArtifactStoreLayer({ workingDirectory });
       const environmentLive = gondolinAgentEnvironmentProviderLayer(
         guestImage,
         report.platform === "linux" && report.kvm === undefined,
       );
-      const harnessLive = piAgentHarnessLayer().pipe(Layer.provideMerge(sessionEventsLive));
+      const harnessLive = piAgentHarnessLayer().pipe(
+        Layer.provideMerge(Layer.merge(sessionEventsLive, sessionArtifactsLive)),
+      );
       const sessionActorLive = sessionActorFactoryLayer().pipe(
         Layer.provideMerge(Layer.merge(harnessLive, environmentLive)),
       );

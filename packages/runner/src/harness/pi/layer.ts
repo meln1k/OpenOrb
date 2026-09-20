@@ -10,6 +10,10 @@ import {
   type AgentHarnessSession,
 } from "../agent-harness.ts";
 import { SessionEvents } from "../../session/events.ts";
+import {
+  type SessionArtifactStore,
+  SessionArtifactStore as SessionArtifactStoreService,
+} from "../../session/artifact-store.ts";
 import { makePiEventNormalizer } from "./event-normalizer.ts";
 import {
   type ConversationProjectionSink,
@@ -57,21 +61,24 @@ export function makePiAgentHarness(
   options: {
     readonly conversationProjection: ConversationProjectionSink;
     readonly create?: CreateRawPiSession;
+    readonly artifactStore?: SessionArtifactStore;
   },
 ): AgentHarness {
   const create = options.create ?? createOpenOrbPiSession;
   return AgentHarness.of({
-    open: (openOptions) => openPiSession(create, options.conversationProjection, openOptions),
+    open: (openOptions) =>
+      openPiSession(create, options.conversationProjection, options.artifactStore, openOptions),
   });
 }
 
 export function piAgentHarnessLayer(
   create?: CreateRawPiSession,
-): Layer.Layer<AgentHarness, never, SessionEvents> {
+): Layer.Layer<AgentHarness, never, SessionEvents | SessionArtifactStoreService> {
   return Layer.effect(
     AgentHarness,
     Effect.gen(function* () {
       const events = yield* SessionEvents;
+      const artifactStore = yield* SessionArtifactStoreService;
       const conversationProjection: ConversationProjectionSink = {
         activate: (sessionId, initial) =>
           events.activateConversation(sessionId, initial).pipe(
@@ -82,6 +89,7 @@ export function piAgentHarnessLayer(
       };
       return makePiAgentHarness({
         conversationProjection,
+        artifactStore,
         ...(create === undefined ? {} : { create }),
       });
     }),
@@ -91,10 +99,12 @@ export function piAgentHarnessLayer(
 function openPiSession(
   create: CreateRawPiSession,
   conversationProjection: ConversationProjectionSink,
+  artifactStore: SessionArtifactStore | undefined,
   options: AgentHarnessOpenOptions,
 ): Effect.Effect<AgentHarnessSession, AgentHarnessError, Scope.Scope> {
   return Effect.gen(function* () {
     const scope = yield* Effect.scope;
+    const context = yield* Effect.context<never>();
     const created = yield* Effect.acquireRelease(
       create({
         sessionId: options.sessionId,
@@ -103,7 +113,13 @@ function openPiSession(
         repositoryUrl: options.git.repositoryUrl,
         branchName: options.git.branchName,
         modelRuntime: options.modelRuntime,
-        tools: createPiTools(options.environment),
+        tools: createPiTools(
+          options.environment,
+          artifactStore === undefined
+            ? undefined
+            : (artifact) =>
+              Effect.runPromiseWith(context)(artifactStore.publish(options.sessionId, artifact)),
+        ),
         conversationProjection,
       }),
       ({ session }) =>

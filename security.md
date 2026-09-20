@@ -36,6 +36,11 @@ not leave an orphan Workspace or create another administrator.
   DNS-rebinding targets while preserving guest-local loopback.
 - PostgreSQL is the gateway's only durable persistence. Complete Session state remains runner-owned;
   the gateway stores only configuration, the minimal Session catalog, and deletion markers.
+- Published Media is copied from `/workspace/.openorb/artifacts` into size- and count-bounded,
+  private Session storage on the runner. Browsers can read it only through the authenticated,
+  Workspace-scoped gateway route. The route serves a fixed allowlist of non-scriptable image and
+  video MIME types with `nosniff`; arbitrary guest paths, SVG, HTML, and remote image embeds are not
+  mounted in the transcript.
 - Ambiguous prompt, Abort, Git, and lifecycle handoffs are reported to the user and are never
   retried automatically. OpenOrb does not claim exactly-once execution.
 

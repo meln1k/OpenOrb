@@ -1,7 +1,9 @@
 import {
+  ArtifactReadError,
   GitPatchReadError,
   RunnerBulkApi,
   runnerBulkRpcSerializationLayer,
+  SessionArtifactChunk,
   SessionGitPatchChunk,
 } from "@openorb/protocol/runner-bulk-api";
 import { RunnerIdentity } from "@openorb/protocol/runner-api";
@@ -15,6 +17,7 @@ import * as Socket from "effect/unstable/socket/Socket";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
 
 import { RunnerSessionStore } from "../session/store.ts";
+import { SessionArtifactStore } from "../session/artifact-store.ts";
 import { makeOutboundSocketServer, type RunnerRpcStartupError } from "./outbound-socket.ts";
 import type { RunnerRpcOptions } from "./rpc.ts";
 import { runnerWebSocketLayer } from "./websocket.ts";
@@ -23,6 +26,7 @@ export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
   options: RunnerRpcOptions,
 ) {
   const store = yield* RunnerSessionStore;
+  const artifacts = yield* SessionArtifactStore;
   const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
   const identity = new RunnerIdentity({
     token: options.runnerToken,
@@ -58,6 +62,27 @@ export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
           new GitPatchReadError({
             sessionId,
             message: "The cached Git Snapshot patch is unavailable.",
+          })
+        ),
+      ),
+    "session.artifact.read-chunk": ({ sessionId, artifactId, offset }) =>
+      artifacts.readChunk(
+        sessionId,
+        artifactId,
+        offset,
+        MAX_RUNNER_BULK_CHUNK_BYTES,
+      ).pipe(
+        Effect.map((chunk) =>
+          new SessionArtifactChunk({
+            artifact: chunk.artifact,
+            offset,
+            bytes: chunk.bytes,
+          })
+        ),
+        Effect.mapError(() =>
+          new ArtifactReadError({
+            sessionId,
+            message: "The published session media is unavailable.",
           })
         ),
       ),

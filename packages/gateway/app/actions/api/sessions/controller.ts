@@ -1,5 +1,10 @@
 import { MAX_SESSION_GIT_PATH_CHARACTERS, SessionId } from "@openorb/protocol/runner-api";
-import { SessionGitPatchSection, SessionGitSnapshotId } from "@openorb/protocol/runner-bulk-api";
+import {
+  type SessionArtifactChunk,
+  SessionArtifactId,
+  SessionGitPatchSection,
+  SessionGitSnapshotId,
+} from "@openorb/protocol/runner-bulk-api";
 import { requireAuth } from "remix/middleware/auth";
 import { createController } from "remix/router";
 import * as s from "remix/data-schema";
@@ -219,6 +224,75 @@ export default createController(routes.api.sessions, {
         headers: { "Cache-Control": "no-store" },
       });
     },
+    async artifact(context) {
+      sessionStage("artifact");
+      const workspaceId = context.auth.identity.workspaceId;
+      const sessionId = parseSessionId(context.params.sessionId);
+      const artifactId = Schema.decodeUnknownOption(SessionArtifactId)(
+        context.params.artifactId,
+      );
+      if (sessionId === null || Option.isNone(artifactId)) {
+        return new Response("Published media not found.", { status: 404 });
+      }
+      const session = await sessionSpan(
+        "catalog.lookup",
+        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+      );
+      if (!session) return new Response("Published media not found.", { status: 404 });
+
+      const readChunk = (offset: number) =>
+        Effect.runPromise(context.services.runnerConnections.readSessionArtifactChunk({
+          workspaceId,
+          sessionId,
+          artifactId: artifactId.value,
+          offset,
+        }));
+      const first = await sessionSpan("runner.artifact_chunk", () => readChunk(0));
+      if (first.status !== "accepted") {
+        return new Response(first.message, {
+          status: first.status === "rejected" ? 400 : 503,
+          headers: { "Cache-Control": "no-store" },
+        });
+      }
+      const artifact = first.acknowledgement.artifact;
+      const range = parseByteRange(context.request.headers.get("range"), artifact.byteLength);
+      if (range === null) {
+        return new Response("Requested range not satisfiable.", {
+          status: 416,
+          headers: {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store",
+            "Content-Range": `bytes */${artifact.byteLength}`,
+          },
+        });
+      }
+      const responseLength = range.end - range.start + 1;
+      const body = createArtifactStream({
+        artifactId: artifact.id,
+        byteLength: artifact.byteLength,
+        ...(range.start === 0 ? { first: first.acknowledgement } : {}),
+        range,
+        readChunk,
+      });
+      const partial = context.request.headers.has("range");
+      return new Response(body, {
+        status: partial ? 206 : 200,
+        headers: {
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "private, max-age=3600",
+          "Content-Disposition": `inline; filename="${
+            safeContentDispositionName(artifact.fileName)
+          }"`,
+          "Content-Length": String(responseLength),
+          "Content-Type": artifact.mediaType,
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "X-Content-Type-Options": "nosniff",
+          ...(partial
+            ? { "Content-Range": `bytes ${range.start}-${range.end}/${artifact.byteLength}` }
+            : {}),
+        },
+      });
+    },
     async events(context) {
       sessionStage("events");
       const workspaceId = context.auth.identity.workspaceId;
@@ -256,6 +330,88 @@ export default createController(routes.api.sessions, {
     },
   },
 });
+
+interface ByteRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+function parseByteRange(header: string | null, byteLength: number): ByteRange | null {
+  if (header === null) return { start: 0, end: byteLength - 1 };
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (match === null) return null;
+  const startText = match[1] ?? "";
+  const endText = match[2] ?? "";
+  if (startText === "" && endText === "") return null;
+  if (startText === "") {
+    const suffixLength = Number(endText);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return null;
+    return { start: Math.max(0, byteLength - suffixLength), end: byteLength - 1 };
+  }
+  const start = Number(startText);
+  const requestedEnd = endText === "" ? byteLength - 1 : Number(endText);
+  if (
+    !Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) ||
+    start < 0 || start >= byteLength || requestedEnd < start
+  ) return null;
+  return { start, end: Math.min(requestedEnd, byteLength - 1) };
+}
+
+function createArtifactStream(options: {
+  readonly artifactId: string;
+  readonly byteLength: number;
+  readonly first?: SessionArtifactChunk;
+  readonly range: ByteRange;
+  readonly readChunk: (offset: number) => Promise<
+    | { status: "accepted"; acknowledgement: SessionArtifactChunk }
+    | { status: "rejected" | "unavailable" | "delivery-uncertain"; message: string }
+  >;
+}): ReadableStream<Uint8Array> {
+  let offset = options.range.start;
+  let first = options.first;
+  return new ReadableStream({
+    async pull(controller) {
+      if (offset > options.range.end) {
+        controller.close();
+        return;
+      }
+      const result = first === undefined
+        ? await options.readChunk(offset)
+        : { status: "accepted" as const, acknowledgement: first };
+      first = undefined;
+      if (result.status !== "accepted") {
+        controller.error(new Error("Published media became unavailable."));
+        return;
+      }
+      const chunk = result.acknowledgement;
+      if (
+        chunk.artifact.id !== options.artifactId ||
+        chunk.artifact.byteLength !== options.byteLength ||
+        chunk.offset !== offset || chunk.bytes.byteLength === 0
+      ) {
+        controller.error(new Error("Published media returned an invalid chunk."));
+        return;
+      }
+      const remaining = options.range.end - offset + 1;
+      const bytes = chunk.bytes.byteLength > remaining
+        ? chunk.bytes.subarray(0, remaining)
+        : chunk.bytes;
+      controller.enqueue(bytes);
+      offset += bytes.byteLength;
+      if (offset > options.range.end) controller.close();
+    },
+  });
+}
+
+function safeContentDispositionName(fileName: string): string {
+  const safe = Array.from(fileName, (character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code >= 0x20 && code <= 0x7e && character !== '"' && character !== "\\"
+      ? character
+      : "_";
+  }).join("");
+  return safe || "media";
+}
 
 function parseSessionId(value: string): string | null {
   return s.parseSafe(sessionIdSchema, value).success ? value : null;

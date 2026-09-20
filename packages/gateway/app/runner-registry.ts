@@ -1,6 +1,8 @@
 import {
   RunnerBulkApi,
   runnerBulkRpcSerializationLayer,
+  type SessionArtifactChunk,
+  SessionArtifactId,
   type SessionGitPatchChunk,
   SessionGitPatchSection,
   SessionGitSnapshotId,
@@ -129,6 +131,12 @@ export interface ReadSessionGitPatchChunkInput {
   section: "staged" | "unstaged";
   offset: number;
 }
+export interface ReadSessionArtifactChunkInput {
+  workspaceId: WorkspaceId;
+  sessionId: string;
+  artifactId: string;
+  offset: number;
+}
 
 export interface RunnerRegistryService {
   readonly getRunnerLiveState: (
@@ -153,6 +161,9 @@ export interface RunnerRegistryService {
   readonly readSessionGitPatchChunk: (
     input: ReadSessionGitPatchChunkInput,
   ) => Effect.Effect<OperationResult<SessionGitPatchChunk>>;
+  readonly readSessionArtifactChunk: (
+    input: ReadSessionArtifactChunkInput,
+  ) => Effect.Effect<OperationResult<SessionArtifactChunk>>;
   readonly provisionSession: (
     input: ProvisionSessionInput,
   ) => Effect.Effect<OperationResult<unknown>>;
@@ -277,6 +288,7 @@ export function makeRunnerRegistry(
         getSessionGitSnapshot(runtime, workspaceId, sessionId),
       updateSessionGitFile: (input) => updateSessionGitFile(runtime, input),
       readSessionGitPatchChunk: (input) => readSessionGitPatchChunk(runtime, input),
+      readSessionArtifactChunk: (input) => readSessionArtifactChunk(runtime, input),
       provisionSession: (input) =>
         observeOperation("provision", input, provisionSession(runtime, input)),
       wakeSession: (input) => observeOperation("wake", input, wakeSession(runtime, input)),
@@ -841,6 +853,49 @@ const readSessionGitPatchChunk = Effect.fn("RunnerRegistry.readSessionGitPatchCh
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
       Effect.catchCause(() =>
         Effect.succeed(unavailable("The cached Git Snapshot patch is unavailable."))
+      ),
+    );
+  },
+);
+
+const readSessionArtifactChunk = Effect.fn("RunnerRegistry.readSessionArtifactChunk")(
+  function* (registry: RegistryRuntime, input: ReadSessionArtifactChunkInput) {
+    const routed = yield* routeSession(
+      registry,
+      input.workspaceId,
+      input.sessionId,
+      () => undefined,
+    );
+    if (routed.status === "unavailable") return unavailable(routed.message);
+    if (routed.status === "rejected") {
+      return { status: "rejected" as const, message: routed.message };
+    }
+    const sessionId = Schema.decodeUnknownOption(SessionId)(input.sessionId);
+    const artifactId = Schema.decodeUnknownOption(SessionArtifactId)(input.artifactId);
+    if (
+      Option.isNone(sessionId) || Option.isNone(artifactId) ||
+      !Number.isInteger(input.offset) || input.offset < 0
+    ) {
+      return { status: "rejected" as const, message: "The artifact range is invalid." };
+    }
+    const state = yield* SynchronizedRef.get(registry.state);
+    const slot = state.runners.get(
+      runnerKey(routed.connection.runner.workspaceId, routed.connection.runner.id),
+    );
+    if (slot?.control?.generation !== routed.connection.generation) {
+      return unavailable("The runner bulk channel is unavailable.");
+    }
+    const bulk = slot.bulk;
+    if (bulk === undefined) return unavailable("The runner bulk channel is unavailable.");
+    return yield* bulk.client["session.artifact.read-chunk"]({
+      sessionId: sessionId.value,
+      artifactId: artifactId.value,
+      offset: input.offset,
+    }).pipe(
+      Effect.timeout(OPERATION_TIMEOUT_MS),
+      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
+      Effect.catchCause(() =>
+        Effect.succeed(unavailable("The published session media is unavailable."))
       ),
     );
   },

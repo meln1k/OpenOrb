@@ -69,6 +69,8 @@ const disconnectedRunnerRegistry: RunnerRegistryService = {
     Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   readSessionGitPatchChunk: () =>
     Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
+  readSessionArtifactChunk: () =>
+    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   provisionSession: () =>
     Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   wakeSession: () =>

@@ -42,6 +42,7 @@ export const routes = route({
       wake: post(":sessionId/wake"),
       changes: post(":sessionId/changes"),
       events: get(":sessionId/events"),
+      artifact: get(":sessionId/artifacts/:artifactId"),
       gitSnapshot: get(":sessionId/git-snapshot"),
       gitPatchChunk: get(":sessionId/git-patch/:snapshotId/:section/:offset"),
     }),

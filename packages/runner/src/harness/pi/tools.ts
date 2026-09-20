@@ -20,6 +20,8 @@ import {
 import { Type } from "@earendil-works/pi-ai";
 import { Effect } from "effect";
 import { posix } from "node:path";
+import type { SessionArtifact, SessionArtifactMediaType } from "@openorb/protocol/runner-bulk-api";
+import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
 
 import {
   AGENT_WORKSPACE,
@@ -29,7 +31,22 @@ import {
 } from "../../environment/agent-environment.ts";
 import { executePiEdit } from "./edit.ts";
 
-export function createPiTools(environment: AgentEnvironment): readonly ToolDefinition[] {
+const SESSION_ARTIFACTS_DIRECTORY = `${AGENT_WORKSPACE}/.openorb/artifacts`;
+
+interface PublishSessionMediaInput {
+  readonly fileName: string;
+  readonly mediaType: SessionArtifactMediaType;
+  readonly bytes: Uint8Array;
+}
+
+type PublishSessionMedia = (
+  input: PublishSessionMediaInput,
+) => Promise<SessionArtifact>;
+
+export function createPiTools(
+  environment: AgentEnvironment,
+  publishSessionMedia?: PublishSessionMedia,
+): readonly ToolDefinition[] {
   const readOperations = createReadOperations(environment);
   const writeOperations = createWriteOperations(environment);
   const withFileMutation = createFileMutationQueue();
@@ -63,7 +80,7 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
     }),
   });
 
-  return [
+  const tools: ToolDefinition[] = [
     defineTool({
       ...read,
       execute(_id, params, signal, _onUpdate, context) {
@@ -106,6 +123,95 @@ export function createPiTools(environment: AgentEnvironment): readonly ToolDefin
     }),
     boundedBash,
   ];
+  if (publishSessionMedia !== undefined) {
+    tools.push(createPublishMediaTool(environment, publishSessionMedia));
+  }
+  return tools;
+}
+
+function createPublishMediaTool(
+  environment: AgentEnvironment,
+  publish: PublishSessionMedia,
+): ToolDefinition {
+  return defineTool({
+    name: "publish_media",
+    label: "Publish media",
+    description:
+      `Publish an image or video from ${SESSION_ARTIFACTS_DIRECTORY} for durable display in the session transcript.`,
+    promptSnippet:
+      "Publish a generated image or video for durable display in the session transcript",
+    promptGuidelines: [
+      `To show the user an image or video, save it under ${SESSION_ARTIFACTS_DIRECTORY}, call publish_media, and include the exact Markdown returned by the tool in your response`,
+    ],
+    parameters: Type.Object({
+      path: Type.String({
+        description: `Absolute or workspace-relative path under ${SESSION_ARTIFACTS_DIRECTORY}`,
+      }),
+      description: Type.String({ description: "Concise accessible description of the media" }),
+    }),
+    async execute(_id, params, signal) {
+      const path = resolveAgentPath(params.path);
+      if (!path.startsWith(`${SESSION_ARTIFACTS_DIRECTORY}/`)) {
+        throw new AgentEnvironmentError(
+          `Published media must be stored under ${SESSION_ARTIFACTS_DIRECTORY}.`,
+          undefined,
+        );
+      }
+      const bytes = await Effect.runPromise(environment.readFile(path, {
+        ...(signal === undefined ? {} : { signal }),
+        maxBytes: MAX_SESSION_ARTIFACT_BYTES,
+      }));
+      const mediaType = detectSessionMediaType(bytes);
+      if (mediaType === null) {
+        throw new AgentEnvironmentError(
+          "Published media must be PNG, JPEG, GIF, WebP, MP4, or WebM.",
+          undefined,
+        );
+      }
+      const artifact = await publish({
+        fileName: posix.basename(path),
+        mediaType,
+        bytes,
+      });
+      const kind = mediaType.startsWith("image/") ? "image" : "video";
+      const description = escapeMarkdownLabel(params.description.trim() || artifact.fileName);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Published ${kind} ${artifact.fileName}.\nUse this exact Markdown in your response:\n![${description}](openorb-artifact:${kind}:${artifact.id})`,
+        }],
+        details: undefined,
+      };
+    },
+  });
+}
+
+function detectSessionMediaType(bytes: Uint8Array): SessionArtifactMediaType | null {
+  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return "image/png";
+  }
+  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (asciiAt(bytes, 0, "GIF87a") || asciiAt(bytes, 0, "GIF89a")) return "image/gif";
+  if (asciiAt(bytes, 0, "RIFF") && asciiAt(bytes, 8, "WEBP")) return "image/webp";
+  if (asciiAt(bytes, 4, "ftyp")) return "video/mp4";
+  if (startsWith(bytes, [0x1a, 0x45, 0xdf, 0xa3])) return "video/webm";
+  return null;
+}
+
+function startsWith(bytes: Uint8Array, signature: readonly number[]): boolean {
+  return signature.every((value, index) => bytes[index] === value);
+}
+
+function asciiAt(bytes: Uint8Array, offset: number, expected: string): boolean {
+  if (bytes.byteLength < offset + expected.length) return false;
+  return Array.from(expected).every((character, index) =>
+    bytes[offset + index] === character.charCodeAt(0)
+  );
+}
+
+function escapeMarkdownLabel(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("]", "\\]");
 }
 
 type FileMutationQueue = <A>(path: string, mutation: () => Promise<A>) => Promise<A>;
