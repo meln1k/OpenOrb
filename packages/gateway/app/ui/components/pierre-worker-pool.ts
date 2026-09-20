@@ -5,7 +5,10 @@ export function getPierreWorkerPool(): WorkerPoolManager {
     poolOptions: {
       poolSize: 2,
       workerFactory: () =>
-        new Worker(new URL("./pierre-diff-worker.ts", import.meta.url), { type: "module" }),
+        new Worker(
+          new URL("./worker-portable.js", import.meta.resolve("@pierre/diffs/worker")),
+          { type: "module" },
+        ),
     },
     highlighterOptions: {
       theme: { light: "pierre-light", dark: "pierre-dark" },

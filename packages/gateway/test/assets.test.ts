@@ -7,11 +7,14 @@ const clientEntries = [
   "packages/gateway/app/ui/session/session-composer-behavior.tsx",
   "packages/gateway/app/ui/session/session-detail-client.tsx",
   "packages/gateway/app/ui/settings/model-providers.tsx",
-  "packages/gateway/app/ui/components/pierre-diff-worker.ts",
-  "node_modules/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/button.js",
+  "node_modules/.deno/remix@3.0.0-rc.3/node_modules/remix/dist/ui/button.js",
 ];
 
 Deno.test("serves browser UI dependencies without exposing server modules", async () => {
+  const clientScript = await assetServer.getScriptEntry(clientEntries[0]!);
+  assertEquals(clientScript.href, "/assets/app/assets/client.ts");
+  assert(Object.keys(clientScript.importMap.scopes ?? {}).length > 0);
+
   const preloads = await assetServer.getPreloads(clientEntries);
 
   assert(preloads.some((href) => href.startsWith("/assets/npm/")));
@@ -28,13 +31,13 @@ Deno.test("serves browser UI dependencies without exposing server modules", asyn
       "/assets/app/ui/settings/settings-navigation.tsx",
       "/assets/app/actions/sessions/controller.tsx",
       "/assets/app/actions/sessions/page.tsx",
-      "/assets/npm/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/server.js",
-      "/assets/npm/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/ui/test.js",
-      "/assets/npm/.deno/@remix-run+ui@0.7.0/node_modules/@remix-run/ui/dist/server/stream.js",
-      "/assets/npm/.deno/@remix-run+ui@0.7.0/node_modules/@remix-run/ui/dist/test.js",
-      "/assets/npm/.deno/remix@3.0.0-beta.10/node_modules/remix/dist/data-table-postgres.js",
+      "/assets/npm/.deno/remix@3.0.0-rc.3/node_modules/remix/dist/ui/server.js",
+      "/assets/npm/.deno/remix@3.0.0-rc.3/node_modules/remix/dist/ui/test.js",
+      "/assets/npm/.deno/@remix-run+ui@0.10.0/node_modules/@remix-run/ui/dist/server/stream.js",
+      "/assets/npm/.deno/@remix-run+ui@0.10.0/node_modules/@remix-run/ui/dist/test.js",
+      "/assets/npm/.deno/remix@3.0.0-rc.3/node_modules/remix/dist/data-table-postgres.js",
       "/assets/npm/.deno/pg@8.16.3/node_modules/pg/lib/index.js",
-      "/assets/npm/.deno/@remix-run+ui@0.7.0/node_modules/@remix-run/ui/dist/index.d.ts",
+      "/assets/npm/.deno/@remix-run+ui@0.10.0/node_modules/@remix-run/ui/dist/index.d.ts",
     ]
   ) {
     assertEquals(

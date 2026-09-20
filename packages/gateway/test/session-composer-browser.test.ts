@@ -17,7 +17,14 @@ Deno.test({
     page.on("pageerror", (error) => errors.push(error.message));
     const uiHref = await assetServer.getHref(import.meta.resolve("remix/ui"));
     const jsxHref = await assetServer.getHref(import.meta.resolve("remix/ui/jsx-runtime"));
-    const html = `<!doctype html><html><body>
+    const importMap = await assetServer.getImportMap([
+      import.meta.resolve("remix/ui"),
+      import.meta.resolve("remix/ui/jsx-runtime"),
+      "packages/gateway/app/ui/session-composer.tsx",
+    ]);
+    const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
+    const html =
+      `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body>
       <button command="show-modal" commandfor="composer">New session</button>
       <div id="app"></div>
       <script type="module">

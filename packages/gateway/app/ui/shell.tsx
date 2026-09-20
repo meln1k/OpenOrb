@@ -38,11 +38,10 @@ import {
   SidebarMobile,
   SidebarTrigger,
 } from "@/app/ui/components/index.ts";
-import { Document } from "@/app/ui/document.tsx";
 import { media } from "@/app/ui/responsive.ts";
 import { SessionComposer, type SessionComposerProps } from "@/app/ui/session-composer.tsx";
 
-export interface AppShellProps {
+export interface AppShellLayoutProps {
   activeSection?: "projects";
   activeSessionId?: string;
   children?: RemixNode;
@@ -61,15 +60,7 @@ export interface AppShellProps {
 const MOBILE_SIDEBAR_ID = "openorb-mobile-sidebar";
 const NEW_SESSION_DIALOG_ID = "openorb-new-session";
 
-export function AppShell(handle: Handle<AppShellProps>) {
-  return () => (
-    <Document title={handle.props.title}>
-      <AppShellLayout {...handle.props} />
-    </Document>
-  );
-}
-
-export function AppShellLayout(handle: Handle<AppShellProps>) {
+export function AppShellLayout(handle: Handle<AppShellLayoutProps>) {
   return () => (
     <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
       <SidebarMobile id={MOBILE_SIDEBAR_ID}>
@@ -190,7 +181,7 @@ export function AppShellLayout(handle: Handle<AppShellProps>) {
 function AppNavigation(
   handle: Handle<{
     csrfToken: string;
-    activeSection: AppShellProps["activeSection"];
+    activeSection: AppShellLayoutProps["activeSection"];
     activeSessionId: string | undefined;
     sessions: SessionCatalogEntry[];
   }>,

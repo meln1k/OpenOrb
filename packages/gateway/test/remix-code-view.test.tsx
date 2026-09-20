@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertMatch } from "@std/assert";
 import {
   type Context,
   type FrameContent,
@@ -7,10 +7,11 @@ import {
   type Handle,
   TypedEventTarget,
 } from "remix/ui";
+import { renderToString } from "remix/ui/server";
 
 import { RemixCodeView, type RemixCodeViewProps } from "@/app/ui/components/remix-code-view.tsx";
 
-Deno.test("RemixCodeView gives Pierre ownership of the host contents", () => {
+Deno.test("RemixCodeView gives Pierre ownership of the host contents", async () => {
   const controller = new AbortController();
   const frame = createFrameHandle();
   const handle: Handle<RemixCodeViewProps> = {
@@ -26,7 +27,7 @@ Deno.test("RemixCodeView gives Pierre ownership of the host contents", () => {
 
   const host = RemixCodeView(handle)();
 
-  assertEquals(host.props.innerHTML, "");
+  assertMatch(await renderToString(host), /<nav(?:\s[^>]*)?><\/nav>/);
   controller.abort();
 });
 

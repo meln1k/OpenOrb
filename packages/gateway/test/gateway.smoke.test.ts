@@ -1,4 +1,4 @@
-import { assertEquals, assertMatch } from "@std/assert";
+import { assert, assertEquals, assertMatch } from "@std/assert";
 
 import { createAppRouter } from "@/app/router.ts";
 import { createAppServices } from "@/app/middleware/services.ts";
@@ -40,6 +40,14 @@ Deno.test("serves process health and the gateway shell over HTTP", async () => {
       /<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content" \/>/,
     );
     assertMatch(homeHtml, /<script type="module" src="\/assets\/app\/assets\/client\.ts">/);
+    const importMapIndex = homeHtml.indexOf('<script data-rmx-import-map type="importmap">');
+    const preloadIndex = homeHtml.indexOf('<link rel="modulepreload"');
+    const moduleScriptIndex = homeHtml.indexOf(
+      '<script type="module" src="/assets/app/assets/client.ts">',
+    );
+    assert(importMapIndex >= 0);
+    assert(preloadIndex > importMapIndex);
+    assert(moduleScriptIndex > preloadIndex);
   } finally {
     await server.close();
     await store.close();

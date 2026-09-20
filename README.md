@@ -252,5 +252,5 @@ baseline, copies the hardened service unit, and writes `dist/SHA256SUMS`. Native
 testing is still required on each target architecture before publishing a release. See the
 [runner release process](docs/runner-release.md) and [guest image release process](docs/guest-image.md).
 
-The gateway pins `remix@3.0.0-beta.10`; dependency and Deno upgrades are explicit, reviewed changes
+The gateway pins `remix@3.0.0-rc.3`; dependency and Deno upgrades are explicit, reviewed changes
 to `deno.json`, `deno.lock`, and `.tool-versions`.

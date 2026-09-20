@@ -299,6 +299,8 @@ Deno.test("auth middleware checks Workspace identity against persistence indepen
     // Memory storage deliberately does not enforce PostgreSQL's identity binding.
     const sessionStorage = createMemorySessionStorage();
     const cookie = createSessionCookie();
+    const maxAge = cookie.maxAge;
+    assert(maxAge !== undefined);
     const router = createAppRouter(createAppServices({ ...store, sessionStorage }), cookie);
     for (
       const identity of [
@@ -312,9 +314,13 @@ Deno.test("auth middleware checks Workspace identity against persistence indepen
       session.set("auth", identity);
       const sessionId = await sessionStorage.save(session);
       assert(sessionId);
+      const cookieValue = JSON.stringify({
+        value: sessionId,
+        expires: Date.now() + maxAge * 1000,
+      });
       const response = await router.fetch(
         new Request(new URL(routes.app.index.href(), "http://localhost"), {
-          headers: { Cookie: (await cookie.serialize(sessionId)).split(";", 1)[0]! },
+          headers: { Cookie: (await cookie.serialize(cookieValue)).split(";", 1)[0]! },
         }),
       );
       assertEquals(response.status, identity === administrator ? 200 : 401);

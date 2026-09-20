@@ -1,9 +1,20 @@
-import { run } from "remix/ui";
+import {
+  detectMultipleImportMapSupport,
+  importModule,
+  preloadShim,
+} from "remix/multiple-import-maps-polyfill";
+import { type LoadModule, run } from "remix/ui";
 
 const app = run({
   async loadModule(moduleUrl, exportName) {
-    const module = await import(moduleUrl);
-    return module[exportName];
+    const module = await importModule(moduleUrl);
+    // SAFETY: Remix hydration metadata names function exports produced by clientEntry().
+    return module[exportName] as Awaited<ReturnType<LoadModule>>;
+  },
+  async processClientEntryPreloads(preloads) {
+    if (await detectMultipleImportMapSupport()) return preloads;
+    preloadShim(preloads);
+    return [];
   },
 });
 

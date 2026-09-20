@@ -38,7 +38,15 @@ Deno.test({
     const jsxHref = await assetServer.getHref(
       import.meta.resolve("remix/ui/jsx-runtime"),
     );
-    const html = `<!doctype html><html><body><div id="app"></div>
+    const importMap = await assetServer.getImportMap([
+      import.meta.resolve("remix/ui"),
+      import.meta.resolve("remix/ui/jsx-runtime"),
+      "packages/gateway/app/ui/session/session-page-controller.tsx",
+      "packages/gateway/app/ui/session/session-transcript.tsx",
+    ]);
+    const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
+    const html =
+      `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body><div id="app"></div>
       <script type="module">
         import { createRoot, Fragment } from ${JSON.stringify(uiHref)};
         import { jsx } from ${JSON.stringify(jsxHref)};

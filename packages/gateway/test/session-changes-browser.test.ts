@@ -39,7 +39,16 @@ Deno.test({
 
     const uiHref = await assetServer.getHref(import.meta.resolve("remix/ui"));
     const jsxHref = await assetServer.getHref(import.meta.resolve("remix/ui/jsx-runtime"));
-    const html = `<!doctype html><html><body style="margin:0">
+    const importMap = await assetServer.getImportMap([
+      import.meta.resolve("remix/ui"),
+      import.meta.resolve("remix/ui/jsx-runtime"),
+      "packages/gateway/app/ui/session/session-page-controller.tsx",
+      "packages/gateway/app/ui/session/session-changes-panel.tsx",
+      "packages/gateway/app/ui/session/session-changes-resource.tsx",
+    ]);
+    const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
+    const html =
+      `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body style="margin:0">
       <div id="app" style="display:flex;width:100%;height:720px"></div>
       <script type="module">
         import { createRoot, Fragment } from ${JSON.stringify(uiHref)};
@@ -186,7 +195,7 @@ Deno.test({
       await page.getByText(/generatedLine0/).waitFor({ state: "visible", timeout: 15_000 });
       assertEquals(await page.getByRole("alert").count(), 0);
       assertEquals(
-        requestedPaths.some((path) => path.endsWith("/pierre-diff-worker.ts")),
+        requestedPaths.some((path) => path.endsWith("/worker-portable.js")),
         true,
       );
       assertEquals(errors, []);

@@ -1,6 +1,7 @@
 import { css, type Handle, type RemixNode } from "remix/ui";
+import { ImportMap } from "remix/ui/server";
 
-import { routes } from "@/app/routes.ts";
+import { clientScriptEntry } from "@/app/assets.ts";
 
 export interface DocumentProps {
   children?: RemixNode;
@@ -22,13 +23,14 @@ export function Document(handle: Handle<DocumentProps>) {
           <meta name="color-scheme" content="dark light" />
           <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
           <title>{title}</title>
+          <ImportMap value={clientScriptEntry.importMap} />
+          {clientScriptEntry.preloads.map((href) => (
+            <link key={href} rel="modulepreload" href={href} />
+          ))}
         </head>
         <body mix={css({ margin: 0 })}>
           {children}
-          <script
-            type="module"
-            src={routes.assets.href({ path: "app/assets/client.ts" })}
-          />
+          <script type="module" src={clientScriptEntry.href} />
         </body>
       </html>
     );

@@ -588,11 +588,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       detailHtml,
       /<link data-rmx(?:-module-preload)? rel="modulepreload" href="\/assets\/app\/ui\/session\/session-detail-client\.tsx" \/>/,
     );
-    assertNotMatch(
+    assertMatch(
       detailHtml,
       /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/app\/ui\/session\/session-changes-panel\.tsx"/,
     );
-    assertNotMatch(
+    assertMatch(
       detailHtml,
       /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/npm\//,
     );

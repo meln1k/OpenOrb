@@ -13,7 +13,7 @@ import {
   type IconName,
 } from "@/app/ui/components/index.ts";
 import { media } from "@/app/ui/responsive.ts";
-import { AppShell, type AppShellProps } from "@/app/ui/shell.tsx";
+import { AppShell, type AppShellProps } from "@/app/ui/app-shell.tsx";
 
 interface AppPageProps {
   composer: AppShellProps["composer"];

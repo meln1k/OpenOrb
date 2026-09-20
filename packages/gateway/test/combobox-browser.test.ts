@@ -19,7 +19,15 @@ Deno.test({
 
     const uiHref = await assetServer.getHref(import.meta.resolve("remix/ui"));
     const jsxHref = await assetServer.getHref(import.meta.resolve("remix/ui/jsx-runtime"));
-    const html = `<!doctype html><html><body><div id="app"></div>
+    const importMap = await assetServer.getImportMap([
+      import.meta.resolve("remix/ui"),
+      import.meta.resolve("remix/ui/jsx-runtime"),
+      "packages/gateway/app/ui/components/combobox.tsx",
+      "packages/gateway/app/ui/components/theme.ts",
+    ]);
+    const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
+    const html =
+      `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body><div id="app"></div>
       <script type="module">
         import { createRoot, css } from ${JSON.stringify(uiHref)};
         import { jsx, jsxs } from ${JSON.stringify(jsxHref)};

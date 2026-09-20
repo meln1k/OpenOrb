@@ -28,7 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/app/ui/components/index.ts";
-import { AppShell } from "@/app/ui/shell.tsx";
+import { AppShell } from "@/app/ui/app-shell.tsx";
 import { media } from "@/app/ui/responsive.ts";
 
 export interface ProjectsPageProps {
