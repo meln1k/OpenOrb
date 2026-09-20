@@ -471,7 +471,15 @@ export function SidebarMenuButton(handle: Handle<SidebarMenuButtonProps>) {
         {icon}
         <span mix={menuTextStyle}>{children}</span>
         {badge ? <span mix={menuBadgeStyle}>{badge}</span> : null}
-        {pending ? <Spinner aria-hidden="true" mix={menuPendingSpinnerStyle} /> : null}
+        {pending || navigation
+          ? (
+            <Spinner
+              aria-hidden="true"
+              hidden={!pending}
+              mix={menuPendingSpinnerStyle}
+            />
+          )
+          : null}
       </>
     );
 
@@ -812,6 +820,7 @@ const menuPendingSpinnerStyle = css({
   width: "12px",
   height: "12px",
   marginLeft: "auto",
+  "&[hidden]": { display: "none" },
 });
 const disclosureTriggerStyle = css({
   "& > [data-slot='sidebar-disclosure-chevron']": { marginLeft: "auto" },

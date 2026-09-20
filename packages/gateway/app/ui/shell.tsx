@@ -96,11 +96,53 @@ type AppShellNavigationProps = {
   workspace: RemixNode;
 };
 
-export const AppShellNavigation = clientEntry<AppShellNavigationProps>(
+export function AppShellNavigation(handle: Handle<AppShellNavigationProps>) {
+  return () => (
+    <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
+      <AppShellNavigationBehavior
+        activeSessionId={handle.props.activeSessionId}
+        sessions={handle.props.sessions}
+      />
+      <SidebarMobile id={MOBILE_SIDEBAR_ID}>
+        <AppNavigation
+          csrfToken={handle.props.csrfToken}
+          activeSection={handle.props.activeSection}
+          selectedSessionId={handle.props.activeSessionId}
+          pendingSessionId={undefined}
+          sessions={handle.props.sessions}
+        />
+      </SidebarMobile>
+      <ResizablePanelGroup orientation="horizontal" mix={shellPanelGroupStyle}>
+        <ResizablePanel
+          data-side="left"
+          defaultSize="256px"
+          minSize="192px"
+          maxSize="480px"
+          mix={desktopSidebarPanelStyle}
+        >
+          <SidebarDesktop>
+            <AppNavigation
+              csrfToken={handle.props.csrfToken}
+              activeSection={handle.props.activeSection}
+              selectedSessionId={handle.props.activeSessionId}
+              pendingSessionId={undefined}
+              sessions={handle.props.sessions}
+            />
+          </SidebarDesktop>
+        </ResizablePanel>
+        {handle.props.workspace}
+      </ResizablePanelGroup>
+      {handle.props.composer}
+    </SidebarLayout>
+  );
+}
+
+export const AppShellNavigationBehavior = clientEntry<
+  Pick<AppShellNavigationProps, "activeSessionId" | "sessions">
+>(
   import.meta.url,
-  function AppShellNavigation(handle: Handle<AppShellNavigationProps>) {
+  function AppShellNavigationBehavior(handle) {
     let selectedSessionId = handle.props.activeSessionId;
-    let pendingSessionId: string | undefined;
     let navigationGeneration = 0;
     let activeSessionNavigation: { generation: number; sessionId: string } | undefined;
     let restoring = false;
@@ -116,10 +158,31 @@ export const AppShellNavigation = clientEntry<AppShellNavigationProps>(
       });
     }
 
-    function setPendingSession(sessionId: string | undefined) {
-      if (pendingSessionId === sessionId) return;
-      pendingSessionId = sessionId;
-      void handle.update();
+    function updateSessionButtons(pendingSessionId?: string) {
+      for (
+        const button of document.querySelectorAll<HTMLAnchorElement>(
+          `[data-rmx-target="${SESSION_WORKSPACE_FRAME}"]`,
+        )
+      ) {
+        const session = sessionForUrl(button.href);
+        if (!session) continue;
+        const active = session.id === (pendingSessionId ?? selectedSessionId);
+        const pending = session.id === pendingSessionId;
+        button.setAttribute("data-active", String(active));
+        if (active) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+        if (pending) {
+          button.setAttribute("data-pending", "true");
+          button.setAttribute("aria-busy", "true");
+        } else {
+          button.removeAttribute("data-pending");
+          button.removeAttribute("aria-busy");
+        }
+        button.querySelector<HTMLElement>(`[data-slot="spinner"]`)?.toggleAttribute(
+          "hidden",
+          !pending,
+        );
+      }
     }
 
     function replaceWorkspace(content: RemixNode) {
@@ -127,15 +190,28 @@ export const AppShellNavigation = clientEntry<AppShellNavigationProps>(
       if (frame) void frame.replace(content);
     }
 
-    if ("navigation" in globalThis) {
+    function updateCurrentEntry(session: SessionNavigationItem) {
+      globalThis.navigation.updateCurrentEntry({
+        state: {
+          target: SESSION_WORKSPACE_FRAME,
+          src: routes.app.sessions.frame.href({ sessionId: session.id }),
+          resetScroll: true,
+          $rmx: true,
+        },
+      });
+    }
+
+    handle.queueTask(() => {
+      if (!("navigation" in globalThis)) return;
       const navigation = globalThis.navigation;
+
       navigation.addEventListener("navigate", (event) => {
         const generation = ++navigationGeneration;
         const session = sessionForUrl(event.destination.url);
         if (!session || !handle.frames.get(SESSION_WORKSPACE_FRAME)) {
           activeSessionNavigation = undefined;
           restoring = false;
-          setPendingSession(undefined);
+          updateSessionButtons();
           return;
         }
 
@@ -143,7 +219,7 @@ export const AppShellNavigation = clientEntry<AppShellNavigationProps>(
         activeSessionNavigation = { generation, sessionId: session.id };
         const mobileSidebar = document.getElementById(MOBILE_SIDEBAR_ID);
         if (mobileSidebar?.matches(":popover-open")) mobileSidebar.hidePopover();
-        setPendingSession(session.id);
+        updateSessionButtons(session.id);
         replaceWorkspace(<SessionWorkspaceLoading title={sessionName(session)} />);
       }, { signal: handle.signal });
       navigation.addEventListener("navigatesuccess", () => {
@@ -151,9 +227,8 @@ export const AppShellNavigation = clientEntry<AppShellNavigationProps>(
         if (!completed || completed.generation !== navigationGeneration) return;
         activeSessionNavigation = undefined;
         selectedSessionId = completed.sessionId;
-        pendingSessionId = undefined;
         restoring = false;
-        void handle.update();
+        updateSessionButtons();
       }, { signal: handle.signal });
       navigation.addEventListener("navigateerror", () => {
         const failed = activeSessionNavigation;
@@ -174,14 +249,13 @@ export const AppShellNavigation = clientEntry<AppShellNavigationProps>(
           );
           if (!committed || restoring) {
             restoring = false;
-            pendingSessionId = undefined;
+            updateSessionButtons();
             replaceWorkspace(<SessionWorkspaceLoadError />);
-            void handle.update();
             return;
           }
 
           restoring = true;
-          setPendingSession(committed.id);
+          updateSessionButtons(committed.id);
           void navigate(routes.app.sessions.detail.href({ sessionId: committed.id }), {
             history: "replace",
             target: SESSION_WORKSPACE_FRAME,
@@ -192,42 +266,26 @@ export const AppShellNavigation = clientEntry<AppShellNavigationProps>(
           });
         }, 0);
       }, { signal: handle.signal });
-    }
+    });
 
-    return () => (
-      <SidebarLayout mix={[designSystemStyle, appThemeAliasesStyle]}>
-        <SidebarMobile id={MOBILE_SIDEBAR_ID}>
-          <AppNavigation
-            csrfToken={handle.props.csrfToken}
-            activeSection={handle.props.activeSection}
-            selectedSessionId={pendingSessionId ?? selectedSessionId}
-            pendingSessionId={pendingSessionId}
-            sessions={handle.props.sessions}
-          />
-        </SidebarMobile>
-        <ResizablePanelGroup orientation="horizontal" mix={shellPanelGroupStyle}>
-          <ResizablePanel
-            data-side="left"
-            defaultSize="256px"
-            minSize="192px"
-            maxSize="480px"
-            mix={desktopSidebarPanelStyle}
-          >
-            <SidebarDesktop>
-              <AppNavigation
-                csrfToken={handle.props.csrfToken}
-                activeSection={handle.props.activeSection}
-                selectedSessionId={pendingSessionId ?? selectedSessionId}
-                pendingSessionId={pendingSessionId}
-                sessions={handle.props.sessions}
-              />
-            </SidebarDesktop>
-          </ResizablePanel>
-          {handle.props.workspace}
-        </ResizablePanelGroup>
-        {handle.props.composer}
-      </SidebarLayout>
-    );
+    return () => {
+      const activeSessionId = handle.props.activeSessionId;
+      handle.queueTask((signal) => {
+        if (signal.aborted || activeSessionNavigation) return;
+        const activeSession = handle.props.sessions.find((session) =>
+          session.id === activeSessionId
+        );
+        if (!activeSession || sessionForUrl(globalThis.location.href)?.id !== activeSession.id) {
+          return;
+        }
+
+        selectedSessionId = activeSession.id;
+        restoring = false;
+        updateSessionButtons();
+        updateCurrentEntry(activeSession);
+      });
+      return null;
+    };
   },
 );
 
