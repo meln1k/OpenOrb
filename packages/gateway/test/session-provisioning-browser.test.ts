@@ -558,7 +558,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assert(additionalCatalog);
     assertEquals(additionalCatalog.acceptedSessionIds, [olderSessionId, newerSessionId]);
     assertEquals(
-      (await store.listSessionCatalogEntries(client.workspaceId)).map((session) => session.id),
+      (await store.listSessionNavigationEntries(client.workspaceId)).map((session) => session.id),
       [newerSessionId, provision.sessionId, olderSessionId],
     );
 

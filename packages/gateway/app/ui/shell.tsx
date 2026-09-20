@@ -1,6 +1,6 @@
 import { clientEntry, css, type Handle, navigate, type RemixNode } from "remix/ui";
 
-import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
+import type { SessionNavigationEntry } from "@/app/data/session-catalog-repository.ts";
 import { routes } from "@/app/routes.ts";
 import {
   Avatar,
@@ -28,7 +28,6 @@ import {
   SidebarDesktop,
   SidebarFooter,
   SidebarGroup,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarLayout,
@@ -52,7 +51,7 @@ export type AppShellLayoutProps = {
   eyebrow?: string;
   heading?: string;
   rightSidebar?: RemixNode;
-  sessions: SessionCatalogEntry[];
+  sessions: SessionNavigationEntry[];
   title: string;
   topBarAccessory?: RemixNode;
   topBarTitle?: string;
@@ -82,9 +81,10 @@ export function AppShellLayout(handle: Handle<AppShellLayoutProps>) {
   );
 }
 
-type SessionNavigationItem = {
-  id: string;
-  initialPromptPreview: string;
+type SessionProjectGroup = {
+  projectId: string;
+  projectName: string;
+  sessions: SessionNavigationEntry[];
 };
 
 type AppShellNavigationProps = {
@@ -92,7 +92,7 @@ type AppShellNavigationProps = {
   activeSessionId: string | undefined;
   composer: RemixNode;
   csrfToken: string;
-  sessions: SessionNavigationItem[];
+  sessions: SessionNavigationEntry[];
   workspace: RemixNode;
 };
 
@@ -190,7 +190,7 @@ export const AppShellNavigationBehavior = clientEntry<
       if (frame) void frame.replace(content);
     }
 
-    function updateCurrentEntry(session: SessionNavigationItem) {
+    function updateCurrentEntry(session: SessionNavigationEntry) {
       globalThis.navigation.updateCurrentEntry({
         state: {
           target: SESSION_WORKSPACE_FRAME,
@@ -391,7 +391,7 @@ type AppNavigationProps = {
   activeSection: AppShellLayoutProps["activeSection"];
   selectedSessionId: string | undefined;
   pendingSessionId: string | undefined;
-  sessions: SessionNavigationItem[];
+  sessions: SessionNavigationEntry[];
 };
 
 function AppNavigation(handle: Handle<AppNavigationProps>) {
@@ -424,25 +424,7 @@ function AppNavigation(handle: Handle<AppNavigationProps>) {
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup aria-label="Session history">
-          <SidebarGroupLabel>Sessions</SidebarGroupLabel>
-          <SidebarMenu>
-            {handle.props.sessions.map((session) => (
-              <SidebarMenuItem key={session.id}>
-                <SidebarMenuButton
-                  href={routes.app.sessions.detail.href({ sessionId: session.id })}
-                  navigation={{
-                    target: SESSION_WORKSPACE_FRAME,
-                    src: routes.app.sessions.frame.href({ sessionId: session.id }),
-                  }}
-                  active={handle.props.selectedSessionId === session.id}
-                  pending={handle.props.pendingSessionId === session.id}
-                  icon={<Icon name="message" />}
-                >
-                  {sessionName(session)}
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
+          {renderSessionProjectGroups(handle.props)}
           {handle.props.sessions.length === 0
             ? <p mix={emptySessionsStyle}>No sessions yet.</p>
             : null}
@@ -525,8 +507,61 @@ export function SessionWorkspaceLoadError(
   );
 }
 
-function sessionName(session: SessionNavigationItem): string {
+function sessionName(session: SessionNavigationEntry): string {
   return session.initialPromptPreview || "Untitled session";
+}
+
+function renderSessionProjectGroups(props: AppNavigationProps): RemixNode {
+  return groupSessionsByProject(props.sessions).map(({ projectId, projectName, sessions }) => (
+    <section
+      key={projectId}
+      aria-label={`${projectName} sessions`}
+      data-session-project={projectId}
+      mix={sessionProjectStyle}
+    >
+      <h2 mix={sessionProjectHeadingStyle}>
+        <Icon name="folder" />
+        <span>{projectName}</span>
+        <span aria-hidden="true" mix={sessionProjectRuleStyle} />
+      </h2>
+      <SidebarMenu>
+        {sessions.map((session) => (
+          <SidebarMenuItem key={session.id}>
+            <SidebarMenuButton
+              href={routes.app.sessions.detail.href({ sessionId: session.id })}
+              navigation={{
+                target: SESSION_WORKSPACE_FRAME,
+                src: routes.app.sessions.frame.href({ sessionId: session.id }),
+              }}
+              active={props.selectedSessionId === session.id}
+              pending={props.pendingSessionId === session.id}
+              icon={<Icon name="message" />}
+            >
+              {sessionName(session)}
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        ))}
+      </SidebarMenu>
+    </section>
+  ));
+}
+
+function groupSessionsByProject(sessions: SessionNavigationEntry[]): SessionProjectGroup[] {
+  const groups = new Map<string, SessionProjectGroup>();
+
+  for (const session of sessions) {
+    const group = groups.get(session.projectId);
+    if (group) group.sessions.push(session);
+    else {
+      groups.set(session.projectId, {
+        projectId: session.projectId,
+        projectName: session.projectName,
+        sessions: [session],
+      });
+    }
+  }
+
+  return [...groups.values()];
 }
 
 const appThemeAliasesStyle = css({
@@ -610,6 +645,37 @@ const sidebarBrandTextStyle = css({
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
+});
+const sessionProjectStyle = css({
+  display: "flex",
+  flexDirection: "column",
+  gap: "4px",
+  "& + &": { marginTop: "12px" },
+});
+const sessionProjectHeadingStyle = css({
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  minWidth: 0,
+  height: "28px",
+  margin: 0,
+  padding: "0 8px",
+  color: "color-mix(in srgb, var(--sidebar-foreground) 70%, transparent)",
+  fontSize: "13px",
+  fontWeight: 500,
+  lineHeight: 1,
+  "& > svg": { flexShrink: 0 },
+  "& > span:first-of-type": {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+});
+const sessionProjectRuleStyle = css({
+  flex: 1,
+  minWidth: "16px",
+  height: "1px",
+  background: "var(--sidebar-border)",
 });
 const emptySessionsStyle = css({
   margin: "4px 8px",

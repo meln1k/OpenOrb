@@ -1,8 +1,8 @@
 import type { RunnerSessionSnapshot, WorkspaceId } from "@openorb/protocol/runner-api";
 import { err, ok, type Result, tryAsync } from "@openorb/result";
-import type { Database } from "remix/data-table";
+import { and, type Database, eq } from "remix/data-table";
 
-import { deletedSessions, type SessionRow, sessions } from "@/app/data/schema.ts";
+import { deletedSessions, projects, type SessionRow, sessions } from "@/app/data/schema.ts";
 
 export type RejectedSessionManifestEntryReason = "catalog-conflict" | "project-not-found";
 
@@ -31,10 +31,17 @@ export interface SessionCatalogEntry {
   initialPromptPreview: string;
 }
 
+export type SessionNavigationEntry = {
+  id: string;
+  projectId: string;
+  projectName: string;
+  initialPromptPreview: string;
+};
+
 export type DeleteSessionCatalogResult = "deleted" | "not-found";
 
 export interface SessionCatalogRepository {
-  listSessionCatalogEntries(workspaceId: WorkspaceId): Promise<SessionCatalogEntry[]>;
+  listSessionNavigationEntries(workspaceId: WorkspaceId): Promise<SessionNavigationEntry[]>;
   getSessionCatalogEntry(
     workspaceId: WorkspaceId,
     sessionId: string,
@@ -58,12 +65,25 @@ class SessionManifestReconciliationRejected extends Error {
 
 export function createSessionCatalogRepository(database: Database): SessionCatalogRepository {
   return {
-    async listSessionCatalogEntries(workspaceId) {
-      const rows = await database.findMany(sessions, {
-        where: { workspace_id: workspaceId },
-        orderBy: ["created_at", "desc"],
-      });
-      return rows.map(mapSessionCatalogEntry);
+    async listSessionNavigationEntries(workspaceId) {
+      return await database
+        .query(sessions)
+        .join(
+          projects,
+          and(
+            eq(sessions.workspace_id, projects.workspace_id),
+            eq(sessions.project_id, projects.id),
+          ),
+        )
+        .where(eq(sessions.workspace_id, workspaceId))
+        .select({
+          id: sessions.id,
+          projectId: sessions.project_id,
+          projectName: projects.name,
+          initialPromptPreview: sessions.initial_prompt_preview,
+        })
+        .orderBy(sessions.created_at, "desc")
+        .all();
     },
 
     async getSessionCatalogEntry(workspaceId, sessionId) {

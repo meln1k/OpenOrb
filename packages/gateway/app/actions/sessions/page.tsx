@@ -1,7 +1,10 @@
 import type { RunnerSessionSnapshot, SessionIssue } from "@openorb/protocol/runner-api";
 import { Frame, type Handle } from "remix/ui";
 
-import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
+import type {
+  SessionCatalogEntry,
+  SessionNavigationEntry,
+} from "@/app/data/session-catalog-repository.ts";
 import { modelContextWindow } from "@/app/model-provider-catalog.ts";
 import { routes } from "@/app/routes.ts";
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
@@ -14,7 +17,7 @@ interface SessionDetailPageProps {
   csrfToken: string;
   frameSrc: string | undefined;
   session: SessionCatalogEntry;
-  sidebarSessions: SessionCatalogEntry[];
+  sidebarSessions: SessionNavigationEntry[];
 }
 
 export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {

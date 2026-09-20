@@ -1,6 +1,6 @@
 import { css, type Handle } from "remix/ui";
 
-import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
+import type { SessionNavigationEntry } from "@/app/data/session-catalog-repository.ts";
 import { routes } from "@/app/routes.ts";
 import {
   Empty,
@@ -26,7 +26,7 @@ interface AppPageProps {
     gitAuthor: boolean;
     project: boolean;
   };
-  sidebarSessions: SessionCatalogEntry[];
+  sidebarSessions: SessionNavigationEntry[];
   title?: string;
 }
 

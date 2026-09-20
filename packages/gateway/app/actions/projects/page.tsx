@@ -1,7 +1,7 @@
 import { css, type Handle } from "remix/ui";
 
 import type { Project } from "@/app/data/project-repository.ts";
-import type { SessionCatalogEntry } from "@/app/data/session-catalog-repository.ts";
+import type { SessionNavigationEntry } from "@/app/data/session-catalog-repository.ts";
 import { routes } from "@/app/routes.ts";
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import {
@@ -35,7 +35,7 @@ export interface ProjectsPageProps {
   composer: SessionComposerData;
   csrfToken: string;
   projects: Project[];
-  sidebarSessions: SessionCatalogEntry[];
+  sidebarSessions: SessionNavigationEntry[];
   error?: string;
 }
 

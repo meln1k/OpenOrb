@@ -50,7 +50,7 @@ export default createController(routes.app.projects, {
       const [composer, projects, sidebarSessions] = await Promise.all([
         loadSessionComposerData(workspaceId, context.services),
         context.services.store.listProjects(workspaceId),
-        context.services.store.listSessionCatalogEntries(workspaceId),
+        context.services.store.listSessionNavigationEntries(workspaceId),
       ]);
       return context.render(
         <ProjectsPage
@@ -70,7 +70,7 @@ export default createController(routes.app.projects, {
         const [composer, projects, sidebarSessions] = await Promise.all([
           loadSessionComposerData(workspaceId, context.services),
           store.listProjects(workspaceId),
-          store.listSessionCatalogEntries(workspaceId),
+          store.listSessionNavigationEntries(workspaceId),
         ]);
         return context.render(
           <ProjectsPage

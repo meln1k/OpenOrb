@@ -552,7 +552,7 @@ async function renderCreateError(
   const workspaceId = context.auth.identity.workspaceId;
   const [composer, sidebarSessions] = await Promise.all([
     loadSessionComposerData(workspaceId, context.services),
-    context.services.store.listSessionCatalogEntries(workspaceId),
+    context.services.store.listSessionNavigationEntries(workspaceId),
   ]);
   return context.render(
     <AppPage
@@ -602,7 +602,7 @@ async function renderDetailPage(
   const [composer, session, sidebarSessions] = await Promise.all([
     loadSessionComposerData(workspaceId, context.services),
     context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
-    context.services.store.listSessionCatalogEntries(workspaceId),
+    context.services.store.listSessionNavigationEntries(workspaceId),
   ]);
   if (!session) return new Response("Session not found.", { status: 404 });
   return context.render(

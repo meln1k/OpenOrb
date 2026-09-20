@@ -15,7 +15,7 @@ export default createController(routes.app, {
       const workspaceId = context.auth.identity.workspaceId;
       const [composer, sidebarSessions, githubCredential, gitAuthor] = await Promise.all([
         loadSessionComposerData(workspaceId, context.services),
-        context.services.store.listSessionCatalogEntries(workspaceId),
+        context.services.store.listSessionNavigationEntries(workspaceId),
         context.services.store.getGitHubCredential(workspaceId),
         context.services.store.getGitAuthorConfiguration(context.auth.identity.userId),
       ]);
