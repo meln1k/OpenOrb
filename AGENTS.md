@@ -40,5 +40,5 @@ Never guess at Effect patterns.
 If the guides are insufficient, inspect the Effect v4 clone at
 `~/.local/share/effect-solutions/effect`.
 
-For Remix internals, inspect the Remix 3 beta 10 checkout at
+For Remix internals, inspect the Remix 3 RC.3 checkout at
 `~/.local/share/remix/remix`.

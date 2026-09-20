@@ -147,7 +147,7 @@ clone_effect_repository() {
 
 clone_remix_repository() {
   local target="$HOME/.local/share/remix/remix"
-  local ref='remix@3.0.0-rc.1'
+  local ref='remix@3.0.0-rc.3'
 
   if [[ -d "$target/.git" ]]; then
     if ! git -C "$target" rev-parse --verify --quiet "refs/tags/$ref^{commit}" >/dev/null; then
@@ -267,7 +267,7 @@ step 'Install system packages' install_system_packages
 step 'Install pinned Deno toolchain' install_deno
 step 'Install Effect Solutions CLI' install_effect_solutions
 step 'Clone Effect v4 reference repository' clone_effect_repository
-step 'Clone Remix 3 RC 1 reference repository' clone_remix_repository
+step 'Clone Remix 3 RC 3 reference repository' clone_remix_repository
 step 'Configure PostgreSQL' configure_postgres
 step 'Create local gateway environment' create_local_environment
 step 'Install locked Deno dependencies' install_dependencies
