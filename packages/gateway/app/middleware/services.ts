@@ -77,6 +77,8 @@ const disconnectedRunnerRegistry: RunnerRegistryService = {
     Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   promptSession: () =>
     Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
+  setSessionThinkingLevel: () =>
+    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   abortSession: () =>
     Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
   stopSession: () =>

@@ -169,7 +169,6 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
         });
         break;
       case "thinking_level_changed":
-        publishLive({ type: "thinking-level.changed", level: event.level });
         break;
       case "bash_execution_update": {
         const delta = safeText(event.delta, MAX_RPC_SESSION_EVENT_TEXT_BYTES);

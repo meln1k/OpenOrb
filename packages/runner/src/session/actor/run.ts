@@ -1,4 +1,9 @@
-import type { RunId, SessionIssue, SessionModelRuntime } from "@openorb/protocol/runner-api";
+import type {
+  RunId,
+  SessionIssue,
+  SessionModelRuntime,
+  ThinkingLevel,
+} from "@openorb/protocol/runner-api";
 import { DateTime, Deferred, Effect, Exit, type Scope } from "effect";
 
 import type { AgentEnvironment } from "../../environment/agent-environment.ts";
@@ -27,6 +32,7 @@ export interface SessionRunBehavior {
     prompt: string,
     completion: RunCompletion,
     issues: readonly SessionIssue[],
+    thinkingLevel?: ThinkingLevel,
   ) => SessionDecision;
   readonly start: (
     environment: AgentEnvironment,
@@ -34,6 +40,7 @@ export interface SessionRunBehavior {
     runId: RunId,
     prompt: string,
     completion: RunCompletion,
+    thinkingLevel?: ThinkingLevel,
     agentSession?: OpenAgentSession,
   ) => Effect.Effect<void, never, Scope.Scope>;
   readonly started: (
@@ -85,6 +92,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     prompt,
     completion,
     issues,
+    thinkingLevel,
   ) =>
     persist({
       type: "run.requested",
@@ -97,6 +105,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
         runId,
         prompt,
         completion,
+        thinkingLevel,
         runtime.get().agentSession,
       ));
 
@@ -106,6 +115,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     runId,
     prompt,
     completion,
+    thinkingLevel,
     existingAgentSession,
   ) =>
     Effect.forkScoped(startWorker(
@@ -114,6 +124,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
       runId,
       prompt,
       completion,
+      thinkingLevel,
       existingAgentSession,
     )).pipe(Effect.asVoid);
 
@@ -123,6 +134,7 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
     runId: RunId,
     prompt: string,
     completion: RunCompletion,
+    thinkingLevel?: ThinkingLevel,
     existingAgentSession?: OpenAgentSession,
   ): Effect.Effect<void, never, Scope.Scope> {
     let openedAgentSession: OpenAgentSession | undefined;
@@ -130,6 +142,9 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
       const agentSession = existingAgentSession ??
         (openedAgentSession = yield* agentRuntime.open(environment, modelRuntime));
       yield* agentRuntime.updateModelRuntime(agentSession, modelRuntime);
+      if (thinkingLevel !== undefined) {
+        yield* agentRuntime.setThinkingLevel(agentSession, thinkingLevel);
+      }
       const run = yield* agentSession.session.start(prompt).pipe(Effect.mapError(actorError));
       const acceptedAt = DateTime.formatIso(yield* DateTime.now);
       yield* send({
@@ -329,41 +344,56 @@ export function makeSessionRun(options: SessionRunOptions): SessionRunBehavior {
         message: "That agent run is unavailable.",
       }));
     }
-    return Effect.succeed(persist({
-      type: "follow-up.requested",
-      runId: activeRun.runId,
-      followUpId,
-    }, () =>
-      Effect.forkScoped(
-        agentRuntime.updateModelRuntime(agentSession, command.payload.modelRuntime).pipe(
-          Effect.andThen(activeRun.run.followUp(command.payload.prompt)),
-          Effect.matchEffect({
-            onFailure: () =>
-              send({
-                kind: "internal",
-                _tag: "FollowUpFailed",
-                runId: activeRun.runId,
-                followUpId,
-                reply: command.reply,
-              }),
-            onSuccess: () =>
-              DateTime.now.pipe(
-                Effect.map(DateTime.formatIso),
-                Effect.flatMap((acceptedAt) =>
-                  send({
-                    kind: "internal",
-                    _tag: "FollowUpAccepted",
-                    runId: activeRun.runId,
-                    followUpId,
-                    acceptedAt,
-                    reply: command.reply,
-                  })
-                ),
+    const applyThinkingLevel = command.payload.thinkingLevel === undefined
+      ? Effect.void
+      : agentRuntime.setThinkingLevel(agentSession, command.payload.thinkingLevel).pipe(
+        Effect.asVoid,
+      );
+    return applyThinkingLevel.pipe(
+      Effect.matchEffect({
+        onFailure: () =>
+          Effect.succeed(reply(command.reply, {
+            ok: false,
+            message: "The thinking level could not be changed.",
+          })),
+        onSuccess: () =>
+          Effect.succeed(persist({
+            type: "follow-up.requested",
+            runId: activeRun.runId,
+            followUpId,
+          }, () =>
+            Effect.forkScoped(
+              agentRuntime.updateModelRuntime(agentSession, command.payload.modelRuntime).pipe(
+                Effect.andThen(activeRun.run.followUp(command.payload.prompt)),
+                Effect.matchEffect({
+                  onFailure: () =>
+                    send({
+                      kind: "internal",
+                      _tag: "FollowUpFailed",
+                      runId: activeRun.runId,
+                      followUpId,
+                      reply: command.reply,
+                    }),
+                  onSuccess: () =>
+                    DateTime.now.pipe(
+                      Effect.map(DateTime.formatIso),
+                      Effect.flatMap((acceptedAt) =>
+                        send({
+                          kind: "internal",
+                          _tag: "FollowUpAccepted",
+                          runId: activeRun.runId,
+                          followUpId,
+                          acceptedAt,
+                          reply: command.reply,
+                        })
+                      ),
+                    ),
+                }),
+                Effect.asVoid,
               ),
-          }),
-          Effect.asVoid,
-        ),
-      ).pipe(Effect.asVoid)));
+            ).pipe(Effect.asVoid))),
+      }),
+    );
   };
 
   const followUpAccepted: SessionRunBehavior["followUpAccepted"] = (state, command) => {

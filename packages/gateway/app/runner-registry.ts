@@ -31,6 +31,8 @@ import {
   type SessionGitSnapshot,
   SessionId,
   SessionNotFound,
+  type SetSessionThinkingLevelPayload,
+  SetSessionThinkingLevelRejected,
   StopRejected,
   type StopSessionAccepted,
   UpdateSessionGitFilePayload,
@@ -99,6 +101,11 @@ export interface PromptSessionInput {
   workspaceId: WorkspaceId;
   sessionId: string;
   payload: Omit<Parameters<Client["session.prompt"]>[0], "sessionId" | "clientRequestId">;
+}
+export interface SetSessionThinkingLevelInput {
+  workspaceId: WorkspaceId;
+  sessionId: string;
+  level: SetSessionThinkingLevelPayload["level"];
 }
 export interface WakeSessionInput {
   workspaceId: WorkspaceId;
@@ -171,6 +178,9 @@ export interface RunnerRegistryService {
     input: WakeSessionInput,
   ) => Effect.Effect<OperationResult<WakeSessionAccepted>>;
   readonly promptSession: (input: PromptSessionInput) => Effect.Effect<OperationResult<unknown>>;
+  readonly setSessionThinkingLevel: (
+    input: SetSessionThinkingLevelInput,
+  ) => Effect.Effect<OperationResult<SetSessionThinkingLevelPayload["level"]>>;
   readonly abortSession: (input: AbortSessionInput) => Effect.Effect<OperationResult<unknown>>;
   readonly stopSession: (
     input: StopSessionInput,
@@ -247,6 +257,7 @@ const OperationRejection = Schema.Union([
   SessionNotFound,
   WakeRejected,
   PromptRejected,
+  SetSessionThinkingLevelRejected,
   AbortRejected,
   StopRejected,
   GitFileUpdateRejected,
@@ -293,6 +304,8 @@ export function makeRunnerRegistry(
         observeOperation("provision", input, provisionSession(runtime, input)),
       wakeSession: (input) => observeOperation("wake", input, wakeSession(runtime, input)),
       promptSession: (input) => observeOperation("prompt", input, promptSession(runtime, input)),
+      setSessionThinkingLevel: (input) =>
+        observeOperation("thinking-level", input, setSessionThinkingLevel(runtime, input)),
       abortSession: (input) => observeOperation("abort", input, abortSession(runtime, input)),
       stopSession: (input) => observeOperation("stop", input, stopSession(runtime, input)),
       deleteSession: (input) => deleteSession(runtime, input),
@@ -1039,6 +1052,35 @@ const promptSession = Effect.fn("RunnerRegistry.promptSession")(
         routed.snapshot.state === "stopped" ? COLD_CONTINUATION_TIMEOUT_MS : OPERATION_TIMEOUT_MS,
       ),
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
+      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
+    );
+  },
+);
+const setSessionThinkingLevel = Effect.fn("RunnerRegistry.setSessionThinkingLevel")(
+  function* (registry: RegistryRuntime, input: SetSessionThinkingLevelInput) {
+    const routed = yield* routeSession(
+      registry,
+      input.workspaceId,
+      input.sessionId,
+      (snapshot) =>
+        snapshot.state === "ready" || snapshot.state === "running"
+          ? undefined
+          : "The session environment is not running.",
+    );
+    if (routed.status === "unavailable") return unavailable(routed.message);
+    if (routed.status === "rejected") {
+      return { status: "rejected" as const, message: routed.message };
+    }
+    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
+    return yield* routed.connection.runtime.client["session.thinking-level.set"]({
+      sessionId,
+      level: input.level,
+    }).pipe(
+      Effect.timeout(OPERATION_TIMEOUT_MS),
+      Effect.map((acknowledgement) => ({
+        status: "accepted" as const,
+        acknowledgement: acknowledgement.level,
+      })),
       Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
     );
   },

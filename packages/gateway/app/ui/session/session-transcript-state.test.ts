@@ -14,6 +14,17 @@ import {
   type TranscriptEntry,
 } from "@/app/ui/session/session-transcript-state.ts";
 
+Deno.test("tracks replayed thinking-level changes", () => {
+  const initial = createSessionTranscriptState("ready");
+  const changed = reduceSessionTranscriptState(
+    initial,
+    { type: "thinking-level.changed", level: "max" },
+    "ready",
+  );
+
+  assertEquals(changed.thinkingLevel, "max");
+});
+
 Deno.test("commits streamed assistant content and usage under its durable message identity", () => {
   const state = reduce([
     { type: "message.started", role: "assistant" },

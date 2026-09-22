@@ -1,3 +1,4 @@
+import { SESSION_THINKING_LEVELS } from "@openorb/protocol";
 import type { RunnerSessionSnapshot, SessionIssue } from "@openorb/protocol/runner-api";
 import { Frame, type Handle } from "remix/ui";
 
@@ -5,7 +6,7 @@ import type {
   SessionCatalogEntry,
   SessionNavigationEntry,
 } from "@/app/data/session-catalog-repository.ts";
-import { modelContextWindow } from "@/app/model-provider-catalog.ts";
+import { modelContextWindow, modelThinkingLevels } from "@/app/model-provider-catalog.ts";
 import { routes } from "@/app/routes.ts";
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import { SessionDetailClient } from "@/app/ui/session/session-detail-client.tsx";
@@ -65,6 +66,11 @@ export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
       initialIssues={[...issues]}
       sessionId={session.id}
       sessionName={nameSession(session)}
+      thinkingLevels={[
+        ...(snapshot === null
+          ? SESSION_THINKING_LEVELS
+          : modelThinkingLevels(snapshot.model) ?? SESSION_THINKING_LEVELS),
+      ]}
     />
   );
 }

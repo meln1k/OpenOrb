@@ -22,6 +22,8 @@ import {
   RunnerSessionSnapshot,
   RunnerStateEvent,
   SessionGitSnapshot,
+  SetSessionThinkingLevelAccepted,
+  SetSessionThinkingLevelRejected,
   StopSessionAccepted,
   StopSessionPayload,
   UpdateSessionGitFilePayload,
@@ -100,6 +102,7 @@ interface Probe {
   watchCalls: number;
   provisionRequests: unknown[];
   promptRequests: unknown[];
+  thinkingLevelRequests: unknown[];
   wakeRequests: unknown[];
   abortRequests: unknown[];
   stopRequests: unknown[];
@@ -110,6 +113,8 @@ interface Probe {
   sessionWatches: SessionWatchProbe[];
   provisionBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
   promptBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
+  thinkingLevelBlock: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null;
+  rejectThinkingLevel: boolean;
   connectionFinalized: Deferred.Deferred<void>;
   closeCode: Deferred.Deferred<number>;
 }
@@ -140,6 +145,7 @@ const makeProbe = Effect.fn(function* (
     watchCalls: 0,
     provisionRequests: [],
     promptRequests: [],
+    thinkingLevelRequests: [],
     wakeRequests: [],
     abortRequests: [],
     stopRequests: [],
@@ -150,6 +156,8 @@ const makeProbe = Effect.fn(function* (
     sessionWatches: [],
     provisionBlock: null,
     promptBlock: null,
+    thinkingLevelBlock: null,
+    rejectThinkingLevel: false,
     connectionFinalized: yield* Deferred.make<void>(),
     closeCode: yield* Deferred.make<number>(),
   };
@@ -261,6 +269,21 @@ function handlers(probe: Probe) {
           runId: "run-prompt",
           mode: "started",
         });
+      }),
+    "session.thinking-level.set": (request) =>
+      Effect.gen(function* () {
+        probe.thinkingLevelRequests.push(request);
+        if (probe.thinkingLevelBlock) {
+          yield* Deferred.succeed(probe.thinkingLevelBlock.started, undefined);
+          yield* Deferred.await(probe.thinkingLevelBlock.release);
+        }
+        if (probe.rejectThinkingLevel) {
+          return yield* new SetSessionThinkingLevelRejected({
+            sessionId: request.sessionId,
+            message: "Injected thinking-level rejection.",
+          });
+        }
+        return new SetSessionThinkingLevelAccepted({ level: request.level });
       }),
     "session.wake": (request) =>
       Effect.sync(() => {
@@ -1053,6 +1076,44 @@ Deno.test("concurrent Prompt and Abort both reach the runner for serialized hand
     assertEquals(abort.status, "accepted");
     assertEquals(probe.promptRequests.length, 1);
     assertEquals(probe.abortRequests.length, 1);
+  }))));
+
+Deno.test("thinking-level changes preserve typed rejection and delivery uncertainty", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const { gateway, url } = yield* makeHarness();
+    const probe = yield* makeProbe();
+    yield* connectRunner(url, probe);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1)]);
+    yield* waitUntil(
+      () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
+      "route missing",
+    );
+
+    probe.rejectThinkingLevel = true;
+    assertEquals(
+      yield* gateway.setSessionThinkingLevel({
+        workspaceId: WORKSPACE_ID,
+        sessionId: SESSION_1,
+        level: "low",
+      }),
+      { status: "rejected", message: "Injected thinking-level rejection." },
+    );
+
+    probe.rejectThinkingLevel = false;
+    probe.thinkingLevelBlock = {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+    };
+    const changing = yield* gateway.setSessionThinkingLevel({
+      workspaceId: WORKSPACE_ID,
+      sessionId: SESSION_1,
+      level: "max",
+    }).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(probe.thinkingLevelBlock.started);
+    assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
+
+    assertEquals((yield* Fiber.join(changing)).status, "delivery-uncertain");
+    assertEquals(probe.thinkingLevelRequests.length, 2);
   }))));
 
 Deno.test("disconnect after provisioning dispatch reports uncertain delivery", () =>

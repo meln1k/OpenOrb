@@ -60,9 +60,21 @@ function sessionDefinition(
     gitAuthor: new GitAuthor({ name: "OpenOrb User", email: "user@example.com" }),
     initialPrompt,
     model: MODEL,
+    initialThinkingLevel: "high",
     orbSize,
   });
 }
+
+Deno.test("legacy session definitions default the initial thinking level", () => {
+  const definition = sessionDefinition();
+  const encoded = Schema.encodeSync(RunnerSessionDefinition)(definition);
+  const { initialThinkingLevel: _, ...legacy } = encoded;
+
+  assertEquals(
+    Schema.decodeUnknownSync(RunnerSessionDefinition)(legacy).initialThinkingLevel,
+    "high",
+  );
+});
 
 Deno.test("creates private session storage and recovers cold session state", async () => {
   const workingDirectory = await Deno.makeTempDir();

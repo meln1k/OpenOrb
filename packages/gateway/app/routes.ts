@@ -18,6 +18,7 @@ export const routes = route({
       detail: get(":sessionId"),
       frame: get(":sessionId/frame"),
       message: post(":sessionId/messages"),
+      thinkingLevel: post(":sessionId/thinking-level"),
       abort: post(":sessionId/abort"),
       stop: post(":sessionId/stop"),
       retry: post(":sessionId/retry"),

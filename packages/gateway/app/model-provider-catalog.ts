@@ -1,5 +1,10 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { DEFAULT_SESSION_THINKING_LEVEL, modelReference } from "@openorb/protocol";
+import {
+  DEFAULT_SESSION_THINKING_LEVEL,
+  modelReference,
+  type SessionThinkingLevel,
+} from "@openorb/protocol";
 import { SessionModelRuntime } from "@openorb/protocol/runner-api";
 
 export const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
@@ -15,6 +20,7 @@ export interface ModelOption {
   name: string;
   providerId: string;
   providerName: string;
+  thinkingLevels: readonly SessionThinkingLevel[];
 }
 
 const MODEL_PROVIDERS = builtinProviders()
@@ -39,6 +45,7 @@ export const MODEL_OPTIONS: readonly ModelOption[] = MODEL_PROVIDERS.flatMap((pr
       name: model.name,
       providerId: provider.id,
       providerName: provider.name,
+      thinkingLevels: getSupportedThinkingLevels(model),
     }))
     .sort((left, right) => left.name.localeCompare(right.name))
 );
@@ -56,6 +63,12 @@ export function isModelReference(value: string): boolean {
 
 export function modelContextWindow(value: string): number | undefined {
   return MODEL_OPTIONS.find((model) => model.id === value)?.contextWindow;
+}
+
+export function modelThinkingLevels(
+  value: string,
+): readonly SessionThinkingLevel[] | undefined {
+  return MODEL_OPTIONS.find((model) => model.id === value)?.thinkingLevels;
 }
 
 export function modelProviderName(providerId: string): string {

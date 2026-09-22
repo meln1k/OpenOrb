@@ -1,5 +1,5 @@
 import { clientEntry, css, type Handle, on } from "remix/ui";
-import type { SessionIssue } from "@openorb/protocol/browser-session-events";
+import type { SessionIssue, SessionThinkingLevel } from "@openorb/protocol/browser-session-events";
 
 import { routes } from "@/app/routes.ts";
 import { media } from "@/app/ui/responsive.ts";
@@ -38,6 +38,7 @@ export type SessionDetailClientProps = {
   readonly initialIssues: SessionIssueData[];
   readonly sessionId: string;
   readonly sessionName: string;
+  readonly thinkingLevels: SessionThinkingLevel[];
 };
 
 export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
@@ -166,6 +167,7 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
                     contextWindow={handle.props.contextWindow}
                     csrfToken={handle.props.csrfToken}
                     sessionId={handle.props.sessionId}
+                    thinkingLevels={handle.props.thinkingLevels}
                   />
                 </section>
                 <section

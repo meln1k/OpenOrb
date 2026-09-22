@@ -157,6 +157,31 @@ export function makeSessionBehavior(
           return continuation.wake(state, command);
         case "Prompt":
           return continuation.prompt(state, command);
+        case "SetThinkingLevel": {
+          if (state.phase._tag !== "Ready" && state.phase._tag !== "Running") {
+            return Effect.succeed(decisions.reply(command.reply, {
+              ok: false,
+              message: "The session cannot change thinking level right now.",
+            }));
+          }
+          const agentSession = runtime.get().agentSession;
+          if (agentSession === undefined) {
+            return Effect.succeed(decisions.reply(command.reply, {
+              ok: false,
+              message: "The session environment is not running.",
+            }));
+          }
+          return agentRuntime.setThinkingLevel(agentSession, command.payload.level).pipe(
+            Effect.match({
+              onFailure: () =>
+                decisions.reply(command.reply, {
+                  ok: false,
+                  message: "The thinking level could not be changed.",
+                }),
+              onSuccess: (level) => decisions.reply(command.reply, { ok: true, level }),
+            }),
+          );
+        }
         case "Abort":
           return run.abort(state, command);
         case "Stop":
@@ -175,6 +200,8 @@ export function makeSessionBehavior(
         case "Wake":
           return decisions.reply(command.reply, rejected);
         case "Prompt":
+          return decisions.reply(command.reply, rejected);
+        case "SetThinkingLevel":
           return decisions.reply(command.reply, rejected);
         case "Abort":
           return decisions.reply(command.reply, rejected);

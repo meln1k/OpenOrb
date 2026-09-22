@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 
+import { SESSION_THINKING_LEVELS } from "./thinking-level.ts";
+
 export const MAX_RPC_SESSION_EVENT_TEXT_BYTES = 32 * 1024;
 export const MAX_RPC_QUEUED_SESSION_MESSAGES = 8;
 export const MAX_SESSION_ISSUES = 16;
@@ -17,15 +19,7 @@ const MessageRole = Schema.Literals([
   "branchSummary",
   "compactionSummary",
 ]);
-const ThinkingLevel = Schema.Literals([
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-]);
+const ThinkingLevel = Schema.Literals(SESSION_THINKING_LEVELS);
 const SessionEntryType = Schema.Literals([
   "message",
   "thinking_level_change",
@@ -373,6 +367,7 @@ export const DurableSessionEvent = Schema.Union([
   ToolStartedEvent,
   ToolCompletedEvent,
   ContextCompactedEvent,
+  ThinkingLevelChangedEvent,
 ]);
 export type DurableSessionEvent = typeof DurableSessionEvent.Type;
 
@@ -411,7 +406,6 @@ export const EphemeralSessionEvent = Schema.Union([
   SummarizationRetryCompletedEvent,
   SessionEntryAppendedEvent,
   SessionInfoChangedEvent,
-  ThinkingLevelChangedEvent,
   BashOutputDeltaEvent,
 ]);
 export type EphemeralSessionEvent = typeof EphemeralSessionEvent.Type;

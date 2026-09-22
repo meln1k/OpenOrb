@@ -39,6 +39,7 @@ interface SessionInitializationOptions {
     prompt: string,
     completion: RunCompletion,
     issues: readonly SessionIssue[],
+    thinkingLevel?: SessionModelRuntime["thinkingLevel"],
   ) => SessionDecision;
 }
 

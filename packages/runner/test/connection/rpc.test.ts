@@ -714,7 +714,7 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session actor",
     yield* Fiber.interrupt(launched);
   }))));
 
-Deno.test("Prompt and Abort RPCs resolve and call the session actor", () =>
+Deno.test("Prompt, thinking-level, and Abort RPCs resolve and call the session actor", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const activeRunId = "01989d78-65ee-7f6a-a97e-0f16ad134c30";
     const store = {
@@ -731,6 +731,11 @@ Deno.test("Prompt and Abort RPCs resolve and call the session actor", () =>
         Effect.sync(() => {
           calls.push("prompt");
           return { ok: true as const, runId: activeRunId, mode: "follow-up" as const };
+        }),
+      setThinkingLevel: () =>
+        Effect.sync(() => {
+          calls.push("thinking-level");
+          return { ok: true as const, level: "xhigh" as const };
         }),
       abort: () =>
         Effect.sync(() => {
@@ -771,13 +776,20 @@ Deno.test("Prompt and Abort RPCs resolve and call the session actor", () =>
     assert(prompted.status === "accepted");
     assert(prompted.acknowledgement instanceof PromptSessionAccepted);
 
+    const changed = yield* harness.gateway.setSessionThinkingLevel({
+      workspaceId: WORKSPACE_ID,
+      sessionId: SESSION_ID,
+      level: "xhigh",
+    });
+    assertEquals(changed, { status: "accepted", acknowledgement: "xhigh" });
+
     const aborted = yield* harness.gateway.abortSession({
       workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
     });
     assert(aborted.status === "accepted");
     assert(aborted.acknowledgement instanceof AbortSessionAccepted);
-    assertEquals(calls, ["prompt", "abort"]);
+    assertEquals(calls, ["prompt", "thinking-level", "abort"]);
     yield* Fiber.interrupt(launched);
   }))));
 

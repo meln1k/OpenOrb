@@ -1,9 +1,14 @@
-import { modelReferenceSchema, orbSizeSchema } from "@openorb/protocol";
+import {
+  DEFAULT_SESSION_THINKING_LEVEL,
+  modelReferenceSchema,
+  orbSizeSchema,
+} from "@openorb/protocol";
 import {
   GitAuthor,
   isSafeGitReference,
   MAX_RPC_INITIAL_PROMPT_BYTES,
   ProjectId,
+  SessionModelRuntime,
 } from "@openorb/protocol/runner-api";
 import { validate as validateUuid } from "@std/uuid";
 import * as s from "remix/data-schema";
@@ -48,6 +53,15 @@ const promptSchema = s.string().refine(
       MAX_RPC_INITIAL_PROMPT_BYTES,
   `The prompt is required and must be at most ${MAX_RPC_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
 );
+const thinkingLevelSchema = s.union([
+  s.literal("off" as const),
+  s.literal("minimal" as const),
+  s.literal("low" as const),
+  s.literal("medium" as const),
+  s.literal("high" as const),
+  s.literal("xhigh" as const),
+  s.literal("max" as const),
+]);
 
 const createSessionSchema = f.object({
   projectId: f.field(projectIdSchema),
@@ -56,10 +70,15 @@ const createSessionSchema = f.object({
   runnerId: f.field(s.string()),
   orbSize: f.field(orbSizeSchema),
   branchName: f.field(sessionBranchNameSchema),
+  thinkingLevel: f.field(s.optional(thinkingLevelSchema)),
   initialPrompt: f.field(promptSchema),
 });
 const continueSessionSchema = f.object({
   prompt: f.field(promptSchema),
+  thinkingLevel: f.field(s.optional(thinkingLevelSchema)),
+});
+const setThinkingLevelSchema = f.object({
+  thinkingLevel: f.field(thinkingLevelSchema),
 });
 const retrySessionSchema = f.object({
   recovery: f.field(s.union([
@@ -199,7 +218,10 @@ export default createController(routes.app.sessions, {
             }),
             orbSize: parsed.value.orbSize,
             initialPrompt: parsed.value.initialPrompt,
-            modelRuntime,
+            modelRuntime: new SessionModelRuntime({
+              ...modelRuntime,
+              thinkingLevel: parsed.value.thinkingLevel ?? DEFAULT_SESSION_THINKING_LEVEL,
+            }),
             ...(githubToken ? { githubToken } : {}),
             ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
           },
@@ -307,6 +329,9 @@ export default createController(routes.app.sessions, {
           payload: {
             prompt: parsed.value.prompt,
             modelRuntime,
+            ...(parsed.value.thinkingLevel === undefined
+              ? {}
+              : { thinkingLevel: parsed.value.thinkingLevel }),
             ...(githubToken === null ? {} : { githubToken }),
             ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
           },
@@ -321,6 +346,37 @@ export default createController(routes.app.sessions, {
         );
       }
       return sessionCommandAccepted(context, sessionId);
+    },
+
+    async thinkingLevel(context) {
+      const workspaceId = context.auth.identity.workspaceId;
+      const sessionId = parseSessionId(context.params.sessionId);
+      if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
+      const parsed = s.parseSafe(setThinkingLevelSchema, context.formData);
+      if (!parsed.success) {
+        return await sessionCommandError(context, "Choose a valid thinking level.", 400);
+      }
+      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      if (!session) return await sessionCommandError(context, "Session not found.", 404);
+      const changed = await Effect.runPromise(
+        context.services.runnerConnections.setSessionThinkingLevel({
+          workspaceId,
+          sessionId,
+          level: parsed.value.thinkingLevel,
+        }),
+        { signal: context.request.signal },
+      );
+      if (changed.status !== "accepted") {
+        return await sessionCommandError(
+          context,
+          changed.message,
+          changed.status === "rejected" ? 409 : 503,
+        );
+      }
+      return Response.json(
+        { status: "accepted", level: changed.acknowledgement },
+        { status: 202 },
+      );
     },
 
     async abort(context) {
@@ -667,6 +723,7 @@ function submittedValues(formData: FormData): SessionComposerValues {
     ref: stringField(formData, "ref"),
     orbSize: stringField(formData, "orbSize"),
     branchName: stringField(formData, "branchName"),
+    thinkingLevel: stringField(formData, "thinkingLevel"),
     initialPrompt: stringField(formData, "initialPrompt"),
   };
 }

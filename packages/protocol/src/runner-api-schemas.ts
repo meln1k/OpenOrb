@@ -18,6 +18,7 @@ import {
   MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
 } from "./runner-api-limits.ts";
+import { SESSION_THINKING_LEVELS } from "./thinking-level.ts";
 
 export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
@@ -200,7 +201,8 @@ export const RunnerStateEvent = Schema.Union([
   SessionRemovedEvent,
 ]);
 
-const ThinkingLevel = Schema.Literals(["minimal", "low", "medium", "high", "xhigh", "max"]);
+export const ThinkingLevel = Schema.Literals(SESSION_THINKING_LEVELS);
+export type ThinkingLevel = typeof ThinkingLevel.Type;
 const Secret = Schema.String.check(
   Schema.isTrimmed(),
   Schema.isMinLength(1),
@@ -373,6 +375,7 @@ export class PromptSessionPayload extends Schema.Class<PromptSessionPayload>(
   clientRequestId: ClientRequestId,
   prompt: Prompt,
   modelRuntime: SessionModelRuntime,
+  thinkingLevel: Schema.optionalKey(ThinkingLevel),
   githubToken: Schema.optionalKey(Secret),
   environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
 }) {}
@@ -384,6 +387,18 @@ export class PromptSessionAccepted extends Schema.Class<PromptSessionAccepted>(
   runId: RunId,
   mode: Schema.Literals(["started", "follow-up"]),
 }) {}
+
+export class SetSessionThinkingLevelPayload extends Schema.Class<SetSessionThinkingLevelPayload>(
+  "SetSessionThinkingLevelPayload",
+)({
+  sessionId: SessionId,
+  level: ThinkingLevel,
+}) {}
+
+export class SetSessionThinkingLevelAccepted
+  extends Schema.Class<SetSessionThinkingLevelAccepted>("SetSessionThinkingLevelAccepted")({
+    level: ThinkingLevel,
+  }) {}
 
 export class WakeSessionPayload extends Schema.Class<WakeSessionPayload>("WakeSessionPayload")({
   sessionId: SessionId,
@@ -613,6 +628,12 @@ export class PromptRejected extends Schema.TaggedError<PromptRejected>()(
   "PromptRejected",
   { sessionId: SessionId, message: SafeMessage },
 ) {}
+
+export class SetSessionThinkingLevelRejected
+  extends Schema.TaggedError<SetSessionThinkingLevelRejected>()(
+    "SetSessionThinkingLevelRejected",
+    { sessionId: SessionId, message: SafeMessage },
+  ) {}
 
 export class WakeRejected extends Schema.TaggedError<WakeRejected>()(
   "WakeRejected",

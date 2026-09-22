@@ -210,6 +210,31 @@ Deno.test("active conversation reads use the cache and coalesced updates preserv
   }
 });
 
+Deno.test("active conversation cache publishes persisted thinking-level changes", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    await withSession(workingDirectory, SESSION_ID, async ({ events, pi }) => {
+      const watching = Effect.runFork(
+        events.watch(SESSION_ID, 0).pipe(
+          Stream.filter((item) => "cursor" in item),
+          Stream.take(1),
+          Stream.runCollect,
+        ),
+      );
+      await Effect.runPromise(Effect.yieldNow);
+      pi.appendThinkingLevelChange("low");
+
+      assertEquals(Array.from(await Effect.runPromise(Fiber.join(watching))), [{
+        runId: null,
+        cursor: 1,
+        event: { type: "thinking-level.changed", level: "low" },
+      }]);
+    });
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
 Deno.test("cold conversation reads project directly from Pi JSONL", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
@@ -545,6 +570,7 @@ async function withSession(
       gitAuthor: GIT_AUTHOR,
       initialPrompt: "Inspect the repository",
       model: "opencode-go/deepseek-v4-flash",
+      initialThinkingLevel: "high",
       orbSize: "small",
     }),
     "2026-08-23T12:00:00Z",

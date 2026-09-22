@@ -238,6 +238,7 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
       command.payload.prompt,
       { _tag: "Prompt", reply: command.reply },
       [],
+      command.payload.thinkingLevel,
     ));
   }
 
@@ -367,6 +368,7 @@ export function makeSessionContinuation(options: SessionContinuationOptions) {
                 continuation.runId,
                 continuation.payload.prompt,
                 { _tag: "Prompt", reply: continuation.reply },
+                continuation.payload.thinkingLevel,
               ),
           ),
         ),

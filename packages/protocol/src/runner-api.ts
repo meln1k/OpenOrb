@@ -30,6 +30,9 @@ import {
   SessionCorrupt,
   SessionGitSnapshot,
   SessionNotFound,
+  SetSessionThinkingLevelAccepted,
+  SetSessionThinkingLevelPayload,
+  SetSessionThinkingLevelRejected,
   StopRejected,
   StopSessionAccepted,
   StopSessionPayload,
@@ -65,6 +68,12 @@ export class PromptSession extends Rpc.make("session.prompt", {
   payload: PromptSessionPayload,
   success: PromptSessionAccepted,
   error: Schema.Union([SessionNotFound, PromptRejected]),
+}) {}
+
+export class SetSessionThinkingLevel extends Rpc.make("session.thinking-level.set", {
+  payload: SetSessionThinkingLevelPayload,
+  success: SetSessionThinkingLevelAccepted,
+  error: Schema.Union([SessionNotFound, SetSessionThinkingLevelRejected]),
 }) {}
 
 export class WakeSession extends Rpc.make("session.wake", {
@@ -115,6 +124,7 @@ export const RunnerApi = RpcGroup.make(
   WatchRunner,
   ProvisionSession,
   PromptSession,
+  SetSessionThinkingLevel,
   WakeSession,
   AbortSession,
   StopSession,

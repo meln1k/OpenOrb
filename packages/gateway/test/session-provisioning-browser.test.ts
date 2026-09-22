@@ -36,6 +36,7 @@ import type {
   ReadSessionArtifactChunkInput,
   RunnerLiveState,
   RunnerRegistryService,
+  SetSessionThinkingLevelInput,
   StopSessionInput,
   UpdateSessionGitFileInput,
   WakeSessionInput,
@@ -76,6 +77,7 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   provisions: ProvisionSessionInput[] = [];
   wakes: WakeSessionInput[] = [];
   prompts: PromptSessionInput[] = [];
+  thinkingLevelChanges: SetSessionThinkingLevelInput[] = [];
   aborts: AbortSessionInput[] = [];
   stops: StopSessionInput[] = [];
   deletions: DeleteSessionInput[] = [];
@@ -255,6 +257,14 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     return Effect.sync(() => {
       this.prompts.push(input);
       return this.promptResult;
+    });
+  }
+
+  setSessionThinkingLevel(input: SetSessionThinkingLevelInput) {
+    this.thinkingLevelChanges.push(input);
+    return Effect.succeed({
+      status: "accepted" as const,
+      acknowledgement: input.level,
     });
   }
 
@@ -457,21 +467,42 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
     assertMatch(createHtml, /<dialog[^>]*id="openorb-new-session"/);
     assertNotMatch(createHtml, /<dialog[^>]*id="openorb-new-session"[^>]* open/);
+    assertStringIncludes(
+      createHtml,
+      '"exportName":"SessionComposerClient","moduleUrl":"/assets/app/ui/session-composer.tsx","props":{"projects":[',
+    );
     assertMatch(createHtml, /Write prompt…/);
     assertMatch(createHtml, /tiny · 1 CPU · 2 GB memory/);
     assertMatch(createHtml, /small · 2 CPUs · 4 GB memory/);
     assertMatch(
       createHtml,
-      /<option[^>]*value="medium"[^>]*selected[^>]*>medium · 4 CPUs · 8 GB memory<\/option>/,
+      /<div[^>]*role="option"[^>]*aria-selected="true"[^>]*>[\s\S]*?medium · 4 CPUs · 8 GB memory/,
     );
     assertMatch(createHtml, /large · 8 CPUs · 16 GB memory/);
     assertMatch(createHtml, /xxlarge · 16 CPUs · 32 GB memory/);
+    assertMatch(createHtml, /<input[^>]*name="orbSize"[^>]*type="hidden"[^>]*value="medium"/);
     assertNotMatch(createHtml, /aria-label="Runner"/);
     assertNotMatch(createHtml, /name="sessionId"/);
     assertMatch(createHtml, /<input[^>]*type="hidden"[^>]*name="runnerId"[^>]*value=""/);
     assertMatch(createHtml, /<input[^>]*name="ref"[^>]*value="main"/);
     assertMatch(createHtml, /<input[^>]*name="branchName"[^>]*value="main"/);
     assertMatch(createHtml, /aria-label="Orb size"/);
+    assertMatch(createHtml, /aria-label="Thinking level"/);
+    assertMatch(createHtml, /data-supported-thinking-levels="off low high max"/);
+    assertMatch(
+      createHtml,
+      /<div[^>]*data-thinking-level-option="high"[^>]*aria-selected="true"[^>]*>[\s\S]*?<span>High<\/span>/,
+    );
+    assertMatch(
+      createHtml,
+      /<div[^>]*data-thinking-level-option="minimal"[^>]*hidden[^>]*>[\s\S]*?<span>Minimal<\/span>/,
+    );
+    const maxThinkingOption = createHtml.match(
+      /<div[^>]*data-thinking-level-option="max"[^>]*>[\s\S]*?<span>Max<\/span>/,
+    )?.[0];
+    assert(maxThinkingOption);
+    assertNotMatch(maxThinkingOption, /hidden/);
+    assertMatch(createHtml, /<input[^>]*name="thinkingLevel"[^>]*value="high"/);
     assertMatch(createHtml, /aria-keyshortcuts="Enter"/);
     assertMatch(createHtml, /deepseek-v4-flash/);
     assertNotMatch(createHtml, /name="apiKey"/);
@@ -496,6 +527,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         ref: "main",
         runnerId: "",
         orbSize: "small",
+        thinkingLevel: "max",
         branchName: "openorb/browser-test",
         initialPrompt: INITIAL_PROMPT,
       }),
@@ -529,7 +561,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       provision.payload.modelRuntime,
       new SessionModelRuntime({
         model: MODEL,
-        thinkingLevel: "high",
+        thinkingLevel: "max",
         credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
       }),
     );
@@ -925,6 +957,25 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       },
     }]);
 
+    const thinkingLevelHref = routes.app.sessions.thinkingLevel.href({
+      sessionId: provision.sessionId,
+    });
+    const changedThinkingLevel = await fetch(new URL(thinkingLevelHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(detailHtml),
+        thinkingLevel: "xhigh",
+      }),
+    });
+    assertEquals(changedThinkingLevel.status, 202);
+    assertEquals(await changedThinkingLevel.json(), { status: "accepted", level: "xhigh" });
+    assertEquals(connections.thinkingLevelChanges, [{
+      workspaceId: client.workspaceId,
+      sessionId: provision.sessionId,
+      level: "xhigh",
+    }]);
+
     const stopHref = routes.app.sessions.stop.href({ sessionId: provision.sessionId });
     const missingStopCsrf = await fetch(new URL(stopHref, server.baseUrl), {
       method: "POST",
@@ -1249,7 +1300,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(
       retryProvision?.payload.mode === "retry" ? retryProvision.payload.modelRuntime : undefined,
       new SessionModelRuntime({
-        ...provision.payload.modelRuntime,
+        model: provision.payload.modelRuntime.model,
+        thinkingLevel: "high",
         credential: { type: "api_key", value: RETRY_MODEL_PROVIDER_KEY },
       }),
     );
@@ -1450,6 +1502,19 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(invalidOrbSize.status, 400);
+    assertEquals(connections.provisions.length, 0);
+
+    const invalidThinkingLevel = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: connections.runnerId,
+      thinkingLevel: "unbounded",
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(invalidThinkingLevel.status, 400);
     assertEquals(connections.provisions.length, 0);
 
     const missingAuthor = await submitSession(server.baseUrl, client.cookie, {

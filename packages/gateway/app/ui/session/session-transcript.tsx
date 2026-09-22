@@ -1,4 +1,5 @@
 import type { SessionUsage } from "@openorb/protocol/browser-session-events";
+import type { SessionThinkingLevel } from "../../../../protocol/src/thinking-level.ts";
 import { tryAsync, trySync } from "../../../../result/src/index.ts";
 import { object, parseSafe, string } from "remix/data-schema";
 import { css, type Dispatched, type Handle, on } from "remix/ui";
@@ -34,11 +35,14 @@ import {
   usageContextTokens,
 } from "@/app/ui/session/session-transcript-state.ts";
 import { SessionPageScope } from "@/app/ui/session/session-page-controller.tsx";
+import { formatThinkingLevel } from "@/app/ui/session-thinking-level.ts";
+import { createSessionThinkingLevelController } from "@/app/ui/session/session-thinking-level-controller.ts";
 
 export type SessionTranscriptProps = {
   contextWindow: number;
   csrfToken: string;
   sessionId: string;
+  thinkingLevels: readonly SessionThinkingLevel[];
 };
 const bashToolArgumentsSchema = object(
   { command: string() },
@@ -48,7 +52,6 @@ const readToolArgumentsSchema = object(
   { path: string() },
   { unknownKeys: "passthrough" },
 );
-
 export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   const page = handle.context.get(SessionPageScope);
   let transcriptState = createSessionTranscriptState(page.projection.sessionState);
@@ -59,6 +62,17 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   let actionError: string | undefined;
   let updateFrame: number | undefined;
   const abortFormId = `session-${handle.props.sessionId}-abort`;
+  const thinking = createSessionThinkingLevelController({
+    csrfToken: handle.props.csrfToken,
+    sessionId: handle.props.sessionId,
+    supportedLevels: handle.props.thinkingLevels,
+    signal: handle.signal,
+    confirmedLevel: () => transcriptState.thinkingLevel,
+    setError: (error) => actionError = error,
+    update: async () => {
+      await handle.update();
+    },
+  }, page.projection.sessionState);
 
   const scheduleUpdate = () => {
     if (updateFrame !== undefined) return;
@@ -78,10 +92,21 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
         event,
         page.projection.sessionState,
       );
+      if (event.type === "thinking-level.changed") thinking.observeConfirmed();
       if (next === transcriptState) return;
       transcriptState = next;
       scheduleUpdate();
     }, { signal: handle.signal });
+    document.addEventListener("keydown", (event) => {
+      if (
+        event.key !== "Tab" || !event.shiftKey || event.altKey || event.ctrlKey ||
+        event.metaKey || event.isComposing
+      ) return;
+      if (document.querySelector("dialog[open]")) return;
+      event.preventDefault();
+      const { connectionInterrupted, sessionState } = page.projection;
+      if (!connectionInterrupted) void thinking.cycle(sessionState);
+    }, { capture: true, signal: handle.signal });
     handle.signal.addEventListener("abort", () => {
       if (updateFrame !== undefined) cancelAnimationFrame(updateFrame);
     }, { once: true });
@@ -140,6 +165,9 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
 
   return () => {
     const { connectionInterrupted, sessionState } = page.projection;
+    thinking.syncSessionState(sessionState);
+    const thinkingLevel = thinking.displayedLevel(sessionState);
+    const promptThinkingLevel = thinking.promptLevel(sessionState);
     const currentActivityId = activeActivityId(transcriptState);
     const busy = isSessionBusy(sessionState) && !connectionInterrupted;
     const hasActiveRun = sessionState === "running";
@@ -158,6 +186,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
       <section
         id={handle.id}
         aria-label="Session conversation"
+        aria-keyshortcuts="Shift+Tab"
         data-session-state={sessionState}
         mix={sessionFrameStyle}
       >
@@ -249,6 +278,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
         <form
           method="post"
           action={routes.app.sessions.message.href({ sessionId: handle.props.sessionId })}
+          data-thinking-level={thinkingLevel}
           mix={[
             sessionFooterItemStyle,
             promptFormStyle,
@@ -330,6 +360,13 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
           ]}
         >
           <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+          {promptThinkingLevel === undefined ? null : (
+            <input
+              type="hidden"
+              name="thinkingLevel"
+              value={promptThinkingLevel}
+            />
+          )}
           <textarea
             name="prompt"
             aria-label="Continue session"
@@ -386,6 +423,8 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
           transcriptState.latestUsage,
           transcriptState.contextUsage,
           handle.props.contextWindow,
+          thinkingLevel,
+          thinking.requestPending(),
         )}
       </section>
     );
@@ -618,6 +657,8 @@ function renderUsageStatus(
   latestUsage: SessionUsage | undefined,
   contextUsage: SessionUsage | undefined,
   contextWindow: number,
+  thinkingLevel: SessionThinkingLevel,
+  thinkingLevelPending: boolean,
 ) {
   const latestPromptTokens = latestUsage === undefined
     ? 0
@@ -632,6 +673,14 @@ function renderUsageStatus(
 
   return (
     <div data-session-usage mix={[sessionFooterItemStyle, sessionUsageStyle]}>
+      <span
+        data-thinking-level={thinkingLevel}
+        title="Thinking level · Shift+Tab to change"
+        aria-live="polite"
+      >
+        {formatThinkingLevel(thinkingLevel)}
+        {thinkingLevelPending ? "…" : ""}
+      </span>
       {usage.inputTokens > 0
         ? (
           <span title="Cumulative input tokens">
@@ -874,13 +923,17 @@ const promptFormStyle = css({
   marginBlock: "0 8px",
   padding: "12px",
   background: "var(--background)",
-  border: "1px solid var(--border)",
+  border: "2px solid var(--border)",
   borderRadius: "12px",
   boxShadow: "0 1px 4px rgb(0 0 0 / 0.1)",
   transition: "border-color 150ms ease",
-  "&:focus-within": {
-    borderColor: "color-mix(in oklab, var(--border) 88%, black)",
-  },
+  "&[data-thinking-level='off']": { borderColor: "#9d9d9d" },
+  "&[data-thinking-level='minimal']": { borderColor: "#ffffff" },
+  "&[data-thinking-level='low']": { borderColor: "#1eff00" },
+  "&[data-thinking-level='medium']": { borderColor: "#0070dd" },
+  "&[data-thinking-level='high']": { borderColor: "#a335ee" },
+  "&[data-thinking-level='xhigh']": { borderColor: "#ff8000" },
+  "&[data-thinking-level='max']": { borderColor: "#e6cc80" },
 });
 const promptInputStyle = css({
   boxSizing: "border-box",

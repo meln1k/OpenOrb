@@ -177,13 +177,15 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
     if (!model) {
       return yield* new AgentHarnessError("The configured Pi model is unavailable.", undefined);
     }
-    const thinkingLevel = options.modelRuntime.thinkingLevel;
-
     const sessionManager = SessionManager.open(
       options.runnerSessionFile,
       undefined,
       OPENORB_GUEST_WORKSPACE,
     );
+    const thinkingLevel =
+      sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change")
+        ? undefined
+        : options.modelRuntime.thinkingLevel;
     const activeConversation = yield* options.conversationProjection.activate(
       options.sessionId,
       eventsFromPiEntries(sessionManager.getBranch()),
@@ -203,7 +205,7 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
           resourceLoader,
           sessionManager,
           settingsManager,
-          thinkingLevel,
+          ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
           tools: toolNames,
           customTools: [...options.tools],
         }),
@@ -213,8 +215,9 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
     );
     return {
       ...created,
-      updateModelRuntime: (runtime: SessionModelRuntime) =>
-        updatePiCredential(credentials, runtime),
+      updateModelRuntime: async (runtime: SessionModelRuntime) => {
+        await updatePiCredential(credentials, runtime);
+      },
     };
   },
 );
@@ -277,6 +280,16 @@ export function observeSessionManagerPersistence(
     notify(id);
     return id;
   }) as SessionManager["appendCompaction"];
+
+  const appendThinkingLevelChange = manager.appendThinkingLevelChange.bind(manager);
+  // SAFETY: The wrapper forwards the exact public method parameters and return value unchanged.
+  manager.appendThinkingLevelChange = ((
+    ...args: Parameters<SessionManager["appendThinkingLevelChange"]>
+  ) => {
+    const id = appendThinkingLevelChange(...args);
+    notify(id);
+    return id;
+  }) as SessionManager["appendThinkingLevelChange"];
 
   return manager;
 }

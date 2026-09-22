@@ -3,6 +3,7 @@ import {
   type DurableSessionEvent,
   MAX_RPC_SESSION_EVENT_TEXT_BYTES,
 } from "@openorb/protocol/runner-api";
+import { SESSION_THINKING_LEVELS } from "@openorb/protocol";
 
 import {
   boundedCount,
@@ -22,6 +23,14 @@ export async function readPiSessionEvents(
 
 export function eventsFromPiEntries(entries: readonly SessionEntry[]): DurableSessionEvent[] {
   return entries.flatMap((entry): DurableSessionEvent[] => {
+    if (entry.type === "thinking_level_change") {
+      const level = SESSION_THINKING_LEVELS.find((level) => level === entry.thinkingLevel);
+      if (level === undefined) return [];
+      return [{
+        type: "thinking-level.changed",
+        level,
+      }];
+    }
     if (entry.type === "compaction") {
       return [{
         type: "context.compacted",

@@ -1,5 +1,5 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import type { EphemeralSessionEvent } from "@openorb/protocol/runner-api";
+import type { EphemeralSessionEvent, ThinkingLevel } from "@openorb/protocol/runner-api";
 import { Deferred, Effect, Fiber, Layer, Queue, Result, type Scope, Stream } from "effect";
 
 import {
@@ -24,6 +24,8 @@ import { createPiTools } from "./tools.ts";
 
 export interface RawPiSession {
   readonly isIdle: boolean;
+  readonly thinkingLevel: ThinkingLevel;
+  readonly sessionManager?: unknown;
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
   prompt(
     input: string,
@@ -32,6 +34,7 @@ export interface RawPiSession {
   followUp(input: string): Promise<void>;
   clearQueue(): { steering: string[]; followUp: string[] };
   abort(): Promise<void>;
+  setThinkingLevel(level: ThinkingLevel): void;
   dispose(): void;
 }
 
@@ -148,6 +151,15 @@ function openPiSession(
           catch: (cause) =>
             new AgentHarnessError("Could not update the Pi model credential.", cause),
         }),
+      setThinkingLevel: (level) => {
+        return Effect.try({
+          try: () => {
+            raw.setThinkingLevel(level);
+            return raw.thinkingLevel;
+          },
+          catch: (cause) => new AgentHarnessError("Could not update the Pi thinking level.", cause),
+        });
+      },
       start: (input) => startPiRun(raw, modelCredentials, input, scope),
     };
   });

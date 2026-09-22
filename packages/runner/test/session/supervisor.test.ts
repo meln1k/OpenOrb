@@ -15,7 +15,9 @@ import {
   SessionEnvironmentSecret,
   SessionId,
   type SessionIssueCategory,
+  SetSessionThinkingLevelPayload,
   StopSessionPayload,
+  type ThinkingLevel,
   UpdateSessionGitFilePayload,
   WakeSessionPayload,
   WorkspaceId,
@@ -79,6 +81,10 @@ const MODEL_RUNTIME = {
   thinkingLevel: "high" as const,
   credential: { type: "api_key" as const, value: "model-secret" },
 };
+const STATIC_THINKING_LEVEL = {
+  thinkingLevel: MODEL_RUNTIME.thinkingLevel,
+  setThinkingLevel() {},
+};
 const ENVIRONMENT_SECRETS = [
   new SessionEnvironmentSecret({
     name: "DEPLOY_TOKEN",
@@ -100,7 +106,10 @@ interface TestStore extends RunnerSessionStoreService {
   readonly session: SessionFixture;
 }
 
-function sessionDefinition(branchName: string): RunnerSessionDefinition {
+function sessionDefinition(
+  branchName: string,
+  initialThinkingLevel: ThinkingLevel = MODEL_RUNTIME.thinkingLevel,
+): RunnerSessionDefinition {
   return new RunnerSessionDefinition({
     workspaceId: WORKSPACE_ID,
     projectId: PROJECT_ID,
@@ -110,6 +119,7 @@ function sessionDefinition(branchName: string): RunnerSessionDefinition {
     gitAuthor: GIT_AUTHOR,
     initialPrompt: "Inspect the repository",
     model: MODEL_RUNTIME.model,
+    initialThinkingLevel,
     orbSize: "small",
   });
 }
@@ -189,12 +199,25 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
     const runtime = new FakeEnvironment();
     let piCreations = 0;
     let piDisposals = 0;
+    const piOperations: string[] = [];
     const createPiSession: CreateRawPiSession = (options) =>
       Effect.map(createSettlingPiSession(options), (created) => {
         piCreations++;
+        let thinkingLevel: ThinkingLevel = options.modelRuntime.thinkingLevel;
         return {
           session: {
             ...created.session,
+            get thinkingLevel() {
+              return thinkingLevel;
+            },
+            setThinkingLevel(level) {
+              thinkingLevel = level;
+              piOperations.push(`thinking:${level}`);
+            },
+            prompt: async (input, promptOptions) => {
+              piOperations.push(`prompt:${input}`);
+              await created.session.prompt(input, promptOptions);
+            },
             dispose: () => {
               piDisposals++;
               created.session.dispose();
@@ -246,6 +269,13 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
           "main",
         ]);
 
+        const changed = await Effect.runPromise(
+          requireActor(supervisor).setThinkingLevel(
+            new SetSessionThinkingLevelPayload({ sessionId: SESSION_ID, level: "low" }),
+          ),
+        );
+        assertEquals(changed, { ok: true, level: "low" });
+
         const prompt = Schema.decodeUnknownSync(PromptSessionPayload)({
           sessionId: SESSION_ID,
           clientRequestId: crypto.randomUUID(),
@@ -257,6 +287,23 @@ Deno.test("SessionSupervisor accepts typed provisioning and owns the background 
         assertEquals(promptAccepted.mode, "started");
         assert(String(promptAccepted.runId) !== String(prompt.clientRequestId));
         await waitForState(store, "ready");
+        const explicitPrompt = Schema.decodeUnknownSync(PromptSessionPayload)({
+          ...prompt,
+          clientRequestId: crypto.randomUUID(),
+          prompt: "Continue with maximum thinking",
+          thinkingLevel: "max",
+        });
+        const explicitAccepted = await Effect.runPromise(
+          requireActor(supervisor).prompt(explicitPrompt),
+        );
+        assert(explicitAccepted.ok);
+        await waitForState(store, "ready");
+        assertEquals(piOperations.slice(piOperations.indexOf("thinking:low")), [
+          "thinking:low",
+          "prompt:Continue",
+          "thinking:max",
+          "prompt:Continue with maximum thinking",
+        ]);
         assertEquals(piCreations, 1);
       },
     );
@@ -367,6 +414,7 @@ Deno.test("manual Stop syncs the persistent root disk and wake restores the envi
     let active = false;
     return Effect.succeed({
       session: {
+        ...STATIC_THINKING_LEVEL,
         get isIdle() {
           return !active;
         },
@@ -515,6 +563,7 @@ Deno.test("explicit Stop cancels active Pi work while idle Stop leaves it runnin
   const createPiSession: CreateRawPiSession = () =>
     Effect.succeed({
       session: {
+        ...STATIC_THINKING_LEVEL,
         isIdle: true,
         sessionManager: EMPTY_PI_SESSION_MANAGER,
         subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
@@ -926,6 +975,7 @@ Deno.test("SessionSupervisor records failed follow-ups and aborts only the activ
       createPiSession: (_options: OpenOrbPiSessionOptions) =>
         Effect.succeed({
           session: {
+            ...STATIC_THINKING_LEVEL,
             get isIdle() {
               return !active;
             },
@@ -1134,6 +1184,7 @@ Deno.test("SessionSupervisor lazily restores a ready actor for Git file updates"
       active: true,
       wake: () => Effect.die("unexpected wake"),
       prompt: () => Effect.die("unexpected prompt"),
+      setThinkingLevel: () => Effect.die("unexpected thinking-level change"),
       abort: () => Effect.die("unexpected abort"),
       stop: () => Effect.die("unexpected stop"),
       delete: () => Effect.succeed({ ok: true }),
@@ -1616,15 +1667,22 @@ Deno.test("SessionSupervisor marks interrupted provisioning for explicit retry",
   try {
     const store = await makeStore(directory);
     const payload = createProvisionPayload("openorb/restart-provisioning-test");
-    await Effect.runPromise(
-      store.session.create(payload.sessionId, sessionDefinition(payload.branchName), CREATED_AT),
-    );
+    await Effect.runPromise(store.session.create(
+      payload.sessionId,
+      sessionDefinition(payload.branchName, "max"),
+      CREATED_AT,
+    ));
+    const openedThinkingLevels: string[] = [];
+    const createPiSession: CreateRawPiSession = (options) => {
+      openedThinkingLevels.push(options.modelRuntime.thinkingLevel);
+      return createSettlingPiSession(options);
+    };
 
     await withSupervisor(
       {
         cpuCount: 4,
         memoryMiB: 8192,
-        createPiSession: createSettlingPiSession,
+        createPiSession,
       },
       store,
       fakeEnvironmentProvider(new FakeEnvironment()),
@@ -1638,6 +1696,7 @@ Deno.test("SessionSupervisor marks interrupted provisioning for explicit retry",
         await Effect.runPromise(supervisor.provision(retry));
         await waitForState(store, "ready");
         assertEquals(supervisor.activeSessionCount(), 1);
+        assertEquals(openedThinkingLevels, ["max"]);
       },
     );
   } finally {
@@ -1867,6 +1926,7 @@ Deno.test("SessionSupervisor does not impose a concurrent session-count limit", 
     const neverSettlingPiSession: CreateRawPiSession = () =>
       Effect.succeed({
         session: {
+          ...STATIC_THINKING_LEVEL,
           isIdle: false,
           sessionManager: EMPTY_PI_SESSION_MANAGER,
           subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
@@ -1912,6 +1972,7 @@ Deno.test("SessionSupervisor serializes two closely queued idle prompts into one
     const createPiSession: CreateRawPiSession = () =>
       Effect.succeed({
         session: {
+          ...STATIC_THINKING_LEVEL,
           isIdle: true,
           sessionManager: EMPTY_PI_SESSION_MANAGER,
           subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
@@ -1977,6 +2038,7 @@ Deno.test("SessionSupervisor rejects active deletion, then removes an idle sessi
     let active = false;
     return Effect.succeed({
       session: {
+        ...STATIC_THINKING_LEVEL,
         get isIdle() {
           return !active;
         },
@@ -2161,6 +2223,7 @@ function createSettlingPiSession(_options: OpenOrbPiSessionOptions) {
   let active = false;
   return Effect.succeed({
     session: {
+      ...STATIC_THINKING_LEVEL,
       get isIdle() {
         return !active;
       },
@@ -2333,6 +2396,7 @@ function passiveActor(
     active: false,
     wake: () => Effect.die("unexpected wake"),
     prompt: () => Effect.die("unexpected prompt"),
+    setThinkingLevel: () => Effect.die("unexpected thinking-level change"),
     abort: () => Effect.die("unexpected abort"),
     stop: () => Effect.die("unexpected stop"),
     delete: () => Effect.succeed({ ok: true }),

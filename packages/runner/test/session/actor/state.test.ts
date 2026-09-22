@@ -40,6 +40,7 @@ const definition = new RunnerSessionDefinition({
   gitAuthor: new GitAuthor({ name: "OpenOrb User", email: "user@example.com" }),
   initialPrompt: "Inspect the repository",
   model: "opencode-go/deepseek-v4-flash",
+  initialThinkingLevel: "high",
   orbSize: "small",
 });
 const modelIssue = {

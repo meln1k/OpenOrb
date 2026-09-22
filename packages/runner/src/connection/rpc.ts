@@ -17,6 +17,8 @@ import {
   type RunnerId,
   RunnerIdentity,
   SessionNotFound,
+  SetSessionThinkingLevelAccepted,
+  SetSessionThinkingLevelRejected,
   StopRejected,
   StopSessionAccepted,
   WakeRejected,
@@ -160,6 +162,25 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
               }),
             )
             : new PromptRejected({ sessionId: payload.sessionId, message: result.message })
+        ),
+      ),
+    "session.thinking-level.set": (payload) =>
+      supervisor.findOrRestoreActor(payload.sessionId).pipe(
+        Effect.flatMap((actor) =>
+          actor ? actor.setThinkingLevel(payload) : Effect.succeed(
+            {
+              ok: false,
+              message: "The session is not ready and idle.",
+            } as const,
+          )
+        ),
+        Effect.flatMap((result) =>
+          result.ok
+            ? Effect.succeed(new SetSessionThinkingLevelAccepted({ level: result.level }))
+            : new SetSessionThinkingLevelRejected({
+              sessionId: payload.sessionId,
+              message: result.message,
+            })
         ),
       ),
     "session.abort": (payload) => {

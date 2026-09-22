@@ -8,7 +8,12 @@ Deno.test("session navigation groups projects by recent activity", async () => {
     <AppShellNavigation
       activeSection={undefined}
       activeSessionId="beta-only"
-      composer={null}
+      composer={{
+        projects: [],
+        models: [],
+        hasConfiguredRunner: false,
+        hasConnectedRunner: false,
+      }}
       csrfToken="csrf-token"
       sessions={[
         {

@@ -10,3 +10,4 @@ export type {
   SessionRecoveryAction,
   SessionUsage,
 } from "./runner-api-session-events.ts";
+export type { SessionThinkingLevel } from "./thinking-level.ts";

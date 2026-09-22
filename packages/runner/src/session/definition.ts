@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_THINKING_LEVEL } from "@openorb/protocol";
 import {
   GitAuthor,
   initialPromptPreview,
@@ -6,9 +7,10 @@ import {
   ProjectId,
   SessionGitReference,
   SessionRepositoryUrl,
+  ThinkingLevel,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 const StoredInitialPrompt = Schema.String.check(
   Schema.makeFilter((value) =>
@@ -29,6 +31,9 @@ export class RunnerSessionDefinition extends Schema.Class<RunnerSessionDefinitio
   gitAuthor: GitAuthor,
   initialPrompt: StoredInitialPrompt,
   model: ModelReference,
+  initialThinkingLevel: ThinkingLevel.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(DEFAULT_SESSION_THINKING_LEVEL)),
+  ),
   orbSize: OrbSize,
 }) {}
 

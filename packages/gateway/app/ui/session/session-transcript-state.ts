@@ -1,6 +1,7 @@
 import type {
   SessionEvent,
   SessionProvisioningStage,
+  SessionThinkingLevel,
   SessionUsage,
 } from "@openorb/protocol/browser-session-events";
 
@@ -80,6 +81,7 @@ export type TranscriptEntry =
 
 export interface SessionTranscriptState {
   readonly status: string;
+  readonly thinkingLevel: SessionThinkingLevel;
   readonly warningVisible: boolean;
   readonly followUpQueue: readonly string[];
   readonly entries: readonly TranscriptEntry[];
@@ -108,6 +110,7 @@ export function createSessionTranscriptState(
 ): SessionTranscriptState {
   return {
     status: statusLabel(initialState),
+    thinkingLevel: "high",
     warningVisible: false,
     followUpQueue: [],
     entries: [],
@@ -183,6 +186,9 @@ export function reduceSessionTranscriptState(
 
   let next = reduceUsage(state, event);
   next = reduceConversation(next, event);
+  if (event.type === "thinking-level.changed") {
+    next = { ...next, thinkingLevel: event.level };
+  }
   if (event.type === "queue.updated") next = { ...next, followUpQueue: event.followUp };
   const activity = activityForEvent(event);
   if (activity !== null) next = appendActivity(next, activity);

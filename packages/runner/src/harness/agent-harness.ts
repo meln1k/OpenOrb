@@ -3,6 +3,7 @@ import type {
   EphemeralSessionEvent,
   SessionId,
   SessionModelRuntime,
+  ThinkingLevel,
 } from "@openorb/protocol/runner-api";
 
 import type { AgentEnvironment } from "../environment/agent-environment.ts";
@@ -35,6 +36,9 @@ export interface AgentHarnessSession {
   readonly updateModelRuntime: (
     modelRuntime: SessionModelRuntime,
   ) => Effect.Effect<void, AgentHarnessError>;
+  readonly setThinkingLevel: (
+    level: ThinkingLevel,
+  ) => Effect.Effect<ThinkingLevel, AgentHarnessError>;
   readonly start: (input: string) => Effect.Effect<ActiveAgentRun, AgentHarnessError>;
 }
 

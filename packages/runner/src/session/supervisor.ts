@@ -23,6 +23,7 @@ import {
   ProvisionRejected,
   ProvisionSessionSuccess,
   RunnerSessionSnapshot as RunnerSessionSnapshotValue,
+  SessionModelRuntime,
 } from "@openorb/protocol/runner-api";
 
 import { RunnerSessionDefinition } from "./definition.ts";
@@ -264,6 +265,7 @@ export function makeSessionSupervisor(
         gitAuthor: payload.gitAuthor,
         initialPrompt: payload.initialPrompt,
         model: payload.modelRuntime.model,
+        initialThinkingLevel: payload.modelRuntime.thinkingLevel,
         orbSize: payload.orbSize,
       });
     const prepareCreate = Effect.fn("SessionSupervisor.prepareCreate")(function* (
@@ -419,7 +421,12 @@ export function makeSessionSupervisor(
             ...(payload.environmentSecrets === undefined
               ? {}
               : { environmentSecrets: payload.environmentSecrets }),
-            modelRuntime: payload.modelRuntime,
+            modelRuntime: prepared.value.mode === "retry"
+              ? new SessionModelRuntime({
+                ...payload.modelRuntime,
+                thinkingLevel: metadata.definition.initialThinkingLevel,
+              })
+              : payload.modelRuntime,
             correlationId: crypto.randomUUID(),
             idleTimeoutMs,
           };

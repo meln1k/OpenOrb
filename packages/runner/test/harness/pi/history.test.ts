@@ -3,6 +3,17 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import { eventsFromPiEntries } from "@/src/harness/pi/history.ts";
 
+Deno.test("projects thinking-level changes for reconnect replay", () => {
+  const session = SessionManager.inMemory("/workspace");
+  session.appendThinkingLevelChange("low");
+  session.appendThinkingLevelChange("max");
+
+  assertEquals(eventsFromPiEntries(session.getBranch()), [
+    { type: "thinking-level.changed", level: "low" },
+    { type: "thinking-level.changed", level: "max" },
+  ]);
+});
+
 Deno.test("projects only Pi's active conversation branch", () => {
   const session = SessionManager.inMemory("/workspace");
   const firstUserId = session.appendMessage({

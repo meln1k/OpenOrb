@@ -6,21 +6,58 @@ export const SessionComposerBehavior = clientEntry<{ dialogId: string }>(
     handle.queueTask(() => {
       const dialog = document.getElementById(handle.props.dialogId);
       if (!(dialog instanceof HTMLDialogElement)) return;
-      const submitPromptOnEnter = (event: KeyboardEvent) => {
+      const handleComposerKeydown = (event: KeyboardEvent) => {
+        if (
+          event.key === "Tab" && event.shiftKey && !event.altKey && !event.ctrlKey &&
+          !event.metaKey && !event.isComposing
+        ) {
+          const thinkingLevel = dialog.querySelector<HTMLButtonElement>(
+            'button[aria-label="Thinking level"]',
+          );
+          if (!(thinkingLevel instanceof HTMLButtonElement)) return;
+          event.preventDefault();
+          thinkingLevel.dispatchEvent(new Event("openorb:cycle-thinking-level"));
+          return;
+        }
         if (
           !(event.target instanceof HTMLTextAreaElement) ||
-          event.target.name !== "initialPrompt" ||
-          event.key !== "Enter" ||
-          event.isComposing ||
-          event.shiftKey
+          event.target.name !== "initialPrompt"
         ) return;
+        if (event.key !== "Enter" || event.isComposing || event.shiftKey) return;
         event.preventDefault();
         const submitter = event.target.form?.querySelector<HTMLButtonElement>(
           'button[type="submit"]',
         );
         if (submitter && !submitter.disabled) event.target.form?.requestSubmit(submitter);
       };
-      dialog.addEventListener("keydown", submitPromptOnEnter, { signal: handle.signal });
+      const updateThinkingLevels = (event: Event) => {
+        if (
+          event.type !== "rmx:select-change" || !(event.target instanceof HTMLButtonElement) ||
+          event.target.getAttribute("aria-label") !== "Model"
+        ) return;
+        const modelInput = event.target.form?.elements.namedItem("model");
+        if (!(modelInput instanceof HTMLInputElement)) return;
+        const modelOption = Array.from(
+          dialog.querySelectorAll<HTMLElement>("[data-model-value]"),
+        ).find((option) => option.dataset.modelValue === modelInput.value);
+        const supported = modelOption?.dataset.supportedThinkingLevels?.split(" ") ?? [];
+        dialog.querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
+          ?.dispatchEvent(new CustomEvent("openorb:update-thinking-levels", { detail: supported }));
+      };
+      const updateThinkingLevelColor = (event: Event) => {
+        if (
+          event.type !== "rmx:select-change" || !(event.target instanceof HTMLButtonElement) ||
+          event.target.getAttribute("aria-label") !== "Thinking level"
+        ) return;
+        const thinkingLevel = event.target.form?.elements.namedItem("thinkingLevel");
+        if (!(thinkingLevel instanceof HTMLInputElement)) return;
+        dialog.dataset.thinkingLevel = thinkingLevel.value;
+      };
+      dialog.addEventListener("keydown", handleComposerKeydown, { signal: handle.signal });
+      dialog.addEventListener("rmx:select-change", updateThinkingLevels, { signal: handle.signal });
+      dialog.addEventListener("rmx:select-change", updateThinkingLevelColor, {
+        signal: handle.signal,
+      });
     });
     return () => null;
   },

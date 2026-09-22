@@ -5,6 +5,7 @@ import type {
   SessionEnvironmentSecret,
   SessionIssue,
   SessionModelRuntime,
+  SetSessionThinkingLevelPayload,
   StopSessionPayload,
   UpdateSessionGitFilePayload,
   WakeSessionPayload,
@@ -26,6 +27,10 @@ export type PromptAcceptance =
 
 export type AbortAcceptance =
   | { readonly ok: true }
+  | { readonly ok: false; readonly message: string };
+
+export type ThinkingLevelAcceptance =
+  | { readonly ok: true; readonly level: SetSessionThinkingLevelPayload["level"] }
   | { readonly ok: false; readonly message: string };
 
 export type WakeAcceptance =
@@ -90,6 +95,12 @@ export type ActorCommand =
     readonly _tag: "Abort";
     readonly payload: AbortSessionPayload;
     readonly reply: Deferred.Deferred<AbortAcceptance>;
+  }
+  | {
+    readonly kind: "command";
+    readonly _tag: "SetThinkingLevel";
+    readonly payload: SetSessionThinkingLevelPayload;
+    readonly reply: Deferred.Deferred<ThinkingLevelAcceptance>;
   }
   | {
     readonly kind: "command";

@@ -61,6 +61,7 @@ function sessionDefinition(branchName: string): RunnerSessionDefinition {
     gitAuthor: GIT_AUTHOR,
     initialPrompt: "Inspect the repository",
     model: "opencode-go/deepseek-v4-flash",
+    initialThinkingLevel: "high",
     orbSize: "small",
   });
 }

@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { SessionId } from "@openorb/protocol/runner-api";
+import { SessionId, type ThinkingLevel } from "@openorb/protocol/runner-api";
 import { Effect, Schema, Stream } from "effect";
 
 import type { AgentEnvironment } from "../../../src/environment/agent-environment.ts";
@@ -19,6 +19,10 @@ const MODEL_RUNTIME = {
   thinkingLevel: "high" as const,
   credential: { type: "api_key" as const, value: "model-secret" },
 };
+const STATIC_THINKING_LEVEL = {
+  thinkingLevel: MODEL_RUNTIME.thinkingLevel,
+  setThinkingLevel() {},
+};
 
 Deno.test("Pi harness exposes a finite, ordered, lossless run stream", async () => {
   let disposed = false;
@@ -32,6 +36,7 @@ Deno.test("Pi harness exposes a finite, ordered, lossless run stream", async () 
         let active = false;
         return Effect.succeed({
           session: {
+            ...STATIC_THINKING_LEVEL,
             get isIdle() {
               return !active;
             },
@@ -77,6 +82,7 @@ Deno.test("Pi harness exposes a finite, ordered, lossless run stream", async () 
 Deno.test("Pi harness updates access tokens in memory and redacts every rotation", async () => {
   const freshToken = "fresh-chatgpt-access-token";
   const configured: string[] = [];
+  let setThinkingLevelCalls = 0;
   const events = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     let listener: (event: AgentSessionEvent) => void = () => {};
     const harness = makePiAgentHarness({
@@ -88,6 +94,10 @@ Deno.test("Pi harness updates access tokens in memory and redacts every rotation
             return Promise.resolve();
           },
           session: {
+            ...STATIC_THINKING_LEVEL,
+            setThinkingLevel() {
+              setThinkingLevelCalls++;
+            },
             isIdle: true,
             subscribe(next: (event: AgentSessionEvent) => void) {
               listener = next;
@@ -130,6 +140,7 @@ Deno.test("Pi harness updates access tokens in memory and redacts every rotation
   })));
 
   assertEquals(configured, [freshToken]);
+  assertEquals(setThinkingLevelCalls, 0);
   assertEquals(Array.from(events), [{
     type: "model.retry.started",
     attempt: 1,
@@ -137,6 +148,46 @@ Deno.test("Pi harness updates access tokens in memory and redacts every rotation
     delayMs: 0,
     errorMessage: "Authorization failed for [REDACTED]",
   }]);
+});
+
+Deno.test("Pi harness returns the thinking level accepted by Pi", async () => {
+  const accepted = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    let thinkingLevel: ThinkingLevel = MODEL_RUNTIME.thinkingLevel;
+    const harness = makePiAgentHarness({
+      conversationProjection: CONVERSATION_PROJECTION,
+      create: () =>
+        Effect.succeed({
+          session: {
+            isIdle: true,
+            get thinkingLevel() {
+              return thinkingLevel;
+            },
+            setThinkingLevel(level) {
+              thinkingLevel = level === "max" ? "xhigh" : level;
+            },
+            subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
+            prompt: () => Promise.resolve(),
+            followUp: () => Promise.resolve(),
+            clearQueue: () => ({ steering: [], followUp: [] }),
+            abort: () => Promise.resolve(),
+            dispose() {},
+          },
+        }),
+    });
+    const session = yield* harness.open({
+      sessionId: SESSION_ID,
+      environment: EMPTY_ENVIRONMENT,
+      git: {
+        repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
+        branchName: "openorb/pi-layer-test",
+      },
+      modelRuntime: MODEL_RUNTIME,
+      state: { sessionFile: "/state/session", agentDirectory: "/state/agent" },
+    });
+    return yield* session.setThinkingLevel("max");
+  })));
+
+  assertEquals(accepted, "xhigh");
 });
 
 Deno.test("Pi harness atomically clears queued follow-ups before aborting", async () => {
@@ -149,6 +200,7 @@ Deno.test("Pi harness atomically clears queued follow-ups before aborting", asyn
       create: () =>
         Effect.succeed({
           session: {
+            ...STATIC_THINKING_LEVEL,
             get isIdle() {
               return !active;
             },

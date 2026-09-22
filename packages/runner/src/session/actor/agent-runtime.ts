@@ -1,4 +1,9 @@
-import type { RunId, SessionId, SessionModelRuntime } from "@openorb/protocol/runner-api";
+import type {
+  RunId,
+  SessionId,
+  SessionModelRuntime,
+  ThinkingLevel,
+} from "@openorb/protocol/runner-api";
 import { Cause, Effect, Exit, Scope, Stream } from "effect";
 
 import type { AgentEnvironment } from "../../environment/agent-environment.ts";
@@ -31,6 +36,10 @@ export interface SessionAgentRuntime {
     session: OpenAgentSession,
     modelRuntime: SessionModelRuntime,
   ) => Effect.Effect<void, SessionActorError>;
+  readonly setThinkingLevel: (
+    session: OpenAgentSession,
+    level: ThinkingLevel,
+  ) => Effect.Effect<ThinkingLevel, SessionActorError>;
   readonly close: (session: OpenAgentSession) => Effect.Effect<void>;
 }
 
@@ -103,6 +112,8 @@ export const makeSessionAgentRuntime = Effect.fn("makeSessionAgentRuntime")(func
     consume,
     updateModelRuntime: (session, modelRuntime) =>
       session.session.updateModelRuntime(modelRuntime).pipe(Effect.mapError(actorError)),
+    setThinkingLevel: (session, level) =>
+      session.session.setThinkingLevel(level).pipe(Effect.mapError(actorError)),
     close: (session) => Scope.close(session.scope, Exit.void),
   } satisfies SessionAgentRuntime;
 });

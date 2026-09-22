@@ -7,6 +7,7 @@ export {
   type ParsedModelReference,
   parseModelReference,
 } from "@/src/model-provider.ts";
+export { SESSION_THINKING_LEVELS, type SessionThinkingLevel } from "@/src/thinking-level.ts";
 export {
   ENROLLMENT_PSK_PREFIX,
   enrollmentPskSchema,
@@ -45,6 +46,7 @@ export {
   ProvisionSession,
   ReadSessionGitSnapshot,
   RunnerApi,
+  SetSessionThinkingLevel,
   UpdateSessionGitFile,
   WakeSession,
   WatchRunner,

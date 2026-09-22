@@ -3,6 +3,7 @@ import type {
   AbortSessionPayload,
   PromptSessionPayload,
   SessionId,
+  SetSessionThinkingLevelPayload,
   StopSessionPayload,
   UpdateSessionGitFilePayload,
   WakeSessionPayload,
@@ -25,6 +26,7 @@ import type {
   SessionActorInput,
   SessionCommand,
   StopAcceptance,
+  ThinkingLevelAcceptance,
   WakeAcceptance,
 } from "./commands.ts";
 import { makeSessionBehavior } from "./behavior.ts";
@@ -41,6 +43,7 @@ export type {
   PromptAcceptance,
   SessionActorInput,
   StopAcceptance,
+  ThinkingLevelAcceptance,
   WakeAcceptance,
 } from "./commands.ts";
 export { SessionActorError } from "./actor-error.ts";
@@ -51,6 +54,9 @@ export interface SessionActor {
   readonly active: boolean;
   readonly wake: (payload: WakeSessionPayload) => Effect.Effect<WakeAcceptance>;
   readonly prompt: (payload: PromptSessionPayload) => Effect.Effect<PromptAcceptance>;
+  readonly setThinkingLevel: (
+    payload: SetSessionThinkingLevelPayload,
+  ) => Effect.Effect<ThinkingLevelAcceptance>;
   readonly abort: (payload: AbortSessionPayload) => Effect.Effect<AbortAcceptance>;
   readonly stop: (payload: StopSessionPayload) => Effect.Effect<StopAcceptance>;
   readonly delete: () => Effect.Effect<DeletionAcceptance>;
@@ -184,6 +190,11 @@ const makeSessionActor = Effect.fn("makeSessionActor")(function* (
     prompt: (payload) =>
       request<PromptAcceptance>(
         (reply) => ({ kind: "command", _tag: "Prompt", payload, reply }),
+        { ok: false, message: "The session actor is unavailable." },
+      ),
+    setThinkingLevel: (payload) =>
+      request<ThinkingLevelAcceptance>(
+        (reply) => ({ kind: "command", _tag: "SetThinkingLevel", payload, reply }),
         { ok: false, message: "The session actor is unavailable." },
       ),
     abort: (payload) =>

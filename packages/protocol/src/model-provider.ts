@@ -1,7 +1,9 @@
 import { parse, parseSafe, string } from "@remix-run/data-schema";
 
+import type { SessionThinkingLevel } from "./thinking-level.ts";
+
 export const DEFAULT_SESSION_MODEL = "opencode-go/deepseek-v4-flash";
-export const DEFAULT_SESSION_THINKING_LEVEL = "high";
+export const DEFAULT_SESSION_THINKING_LEVEL: SessionThinkingLevel = "high";
 
 export const modelProviderIdSchema = string().refine(
   (value) =>

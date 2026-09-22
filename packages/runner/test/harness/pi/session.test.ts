@@ -90,8 +90,14 @@ Deno.test("SessionManager observer runs post-write for every durable conversatio
     originalReturned = true;
     manager.appendCustomMessageEntry("openorb-test", "Context", true);
     manager.appendCompaction("Summary", messageId, 100);
+    manager.appendThinkingLevelChange("low");
 
-    assertEquals(observed, ["message", "custom_message", "compaction"]);
+    assertEquals(observed, [
+      "message",
+      "custom_message",
+      "compaction",
+      "thinking_level_change",
+    ]);
   } finally {
     await Deno.remove(temporaryDirectory, { recursive: true });
   }

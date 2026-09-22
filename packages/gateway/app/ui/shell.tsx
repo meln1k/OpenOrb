@@ -39,7 +39,7 @@ import {
   Spinner,
 } from "@/app/ui/components/index.ts";
 import { media } from "@/app/ui/responsive.ts";
-import { SessionComposer, type SessionComposerProps } from "@/app/ui/session-composer.tsx";
+import { SessionComposerClient, type SessionComposerProps } from "@/app/ui/session-composer.tsx";
 
 export type AppShellLayoutProps = {
   activeSection?: "projects";
@@ -67,13 +67,7 @@ export function AppShellLayout(handle: Handle<AppShellLayoutProps>) {
     <AppShellNavigation
       activeSection={handle.props.activeSection}
       activeSessionId={handle.props.activeSessionId}
-      composer={
-        <SessionComposer
-          {...handle.props.composer}
-          csrfToken={handle.props.csrfToken}
-          dialogId={NEW_SESSION_DIALOG_ID}
-        />
-      }
+      composer={handle.props.composer}
       csrfToken={handle.props.csrfToken}
       sessions={handle.props.sessions}
       workspace={handle.props.workspace ?? <AppWorkspaceLayout {...handle.props} />}
@@ -90,7 +84,7 @@ type SessionProjectGroup = {
 type AppShellNavigationProps = {
   activeSection: "projects" | undefined;
   activeSessionId: string | undefined;
-  composer: RemixNode;
+  composer: Omit<SessionComposerProps, "csrfToken" | "dialogId">;
   csrfToken: string;
   sessions: SessionNavigationEntry[];
   workspace: RemixNode;
@@ -132,7 +126,11 @@ export function AppShellNavigation(handle: Handle<AppShellNavigationProps>) {
         </ResizablePanel>
         {handle.props.workspace}
       </ResizablePanelGroup>
-      {handle.props.composer}
+      <SessionComposerClient
+        {...handle.props.composer}
+        csrfToken={handle.props.csrfToken}
+        dialogId={NEW_SESSION_DIALOG_ID}
+      />
     </SidebarLayout>
   );
 }

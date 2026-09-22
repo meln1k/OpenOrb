@@ -50,6 +50,7 @@ import {
   SessionIssues,
   SessionModelRuntime,
   type SessionNotFound,
+  SetSessionThinkingLevelAccepted,
   type StopRejected,
   StopSessionAccepted,
   StopSessionPayload,
@@ -581,6 +582,8 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
           mode: "started",
         }),
       ),
+    "session.thinking-level.set": ({ level }) =>
+      Effect.succeed(new SetSessionThinkingLevelAccepted({ level })),
     "session.wake": () => Effect.succeed(new WakeSessionAccepted({})),
     "session.abort": ({ runId }) => Effect.succeed(new AbortSessionAccepted({ runId })),
     "session.stop": () => Effect.succeed(new StopSessionAccepted({})),

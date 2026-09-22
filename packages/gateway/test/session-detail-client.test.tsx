@@ -13,6 +13,7 @@ Deno.test("session detail defaults mobile navigation to the agent view", async (
       initialIssues={[]}
       sessionId="session-id"
       sessionName="Mobile session tabs"
+      thinkingLevels={["off", "low", "high"]}
     />,
   );
 
@@ -47,6 +48,7 @@ Deno.test("session composer replaces send with stop during an active turn", asyn
       initialIssues={[]}
       sessionId="session-id"
       sessionName="Active session"
+      thinkingLevels={["off", "low", "high"]}
     />,
   );
 

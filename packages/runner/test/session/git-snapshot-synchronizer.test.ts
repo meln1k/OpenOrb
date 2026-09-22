@@ -39,6 +39,7 @@ const METADATA: RunnerSessionMetadata = {
     gitAuthor: new GitAuthor({ name: "OpenOrb User", email: "user@example.com" }),
     initialPrompt: "Inspect the repository",
     model: Schema.decodeUnknownSync(ModelReference)("opencode-go/deepseek-v4-flash"),
+    initialThinkingLevel: "high",
     orbSize: "small",
   }),
   runnerId: Schema.decodeUnknownSync(RunnerId)(
