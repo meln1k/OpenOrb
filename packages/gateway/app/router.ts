@@ -25,6 +25,8 @@ import apiSessionsController from "@/app/actions/api/sessions/controller.ts";
 import { assetServer } from "@/app/assets.ts";
 import type { Administrator } from "@/app/data/administrator-repository.ts";
 import { type AppServices, AppServicesKey, provideAppServices } from "@/app/middleware/services.ts";
+import { rewriteTrailingSlash } from "@/app/middleware/trailing-slash.ts";
+import { redirectUnauthorizedPages } from "@/app/middleware/unauthorized-page.ts";
 import { routes } from "@/app/routes.ts";
 import {
   BROWSER_SESSION_MAX_AGE_SECONDS,
@@ -59,9 +61,11 @@ export function createAppRouter(
 ) {
   const appRouter = createRouter({
     middleware: [
+      rewriteTrailingSlash(),
       publicFiles(),
       formData(),
       session(sessionCookie, services.store.sessionStorage),
+      redirectUnauthorizedPages(),
       provideAppServices(services),
       auth({
         schemes: [

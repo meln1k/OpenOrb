@@ -686,8 +686,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         routes.app.sessions.frame.href({ sessionId: provision.sessionId }),
         server.baseUrl,
       ),
+      { redirect: "manual" },
     );
-    assertEquals(anonymousFrame.status, 401);
+    assertEquals(anonymousFrame.status, 302);
+    assertEquals(anonymousFrame.headers.get("location"), "/");
 
     const missingFrame = await fetch(
       new URL(
@@ -1353,8 +1355,11 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     assert(foreignProject.status === "saved");
     connections.runnerId = (await enrollRunner(store, client.workspaceId)).runnerId;
 
-    const anonymous = await fetch(new URL(routes.app.index.href(), server.baseUrl));
-    assertEquals(anonymous.status, 401);
+    const anonymous = await fetch(new URL(routes.app.index.href(), server.baseUrl), {
+      redirect: "manual",
+    });
+    assertEquals(anonymous.status, 302);
+    assertEquals(anonymous.headers.get("location"), "/");
     const page = await fetch(new URL(routes.app.index.href(), server.baseUrl), {
       headers: { Cookie: client.cookie },
     });

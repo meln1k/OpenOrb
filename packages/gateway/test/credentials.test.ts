@@ -870,7 +870,8 @@ Deno.test("rejects unknown providers, unauthenticated access, and missing CSRF",
     const anonymous = await fetch(new URL(PROVIDERS_SETTINGS_PATH, client.server.baseUrl), {
       redirect: "manual",
     });
-    assertEquals(anonymous.status, 401);
+    assertEquals(anonymous.status, 302);
+    assertEquals(anonymous.headers.get("location"), "/");
 
     const missingCsrf = await fetch(new URL(PROVIDERS_SETTINGS_PATH, client.server.baseUrl), {
       method: "POST",

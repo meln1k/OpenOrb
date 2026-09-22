@@ -136,8 +136,11 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
   const githubSettingsPath = routes.app.settings.github.index.href();
   const projectsPath = routes.app.projects.index.href();
   try {
-    const anonymous = await fetch(new URL(projectsPath, client.server.baseUrl));
-    assertEquals(anonymous.status, 401);
+    const anonymous = await fetch(new URL(projectsPath, client.server.baseUrl), {
+      redirect: "manual",
+    });
+    assertEquals(anonymous.status, 302);
+    assertEquals(anonymous.headers.get("location"), "/");
 
     const emptyAuthorSettings = await getPage(client, gitAuthorSettingsPath);
     assertMatch(emptyAuthorSettings, /Git author/);

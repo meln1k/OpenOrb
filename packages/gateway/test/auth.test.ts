@@ -217,7 +217,8 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
       redirect: "manual",
       headers: { Cookie: setupCookie },
     });
-    assertEquals(oldSessionResponse.status, 401);
+    assertEquals(oldSessionResponse.status, 302);
+    assertEquals(oldSessionResponse.headers.get("location"), "/");
 
     const logoutResponse = await fetch(new URL("/auth/logout", server.baseUrl), {
       method: "POST",
@@ -233,7 +234,8 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
       redirect: "manual",
       headers: { Cookie: authenticatedCookie },
     });
-    assertEquals(afterLogout.status, 401);
+    assertEquals(afterLogout.status, 302);
+    assertEquals(afterLogout.headers.get("location"), "/");
   } finally {
     await server.close();
     await store.close();
@@ -323,7 +325,13 @@ Deno.test("auth middleware checks Workspace identity against persistence indepen
           headers: { Cookie: (await cookie.serialize(cookieValue)).split(";", 1)[0]! },
         }),
       );
-      assertEquals(response.status, identity === administrator ? 200 : 401);
+      assertEquals(response.status, identity === administrator ? 200 : 302);
+      if (identity !== administrator) {
+        assertEquals(response.headers.get("location"), "/");
+      }
+      if (identity !== administrator && "workspaceId" in identity) {
+        assert(response.headers.has("set-cookie"));
+      }
       await response.body?.cancel();
     }
   } finally {
