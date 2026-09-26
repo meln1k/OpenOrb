@@ -24,6 +24,8 @@ export const assetServer = createAssetServer({
     "packages/gateway/app/ui/session/session-change-files.tsx",
     "packages/gateway/app/ui/session/session-change-items.ts",
     "packages/gateway/app/ui/session/session-composer-behavior.tsx",
+    "packages/gateway/app/ui/session/session-model-picker.tsx",
+    "packages/gateway/app/ui/session/session-selector-styles.ts",
     "packages/gateway/app/ui/session/session-changes-panel.tsx",
     "packages/gateway/app/ui/session/session-changes-resource.tsx",
     "packages/gateway/app/ui/session/session-detail-client.tsx",

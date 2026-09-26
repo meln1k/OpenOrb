@@ -30,20 +30,6 @@ export const SessionComposerBehavior = clientEntry<{ dialogId: string }>(
         );
         if (submitter && !submitter.disabled) event.target.form?.requestSubmit(submitter);
       };
-      const updateThinkingLevels = (event: Event) => {
-        if (
-          event.type !== "rmx:select-change" || !(event.target instanceof HTMLButtonElement) ||
-          event.target.getAttribute("aria-label") !== "Model"
-        ) return;
-        const modelInput = event.target.form?.elements.namedItem("model");
-        if (!(modelInput instanceof HTMLInputElement)) return;
-        const modelOption = Array.from(
-          dialog.querySelectorAll<HTMLElement>("[data-model-value]"),
-        ).find((option) => option.dataset.modelValue === modelInput.value);
-        const supported = modelOption?.dataset.supportedThinkingLevels?.split(" ") ?? [];
-        dialog.querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
-          ?.dispatchEvent(new CustomEvent("openorb:update-thinking-levels", { detail: supported }));
-      };
       const updateThinkingLevelColor = (event: Event) => {
         if (
           event.type !== "rmx:select-change" || !(event.target instanceof HTMLButtonElement) ||
@@ -54,7 +40,6 @@ export const SessionComposerBehavior = clientEntry<{ dialogId: string }>(
         dialog.dataset.thinkingLevel = thinkingLevel.value;
       };
       dialog.addEventListener("keydown", handleComposerKeydown, { signal: handle.signal });
-      dialog.addEventListener("rmx:select-change", updateThinkingLevels, { signal: handle.signal });
       dialog.addEventListener("rmx:select-change", updateThinkingLevelColor, {
         signal: handle.signal,
       });

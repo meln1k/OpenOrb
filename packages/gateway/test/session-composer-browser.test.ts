@@ -167,7 +167,7 @@ Deno.test({
         "rgb(230, 204, 128)",
       );
       assertEquals(await prompt.evaluate((element) => element === document.activeElement), true);
-      await model.locator("svg").first().click();
+      await model.click();
       assertEquals(
         await page.getByRole("listbox").evaluate((list) => {
           const trigger = document.querySelector('button[aria-label="Model"]')
@@ -185,6 +185,23 @@ Deno.test({
       assertEquals(
         await page.getByRole("listbox").getByRole("option").allTextContents(),
         ["Test · First", "Test · Second"],
+      );
+      const modelSearch = page.getByRole("combobox", { name: "Search models" });
+      await modelSearch.fill("Unknown");
+      assertEquals(
+        await page.getByRole("listbox").getByRole("option").filter({ visible: true }).count(),
+        0,
+      );
+      assertEquals(await modelInput.inputValue(), "first-model");
+      await modelSearch.press("Enter");
+      assertEquals(await dialog.isVisible(), true);
+      assertEquals(await modelInput.inputValue(), "first-model");
+      assertEquals((await model.textContent())?.trim(), "First");
+      await modelSearch.fill("Sec");
+      assertEquals(
+        await page.getByRole("listbox").getByRole("option").filter({ visible: true })
+          .allTextContents(),
+        ["Test · Second"],
       );
       await page.getByRole("option", { name: "Test · Second" }).click();
       await page.waitForFunction(() =>
@@ -312,8 +329,23 @@ Deno.test({
       );
       await page.getByRole("button", { name: "Back to session" }).click();
       assertEquals(await orbSize.getAttribute("aria-expanded"), "false");
-      await model.locator("svg").first().click();
+      await model.click();
       assertEquals(await page.getByRole("heading", { name: "Choose a model" }).isVisible(), true);
+      assertEquals(await page.getByRole("combobox", { name: "Search models" }).isVisible(), true);
+      assertEquals(
+        await page.getByRole("listbox").evaluate((list) => {
+          const rect = list.parentElement?.getBoundingClientRect();
+          return rect
+            ? {
+              top: Math.round(rect.top),
+              right: Math.round(globalThis.innerWidth - rect.right),
+              bottom: Math.round(globalThis.innerHeight - rect.bottom),
+              left: Math.round(rect.left),
+            }
+            : null;
+        }),
+        { top: 12, right: 12, bottom: 12, left: 12 },
+      );
       assertEquals(
         await page.getByRole("listbox").getByRole("option").allTextContents(),
         ["Test · First", "Test · Second"],

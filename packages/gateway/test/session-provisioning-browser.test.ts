@@ -488,7 +488,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(createHtml, /<input[^>]*name="branchName"[^>]*value="main"/);
     assertMatch(createHtml, /aria-label="Orb size"/);
     assertMatch(createHtml, /aria-label="Thinking level"/);
-    assertMatch(createHtml, /data-supported-thinking-levels="off low high max"/);
+    assertMatch(createHtml, /aria-label="Search models"/);
+    assertMatch(
+      createHtml,
+      /<input[^>]*type="hidden"[^>]*name="model"[^>]*value="[^"]*deepseek-v4-flash"/,
+    );
     assertMatch(
       createHtml,
       /<div[^>]*data-thinking-level-option="high"[^>]*aria-selected="true"[^>]*>[\s\S]*?<span>High<\/span>/,
