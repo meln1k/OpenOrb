@@ -27,6 +27,18 @@ Deno.test("serves browser UI dependencies without exposing server modules", asyn
 
   for (
     const href of [
+      "/assets/npm/marked/lib/marked.esm.js",
+      "/assets/npm/lucide/dist/esm/icons/plus.mjs",
+      "/assets/npm/@remix-run/data-schema/dist/index.js",
+    ]
+  ) {
+    const response = await assetServer.fetch(new Request(new URL(href, "http://assets.test")));
+    assert(response, `expected the asset server to handle ${href}`);
+    assertEquals(response.status, 200, href);
+  }
+
+  for (
+    const href of [
       "/assets/app/actions/settings/controller.tsx",
       "/assets/app/actions/settings/page.tsx",
       "/assets/app/ui/settings/settings-navigation.tsx",
