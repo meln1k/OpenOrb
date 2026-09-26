@@ -138,12 +138,12 @@ export function makeSessionEvents(options: {
           },
         );
         const replay = Stream.fromEffect(missingHistory).pipe(
-          Stream.flatMap(Stream.fromIterable),
+          Stream.flatMap((events) => Stream.fromIterable(events, { chunkSize: 1 })),
         );
         const currentState = Stream.fromEffect(Effect.sync(() => session.latestState));
         const durableTail = Stream.fromSubscription(conversationChanges).pipe(
           Stream.mapEffect(() => missingHistory),
-          Stream.flatMap(Stream.fromIterable),
+          Stream.flatMap((events) => Stream.fromIterable(events, { chunkSize: 1 })),
         );
         const liveTail = Stream.fromSubscription(liveEvents);
         return replay.pipe(

@@ -106,6 +106,28 @@ Deno.test("WatchSession retains the latest session state across watch reconnects
   }
 });
 
+Deno.test("WatchSession emits durable replay in single-event chunks", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    await withSession(workingDirectory, SESSION_ID, async ({ events, pi }) => {
+      pi.appendMessage({ role: "user", content: "first", timestamp: 1 });
+      pi.appendMessage({ role: "user", content: "second", timestamp: 2 });
+
+      const chunks = await Effect.runPromise(
+        events.watch(SESSION_ID, 0).pipe(
+          Stream.take(3),
+          Stream.chunks,
+          Stream.runCollect,
+        ),
+      );
+
+      assertEquals(Array.from(chunks, (chunk) => chunk.length), [1, 1, 1]);
+    });
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
 Deno.test("session cleanup publishes a typed removal state change", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
