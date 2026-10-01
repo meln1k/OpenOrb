@@ -247,6 +247,7 @@ function handlers(probe: Probe) {
               createdAt: "2026-08-23T12:00:00Z",
               initialPromptPreview: request.initialPrompt,
               model: request.modelRuntime.model,
+              initialThinkingLevel: request.modelRuntime.thinkingLevel,
               orbSize: request.orbSize,
               state: "created",
               issues: [],
