@@ -6,7 +6,7 @@ import {
   type NavigationOptions,
   type Props,
   type RemixNode,
-} from "remix/ui";
+} from "remix/component";
 
 import { media } from "@/app/ui/responsive.ts";
 import { Spinner } from "@/app/ui/components/progress.tsx";

@@ -15,11 +15,11 @@ Deno.test({
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const uiHref = await assetServer.getHref(import.meta.resolve("remix/ui"));
-    const jsxHref = await assetServer.getHref(import.meta.resolve("remix/ui/jsx-runtime"));
+    const uiHref = await assetServer.getHref(import.meta.resolve("remix/component"));
+    const jsxHref = await assetServer.getHref(import.meta.resolve("remix/component/jsx-runtime"));
     const importMap = await assetServer.getImportMap([
-      import.meta.resolve("remix/ui"),
-      import.meta.resolve("remix/ui/jsx-runtime"),
+      import.meta.resolve("remix/component"),
+      import.meta.resolve("remix/component/jsx-runtime"),
       "packages/gateway/app/ui/session-composer.tsx",
       "packages/gateway/app/ui/components/theme.ts",
     ]);

@@ -1,4 +1,4 @@
-import { css, type Handle } from "remix/ui";
+import { css, type Handle } from "remix/component";
 import { Button, SubmitProgressBehavior } from "@/app/ui/components/button.tsx";
 import { Field, FieldLabel } from "@/app/ui/components/field.tsx";
 import { Input } from "@/app/ui/components/input.tsx";

@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { renderToString } from "remix/ui/server";
+import { renderToString } from "remix/component/server";
 
 import { AppShellNavigation } from "@/app/ui/shell.tsx";
 

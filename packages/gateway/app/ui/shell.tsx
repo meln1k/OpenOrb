@@ -1,4 +1,4 @@
-import { clientEntry, css, type Handle, navigate, type RemixNode } from "remix/ui";
+import { clientEntry, css, type Handle, navigate, type RemixNode } from "remix/component";
 
 import type { SessionNavigationEntry } from "@/app/data/session-catalog-repository.ts";
 import { routes } from "@/app/routes.ts";

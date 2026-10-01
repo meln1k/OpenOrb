@@ -1,4 +1,4 @@
-import type { Handle } from "remix/ui";
+import type { Handle } from "remix/component";
 import type { IconNode } from "lucide";
 import Activity from "lucide/dist/esm/icons/activity.mjs";
 import ArrowDown from "lucide/dist/esm/icons/arrow-down.mjs";

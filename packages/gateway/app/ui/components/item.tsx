@@ -1,4 +1,4 @@
-import { css, type Handle, type Props } from "remix/ui";
+import { css, type Handle, type Props } from "remix/component";
 
 export type ItemVariant = "default" | "outline" | "muted";
 export type ItemSize = "default" | "sm" | "xs";

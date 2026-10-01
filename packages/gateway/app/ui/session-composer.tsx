@@ -12,9 +12,9 @@ import {
   SESSION_THINKING_LEVELS,
   type SessionThinkingLevel,
 } from "../../../protocol/src/thinking-level.ts";
-import { clientEntry, css, type Handle, on } from "remix/ui";
-import * as popover from "remix/ui/popover";
-import * as selectControl from "remix/ui/select/primitives";
+import { clientEntry, css, type Handle, on } from "remix/component";
+import * as popover from "@remix-run/ui/popover";
+import * as selectControl from "@remix-run/ui/select";
 
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import { routes } from "@/app/routes.ts";

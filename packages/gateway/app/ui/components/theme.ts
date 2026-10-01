@@ -1,4 +1,4 @@
-import { css } from "remix/ui";
+import { css } from "remix/component";
 
 export const designSystemStyle = css({
   "--background": "oklch(1 0 0)",

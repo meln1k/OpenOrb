@@ -1,6 +1,6 @@
-import { css, type Handle, on } from "remix/ui";
-import * as combobox from "remix/ui/combobox/primitives";
-import * as popover from "remix/ui/popover";
+import { css, type Handle, on } from "remix/component";
+import * as combobox from "@remix-run/ui/combobox";
+import * as popover from "@remix-run/ui/popover";
 
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
 import { Icon } from "@/app/ui/components/icons.tsx";

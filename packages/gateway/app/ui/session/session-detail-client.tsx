@@ -1,4 +1,4 @@
-import { clientEntry, css, type Handle, on } from "remix/ui";
+import { clientEntry, css, type Handle, on } from "remix/component";
 import type { SessionIssue, SessionThinkingLevel } from "@openorb/protocol/browser-session-events";
 
 import { routes } from "@/app/routes.ts";

@@ -1,4 +1,4 @@
-import { css, type Handle, type Props } from "remix/ui";
+import { css, type Handle, type Props } from "remix/component";
 
 export function Avatar(handle: Handle<Props<"span">>) {
   return () => {

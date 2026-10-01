@@ -2,7 +2,7 @@ import type { SessionUsage } from "@openorb/protocol/browser-session-events";
 import type { SessionThinkingLevel } from "../../../../protocol/src/thinking-level.ts";
 import { tryAsync, trySync } from "../../../../result/src/index.ts";
 import { object, parseSafe, string } from "remix/data-schema";
-import { css, type Dispatched, type Handle, on } from "remix/ui";
+import { css, type Dispatched, type Handle, on } from "remix/component";
 
 import { routes } from "@/app/routes.ts";
 import { Button } from "@/app/ui/components/button.tsx";

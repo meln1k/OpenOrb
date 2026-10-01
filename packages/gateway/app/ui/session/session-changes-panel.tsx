@@ -1,4 +1,4 @@
-import { css, type Handle } from "remix/ui";
+import { css, type Handle } from "remix/component";
 
 import { Icon } from "../components/icons.tsx";
 import { screens } from "../responsive.ts";

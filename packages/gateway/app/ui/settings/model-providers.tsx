@@ -1,4 +1,4 @@
-import { clientEntry, css, type Handle } from "remix/ui";
+import { clientEntry, css, type Handle } from "remix/component";
 import { object, optional, parseSafe, string } from "remix/data-schema";
 import { tryAsync } from "../../../../result/src/index.ts";
 

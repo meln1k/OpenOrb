@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "jsx": "react-jsx",
-    "jsxImportSource": "remix/ui",
+    "jsxImportSource": "remix/component",
     "paths": {
       "@/*": ["./*"],
       "@openorb/protocol/browser-session-events": [

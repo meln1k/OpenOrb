@@ -1,4 +1,4 @@
-import { clientEntry, css, type Handle, type Props } from "remix/ui";
+import { clientEntry, css, type Handle, type Props } from "remix/component";
 
 export type ButtonVariant =
   | "default"

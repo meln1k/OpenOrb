@@ -1,6 +1,6 @@
 import { DEFAULT_SESSION_THINKING_LEVEL, SESSION_THINKING_LEVELS } from "@openorb/protocol";
 import type { RunnerSessionSnapshot, SessionIssue } from "@openorb/protocol/runner-api";
-import { Frame, type Handle } from "remix/ui";
+import { Frame, type Handle } from "remix/component";
 
 import type {
   SessionCatalogEntry,

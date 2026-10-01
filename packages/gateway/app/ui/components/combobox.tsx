@@ -1,10 +1,10 @@
-import { css, type Handle, type Props, type RemixNode } from "remix/ui";
-import * as combobox from "remix/ui/combobox/primitives";
+import { css, type Handle, type Props, type RemixNode } from "remix/component";
+import * as combobox from "@remix-run/ui/combobox";
 
 import { media } from "@/app/ui/responsive.ts";
 import { Icon } from "@/app/ui/components/icons.tsx";
 
-export { ComboboxChangeEvent, onComboboxChange } from "remix/ui/combobox/primitives";
+export { ComboboxChangeEvent, onComboboxChange } from "@remix-run/ui/combobox";
 
 export type ComboboxInputProps = Omit<
   Props<"input">,

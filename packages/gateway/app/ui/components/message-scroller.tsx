@@ -1,4 +1,4 @@
-import { css, type Handle, on, type Props, ref } from "remix/ui";
+import { css, type Handle, on, type Props, ref } from "remix/component";
 
 import { Button, type ButtonProps } from "@/app/ui/components/button.tsx";
 import { Icon } from "@/app/ui/components/icons.tsx";

@@ -1,5 +1,5 @@
 import { assertStringIncludes } from "@std/assert";
-import { renderToString } from "remix/ui/server";
+import { renderToString } from "remix/component/server";
 
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/app/ui/components/index.ts";
 import { AppShellLayout } from "@/app/ui/shell.tsx";

@@ -1,5 +1,5 @@
 import { tryAsync } from "../../../../result/src/index.ts";
-import { css, type Dispatched, type Handle, on } from "remix/ui";
+import { css, type Dispatched, type Handle, on } from "remix/component";
 
 import { routes } from "@/app/routes.ts";
 import { Button } from "@/app/ui/components/button.tsx";

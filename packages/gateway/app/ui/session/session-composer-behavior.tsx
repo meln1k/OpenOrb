@@ -1,4 +1,4 @@
-import { clientEntry, type Handle } from "remix/ui";
+import { clientEntry, type Handle } from "remix/component";
 
 export const SessionComposerBehavior = clientEntry<{ dialogId: string }>(
   import.meta.url,

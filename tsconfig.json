@@ -4,7 +4,7 @@
     "allowImportingTsExtensions": true,
     "exactOptionalPropertyTypes": true,
     "jsx": "react-jsx",
-    "jsxImportSource": "remix/ui",
+    "jsxImportSource": "remix/component",
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "module": "preserve",
     "moduleDetection": "force",

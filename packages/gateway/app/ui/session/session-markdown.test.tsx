@@ -1,5 +1,5 @@
 import { assertEquals, assertNotMatch, assertStringIncludes } from "@std/assert";
-import { renderToString } from "remix/ui/server";
+import { renderToString } from "remix/component/server";
 
 import { AssistantMarkdown } from "@/app/ui/session/session-markdown.tsx";
 

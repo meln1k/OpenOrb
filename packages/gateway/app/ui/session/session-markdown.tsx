@@ -1,5 +1,5 @@
 import { Lexer, type MarkedOptions, type MarkedToken, type Token, type Tokens } from "marked";
-import { css, type Handle, type RemixNode } from "remix/ui";
+import { css, type Handle, type RemixNode } from "remix/component";
 
 import { routes } from "@/app/routes.ts";
 

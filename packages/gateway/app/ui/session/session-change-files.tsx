@@ -3,7 +3,7 @@ import type {
   SessionGitSnapshotData,
 } from "../../../../protocol/src/browser-session-git-snapshot.ts";
 import type { CodeViewItem, CodeViewOptions, FileDiffMetadata } from "@pierre/diffs";
-import { css, type Handle } from "remix/ui";
+import { css, type Handle } from "remix/component";
 
 import { createIconElement } from "../components/icons.tsx";
 import { RemixCodeView, type RemixCodeViewProps } from "../components/remix-code-view.tsx";

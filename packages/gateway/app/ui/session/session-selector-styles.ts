@@ -1,4 +1,4 @@
-import { css } from "remix/ui";
+import { css } from "remix/component";
 
 import { media } from "@/app/ui/responsive.ts";
 

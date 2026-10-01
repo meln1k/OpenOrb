@@ -1,4 +1,4 @@
-import { css, type Handle, type Props, type RemixNode } from "remix/ui";
+import { css, type Handle, type Props, type RemixNode } from "remix/component";
 
 export type FieldOrientation = "vertical" | "horizontal" | "responsive";
 export type FieldProps = Props<"div"> & { orientation?: FieldOrientation };

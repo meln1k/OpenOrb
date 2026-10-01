@@ -37,14 +37,14 @@ Deno.test({
     let received = Promise.withResolvers<void>();
     let thinkingLevelAcknowledgement: PromiseWithResolvers<void> | undefined;
     const uiHref = await assetServer.getHref(
-      import.meta.resolve("remix/ui"),
+      import.meta.resolve("remix/component"),
     );
     const jsxHref = await assetServer.getHref(
-      import.meta.resolve("remix/ui/jsx-runtime"),
+      import.meta.resolve("remix/component/jsx-runtime"),
     );
     const importMap = await assetServer.getImportMap([
-      import.meta.resolve("remix/ui"),
-      import.meta.resolve("remix/ui/jsx-runtime"),
+      import.meta.resolve("remix/component"),
+      import.meta.resolve("remix/component/jsx-runtime"),
       "packages/gateway/app/ui/session/session-page-controller.tsx",
       "packages/gateway/app/ui/session/session-transcript.tsx",
     ]);

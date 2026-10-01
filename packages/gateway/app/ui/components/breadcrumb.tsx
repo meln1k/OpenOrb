@@ -1,4 +1,4 @@
-import { css, type Handle, type Props } from "remix/ui";
+import { css, type Handle, type Props } from "remix/component";
 
 import { media } from "@/app/ui/responsive.ts";
 

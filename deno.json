@@ -15,14 +15,14 @@
     "@std/assert": "jsr:@std/assert@1.0.19",
     "@std/tar": "jsr:@std/tar@0.1.10",
     "effect": "npm:effect@4.0.0",
-    "remix": "npm:remix@3.0.0-rc.4",
-    "remix/": "npm:/remix@3.0.0-rc.4/"
+    "remix": "npm:remix@3.0.0-rc.5",
+    "remix/": "npm:/remix@3.0.0-rc.5/"
   },
   "compilerOptions": {
     "strict": true,
     "lib": ["ES2024", "DOM", "DOM.Iterable", "Deno.ns"],
     "jsx": "react-jsx",
-    "jsxImportSource": "remix/ui",
+    "jsxImportSource": "remix/component",
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,

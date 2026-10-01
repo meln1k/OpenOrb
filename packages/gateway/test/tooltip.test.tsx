@@ -1,5 +1,5 @@
 import { assertMatch, assertStringIncludes } from "@std/assert";
-import { renderToString } from "remix/ui/server";
+import { renderToString } from "remix/component/server";
 
 import {
   Tooltip,

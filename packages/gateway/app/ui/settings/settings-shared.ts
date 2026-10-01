@@ -1,4 +1,4 @@
-import { css } from "remix/ui";
+import { css } from "remix/component";
 
 export function formatSettingsDate(value: string): string {
   return new Intl.DateTimeFormat("en", {

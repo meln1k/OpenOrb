@@ -37,11 +37,11 @@ Deno.test({
     let mutationRequests = 0;
     let snapshotRequests = 0;
 
-    const uiHref = await assetServer.getHref(import.meta.resolve("remix/ui"));
-    const jsxHref = await assetServer.getHref(import.meta.resolve("remix/ui/jsx-runtime"));
+    const uiHref = await assetServer.getHref(import.meta.resolve("remix/component"));
+    const jsxHref = await assetServer.getHref(import.meta.resolve("remix/component/jsx-runtime"));
     const importMap = await assetServer.getImportMap([
-      import.meta.resolve("remix/ui"),
-      import.meta.resolve("remix/ui/jsx-runtime"),
+      import.meta.resolve("remix/component"),
+      import.meta.resolve("remix/component/jsx-runtime"),
       "packages/gateway/app/ui/session/session-page-controller.tsx",
       "packages/gateway/app/ui/session/session-changes-panel.tsx",
       "packages/gateway/app/ui/session/session-changes-resource.tsx",

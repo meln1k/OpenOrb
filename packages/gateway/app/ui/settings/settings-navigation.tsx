@@ -1,4 +1,4 @@
-import { css, type Handle } from "remix/ui";
+import { css, type Handle } from "remix/component";
 
 import { routes } from "@/app/routes.ts";
 import { Icon, type IconName } from "@/app/ui/components/icons.tsx";

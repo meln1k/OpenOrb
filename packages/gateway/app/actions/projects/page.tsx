@@ -1,4 +1,4 @@
-import { css, type Handle } from "remix/ui";
+import { css, type Handle } from "remix/component";
 
 import type { Project } from "@/app/data/project-repository.ts";
 import type { SessionNavigationEntry } from "@/app/data/session-catalog-repository.ts";

@@ -5,7 +5,7 @@ import type {
 } from "@openorb/protocol/browser-session-events";
 import { trySync } from "../../../../result/src/index.ts";
 import { parseSafe, string } from "remix/data-schema";
-import { type Handle, type RemixNode, TypedEventTarget } from "remix/ui";
+import { type Handle, type RemixNode, TypedEventTarget } from "remix/component";
 
 import { routes } from "@/app/routes.ts";
 import {

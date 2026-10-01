@@ -40,6 +40,7 @@
     "npm:@pierre/diffs@^1.3.6": "1.3.6_react@19.2.8_react-dom@19.2.8__react@19.2.8",
     "npm:@remix-run/csrf-middleware@*": "0.2.0",
     "npm:@remix-run/data-schema@0.3.0": "0.3.0",
+    "npm:@remix-run/ui@0.12.0": "0.12.0",
     "npm:effect@*": "4.0.0",
     "npm:effect@4.0.0": "4.0.0",
     "npm:lucide@1.31.0": "1.31.0",
@@ -47,7 +48,7 @@
     "npm:pg@*": "8.16.3",
     "npm:pg@8.16.3": "8.16.3",
     "npm:playwright@1.55.0": "1.55.0",
-    "npm:remix@3.0.0-rc.4": "3.0.0-rc.4_pg@8.16.3_playwright@1.55.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2",
+    "npm:remix@3.0.0-rc.5": "3.0.0-rc.5_pg@8.16.3_playwright@1.55.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2",
     "npm:typescript@^6.0.3": "6.0.3"
   },
   "jsr": {
@@ -1454,8 +1455,8 @@
         "@remix-run/session"
       ]
     },
-    "@remix-run/cli@0.8.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2_pg@8.16.3_playwright@1.55.0": {
-      "integrity": "sha512-1gmQTThlcmX4NwoZRKmG+S5bUnY6BL6Y7NjFywNqCFpmhvY63OKNOMiZSrMsn3Bt8QovABGfMnePCv3SB8KC/g==",
+    "@remix-run/cli@0.8.1_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2_pg@8.16.3_playwright@1.55.0": {
+      "integrity": "sha512-M3TdF8qJIqcvZ0s8NNN7SDO7j9xRf5maqiLC2B0POVVTv1AkP9XXsiCsw8WjvRuv/adk2RTaUKxfCMGnPBi55Q==",
       "dependencies": [
         "@remix-run/assets",
         "@remix-run/data-table",
@@ -1466,6 +1467,20 @@
         "@remix-run/test",
         "jsonc-parser",
         "semver"
+      ]
+    },
+    "@remix-run/component-hmr@0.1.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
+      "integrity": "sha512-hp4Fvwake4meRJagmZ/P2v8QbFPLYStdY+Ktr4f7y/AoqFrjRxCYZCal2MpRvN/PHL4r5/AV2Fw/7SOD7FCz7Q==",
+      "dependencies": [
+        "magic-string",
+        "oxc-parser",
+        "source-map-js"
+      ]
+    },
+    "@remix-run/component@0.8.0": {
+      "integrity": "sha512-f3ubhqD3Ui2Qhgs+RlIpNX5Z4QNKEtBLRFeHN/WRYRqQw5tsFd6cFkz9R8Ss2T1H47Ry2VPUvm5RRcmCiZdcZA==",
+      "dependencies": [
+        "@types/dom-navigation"
       ]
     },
     "@remix-run/compression-middleware@0.1.16": {
@@ -1514,14 +1529,14 @@
         "@standard-schema/spec"
       ]
     },
-    "@remix-run/data-table-mysql@0.5.3": {
-      "integrity": "sha512-A7Uw6sJYmmUJvbGfI3CpnI1ssK++sHJa/dpoFkL6SzQgVRBlp46QLsIeaTATPZSlyQigi307sGdBJAPF6LuXgw==",
+    "@remix-run/data-table-mysql@0.5.4": {
+      "integrity": "sha512-u5ojkcThkb2lcJ5vFDMkWxdyFmbYBe2ojS7qMbeBYQ/RmaZvu8iunITTT50XPmbc7kSyHfWiaouU1NgaWFTBJw==",
       "dependencies": [
         "@remix-run/data-table"
       ]
     },
-    "@remix-run/data-table-postgres@0.5.3_pg@8.16.3": {
-      "integrity": "sha512-yJSm3aIuiA3wmg9+idwXq+YLxxkF6DlLwJJCkZ5bjIrW+d2BY00k6pDKFYQucwJrb4ULl54HBof6qYsJ6W3gmw==",
+    "@remix-run/data-table-postgres@0.5.4_pg@8.16.3": {
+      "integrity": "sha512-Yloept53oOlGUvxSzWPB7ch2Y4sbJ41WGHPeC8XhXiLtVDUDZ9UQTAgtSuMgWn5h3gFibTlBsFceOYZCc3iRdA==",
       "dependencies": [
         "@remix-run/data-table",
         "pg"
@@ -1530,14 +1545,14 @@
         "pg"
       ]
     },
-    "@remix-run/data-table-sqlite@0.6.3": {
-      "integrity": "sha512-v1o+1xVizutsl3ykEYMJYKV0n8CHCMBUarPp59o7Da9tjhpQpXbAQS8iNVbu63KQhM3BneoWdAV8XVApuUCEHA==",
+    "@remix-run/data-table-sqlite@0.6.4": {
+      "integrity": "sha512-hT20UXQBHcfVS31cUVGk1uUjDLG4niOl5Z0VBOfce27KYd5HK8/bgXHocMCczWG4OknmopXLWPLfBIAwvWT+xg==",
       "dependencies": [
         "@remix-run/data-table"
       ]
     },
-    "@remix-run/data-table@0.6.0": {
-      "integrity": "sha512-rVF3dg+t6DtQ1W+yRcuuTb6g7TA9qqw5/++ztAK7CFviG0H+1LZnoOQeUonDApXaU9eevCvrZwDrLgb5Gb1p+Q=="
+    "@remix-run/data-table@0.7.0": {
+      "integrity": "sha512-Cr9VatYEkwDJONouuxnv357T14nkb+l4H7/thaJWeGvJnl8hSrt74NW8QKjrnFQHYoT90QVGVAv6oHrreqoSEw=="
     },
     "@remix-run/fetch-proxy@0.9.0": {
       "integrity": "sha512-9Cjlr+vekb14fUJdTBCusQfsXXdV/rU7IedQo8ANorhq1x3GjlqUNNUhqMkNnmTl5oxhXgXtP0V1t/GafwyXHQ==",
@@ -1646,13 +1661,13 @@
         "oxc-transform"
       ]
     },
-    "@remix-run/render-middleware@0.3.2_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
-      "integrity": "sha512-O2CBSyAnsPEuML5SjKsqn21nUYSMAx5Aca1coRD9qT61PMb/smJxaWN8I8H2D69gssE7Rx5c727ASmM/ffNzcQ==",
+    "@remix-run/render-middleware@0.3.3_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
+      "integrity": "sha512-bl3DFPqvSYnoWUKW56TD+oOVQcWD4JlVCvwqwZXXv1BYnk2q1M0v1qu/l8NmHh2pf1P6eATT61lYE4QCw1/bZg==",
       "dependencies": [
         "@remix-run/assets",
+        "@remix-run/component",
         "@remix-run/fetch-router",
-        "@remix-run/response",
-        "@remix-run/ui"
+        "@remix-run/response"
       ]
     },
     "@remix-run/response@0.3.10": {
@@ -1689,12 +1704,12 @@
     "@remix-run/session@0.4.3": {
       "integrity": "sha512-kEK7NM5m+3UTCSXJEvU+8KU076JfQjPte+o56tdsNTbt4tEJuLecQkQGkw0trBZC9AhDpIoPOFtTlG/6P/tmxw=="
     },
-    "@remix-run/spa@0.1.3_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
-      "integrity": "sha512-Xzqju4rHaCNxGxbYk1h8tPyxt3Bz6bQrj+/hT8zNElsCoME5oE9E9FyDfBXKqAfD2bSTKweqYJem7htpWrlNug==",
+    "@remix-run/spa@0.1.4_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
+      "integrity": "sha512-cRnGxx0vrDP0YzjnNiKsFPijBWnAUoWIkDNF7DGAu+5SR1AUjmc6WdTZRSeVGMpNlUU+441rM5AE1DDMc+We+w==",
       "dependencies": [
+        "@remix-run/component",
         "@remix-run/fetch-router",
-        "@remix-run/render-middleware",
-        "@remix-run/ui"
+        "@remix-run/render-middleware"
       ]
     },
     "@remix-run/static-middleware@0.4.17": {
@@ -1734,18 +1749,10 @@
         "playwright"
       ]
     },
-    "@remix-run/ui-hmr@0.1.1_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
-      "integrity": "sha512-uGEn7ghNxg8ip11wiTEuxO0Xdc7L5GSJ6LMMUfYfIpIx81BGmthriGXRZ6K7GrLmXpbQB1ImLe+aS3Isxz10qQ==",
+    "@remix-run/ui@0.12.0": {
+      "integrity": "sha512-RcbPSO89y36aUspWLZp8T880THbhrH2NoNYHHfX0NvATrybYxGaPEm8WkfTuB3DU8+suYwmI4TW1zDKYozYd9Q==",
       "dependencies": [
-        "magic-string",
-        "oxc-parser",
-        "source-map-js"
-      ]
-    },
-    "@remix-run/ui@0.11.0": {
-      "integrity": "sha512-bjCHsXT5JoSUEickSIUmq9uPKWRHmhTXVNUHEbY+jt2ZfDqzgrI2L768sp93NGJSXFP60WA4bGkS7WF9xItmkw==",
-      "dependencies": [
-        "@types/dom-navigation"
+        "@remix-run/component"
       ]
     },
     "@shikijs/core@4.4.3": {
@@ -2756,8 +2763,8 @@
         "regex-utilities"
       ]
     },
-    "remix@3.0.0-rc.4_pg@8.16.3_playwright@1.55.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
-      "integrity": "sha512-HQb7PoOziyke+kvomlIpAs480sFAL+OSV7EWwPTFccK3ketR+cFidTI8AmCXGjuKYhcyH2gD1VChNkgGw7brfw==",
+    "remix@3.0.0-rc.5_pg@8.16.3_playwright@1.55.0_@emnapi+core@1.11.2_@emnapi+runtime@1.11.2": {
+      "integrity": "sha512-vbmtoe6nIQPQY4mYWlxn27VmnSAlLRBZEo6C0jBLTAJjfhfL0fGVi4oDcoTdp+GQZsQwz+VO17o8OVIPGn0hDA==",
       "dependencies": [
         "@remix-run/assert",
         "@remix-run/assets",
@@ -2765,6 +2772,8 @@
         "@remix-run/auth",
         "@remix-run/auth-middleware",
         "@remix-run/cli",
+        "@remix-run/component",
+        "@remix-run/component-hmr",
         "@remix-run/compression-middleware",
         "@remix-run/cookie",
         "@remix-run/cop-middleware",
@@ -2805,8 +2814,6 @@
         "@remix-run/tar-parser",
         "@remix-run/terminal",
         "@remix-run/test",
-        "@remix-run/ui",
-        "@remix-run/ui-hmr",
         "pg",
         "playwright"
       ],
@@ -3021,7 +3028,7 @@
       "npm:@earendil-works/gondolin@0.12.0",
       "npm:@effect/platform-deno@4.0.0",
       "npm:effect@4.0.0",
-      "npm:remix@3.0.0-rc.4"
+      "npm:remix@3.0.0-rc.5"
     ],
     "packageJson": {
       "dependencies": [
@@ -3044,10 +3051,11 @@
           "npm:@earendil-works/pi-ai@1.0.0",
           "npm:@opentelemetry/api@1.9.0",
           "npm:@pierre/diffs@^1.3.6",
+          "npm:@remix-run/ui@0.12.0",
           "npm:lucide@1.31.0",
           "npm:marked@18.0.5",
           "npm:pg@8.16.3",
-          "npm:remix@3.0.0-rc.4"
+          "npm:remix@3.0.0-rc.5"
         ]
       },
       "packages/protocol": {

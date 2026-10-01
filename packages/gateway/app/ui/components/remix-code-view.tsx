@@ -1,5 +1,5 @@
 import type { CodeView as PierreCodeView, CodeViewItem, CodeViewOptions } from "@pierre/diffs";
-import { css, type Handle, on, type Props, ref, unsafeHTML } from "remix/ui";
+import { css, type Handle, on, type Props, ref, unsafeHTML } from "remix/component";
 
 import { getPierreWorkerPool } from "./pierre-worker-pool.ts";
 

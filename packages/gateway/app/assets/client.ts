@@ -3,7 +3,7 @@ import {
   importModule,
   preloadShim,
 } from "remix/multiple-import-maps-polyfill";
-import { type LoadModule, run } from "remix/ui";
+import { type LoadModule, run } from "remix/component";
 
 const app = run({
   async loadModule(moduleUrl, exportName) {

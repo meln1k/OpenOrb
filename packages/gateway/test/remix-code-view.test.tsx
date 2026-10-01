@@ -6,8 +6,8 @@ import {
   type FrameHandleEventMap,
   type Handle,
   TypedEventTarget,
-} from "remix/ui";
-import { renderToString } from "remix/ui/server";
+} from "remix/component";
+import { renderToString } from "remix/component/server";
 
 import { RemixCodeView, type RemixCodeViewProps } from "@/app/ui/components/remix-code-view.tsx";
 

@@ -4,7 +4,7 @@ import {
 } from "../../../../protocol/src/browser-session-git-snapshot.ts";
 import { tryAsync, trySync } from "../../../../result/src/index.ts";
 import { boolean, number, object, parseSafe, string } from "remix/data-schema";
-import { type Handle, type RemixNode, TypedEventTarget } from "remix/ui";
+import { type Handle, type RemixNode, TypedEventTarget } from "remix/component";
 
 import { routes } from "@/app/routes.ts";
 import {

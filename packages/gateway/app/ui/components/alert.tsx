@@ -1,4 +1,4 @@
-import { css, type Handle, type Props } from "remix/ui";
+import { css, type Handle, type Props } from "remix/component";
 
 export type AlertVariant = "default" | "destructive";
 export type AlertProps = Props<"div"> & { variant?: AlertVariant };

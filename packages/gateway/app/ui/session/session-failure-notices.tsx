@@ -1,5 +1,5 @@
 import type { SessionIssue, SessionRecoveryAction } from "@openorb/protocol/browser-session-events";
-import { css, type Handle } from "remix/ui";
+import { css, type Handle } from "remix/component";
 
 import { routes } from "@/app/routes.ts";
 import { Button } from "@/app/ui/components/button.tsx";

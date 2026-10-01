@@ -8,7 +8,7 @@ const clientEntries = [
   "packages/gateway/app/ui/session/session-detail-client.tsx",
   "packages/gateway/app/ui/shell.tsx",
   "packages/gateway/app/ui/settings/model-providers.tsx",
-  "node_modules/.deno/remix@3.0.0-rc.4/node_modules/remix/dist/ui/button.js",
+  "packages/gateway/app/ui/components/button.tsx",
 ];
 
 Deno.test("serves browser UI dependencies without exposing server modules", async () => {
@@ -30,6 +30,9 @@ Deno.test("serves browser UI dependencies without exposing server modules", asyn
       "/assets/npm/marked/lib/marked.esm.js",
       "/assets/npm/lucide/dist/esm/icons/plus.mjs",
       "/assets/npm/@remix-run/data-schema/dist/index.js",
+      "/assets/npm/@remix-run/ui/dist/combobox.js",
+      "/assets/npm/@remix-run/ui/dist/select.js",
+      "/assets/npm/@remix-run/ui/dist/popover.js",
     ]
   ) {
     const response = await assetServer.fetch(new Request(new URL(href, "http://assets.test")));
@@ -44,13 +47,13 @@ Deno.test("serves browser UI dependencies without exposing server modules", asyn
       "/assets/app/ui/settings/settings-navigation.tsx",
       "/assets/app/actions/sessions/controller.tsx",
       "/assets/app/actions/sessions/page.tsx",
-      "/assets/npm/.deno/remix@3.0.0-rc.4/node_modules/remix/dist/ui/server.js",
-      "/assets/npm/.deno/remix@3.0.0-rc.4/node_modules/remix/dist/ui/test.js",
-      "/assets/npm/.deno/@remix-run+ui@0.11.0/node_modules/@remix-run/ui/dist/server/stream.js",
-      "/assets/npm/.deno/@remix-run+ui@0.11.0/node_modules/@remix-run/ui/dist/test.js",
-      "/assets/npm/.deno/remix@3.0.0-rc.4/node_modules/remix/dist/data-table-postgres.js",
+      "/assets/npm/.deno/remix@3.0.0-rc.5/node_modules/remix/dist/component/server.js",
+      "/assets/npm/.deno/remix@3.0.0-rc.5/node_modules/remix/dist/component/test.js",
+      "/assets/npm/.deno/@remix-run+component@0.8.0/node_modules/@remix-run/component/dist/server/stream.js",
+      "/assets/npm/.deno/@remix-run+component@0.8.0/node_modules/@remix-run/component/dist/test.js",
+      "/assets/npm/.deno/remix@3.0.0-rc.5/node_modules/remix/dist/data-table-postgres.js",
       "/assets/npm/.deno/pg@8.16.3/node_modules/pg/lib/index.js",
-      "/assets/npm/.deno/@remix-run+ui@0.11.0/node_modules/@remix-run/ui/dist/index.d.ts",
+      "/assets/npm/.deno/@remix-run+component@0.8.0/node_modules/@remix-run/component/dist/index.d.ts",
     ]
   ) {
     assertEquals(
