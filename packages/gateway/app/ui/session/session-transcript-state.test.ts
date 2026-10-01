@@ -14,8 +14,12 @@ import {
   type TranscriptEntry,
 } from "@/app/ui/session/session-transcript-state.ts";
 
+Deno.test("starts with the thinking level selected during session setup", () => {
+  assertEquals(createSessionTranscriptState("provisioning", "max").thinkingLevel, "max");
+});
+
 Deno.test("tracks replayed thinking-level changes", () => {
-  const initial = createSessionTranscriptState("ready");
+  const initial = createSessionTranscriptState("ready", "high");
   const changed = reduceSessionTranscriptState(
     initial,
     { type: "thinking-level.changed", level: "max" },
@@ -163,7 +167,7 @@ Deno.test("duplicate durable events are idempotent", () => {
 });
 
 Deno.test("optimistic user messages reconcile with durable events or retain failures", () => {
-  const initial = createSessionTranscriptState("ready");
+  const initial = createSessionTranscriptState("ready", "high");
   const pending = appendOptimisticUserMessage(
     initial,
     "optimistic-1",
@@ -203,7 +207,7 @@ Deno.test("optimistic user messages reconcile with durable events or retain fail
 
 Deno.test("optimistic user messages reconcile after form line-ending normalization", () => {
   const pending = appendOptimisticUserMessage(
-    createSessionTranscriptState("ready"),
+    createSessionTranscriptState("ready", "high"),
     "optimistic-1",
     "rate the reliability\n",
   );
@@ -222,7 +226,7 @@ Deno.test("optimistic user messages reconcile after form line-ending normalizati
 });
 
 Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's live queue", () => {
-  const initial = createSessionTranscriptState("running");
+  const initial = createSessionTranscriptState("running", "high");
   const pending = appendOptimisticUserMessage(initial, "optimistic-1", "First follow-up");
   const accepted = removeOptimisticUserMessage(pending, "optimistic-1");
   assertEquals(accepted.entries, []);
@@ -252,7 +256,7 @@ Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's li
 
 Deno.test("VM lifecycle stages expose transcript-specific status", () => {
   const stopping = reduceSessionTranscriptState(
-    createSessionTranscriptState("ready"),
+    createSessionTranscriptState("ready", "high"),
     { type: "session.state", stage: "stopping", checkoutState: "available", issues: [] },
     "provisioning",
   );
@@ -290,7 +294,7 @@ Deno.test("agent and turn boundaries do not add transcript activity", () => {
 
 function reduce(events: SessionEvent[]) {
   let sessionState: SessionState = "running";
-  let transcriptState = createSessionTranscriptState(sessionState);
+  let transcriptState = createSessionTranscriptState(sessionState, "high");
   for (const event of events) {
     if (event.type === "session.state") {
       sessionState = runnerSessionStateForProvisioningStage(event.stage);

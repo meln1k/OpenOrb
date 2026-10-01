@@ -714,6 +714,7 @@ function sessionSnapshot(): RunnerSessionSnapshot {
     createdAt: "2026-08-23T12:00:00Z",
     initialPromptPreview: "Implement the change.",
     model: "opencode-go/deepseek-v4-flash",
+    initialThinkingLevel: "max",
     orbSize: "medium",
     state: "ready",
     issues: [],

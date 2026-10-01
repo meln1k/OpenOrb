@@ -87,6 +87,7 @@ function snapshot(
     createdAt: "2026-08-23T12:00:00Z",
     initialPromptPreview: `Session ${id.slice(-2)}`,
     model: "opencode-go/deepseek-v4-flash",
+    initialThinkingLevel: "high",
     orbSize: "small",
     state,
     issues,

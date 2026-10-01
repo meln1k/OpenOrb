@@ -107,10 +107,11 @@ const PROVISIONING_ENTRY_KEY = "provisioning:output";
 
 export function createSessionTranscriptState(
   initialState: SessionState,
+  initialThinkingLevel: SessionThinkingLevel,
 ): SessionTranscriptState {
   return {
     status: statusLabel(initialState),
-    thinkingLevel: "high",
+    thinkingLevel: initialThinkingLevel,
     warningVisible: false,
     followUpQueue: [],
     entries: [],

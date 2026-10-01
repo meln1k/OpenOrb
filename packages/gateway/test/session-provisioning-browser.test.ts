@@ -223,6 +223,7 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
         createdAt: "2026-08-17T12:00:00Z",
         initialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
         model: input.payload.modelRuntime.model,
+        initialThinkingLevel: input.payload.modelRuntime.thinkingLevel,
         orbSize: input.payload.orbSize,
         state: "created",
         issues: [],
@@ -618,6 +619,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         createdAt: "2026-08-17T11:00:00Z",
         initialPromptPreview: "Older sidebar session",
         model: MODEL,
+        initialThinkingLevel: "high",
         orbSize: "medium",
         state: "ready",
         issues: [],
@@ -629,6 +631,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         createdAt: "2026-08-17T13:00:00Z",
         initialPromptPreview: "Newer sidebar session",
         model: MODEL,
+        initialThinkingLevel: "high",
         orbSize: "medium",
         state: "ready",
         issues: [],
@@ -715,6 +718,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(frame.status, 200);
     const frameHtml = await frame.text();
     assertMatch(frameHtml, /aria-label="Session changes"/);
+    assertStringIncludes(frameHtml, 'data-thinking-level="max"');
     assertNotMatch(frameHtml, /aria-label="Primary navigation"/);
 
     const anonymousFrame = await fetch(
@@ -1820,6 +1824,7 @@ function deletionSnapshot(
     createdAt: "2026-08-28T12:00:00Z",
     initialPromptPreview,
     model: MODEL,
+    initialThinkingLevel: "high",
     orbSize: "medium",
     state: "ready",
     issues: [],

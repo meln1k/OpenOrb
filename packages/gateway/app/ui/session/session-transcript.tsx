@@ -41,6 +41,7 @@ import { createSessionThinkingLevelController } from "@/app/ui/session/session-t
 export type SessionTranscriptProps = {
   contextWindow: number;
   csrfToken: string;
+  initialThinkingLevel: SessionThinkingLevel;
   sessionId: string;
   thinkingLevels: readonly SessionThinkingLevel[];
 };
@@ -54,7 +55,10 @@ const readToolArgumentsSchema = object(
 );
 export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   const page = handle.context.get(SessionPageScope);
-  let transcriptState = createSessionTranscriptState(page.projection.sessionState);
+  let transcriptState = createSessionTranscriptState(
+    page.projection.sessionState,
+    handle.props.initialThinkingLevel,
+  );
   let promptRequestPending = false;
   // Optimistic keys live only in this transcript, not in the runner's history.
   let nextOptimisticMessageId = 0;

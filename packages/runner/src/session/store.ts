@@ -629,6 +629,7 @@ function snapshotFrom(
     createdAt: metadata.createdAt,
     initialPromptPreview: initialPromptPreview(metadata.definition.initialPrompt),
     model: metadata.definition.model,
+    initialThinkingLevel: metadata.definition.initialThinkingLevel,
     orbSize: metadata.definition.orbSize,
     state,
     issues: metadata.issues,

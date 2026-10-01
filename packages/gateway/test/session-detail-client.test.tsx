@@ -11,6 +11,7 @@ Deno.test("session detail defaults mobile navigation to the agent view", async (
       error={undefined}
       initialState="ready"
       initialIssues={[]}
+      initialThinkingLevel="max"
       sessionId="session-id"
       sessionName="Mobile session tabs"
       thinkingLevels={["off", "low", "high"]}
@@ -36,6 +37,7 @@ Deno.test("session detail defaults mobile navigation to the agent view", async (
   );
   assertStringIncludes(html, 'data-slot="changes-panel" data-variant="sidebar"');
   assertNotMatch(html, /data-slot="changes-panel" data-variant="content"/);
+  assertStringIncludes(html, 'data-thinking-level="max"');
 });
 
 Deno.test("session composer replaces send with stop during an active turn", async () => {
@@ -46,6 +48,7 @@ Deno.test("session composer replaces send with stop during an active turn", asyn
       error={undefined}
       initialState="running"
       initialIssues={[]}
+      initialThinkingLevel="high"
       sessionId="session-id"
       sessionName="Active session"
       thinkingLevels={["off", "low", "high"]}

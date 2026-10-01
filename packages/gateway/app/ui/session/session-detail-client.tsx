@@ -36,6 +36,7 @@ export type SessionDetailClientProps = {
   readonly error: string | undefined;
   readonly initialState: SessionState;
   readonly initialIssues: SessionIssueData[];
+  readonly initialThinkingLevel: SessionThinkingLevel;
   readonly sessionId: string;
   readonly sessionName: string;
   readonly thinkingLevels: SessionThinkingLevel[];
@@ -166,6 +167,7 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
                   <SessionTranscript
                     contextWindow={handle.props.contextWindow}
                     csrfToken={handle.props.csrfToken}
+                    initialThinkingLevel={handle.props.initialThinkingLevel}
                     sessionId={handle.props.sessionId}
                     thinkingLevels={handle.props.thinkingLevels}
                   />

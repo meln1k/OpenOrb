@@ -24,7 +24,7 @@ export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
 export const MAX_SESSION_SECRET_HOSTS = 32;
 export const MAX_SESSION_SECRET_HOST_CHARACTERS = 253;
-export const RUNNER_PROTOCOL_VERSION = 20;
+export const RUNNER_PROTOCOL_VERSION = 21;
 
 export * from "./runner-api-limits.ts";
 
@@ -144,6 +144,9 @@ export function initialPromptPreview(prompt: string): string {
   return Array.from(collapseWhitespace(prompt)).slice(0, 200).join("").trimEnd();
 }
 
+export const ThinkingLevel = Schema.Literals(SESSION_THINKING_LEVELS);
+export type ThinkingLevel = typeof ThinkingLevel.Type;
+
 export class RunnerSessionSnapshot extends Schema.Class<RunnerSessionSnapshot>(
   "RunnerSessionSnapshot",
 )({
@@ -152,6 +155,7 @@ export class RunnerSessionSnapshot extends Schema.Class<RunnerSessionSnapshot>(
   createdAt: RunnerSessionCreatedAt,
   initialPromptPreview: InitialPromptPreview,
   model: ModelReference,
+  initialThinkingLevel: ThinkingLevel,
   orbSize: OrbSize,
   state: RunnerSessionState,
   issues: SessionIssues,
@@ -201,8 +205,6 @@ export const RunnerStateEvent = Schema.Union([
   SessionRemovedEvent,
 ]);
 
-export const ThinkingLevel = Schema.Literals(SESSION_THINKING_LEVELS);
-export type ThinkingLevel = typeof ThinkingLevel.Type;
 const Secret = Schema.String.check(
   Schema.isTrimmed(),
   Schema.isMinLength(1),

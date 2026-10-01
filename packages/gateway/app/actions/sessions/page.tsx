@@ -1,4 +1,4 @@
-import { SESSION_THINKING_LEVELS } from "@openorb/protocol";
+import { DEFAULT_SESSION_THINKING_LEVEL, SESSION_THINKING_LEVELS } from "@openorb/protocol";
 import type { RunnerSessionSnapshot, SessionIssue } from "@openorb/protocol/runner-api";
 import { Frame, type Handle } from "remix/ui";
 
@@ -56,6 +56,9 @@ export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
   const { csrfToken, error, runnerId, session, snapshot } = handle.props;
   const state = snapshot?.state ?? (runnerId ? "created" : "offline");
   const issues: readonly SessionIssue[] = snapshot?.issues ?? [];
+  const initialThinkingLevel = snapshot === null
+    ? DEFAULT_SESSION_THINKING_LEVEL
+    : snapshot.initialThinkingLevel;
 
   return () => (
     <SessionDetailClient
@@ -64,6 +67,7 @@ export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
       error={error}
       initialState={state}
       initialIssues={[...issues]}
+      initialThinkingLevel={initialThinkingLevel}
       sessionId={session.id}
       sessionName={nameSession(session)}
       thinkingLevels={[

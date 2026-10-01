@@ -128,6 +128,7 @@ Deno.test("creates private session storage and recovers cold session state", asy
         createdAt: CREATED_AT,
         initialPromptPreview: `inspect this ${"😀".repeat(187)}`,
         model: MODEL,
+        initialThinkingLevel: metadata.definition.initialThinkingLevel,
         orbSize: "small",
         state: "provisioning",
         issues: [],
