@@ -61,12 +61,14 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
         publishLive({ type: "turn.completed", toolResultCount: event.toolResults.length });
         break;
       case "message_start":
+        if (event.message.role === "system") break;
         publishLive({ type: "message.started", role: event.message.role });
         break;
       case "message_update":
         normalizeAssistantUpdate(event, publishLive, safeText, safeIdentifier);
         break;
       case "message_end": {
+        if (event.message.role === "system") break;
         publishLive({ type: "message.completed", role: event.message.role });
         break;
       }
@@ -156,6 +158,8 @@ export function makePiEventNormalizer(options: PiEventNormalizerOptions) {
         publishLive({ type: "summarization.retry.completed" });
         break;
       case "entry_appended":
+        // Pi-internal bookkeeping is not part of OpenOrb's conversation protocol.
+        if (event.entry.type === "usage" || event.entry.type === "context_edit") break;
         publishLive({
           type: "session.entry.appended",
           entryId: safeIdentifier(event.entry.id, "entry"),

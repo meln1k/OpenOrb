@@ -170,11 +170,12 @@ Deno.test("the audited factory ignores hostile workspace and global Pi resources
       assertEquals(result.session.getAllTools(), []);
       assertEquals(
         result.session.systemPrompt,
-        `${SYSTEM_PROMPT}\nCurrent working directory: ${OPENORB_GUEST_WORKSPACE}\n`,
+        `${SYSTEM_PROMPT}\n\n<cwd>\n${OPENORB_GUEST_WORKSPACE}\n</cwd>`,
       );
       assertEquals(result.session.sessionFile, sessionFile);
       assertEquals(result.session.settingsManager.getGlobalSettings().packages, []);
       assertEquals(result.session.settingsManager.getProjectSettings(), {});
+      assertEquals(result.session.settingsManager.getCacheWarmingMode(), "off");
 
       const initialRuntime = extensions.runtime;
       await loader.reload();
@@ -264,7 +265,7 @@ Deno.test("the factory installs and rotates OpenAI Codex access tokens in memory
       repositoryUrl: REPOSITORY_URL,
       branchName: BRANCH_NAME,
       modelRuntime: {
-        model: "openai-codex/gpt-5.4",
+        model: "openai-codex/gpt-6.1-sol",
         thinkingLevel: "high",
         credential: { type: "access_token", value: initialToken },
       },
@@ -277,7 +278,7 @@ Deno.test("the factory installs and rotates OpenAI Codex access tokens in memory
         initialToken,
       );
       await result.updateModelRuntime({
-        model: "openai-codex/gpt-5.4",
+        model: "openai-codex/gpt-6.1-sol",
         thinkingLevel: "high",
         credential: { type: "access_token", value: rotatedToken },
       });
@@ -323,6 +324,7 @@ Deno.test({
       let responseText = "";
       let sawTextDelta = false;
       let sawThinkingDelta = false;
+      let modelError: string | undefined;
       const unsubscribe = result.session.subscribe((event) => {
         if (event.type === "message_update") {
           if (event.assistantMessageEvent.type === "text_delta") sawTextDelta = true;
@@ -330,6 +332,9 @@ Deno.test({
           return;
         }
         if (event.type !== "message_end" || event.message.role !== "assistant") return;
+        modelError = event.message.stopReason === "error"
+          ? (event.message.errorMessage ?? "Model request failed").replaceAll(apiKey, "[REDACTED]")
+          : undefined;
         responseText = event.message.content.flatMap((block) =>
           block.type === "text" ? [block.text] : []
         ).join("");
@@ -342,6 +347,7 @@ Deno.test({
         result.session.dispose();
       }
 
+      assertEquals(modelError, undefined);
       assert(sawTextDelta);
       assert(sawThinkingDelta);
       assert(responseText.includes("OPENORB_PI_E2E_OK"));

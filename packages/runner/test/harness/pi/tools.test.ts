@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import type { EditToolDetails, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { EditToolDetails, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { SessionArtifact, SessionArtifactId } from "@openorb/protocol/runner-bulk-api";
 import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
 import { Effect, Schema } from "effect";
@@ -12,7 +12,7 @@ import { createPiTools } from "../../../src/harness/pi/tools.ts";
 
 // SAFETY: these tests call only tool executors; the read executor's sole context access is
 // the optional model field, for which absence is a supported state.
-const TOOL_CONTEXT = {} as ExtensionContext;
+const TOOL_CONTEXT = {} as ExtensionToolContext;
 
 Deno.test({
   name: "Pi file tools access guest files without runner filesystem permissions",

@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
 
 import {
@@ -7,6 +8,7 @@ import {
   stringify,
   truncateUtf8,
 } from "@/src/harness/pi/event-normalizer.ts";
+import { eventsFromPiEntries } from "@/src/harness/pi/history.ts";
 import type { EphemeralSessionEvent } from "@openorb/protocol/runner-api";
 
 Deno.test("message completion remains a live ephemeral event", async () => {
@@ -23,6 +25,46 @@ Deno.test("message completion remains a live ephemeral event", async () => {
     },
   }));
   assertEquals(live, [{ type: "message.completed", role: "user" }]);
+});
+
+Deno.test("Pi internal system messages and context edits stay outside the conversation", async () => {
+  const live: EphemeralSessionEvent[] = [];
+  const normalize = makePiEventNormalizer({
+    publishLive: (event) => Effect.sync(() => live.push(event)).pipe(Effect.asVoid),
+  });
+  const session = SessionManager.inMemory("/workspace");
+  const system = { role: "system" as const, content: "Trusted instructions", timestamp: 1 };
+  session.appendMessage(system);
+  const userId = session.appendMessage({ role: "user", content: "Original prompt", timestamp: 2 });
+  session.appendContextEdit(userId, { content: "Provider-only replacement" });
+  session.appendUsage("cache_warming", "opencode-go", "deepseek-v4-flash", {
+    input: 10,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 10,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  });
+
+  await Effect.runPromise(normalize({ type: "message_start", message: system }));
+  await Effect.runPromise(normalize({ type: "message_end", message: system }));
+  for (const entry of session.getBranch()) {
+    await Effect.runPromise(normalize({ type: "entry_appended", entry }));
+  }
+
+  assertEquals(
+    live,
+    session.getBranch().filter((entry) => entry.type === "message").map((entry) => ({
+      type: "session.entry.appended",
+      entryId: entry.id,
+      entryType: "message",
+    })),
+  );
+  assertEquals(eventsFromPiEntries(session.getBranch()), [{
+    type: "user.message",
+    messageId: userId,
+    text: "Original prompt",
+  }]);
 });
 
 Deno.test("bounds normalized UTF-8 text without splitting code points", () => {

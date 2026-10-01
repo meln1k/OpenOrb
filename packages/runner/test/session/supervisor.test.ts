@@ -24,7 +24,11 @@ import {
 } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Fiber, Layer, Logger, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import type { AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSessionEvent,
+  PromptOptions,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 
 import {
@@ -423,7 +427,7 @@ Deno.test("manual Stop syncs the persistent root disk and wake restores the envi
         prompt: async (input, promptOptions) => {
           active = true;
           prompts.push(input);
-          promptOptions?.preflightResult?.(true);
+          promptOptions?.preflightResult?.("started");
           await delay(0);
           active = false;
         },
@@ -569,7 +573,7 @@ Deno.test("explicit Stop cancels active Pi work while idle Stop leaves it runnin
         subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
         prompt: async (_input, options) => {
           const call = promptCalls++;
-          options?.preflightResult?.(true);
+          options?.preflightResult?.("started");
           if (call > 0) {
             continuationStarted.resolve();
             await releaseContinuation.promise;
@@ -793,7 +797,7 @@ Deno.test("environment restart failure requires explicit retry and leaves the pr
           ...created.session,
           prompt: async (
             input: string,
-            promptOptions?: { preflightResult?: (success: boolean) => void },
+            promptOptions?: PromptOptions,
           ) => {
             piPromptCalls++;
             return await created.session.prompt(input, promptOptions);
@@ -983,10 +987,10 @@ Deno.test("SessionSupervisor records failed follow-ups and aborts only the activ
             subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
             prompt: async (
               _input: string,
-              options?: { preflightResult?: (success: boolean) => void },
+              options?: PromptOptions,
             ) => {
               active = true;
-              options?.preflightResult?.(true);
+              options?.preflightResult?.("started");
               promptStarted.resolve();
               await promptFinished.promise;
               active = false;
@@ -1513,7 +1517,7 @@ for (const failure of ["open", "start", "run"] as const) {
               prompts.push(input);
               if (!failed) {
                 failed = true;
-                promptOptions?.preflightResult?.(failure === "run");
+                if (failure === "run") promptOptions?.preflightResult?.("started");
                 throw new Error("Injected model-secret prompt failure.");
               }
               await created.session.prompt(input, promptOptions);
@@ -1931,7 +1935,7 @@ Deno.test("SessionSupervisor does not impose a concurrent session-count limit", 
           sessionManager: EMPTY_PI_SESSION_MANAGER,
           subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
           prompt: (_input, options) => {
-            options?.preflightResult?.(true);
+            options?.preflightResult?.("started");
             return new Promise<void>(() => {});
           },
           followUp: () => Promise.resolve(),
@@ -1978,7 +1982,7 @@ Deno.test("SessionSupervisor serializes two closely queued idle prompts into one
           subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
           prompt: async (_input, options) => {
             const call = promptCalls++;
-            options?.preflightResult?.(true);
+            options?.preflightResult?.("started");
             if (call > 0) {
               firstContinuationStarted.resolve();
               await releaseContinuations.promise;
@@ -2046,10 +2050,10 @@ Deno.test("SessionSupervisor rejects active deletion, then removes an idle sessi
         subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
         prompt: async (
           _input: string,
-          options?: { preflightResult?: (success: boolean) => void },
+          options?: PromptOptions,
         ) => {
           active = true;
-          options?.preflightResult?.(true);
+          options?.preflightResult?.("started");
           initialRunStarted.resolve();
           await releaseInitialRun.promise;
           active = false;
@@ -2231,10 +2235,10 @@ function createSettlingPiSession(_options: OpenOrbPiSessionOptions) {
       subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
       prompt: async (
         _input: string,
-        options?: { preflightResult?: (success: boolean) => void },
+        options?: PromptOptions,
       ) => {
         active = true;
-        options?.preflightResult?.(true);
+        options?.preflightResult?.("started");
         await delay(0);
         active = false;
       },

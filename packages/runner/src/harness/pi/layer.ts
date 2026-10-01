@@ -1,4 +1,4 @@
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, PromptOptions } from "@earendil-works/pi-coding-agent";
 import type { EphemeralSessionEvent, ThinkingLevel } from "@openorb/protocol/runner-api";
 import { Deferred, Effect, Fiber, Layer, Queue, Result, type Scope, Stream } from "effect";
 
@@ -29,9 +29,9 @@ export interface RawPiSession {
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
   prompt(
     input: string,
-    options?: { preflightResult?: (success: boolean) => void },
+    options?: Pick<PromptOptions, "preflightResult">,
   ): Promise<void>;
-  followUp(input: string): Promise<void>;
+  followUp(input: string): Promise<"handled" | "queued" | void>;
   clearQueue(): { steering: string[]; followUp: string[] };
   abort(): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
@@ -223,8 +223,8 @@ function startPiRun(
     const prompt = yield* Effect.tryPromise({
       try: () =>
         raw.prompt(input, {
-          preflightResult: (success) => {
-            Deferred.doneUnsafe(accepted, Effect.succeed(success));
+          preflightResult: () => {
+            Deferred.doneUnsafe(accepted, Effect.succeed(true));
           },
         }),
       catch: (cause) => new AgentHarnessError("The agent run failed.", cause),
@@ -277,7 +277,7 @@ function startPiRun(
               "The agent harness did not confirm the follow-up handoff.",
               cause,
             ),
-        }),
+        }).pipe(Effect.asVoid),
       abort: Effect.tryPromise({
         try: async () => {
           raw.clearQueue();

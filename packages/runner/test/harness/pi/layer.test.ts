@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, PromptOptions } from "@earendil-works/pi-coding-agent";
 import { SessionId, type ThinkingLevel } from "@openorb/protocol/runner-api";
 import { Effect, Schema, Stream } from "effect";
 
@@ -44,9 +44,9 @@ Deno.test("Pi harness exposes a finite, ordered, lossless run stream", async () 
               listener = next;
               return () => listener = () => {};
             },
-            prompt(_input: string, options?: { preflightResult?: (success: boolean) => void }) {
+            prompt(_input: string, options?: PromptOptions) {
               active = true;
-              options?.preflightResult?.(true);
+              options?.preflightResult?.("started");
               for (let index = 0; index < 300; index++) listener({ type: "agent_start" });
               active = false;
               return Promise.resolve();
@@ -103,8 +103,8 @@ Deno.test("Pi harness updates access tokens in memory and redacts every rotation
               listener = next;
               return () => listener = () => {};
             },
-            prompt(_input: string, options?: { preflightResult?: (success: boolean) => void }) {
-              options?.preflightResult?.(true);
+            prompt(_input: string, options?: PromptOptions) {
+              options?.preflightResult?.("started");
               listener({
                 type: "auto_retry_start",
                 attempt: 1,
@@ -207,10 +207,10 @@ Deno.test("Pi harness atomically clears queued follow-ups before aborting", asyn
             subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
             prompt: async (
               _input: string,
-              options?: { preflightResult?: (success: boolean) => void },
+              options?: PromptOptions,
             ) => {
               active = true;
-              options?.preflightResult?.(true);
+              options?.preflightResult?.("started");
               await completed.promise;
               active = false;
             },

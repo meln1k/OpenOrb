@@ -133,6 +133,7 @@ export const createOpenOrbPiSession = Effect.fn("AgentHarness.createPiSession")(
         prompts: [],
         themes: [],
         defaultTools: [],
+        cacheWarming: "off",
       },
       { projectTrusted: false },
     );
