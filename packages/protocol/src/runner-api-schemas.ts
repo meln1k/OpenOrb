@@ -69,7 +69,7 @@ const SafeMessage = Schema.String.check(
   Schema.isMaxLength(1_000, { message: "Error messages must contain at most 1000 characters." }),
 );
 const RunnerToken = Schema.String.check(
-  Schema.isStartsWith("openorb_runner_"),
+  Schema.isStartingWith("openorb_runner_"),
   Schema.isMinLength("openorb_runner_".length + 1),
   Schema.isMaxLength(128),
 );
@@ -461,7 +461,18 @@ export type SessionGitFileStatus = typeof SessionGitFileStatus.Type;
 export const SessionGitDiffState = Schema.Literals(["available", "binary", "truncated"]);
 export type SessionGitDiffState = typeof SessionGitDiffState.Type;
 
-const StrictObject = { parseOptions: { onExcessProperty: "error" as const } };
+function strictObject<F extends Schema.Struct.Fields>(schema: Schema.Struct<F>): Schema.Struct<F> {
+  // Reject undeclared keys even when this struct is nested in an RPC payload.
+  // Keep the Struct interface for Schema.Class without adding an impossible index signature.
+  const isExtra = (key: PropertyKey) => !Object.hasOwn(schema.fields, key);
+  return schema.rebuild(
+    Schema.StructWithRest(schema, [
+      Schema.Record(Schema.String.check(Schema.makeFilter(isExtra)), Schema.Never),
+      Schema.Record(Schema.Symbol.check(Schema.makeFilter(isExtra)), Schema.Never),
+    ]).ast,
+  );
+}
+
 const SessionGitPath = Schema.String.check(
   Schema.isMinLength(1),
   Schema.makeFilter((value) =>
@@ -480,20 +491,20 @@ const SessionGitTrackedFile = Schema.Union([
     ...SessionGitFileBase,
     kind: Schema.Literal("tracked"),
     status: Schema.Literals(["added", "modified", "deleted"]),
-  }).annotate(StrictObject),
+  }).pipe(strictObject),
   Schema.Struct({
     ...SessionGitFileBase,
     kind: Schema.Literal("tracked"),
     status: Schema.Literal("renamed"),
     previousPath: SessionGitPath,
     previousDisplayPath: SessionGitPath,
-  }).annotate(StrictObject),
+  }).pipe(strictObject),
 ]);
 const SessionGitUntrackedFile = Schema.Struct({
   ...SessionGitFileBase,
   kind: Schema.Literal("untracked"),
   status: Schema.Literal("added"),
-}).annotate(StrictObject);
+}).pipe(strictObject);
 export const SessionGitFile = Schema.Union([SessionGitTrackedFile, SessionGitUntrackedFile]);
 export type SessionGitFile = typeof SessionGitFile.Type;
 
@@ -516,7 +527,7 @@ const SessionGitStagedSection = Schema.Struct({
     NonNegativeInt.check(Schema.isLessThanOrEqualTo(MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES)),
   ),
   truncated: Schema.Boolean,
-}).annotate(StrictObject);
+}).pipe(strictObject);
 const SessionGitUnstagedSection = Schema.Struct({
   files: Schema.Array(SessionGitFile),
   patch: SessionGitPatch,
@@ -524,11 +535,11 @@ const SessionGitUnstagedSection = Schema.Struct({
     NonNegativeInt.check(Schema.isLessThanOrEqualTo(MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES)),
   ),
   truncated: Schema.Boolean,
-}).annotate(StrictObject);
+}).pipe(strictObject);
 const SessionGitSections = Schema.Struct({
   staged: SessionGitStagedSection,
   unstaged: SessionGitUnstagedSection,
-}).annotate(StrictObject).check(
+}).pipe(strictObject).check(
   Schema.makeFilter((value) => {
     const files = [...value.staged.files, ...value.unstaged.files];
     return files.length <= MAX_SESSION_GIT_SNAPSHOT_FILES &&
@@ -563,7 +574,7 @@ export class SessionGitSnapshot extends Schema.Class<SessionGitSnapshot>("Sessio
     truncated: Schema.Boolean,
     message: Schema.optionalKey(SafeMessage),
     sections: SessionGitSections,
-  }).annotate(StrictObject),
+  }).pipe(strictObject),
 ) {}
 
 export class UpdateSessionGitFilePayload

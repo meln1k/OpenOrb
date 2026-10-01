@@ -24,10 +24,10 @@ import {
   WakeRejected,
   WakeSessionAccepted,
 } from "@openorb/protocol/runner-api";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
-import * as RpcServer from "effect/unstable/rpc/RpcServer";
-import * as Socket from "effect/unstable/socket/Socket";
-import * as SocketServer from "effect/unstable/socket/SocketServer";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import * as RpcServer from "effect/rpc/RpcServer";
+import * as Socket from "effect/socket/Socket";
+import * as SocketServer from "effect/socket/SocketServer";
 
 import { SessionEvents } from "../session/events.ts";
 import { RunnerSessionStore } from "../session/store.ts";

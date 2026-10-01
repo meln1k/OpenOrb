@@ -1,7 +1,7 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { parseSafe } from "@remix-run/data-schema";
 import { Effect, Schema, type Scope, Stream } from "effect";
-import * as RpcTest from "effect/unstable/rpc/RpcTest";
+import * as RpcTest from "effect/rpc/RpcTest";
 
 import { sessionGitSnapshotSchema } from "@/src/browser-session-git-snapshot.ts";
 import {
@@ -400,6 +400,33 @@ Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budget
   });
   assertThrows(() => Schema.decodeUnknownSync(SessionGitSnapshot)(oversizedCombinedPatches));
   assertEquals(parseSafe(sessionGitSnapshotSchema, oversizedCombinedPatches).success, false);
+});
+
+Deno.test("SessionGitSnapshot rejects excess keys at every nesting level despite permissive decoding", () => {
+  const snapshot = gitSnapshot();
+  const decode = Schema.decodeUnknownSync(SessionGitSnapshot, { onExcessProperty: "ignore" });
+  assertEquals<object>(Schema.encodeSync(SessionGitSnapshot)(decode(snapshot)), snapshot);
+  const sections = snapshot.sections;
+  for (
+    const candidate of [
+      { ...snapshot, extra: true },
+      { ...snapshot, sections: { ...sections, extra: true } },
+      { ...snapshot, sections: { ...sections, staged: { ...sections.staged, extra: true } } },
+      { ...snapshot, sections: { ...sections, unstaged: { ...sections.unstaged, extra: true } } },
+      gitSnapshot({
+        unstagedFiles: [{
+          kind: "tracked",
+          path: "src/main.ts",
+          displayPath: "src/main.ts",
+          status: "modified",
+          diffState: "available",
+          previousPath: "not-a-rename.ts",
+        }],
+      }),
+    ]
+  ) {
+    assertThrows(() => decode(candidate));
+  }
 });
 
 Deno.test("SessionGitSnapshot accepts only explicit section-owned file states", () => {

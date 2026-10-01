@@ -536,7 +536,7 @@ export function makeRunnerSessionStore(
             const file = yield* fs.open(path, { flag: "r" }).pipe(
               Effect.mapError(sessionDataError),
             );
-            yield* file.seek(offset, "start").pipe(Effect.mapError(sessionDataError));
+            yield* file.seek(BigInt(offset), "start").pipe(Effect.mapError(sessionDataError));
             const requested = Math.min(maxBytes, sectionBytes - offset);
             const read = yield* file.readAlloc(requested).pipe(Effect.mapError(sessionDataError));
             const bytes = Option.getOrElse(read, () => new Uint8Array());

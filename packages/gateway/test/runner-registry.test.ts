@@ -45,13 +45,14 @@ import {
   Schema,
   Stream,
 } from "effect";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
-import * as RpcServer from "effect/unstable/rpc/RpcServer";
-import * as Socket from "effect/unstable/socket/Socket";
-import * as SocketServer from "effect/unstable/socket/SocketServer";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as NetAddress from "effect/net/NetAddress";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import * as RpcServer from "effect/rpc/RpcServer";
+import * as Socket from "effect/socket/Socket";
+import * as SocketServer from "effect/socket/SocketServer";
 
 import { makeRunnerRegistry, PERMANENT_REJECTION_CLOSE_CODE } from "@/app/runner-registry.ts";
 import type { RejectedSessionManifestEntry } from "@/app/data/session-catalog-repository.ts";
@@ -364,20 +365,21 @@ function observeClose(socket: Socket.Socket, probe: Probe): Socket.Socket {
       ),
     );
   return Socket.make({
-    runRaw: (handler, options) => observe(socket.runRaw(handler, options)),
-    run: (handler, options) => observe(socket.run(handler, options)),
-    runString: (handler, options) => observe(socket.runString(handler, options)),
+    reader: observe(Effect.map(socket.reader, (reader) => ({
+      ...reader,
+      pull: observe(reader.pull),
+    }))),
     writer: socket.writer,
   });
 }
 
 const connectRunner = Effect.fn(function* (url: string, probe: Probe) {
-  const socketLayer = DenoSocket.layerWebSocket(url, { closeCodeIsError: () => true });
+  const socketLayer = DenoSocket.layerWebSocket(url);
   const socketServer = Layer.effect(
     SocketServer.SocketServer,
     Effect.map(Socket.Socket, (socket) =>
       ({
-        address: { _tag: "TcpAddress" as const, hostname: "outbound", port: 0 },
+        address: NetAddress.socketAddressFromInputUnsafe({ address: "127.0.0.1", port: 0 }),
         run: (handler) =>
           handler(observeClose(socket, probe)).pipe(
             Effect.ensuring(Deferred.succeed(probe.connectionFinalized, undefined)),
@@ -416,7 +418,7 @@ const makeHarness = Effect.fn(function* (
   })));
   const context = yield* Layer.build(layer);
   const server = Context.get(context, HttpServer.HttpServer);
-  if (server.address._tag !== "TcpAddress") return yield* Effect.die("Expected TCP server");
+  if (server.address._tag !== "InetAddressV4") return yield* Effect.die("Expected IPv4 server");
   return { gateway, url: `ws://127.0.0.1:${server.address.port}/runner` };
 });
 

@@ -1,10 +1,10 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { Effect, Exit, Schema, Stream } from "effect";
-import * as SchemaBinary from "effect/unstable/encoding/SchemaBinary";
-import { Rpc } from "effect/unstable/rpc";
-import * as RpcMessage from "effect/unstable/rpc/RpcMessage";
-import * as RpcTest from "effect/unstable/rpc/RpcTest";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
+import * as SchemaBinary from "effect/encoding/SchemaBinary";
+import { Rpc } from "effect/rpc";
+import * as RpcMessage from "effect/rpc/RpcMessage";
+import * as RpcTest from "effect/rpc/RpcTest";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
 
 import {
   ReadSessionArtifactChunkPayload,
@@ -96,6 +96,14 @@ Deno.test("bulk serialization preserves native bytes across traced RPC frames", 
       assert(frame instanceof Uint8Array);
       assertEquals(receiver.decode(frame), [message]);
     }
+    const oversized = SchemaBinary.encoder(RpcMessage.EncodedSchema, { fingerprint: true }).encode({
+      _tag: "Request",
+      id: 3,
+      tag: "session.git-patch.read-chunk",
+      payload: new Uint8Array(MAX_RUNNER_BULK_RPC_FRAME_BYTES + 1),
+      headers: [],
+    });
+    assertThrows(() => serialization.makeUnsafe().decode(oversized));
   }).pipe(Effect.provide(runnerBulkRpcSerializationLayer));
   // SAFETY: the serialization layer supplies the only service used by this test program.
   await Effect.runPromise(program as Effect.Effect<void>);

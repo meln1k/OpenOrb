@@ -229,7 +229,7 @@ export function makeSessionArtifactStore(
           }
           return yield* Effect.scoped(Effect.gen(function* () {
             const file = yield* fs.open(path, { flag: "r" }).pipe(Effect.mapError(storeError));
-            yield* file.seek(offset, "start").pipe(Effect.mapError(storeError));
+            yield* file.seek(BigInt(offset), "start").pipe(Effect.mapError(storeError));
             const requested = Math.min(maxBytes, artifact.byteLength - offset);
             const read = yield* file.readAlloc(requested).pipe(Effect.mapError(storeError));
             const bytes = Option.getOrElse(read, () => new Uint8Array());

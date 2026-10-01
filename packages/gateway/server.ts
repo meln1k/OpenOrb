@@ -12,12 +12,12 @@ import * as DenoHttpClient from "@effect/platform-deno/DenoHttpClient";
 import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
 import { Context, Effect, Layer } from "effect";
-import * as HttpEffect from "effect/unstable/http/HttpEffect";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import * as OtlpSerialization from "effect/unstable/observability/OtlpSerialization";
-import * as OtlpTracer from "effect/unstable/observability/OtlpTracer";
+import * as HttpEffect from "effect/http/HttpEffect";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as OtlpSerialization from "effect/observability/OtlpSerialization";
+import * as OtlpTracer from "effect/observability/OtlpTracer";
 
 const port = Number(Deno.env.get("PORT") ?? "44100");
 

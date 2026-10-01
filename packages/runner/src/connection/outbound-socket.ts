@@ -1,6 +1,7 @@
 import { Deferred, Duration, Effect, Predicate, Schedule, Schema } from "effect";
-import * as Socket from "effect/unstable/socket/Socket";
-import type * as SocketServer from "effect/unstable/socket/SocketServer";
+import * as NetAddress from "effect/net/NetAddress";
+import * as Socket from "effect/socket/Socket";
+import type * as SocketServer from "effect/socket/SocketServer";
 import { MAX_RUNNER_RPC_FRAME_BYTES } from "@openorb/protocol/runner-api-limits";
 
 export const PERMANENT_REJECTION_CLOSE_CODE = 4401;
@@ -18,7 +19,7 @@ class TransientDisconnect
   extends Schema.TaggedError<TransientDisconnect>()("TransientDisconnect", { code: Schema.Int }) {}
 
 interface OutboundSocketServerShape {
-  address: { _tag: string; hostname: string; port: number };
+  address: NetAddress.SocketAddress;
   run: (
     handler: (socket: Socket.Socket) => Effect.Effect<unknown, unknown, unknown>,
   ) => Effect.Effect<never, PermanentRejection | TransientDisconnect, unknown>;
@@ -30,7 +31,8 @@ export function makeOutboundSocketServer(
   frameLimit = MAX_RUNNER_RPC_FRAME_BYTES,
 ): SocketServer.SocketServer["Service"] {
   const server = {
-    address: { _tag: "TcpAddress", hostname: "outbound-websocket", port: 0 },
+    // Synthetic metadata: this adapter uses an outbound connection, not a listener.
+    address: NetAddress.socketAddressFromInputUnsafe({ address: "127.0.0.1", port: 0 }),
     run: (handler: (socket: Socket.Socket) => Effect.Effect<unknown, unknown, unknown>) =>
       Effect.suspend(() => {
         let attempt = 0;
@@ -122,14 +124,13 @@ function observeCloseCode(
       ),
     );
   return Socket.make({
-    runRaw: (handler, options) =>
-      observe(socket.runRaw(handler, {
-        ...options,
-        onOpen: Effect.logInfo("connection.connected").pipe(
-          Effect.annotateLogs({ component: "openorb-runner" }),
-          Effect.andThen(options?.onOpen ?? Effect.void),
-        ),
-      })),
+    reader: observe(Effect.gen(function* () {
+      const reader = yield* socket.reader;
+      yield* Effect.logInfo("connection.connected").pipe(
+        Effect.annotateLogs({ component: "openorb-runner" }),
+      );
+      return { ...reader, pull: observe(reader.pull) };
+    })),
     writer: socket.writer,
   });
 }
@@ -138,29 +139,42 @@ function limitSocket(socket: Socket.Socket, limit: number): Socket.Socket {
   const byteLength = (frame: string | Uint8Array) =>
     Predicate.isString(frame) ? new TextEncoder().encode(frame).byteLength : frame.byteLength;
   return Socket.make({
-    runRaw: (handler, options) =>
-      socket.runRaw(
-        (frame) => byteLength(frame) <= limit ? handler(frame) : closeOverflow(socket),
-        options,
-      ),
+    reader: Effect.gen(function* () {
+      const reader = yield* socket.reader;
+      const writer = yield* socket.writer;
+      return {
+        ...reader,
+        pull: reader.pull.pipe(
+          Effect.tap((frames) =>
+            frames.every((frame) => byteLength(frame) <= limit)
+              ? Effect.void
+              : closeOverflow(writer)
+          ),
+        ),
+      };
+    }),
     writer: Effect.map(
       socket.writer,
-      (write) => (frame) =>
-        Socket.isCloseEvent(frame) || byteLength(frame) <= limit
-          ? write(frame)
-          : write(new Socket.CloseEvent(4400, "Frame limit exceeded")),
+      (writer) => ({
+        write: (frame) =>
+          Socket.isCloseEvent(frame) || byteLength(frame) <= limit
+            ? writer.write(frame)
+            : writer.write(new Socket.CloseEvent(4400, "Frame limit exceeded")),
+        writeAll: (frames) =>
+          frames.every((frame) => byteLength(frame) <= limit)
+            ? writer.writeAll(frames)
+            : writer.write(new Socket.CloseEvent(4400, "Frame limit exceeded")),
+      }),
     ),
   });
 }
 
-function closeOverflow(socket: Socket.Socket): Effect.Effect<never> {
-  Effect.runFork(
-    Effect.scoped(
-      Effect.flatMap(
-        socket.writer,
-        (write) => write(new Socket.CloseEvent(4400, "Frame limit exceeded")),
-      ),
-    ),
+function closeOverflow(writer: Socket.Writer): Effect.Effect<never, Socket.SocketError> {
+  return writer.write(new Socket.CloseEvent(4400, "Frame limit exceeded")).pipe(
+    Effect.andThen(Effect.fail(
+      new Socket.SocketError({
+        reason: new Socket.SocketCloseError({ code: 4400, closeReason: "Frame limit exceeded" }),
+      }),
+    )),
   );
-  return Effect.never;
 }

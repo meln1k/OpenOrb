@@ -34,10 +34,10 @@ import {
   Schema,
   Stream,
 } from "effect";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import * as Socket from "effect/unstable/socket/Socket";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as Socket from "effect/socket/Socket";
 
 import { makeRunnerRegistry } from "../../../gateway/app/runner-registry.ts";
 import type { RejectedSessionManifestEntry } from "../../../gateway/app/data/session-catalog-repository.ts";
@@ -224,16 +224,17 @@ Deno.test("outbound adapter propagates permanent gateway rejection", async () =>
   const program = Effect.gen(function* () {
     const closeObserved = yield* Deferred.make<void>();
     const socket = Socket.make({
-      runRaw: (_handler, options) =>
-        (options?.onOpen ?? Effect.void).pipe(
-          Effect.andThen(Deferred.succeed(closeObserved, undefined)),
+      reader: Effect.succeed({
+        pull: Deferred.succeed(closeObserved, undefined).pipe(
           Effect.andThen(Effect.fail(closeError(PERMANENT_REJECTION_CLOSE_CODE))),
         ),
-      writer: Effect.succeed(() => Effect.void),
+        upgrade: () => Effect.void,
+      }),
+      writer: Effect.succeed({ write: () => Effect.void, writeAll: () => Effect.void }),
     });
     const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
     const running = yield* makeOutboundSocketServer(socket, terminal).run((decorated) =>
-      decorated.runRaw(() => Effect.void)
+      Effect.scoped(Effect.flatMap(decorated.reader, (reader) => reader.pull))
     ).pipe(Effect.exit, Effect.forkChild);
 
     yield* Deferred.await(closeObserved);
@@ -262,31 +263,87 @@ Deno.test("outbound adapter propagates permanent gateway rejection", async () =>
   assert(logs.every((log) => log.cause === undefined));
 });
 
+Deno.test("outbound socket limits every frame in read and write batches by UTF-8 bytes", () =>
+  Effect.runPromise(
+    Effect.scoped(Effect.gen(function* () {
+      let frames: [string | Uint8Array, ...(string | Uint8Array)[]] = ["éé", new Uint8Array(4)];
+      const written: (string | Uint8Array | Socket.CloseEvent)[] = [];
+      let upgrades = 0;
+      const underlying = Socket.make({
+        reader: Effect.succeed({
+          pull: Effect.sync(() => frames),
+          upgrade: () =>
+            Effect.sync(() => {
+              upgrades++;
+            }),
+        }),
+        writer: Effect.succeed({
+          write: (frame) =>
+            Effect.sync(() => {
+              written.push(frame);
+            }),
+          writeAll: (batch) =>
+            Effect.sync(() => {
+              written.push(...batch);
+            }),
+        }),
+      });
+      const captured = yield* Deferred.make<Socket.Socket>();
+      const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
+      yield* makeOutboundSocketServer(underlying, terminal, 4).run((socket) =>
+        Deferred.succeed(captured, socket).pipe(Effect.andThen(Effect.never))
+      ).pipe(Effect.forkScoped);
+      const socket = yield* Deferred.await(captured);
+      const reader = yield* socket.reader;
+      const writer = yield* socket.writer;
+      assertEquals(yield* reader.pull, frames);
+      yield* reader.upgrade();
+      assertEquals(upgrades, 1);
+      yield* writer.writeAll(frames);
+      yield* writer.write("éé");
+      assertEquals(written, [...frames, "éé"]);
+      written.length = 0;
+
+      frames = ["ok", "ééé"];
+      assert(Exit.isFailure(yield* Effect.exit(reader.pull)));
+      yield* writer.write("ééé");
+      yield* writer.writeAll(["ok", new Uint8Array(5)]);
+      assertEquals(written, [
+        new Socket.CloseEvent(4400, "Frame limit exceeded"),
+        new Socket.CloseEvent(4400, "Frame limit exceeded"),
+        new Socket.CloseEvent(4400, "Frame limit exceeded"),
+      ]);
+      const close = new Socket.CloseEvent(4401, "A close reason longer than the frame limit");
+      yield* writer.write(close);
+      assertEquals(written.at(-1), close);
+    })).pipe(Effect.timeout("5 seconds")),
+  ));
+
 Deno.test("outbound reconnect logs the actual jittered delay and next attempt without close reasons", async () => {
   const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
   const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
   const program = Effect.gen(function* () {
     let opens = 0;
     const socket = Socket.make({
-      runRaw: (_handler, options) =>
-        Effect.suspend(() => {
-          opens++;
-          return (options?.onOpen ?? Effect.void).pipe(
-            Effect.andThen(Effect.fail(
-              new Socket.SocketError({
-                reason: new Socket.SocketCloseError({
-                  code: opens === 1 ? 1006 : 4401,
-                  closeReason: "secret-close-reason",
-                }),
+      reader: Effect.sync(() => {
+        opens++;
+        return {
+          pull: Effect.fail(
+            new Socket.SocketError({
+              reason: new Socket.SocketCloseError({
+                code: opens === 1 ? 1006 : 4401,
+                closeReason: "secret-close-reason",
               }),
-            )),
-          );
-        }),
-      writer: Effect.succeed(() => Effect.void),
+            }),
+          ),
+          upgrade: () => Effect.void,
+        };
+      }),
+      writer: Effect.succeed({ write: () => Effect.void, writeAll: () => Effect.void }),
     });
     const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
     yield* makeOutboundSocketServer(socket, terminal).run((decorated) =>
-      decorated.runRaw(() => Effect.void)
+      Effect.scoped(Effect.flatMap(decorated.reader, (reader) => reader.pull))
     ).pipe(Effect.exit);
     assertEquals(opens, 2);
   });
@@ -1062,7 +1119,7 @@ const makeGatewayHarness = Effect.fn(function* (
   })));
   const context = yield* Layer.build(layer);
   const server = Context.get(context, HttpServer.HttpServer);
-  if (server.address._tag !== "TcpAddress") return yield* Effect.die("Expected TCP server");
+  if (server.address._tag !== "InetAddressV4") return yield* Effect.die("Expected IPv4 server");
   return {
     get gateway() {
       return gateway;

@@ -57,12 +57,12 @@ import {
   Stream,
   SynchronizedRef,
 } from "effect";
-import type * as RpcClient from "effect/unstable/rpc/RpcClient";
-import * as RpcClientApi from "effect/unstable/rpc/RpcClient";
-import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
-import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
-import * as Socket from "effect/unstable/socket/Socket";
+import type * as RpcClient from "effect/rpc/RpcClient";
+import * as RpcClientApi from "effect/rpc/RpcClient";
+import type { RpcClientError } from "effect/rpc/RpcClientError";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import * as Socket from "effect/socket/Socket";
 
 import type { AuthenticatedRunner, RunnerRepository } from "@/app/data/runner-repository.ts";
 import type { SessionCatalogRepository } from "@/app/data/session-catalog-repository.ts";
@@ -325,7 +325,7 @@ const accept = Effect.fn("RunnerRegistry.accept")(
     const startedAt = yield* Clock.currentTimeMillis;
     const scope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-    const write = yield* socket.writer;
+    const { write } = yield* socket.writer;
     const reject = (code: number, reason: string) =>
       Effect.logWarning("connection.rejected").pipe(
         Effect.annotateLogs({ component: "openorb-gateway", closeCode: code, reason }),
@@ -539,7 +539,7 @@ const acceptBulk = Effect.fn("RunnerRegistry.acceptBulk")(
   function* (registry: RegistryRuntime, socket: Socket.Socket) {
     const scope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-    const write = yield* socket.writer;
+    const { write } = yield* socket.writer;
     const reject = (code: number, reason: string) => write(new Socket.CloseEvent(code, reason));
     const protocol = yield* RpcClientApi.makeProtocolSocket({ retryPolicy: Schedule.recurs(0) })
       .pipe(

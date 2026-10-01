@@ -1,8 +1,6 @@
-import { Layer, Predicate, Schema } from "effect";
-import * as SchemaBinary from "effect/unstable/encoding/SchemaBinary";
-import { Rpc, RpcGroup } from "effect/unstable/rpc";
-import * as RpcMessage from "effect/unstable/rpc/RpcMessage";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
+import { Schema } from "effect";
+import { Rpc, RpcGroup } from "effect/rpc";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
 
 import { RunnerIdentity, SessionId } from "./runner-api-schemas.ts";
 import {
@@ -131,36 +129,6 @@ export const RunnerBulkApi = RpcGroup.make(
   ReadSessionArtifactChunk,
 );
 
-const schemaBinaryTextEncoder = new TextEncoder();
-
-const runnerBulkRpcSerialization = RpcSerialization.RpcSerialization.of({
-  contentType: "application/vnd.effect.rpc+schema-binary",
-  includesFraming: true,
-  codecFor: SchemaBinary.toCodec,
-  makeUnsafe: () => {
-    // Effect rc.112's dictionary decoder is broken for repeated strings across frames.
-    // https://github.com/Effect-TS/effect/commit/20bd53d4a9aeede26c28b725db29d1a384e905d0
-    const options = { fingerprint: true, dictionary: false } as const;
-    const parser = SchemaBinary.parser(RpcMessage.EncodedSchema, {
-      ...options,
-      maxFrameSize: MAX_RUNNER_BULK_RPC_FRAME_BYTES,
-    });
-    const encoder = SchemaBinary.encoder(RpcMessage.EncodedSchema, options);
-    return {
-      decode: (data: Uint8Array | string) =>
-        parser.feedSync(
-          Predicate.isString(data) ? schemaBinaryTextEncoder.encode(data) : data,
-        ),
-      encode: (message: unknown) => {
-        if (!Array.isArray(message)) return encoder.encode(message);
-        if (message.length === 0) return undefined;
-        return encoder.encodeMany(message);
-      },
-    };
-  },
+export const runnerBulkRpcSerializationLayer = RpcSerialization.layerSchemaBinary({
+  maxFrameSize: MAX_RUNNER_BULK_RPC_FRAME_BYTES,
 });
-
-export const runnerBulkRpcSerializationLayer = Layer.succeed(
-  RpcSerialization.RpcSerialization,
-  runnerBulkRpcSerialization,
-);

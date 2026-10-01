@@ -12,9 +12,9 @@ import {
   MAX_RUNNER_BULK_RPC_FRAME_BYTES,
 } from "@openorb/protocol/runner-api-limits";
 import { Deferred, Effect, Layer, Schedule, Stream } from "effect";
-import * as RpcServer from "effect/unstable/rpc/RpcServer";
-import * as Socket from "effect/unstable/socket/Socket";
-import * as SocketServer from "effect/unstable/socket/SocketServer";
+import * as RpcServer from "effect/rpc/RpcServer";
+import * as Socket from "effect/socket/Socket";
+import * as SocketServer from "effect/socket/SocketServer";
 
 import { RunnerSessionStore } from "../session/store.ts";
 import { SessionArtifactStore } from "../session/artifact-store.ts";
