@@ -134,7 +134,7 @@ function publicFiles(): Middleware {
 export type AppRouter = ReturnType<typeof createAppRouter>;
 export type AppContext = RouterContext<AppRouter>;
 
-declare module "remix/router" {
+declare module "remix" {
   interface RouterTypes {
     context: AppContext;
   }

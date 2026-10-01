@@ -1,7 +1,8 @@
-import { getOrCreateWorkerPoolSingleton, type WorkerPoolManager } from "@pierre/diffs/worker";
+// Keep the namespace import so Remix retains the import-map entry used by import.meta.resolve.
+import * as worker from "@pierre/diffs/worker";
 
-export function getPierreWorkerPool(): WorkerPoolManager {
-  return getOrCreateWorkerPoolSingleton({
+export function getPierreWorkerPool(): worker.WorkerPoolManager {
+  return worker.getOrCreateWorkerPoolSingleton({
     poolOptions: {
       poolSize: 2,
       workerFactory: () =>
