@@ -19,8 +19,13 @@ not leave an orphan Workspace or create another administrator.
 - Session repositories, files, and Git metadata are untrusted. Native host Git never consumes a
   session checkout; clone, branch, status, diff, fetch, commit, and push execute inside Gondolin.
 - Pi Durable runs on the trusted runner host with an explicit registry and in-memory credentials. It
-  discovers no project or global Pi resources. Its file and shell tools are Gondolin-backed;
-  host-side environment control never waits for guest readiness.
+  discovers no host project or global Pi resources. OpenOrb reads passive repository skill metadata
+  from `/workspace/.agents/skills/**/SKILL.md` through Gondolin only after project setup or resume.
+  The bounded background scan publishes names, descriptions, and guest paths for the next model
+  request; full instructions are read on demand. Skill content remains untrusted guidance, never
+  host code or policy. Stop cancels discovery and clears the catalog; start/restart and harness
+  reopen refresh it. File and shell tools are Gondolin-backed; model work and host-side environment
+  control never wait for skill discovery or guest readiness.
 - Each Session owns one Project Checkout and one isolated Agent Environment. Its private root disk,
   including the checkout and non-tmpfs guest state, persists together with runner-owned Harness
   State, Session Journal, Git Snapshots, and logs; RAM and processes do not.

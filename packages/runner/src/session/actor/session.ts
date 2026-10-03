@@ -273,6 +273,10 @@ export const makeSessionActor = Effect.fn("makeSessionActor")(function* (
         harness.open({
           sessionId: id,
           environment: environment.proxy,
+          get environmentState() {
+            return environment.state;
+          },
+          environmentStates: environment.states,
           git: {
             repositoryUrl: metadata().definition.repositoryUrl,
             branchName: metadata().definition.branchName,

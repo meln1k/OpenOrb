@@ -137,6 +137,8 @@ Deno.test("model generation and host environment control never wait for guest re
   let controls = 0;
   const options = {
     ...optionsFor(directory, unavailable),
+    environmentState: "starting" as const,
+    environmentStates: Stream.make("starting" as const),
     controlEnvironment: () => {
       controls++;
       return Effect.succeed({ state: "stopped" as const, forced: false });

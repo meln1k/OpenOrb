@@ -1,6 +1,6 @@
 import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 import { SessionId } from "@openorb/protocol/runner-api";
-import { Effect, Exit, Schema, Scope } from "effect";
+import { Effect, Exit, Schema, Scope, Stream } from "effect";
 import {
   type AgentEnvironment,
   AgentEnvironmentError,
@@ -50,16 +50,24 @@ export function memoryGuest() {
     stat: (path) =>
       Effect.suspend(() => {
         const bytes = files.get(path);
-        return bytes === undefined
+        const directory = [...files.keys()].some((file) => file.startsWith(`${path}/`));
+        return bytes === undefined && !directory
           ? Effect.fail(new AgentEnvironmentError("missing", undefined))
           : Effect.succeed({
-            isFile: () => true,
-            isDirectory: () => false,
-            size: bytes.length,
+            isFile: () => bytes !== undefined,
+            isDirectory: () => directory,
+            size: bytes?.length ?? 0,
             mtimeMs: 0,
           });
       }),
-    listDirectory: () => Effect.die("unexpected list"),
+    listDirectory: (path) =>
+      Effect.suspend(() => {
+        const names = [...files.keys()].filter((file) => file.startsWith(`${path}/`))
+          .map((file) => file.slice(path.length + 1).split("/")[0]!);
+        return names.length > 0
+          ? Effect.succeed([...new Set(names)])
+          : Effect.fail(new AgentEnvironmentError("missing directory", undefined));
+      }),
     renameFile: () => Effect.die("unexpected rename"),
     remove: () => Effect.die("unexpected remove"),
     detectImageMimeType: () => Effect.succeed(null),
@@ -89,6 +97,8 @@ export function optionsFor(
     sessionId: Schema.decodeUnknownSync(SessionId)("01989d78-65ee-7f6a-a97e-0f16ad134c10"),
     state: { directory },
     environment: guest,
+    environmentState: "running",
+    environmentStates: Stream.make("running"),
     git: { repositoryUrl: "https://github.com/example/project.git", branchName: "openorb/test" },
     modelRuntime: {
       model: "faux/test",

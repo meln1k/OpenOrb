@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { Effect, Exit, Fiber, Stream } from "effect";
+import { Deferred, Effect, Exit, Fiber, Stream } from "effect";
 import { ClientRequestId } from "@openorb/protocol/runner-api";
 import { SessionEvents } from "../../../src/session/events.ts";
 import { createInput, eventually, MODEL, SESSION_ID, withFixture } from "./fixture.ts";
@@ -34,6 +34,39 @@ Deno.test("model submission starts before setup readiness; Stop pauses instead o
       environment.setup = Effect.never;
     },
   ));
+
+Deno.test("harness readiness follows project setup and is replayed after start and restart", () => {
+  let ready: Deferred.Deferred<void>;
+  return withFixture(({ factory, fake }) =>
+    Effect.gen(function* () {
+      ready = yield* Deferred.make<void>();
+      yield* factory.spawn(createInput);
+      yield* eventually(() => fake.requests.length === 1);
+      const options = fake.opened[0]!;
+      const states: string[] = [];
+      const watcher = yield* options.environmentStates.pipe(
+        Stream.runForEach((state) =>
+          Effect.sync(() => {
+            states.push(state);
+          })
+        ),
+        Effect.forkChild,
+      );
+      yield* eventually(() => states.length === 1);
+      assertEquals(states, ["starting"], "no discovery signal until setup finishes");
+      yield* Deferred.succeed(ready, undefined);
+      yield* eventually(() => states.includes("running"));
+      assertEquals(yield* options.environmentStates.pipe(Stream.take(1), Stream.runCollect), [
+        "running",
+      ]);
+      yield* options.controlEnvironment("restart");
+      yield* eventually(() => states.filter((state) => state === "running").length === 2);
+      assertEquals(states, ["starting", "running", "stopping", "stopped", "starting", "running"]);
+      yield* Fiber.interrupt(watcher);
+    }), (environment) => {
+    environment.setup = Effect.suspend(() => Deferred.await(ready));
+  });
+});
 
 Deno.test("Abort leaves VM live; host stop and restart do not close or pause the agent", () =>
   withFixture(

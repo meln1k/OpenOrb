@@ -7,7 +7,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import { SessionId } from "@openorb/protocol/runner-api";
 import { assert, assertEquals } from "@std/assert";
-import { Effect, Exit, Schema, Scope } from "effect";
+import { Effect, Exit, Schema, Scope, Stream } from "effect";
 import {
   type AgentEnvironment,
   AgentEnvironmentError,
@@ -38,6 +38,8 @@ export function durableTestOptions(
   return {
     sessionId: Schema.decodeUnknownSync(SessionId)("01989d78-65ee-7f6a-a97e-0f16ad134c10"),
     environment,
+    environmentState: "running",
+    environmentStates: Stream.make("running"),
     state: { directory },
     git,
     modelRuntime: {

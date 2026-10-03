@@ -94,7 +94,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Patch-download workflow
 - Model-provider OAuth/subscription logins
 - Automatic pull-request creation
-- Automatic Pi loading of project context files, settings, packages, extensions, skills, prompts, themes, or system-prompt fragments
+- Automatic host-side Pi loading of project context files, settings, packages, extensions, skills, prompts, themes, or system-prompt fragments (passive guest repository skill metadata is supported)
 - Arbitrary untrusted project Pi extensions
 - Memory/process VM snapshots
 - GPU scheduling
@@ -161,7 +161,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | Outbound Effect RPC control WebSocket plus authenticated bulk WebSocket for media/Git patches; generic terminal/preview tunneling remains planned |
 | Pi workspace resources | Explicit trusted Durable registry; no project/global discovery or ambient credentials |
-| Project guidance | Project files are available only through Gondolin-backed tools; Pi does not host-load `AGENTS.md`, `CLAUDE.md`, skills, prompts, packages, settings, or extensions |
+| Project guidance | Repository skill metadata is discovered through Gondolin after project readiness; full instructions and other project files are available through guest tools. Pi does not host-load `AGENTS.md`, `CLAUDE.md`, skills, prompts, packages, settings, or extensions |
 | Guest image | Batteries-included OpenOrb Gondolin image |
 | Caches | Guest package caches are tmpfs-backed and do not survive Stop; shared host caches are deferred |
 | Retention | No automatic deletion; explicit archive and delete; offline delete is represented by a durable minimal control-plane marker |
@@ -787,9 +787,19 @@ Repository files such as `AGENTS.md`, `CLAUDE.md`, `.agents/skills/**`, and `.pi
 guest files. The model can inspect them through guest tools and execute associated scripts only
 inside Gondolin. Security tests must reject host discovery and host tool fallbacks.
 
+After each successful project setup/resume, OpenOrb asynchronously discovers
+`/workspace/.agents/skills/**/SKILL.md` through the guest filesystem. An OpenOrb-owned prompt section
+advertises validated names, descriptions, and guest paths; the model reads full instructions on
+demand. Discovery never gates model work or Environment Control. Stop cancels scans and clears the
+catalog; start/restart and harness reopen refresh it. Scans are bounded to eight directory levels,
+64 KiB per skill file, and ten seconds, with no entry-count cap. Skill roots own their supporting files;
+hidden directories and `node_modules` are skipped. Invalid, unreadable, disabled, or duplicate-name
+skills are skipped deterministically. No repository scripts, extensions, settings, or global
+resources are loaded on the host.
+
 A future centrally managed **Agent Profile** may add explicitly approved resources from trusted
-configuration/storage. Its registry integration still needs design; it must not enable checkout
-discovery or host execution of scripts referenced by passive skill metadata.
+configuration/storage. Its registry integration still needs design; it must not enable executable
+checkout discovery or host execution of scripts referenced by passive skill metadata.
 
 ### 14.4 Conversation View projection
 
@@ -1635,6 +1645,9 @@ The runner therefore installs only explicit OpenOrb-owned tools and prompt secti
 registry. It never scans the workspace or global directories for Pi resources and never loads
 `.pi/settings.json`. Host-provided prompt material is trusted and independent of guest readiness.
 
+The sole repository discovery is the bounded passive skill-metadata scan described in §14.3,
+using Gondolin-backed file APIs after project readiness. Its results remain untrusted guidance.
+
 Project documentation remains accessible to the agent through Gondolin-backed file tools. This preserves the VM boundary: reading or executing a script associated with a repository skill happens inside Gondolin, never through host-side Pi discovery.
 
 ### 27.5 Mediated workspace secrets
@@ -1846,8 +1859,8 @@ Scenarios:
 
 ### 30.4 Security tests
 
-- A hostile workspace containing `.pi/extensions`, `.pi/settings.json`, package resources, prompt/system-prompt files, context files, skills, and themes cannot execute host code or alter the resources/system prompt returned to Pi
-- Runner source/build checks forbid project discovery, ambient auth, and host execution adapters
+- A hostile workspace containing `.pi/extensions`, `.pi/settings.json`, package resources, prompt/system-prompt files, context files, skills, and themes cannot execute host code or alter trusted resources/policies; only validated passive skill metadata is advertised through the guest-only loader
+- Runner source/build checks forbid host project discovery, ambient auth, and host execution adapters
 - Pi/the model reaches workspace `AGENTS.md`, `CLAUDE.md`, and skill-associated scripts only through Gondolin-backed tools
 - Project Checkout traversal and escaping symlink denied
 - Preview cannot target runner LAN/loopback arbitrarily

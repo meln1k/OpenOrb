@@ -38,6 +38,14 @@ Deno.test("runner source keeps Durable construction and tools behind the audited
   const factory = await Deno.readTextFile("packages/runner/src/harness/durable/layer.ts");
   assertStringIncludes(factory, "createRegistry()");
   assertStringIncludes(factory, "createGuestExecutionEnv(options.environment");
+  assertStringIncludes(factory, "options.environmentStates.pipe(");
+  const skills = await Deno.readTextFile("packages/runner/src/harness/durable/skills.ts");
+  assertStringIncludes(skills, '"/workspace/.agents/skills"');
+  assertStringIncludes(skills, "guest.listDirectory");
+  assertStringIncludes(skills, "guest.readFile");
+  for (const forbidden of ["node:fs", "Deno.read", "guest.run", "import("]) {
+    assert(!skills.includes(forbidden), `skill discovery includes ${forbidden}`);
+  }
   const models = await Deno.readTextFile("packages/runner/src/harness/durable/models.ts");
   assertStringIncludes(models, "InMemoryCredentialStore");
   const tools = (await Promise.all([

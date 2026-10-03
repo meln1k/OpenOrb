@@ -2,7 +2,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import type { SessionModelRuntime } from "@openorb/protocol/runner-api";
-import { Effect, Layer, Semaphore } from "effect";
+import { Effect, Layer, Semaphore, Stream } from "effect";
 import { SessionArtifactStore } from "../../session/artifact-store.ts";
 import {
   AgentHarness,
@@ -13,6 +13,7 @@ import {
 import { createGuestExecutionEnv } from "./environment.ts";
 import { conversationViews } from "./events.ts";
 import { createDurableModels, durableModelRef, thinkingLevel } from "./models.ts";
+import { discoverRepositorySkills, repositorySkillsPrompt } from "./skills.ts";
 import { openDurableStorage } from "./storage.ts";
 import { createDurableTools } from "./tools.ts";
 
@@ -79,6 +80,42 @@ export function makeDurableAgentHarness(
         );
         const lock = yield* Semaphore.make(1);
         let runtime = options.modelRuntime;
+
+        yield* options.environmentStates.pipe(
+          Stream.switchMap((environmentState) =>
+            Stream.fromEffect(
+              (environmentState === "running"
+                ? discoverRepositorySkills(options.environment).pipe(
+                  Effect.timeout(10_000),
+                  Effect.map(repositorySkillsPrompt),
+                  Effect.catch(() =>
+                    Effect.logWarning("Repository skill discovery failed or timed out.").pipe(
+                      Effect.as("Repository skills could not be loaded."),
+                    )
+                  ),
+                )
+                : Effect.succeed(
+                  "Repository skills will be discovered when the guest project is ready.",
+                ))
+                .pipe(Effect.tap((prompt) =>
+                  Effect.sync(() => {
+                    registry.install({
+                      name: "repository-skills",
+                      sections: [{
+                        key: "repository-skills",
+                        render: () =>
+                          options.environmentState === "running"
+                            ? prompt
+                            : "Repository skills will be discovered when the guest project is ready.",
+                      }],
+                    });
+                  })
+                )),
+            )
+          ),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
 
         const session: AgentHarnessSession = {
           get view() {

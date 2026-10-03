@@ -1,4 +1,4 @@
-import { Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
+import { Deferred, Effect, Exit, Fiber, Scope, Semaphore, SubscriptionRef } from "effect";
 import type { EnvironmentState } from "@openorb/protocol/runner-api";
 import {
   type AgentEnvironment,
@@ -41,11 +41,11 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
   const readinessMs = options.readinessMs ?? 120_000;
   const shutdownMs = options.shutdownMs ?? 5_000;
   let instance: Instance | undefined;
-  let state: EnvironmentState = "stopped";
+  const state = yield* SubscriptionRef.make<EnvironmentState>("stopped");
 
   const change = (next: EnvironmentState, forced = false) =>
     Effect.gen(function* () {
-      state = next;
+      yield* SubscriptionRef.set(state, next);
       yield* options.changed(next, forced);
     });
   const stopped = () =>
@@ -65,7 +65,7 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
 
   const start = Effect.gen(function* () {
     if (instance !== undefined) {
-      if (state === "error") {
+      if (state.value === "error") {
         return yield* new AgentEnvironmentError(
           "The previous environment must be stopped before another disk attach.",
           undefined,
@@ -178,7 +178,10 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
   ) =>
     Effect.suspend(() => {
       const current = instance;
-      if (!current || state === "stopped" || state === "stopping" || state === "error") {
+      if (
+        !current || state.value === "stopped" || state.value === "stopping" ||
+        state.value === "error"
+      ) {
         return Effect.fail(stopped());
       }
       const operationWithCancellation = Effect.raceFirst(
@@ -229,6 +232,7 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
   return {
     proxy,
     control,
+    states: SubscriptionRef.changes(state),
     begin: lock.withPermit(start).pipe(Effect.asVoid),
     cancelGuests: Effect.suspend(() =>
       instance ? Deferred.fail(instance.cancelled, stopped()).pipe(Effect.asVoid) : Effect.void
@@ -239,7 +243,7 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
       return instance !== undefined;
     },
     get state() {
-      return state;
+      return state.value;
     },
   };
 });

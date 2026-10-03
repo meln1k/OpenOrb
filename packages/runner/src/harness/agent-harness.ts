@@ -1,6 +1,7 @@
 import { Context, Data, type Effect, type Scope, type Stream } from "effect";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type {
+  EnvironmentState,
   SessionId,
   SessionModelRuntime,
   SubmissionId,
@@ -18,6 +19,10 @@ export interface AgentHarnessState {
 export interface AgentHarnessOpenOptions {
   readonly sessionId: SessionId;
   readonly environment: AgentEnvironment;
+  /** Live host-side state; reading it never acquires guest compute. */
+  readonly environmentState: EnvironmentState;
+  /** Current state followed by changes; running means the project is prepared. */
+  readonly environmentStates: Stream.Stream<EnvironmentState>;
   readonly git: {
     readonly repositoryUrl: string;
     readonly branchName: string;
