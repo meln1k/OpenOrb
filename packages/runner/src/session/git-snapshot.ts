@@ -93,15 +93,6 @@ export type SessionGitFileUpdateResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string };
 
-export function generateSessionGitSnapshot(
-  environment: AgentEnvironment,
-  metadata: RunnerSessionMetadata,
-): Effect.Effect<SessionGitSnapshot, unknown> {
-  return generateSessionGitSnapshotBundle(environment, metadata).pipe(
-    Effect.map((generated) => generated.snapshot),
-  );
-}
-
 export function generateSessionGitSnapshotBundle(
   environment: AgentEnvironment,
   metadata: RunnerSessionMetadata,

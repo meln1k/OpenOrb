@@ -1,5 +1,4 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
 import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import * as DenoPath from "@effect/platform-deno/DenoPath";
 import {
@@ -19,7 +18,6 @@ import { join } from "node:path";
 import { Journal } from "@/src/session/persistent-actor/journal.ts";
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
 import { sessionJournalLayer } from "@/src/session/persistent-actor/session-journal.ts";
-import { sessionMetadata } from "@/src/session/actor/state.ts";
 import {
   makeRunnerSessionStore,
   RunnerSessionStore,
@@ -84,7 +82,7 @@ Deno.test("creates private session storage and recovers cold session state", asy
     const state = await Effect.runPromise(
       session.create(SESSION_ID, sessionDefinition(prompt), CREATED_AT),
     );
-    const metadata = sessionMetadata(state);
+    const metadata = state.metadata;
     assertEquals(metadata.state, "provisioning");
     assertEquals(
       await Effect.runPromise(store.ensureSessionStorage(SESSION_ID)),
@@ -92,13 +90,13 @@ Deno.test("creates private session storage and recovers cold session state", asy
     );
 
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
-    for (const directory of ["pi", "logs", "snapshots"]) {
+    for (const directory of ["harness", "logs", "snapshots"]) {
       const info = await Deno.lstat(join(sessionPath, directory));
       assert(info.isDirectory);
       assertEquals(info.isSymlink, false);
       assertPrivateMode(info.mode, 0o700);
     }
-    for (const file of ["events.jsonl", join("pi", "session.jsonl")]) {
+    for (const file of ["events.jsonl"]) {
       const info = await Deno.lstat(join(sessionPath, file));
       assert(info.isFile);
       assertEquals(info.isSymlink, false);
@@ -131,8 +129,9 @@ Deno.test("creates private session storage and recovers cold session state", asy
         initialThinkingLevel: metadata.definition.initialThinkingLevel,
         orbSize: "small",
         state: "provisioning",
+        agentState: metadata.agentState,
+        environmentState: metadata.environmentState,
         issues: [],
-        lastEventCursor: 0,
       }),
     ]);
     assertEquals(Array.from(manifest.sessions[0]!.initialPromptPreview).length, 200);
@@ -141,7 +140,7 @@ Deno.test("creates private session storage and recovers cold session state", asy
   }
 });
 
-Deno.test("derives replay cursors using Pi JSONL parsing semantics", async () => {
+Deno.test("snapshots use metadata without reading or creating harness history", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
     const { store, session } = await makeStore(workingDirectory);
@@ -152,45 +151,44 @@ Deno.test("derives replay cursors using Pi JSONL parsing semantics", async () =>
         CREATED_AT,
       ),
     );
-    const sessionFile = join(workingDirectory, "sessions", SESSION_ID, "pi", "session.jsonl");
-    const pi = SessionManager.open(sessionFile, undefined, "/workspace");
-    pi.appendMessage({ role: "user", content: "Inspect the repository", timestamp: 1 });
-    pi.appendMessage({
-      role: "assistant",
-      content: [{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }],
-      api: "openai-completions",
-      provider: "opencode-go",
-      model: "deepseek-v4-flash",
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
-      stopReason: "toolUse",
-      timestamp: 2,
-    });
-    pi.appendMessage({
-      role: "toolResult",
-      toolCallId: "tool-1",
-      toolName: "read",
-      content: [{ type: "text", text: "README" }],
-      isError: false,
-      timestamp: 3,
-    });
-
-    assertEquals(
-      (await Effect.runPromise(store.getSessionSnapshot(SESSION_ID))).lastEventCursor,
-      4,
-    );
-    await Deno.writeTextFile(sessionFile, "{", { append: true });
+    const directory = await Effect.runPromise(store.getSessionHarnessDirectory(SESSION_ID));
+    assertEquals(directory, join(workingDirectory, "sessions", SESSION_ID, "harness"));
+    assertEquals(Array.from(await Array.fromAsync(Deno.readDir(directory))), []);
+    await assertPathMissing(join(workingDirectory, "sessions", SESSION_ID, "pi"));
+    const before = await Effect.runPromise(store.getSessionSnapshot(SESSION_ID));
+    assertEquals("lastEventCursor" in before, false);
+    await Deno.writeTextFile(join(directory, "harness.sqlite"), "not opened by metadata reads");
     const manifest = await Effect.runPromise(store.loadSessionManifest());
-    assertEquals(manifest.sessions[0]?.lastEventCursor, 4);
+    assertEquals(manifest.sessions, [before]);
     assertEquals(manifest.errors, []);
   } finally {
     await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
+Deno.test("harness directory access tightens permissions and rejects symlinks without touching their target", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  const outside = await Deno.makeTempDir();
+  try {
+    const { store, session } = await makeStore(workingDirectory);
+    await Effect.runPromise(session.create(SESSION_ID, sessionDefinition(), CREATED_AT));
+    const directory = join(workingDirectory, "sessions", SESSION_ID, "harness");
+    await Deno.chmod(directory, 0o755);
+    await Effect.runPromise(store.getSessionHarnessDirectory(SESSION_ID));
+    assertPrivateMode((await Deno.stat(directory)).mode, 0o700);
+    await Deno.remove(directory);
+    await Deno.chmod(outside, 0o755);
+    await Deno.symlink(outside, directory);
+    const error = await Effect.runPromise(
+      Effect.flip(store.getSessionHarnessDirectory(SESSION_ID)),
+    );
+    assertEquals(error.operation, "get-harness-directory");
+    assertPrivateMode((await Deno.stat(outside)).mode, 0o755);
+    await Effect.runPromise(store.removeSessionStorage(SESSION_ID));
+    assert((await Deno.stat(outside)).isDirectory);
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
   }
 });
 
@@ -455,6 +453,34 @@ Deno.test("reports invalid session entries without hiding valid manifest session
   }
 });
 
+for (const missing of [false, true]) {
+  Deno.test(`rejects ${missing ? "missing" : "empty"} journals in metadata reads and manifests`, async () => {
+    const workingDirectory = await Deno.makeTempDir();
+    try {
+      const { store } = await makeStore(workingDirectory);
+      await Effect.runPromise(store.ensureSessionStorage(SESSION_ID));
+      if (!missing) {
+        await Deno.writeTextFile(
+          join(workingDirectory, "sessions", SESSION_ID, "events.jsonl"),
+          "",
+        );
+      }
+      const error = await Effect.runPromise(Effect.flip(store.readMetadata(SESSION_ID)));
+      assertEquals(error.operation, "read-metadata");
+      assertStringIncludes(error.message, "The session event journal is empty.");
+      assertEquals(await Effect.runPromise(store.loadSessionManifest()), {
+        sessions: [],
+        errors: [{
+          sessionDirectory: SESSION_ID,
+          message: "The session event journal is empty.",
+        }],
+      });
+    } finally {
+      await Deno.remove(workingDirectory, { recursive: true });
+    }
+  });
+}
+
 Deno.test("fails cold reads when persisted session events are invalid", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
@@ -481,7 +507,7 @@ Deno.test("idempotently removes every session-owned storage path", async () => {
     const sessionPath = join(workingDirectory, "sessions", SESSION_ID);
     for (
       const [directory, file] of [
-        ["pi", "history.jsonl"],
+        ["harness", "harness.sqlite"],
         ["logs", "runner.log"],
         ["snapshots", "git-snapshot.json"],
       ] as const

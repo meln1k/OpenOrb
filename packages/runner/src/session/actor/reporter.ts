@@ -20,23 +20,19 @@ export interface CommandOutput {
 
 export interface SessionReporter {
   readonly publish: (
-    correlationId: string,
     event: unknown,
   ) => Effect.Effect<void, SessionActorError>;
   readonly emitLog: (
-    correlationId: string,
     stream: "stdout" | "stderr",
     text: string,
   ) => Effect.Effect<void, SessionActorError>;
   readonly emitState: (
     metadata: RunnerSessionMetadata,
     stage: SessionProvisioningStage,
-    correlationId: string,
   ) => Effect.Effect<void, SessionActorError>;
   readonly runCommand: (
     environment: AgentEnvironment,
     command: string[],
-    correlationId: string,
     logBudget: ProvisioningLogBudget,
   ) => Effect.Effect<CommandOutput, SessionActorError>;
 }
@@ -68,28 +64,26 @@ export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
   const events = yield* SessionEvents;
 
   const publish = (
-    correlationId: string,
     event: unknown,
   ): Effect.Effect<void, SessionActorError> =>
-    events.publishLive(sessionId, correlationId, event).pipe(
+    events.publishLive(sessionId, event).pipe(
       Effect.mapError((cause) => new SessionActorError("Session event publication failed.", cause)),
     );
 
   const emitLog = (
-    correlationId: string,
     stream: "stdout" | "stderr",
     text: string,
-  ): Effect.Effect<void, SessionActorError> =>
-    publish(correlationId, { type: "provisioning.log", stream, text });
+  ): Effect.Effect<void, SessionActorError> => publish({ type: "provisioning.log", stream, text });
 
   const emitState = (
     metadata: RunnerSessionMetadata,
     stage: SessionProvisioningStage,
-    correlationId: string,
   ): Effect.Effect<void, SessionActorError> =>
-    publish(correlationId, {
+    publish({
       type: "session.state",
       stage,
+      agentState: metadata.agentState,
+      environmentState: metadata.environmentState,
       checkoutState: metadata.checkoutState,
       issues: metadata.issues,
     }).pipe(
@@ -105,7 +99,6 @@ export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
     );
 
   const emitBoundedOutput = (
-    correlationId: string,
     stream: "stdout" | "stderr",
     text: string,
     budget: ProvisioningLogBudget,
@@ -115,20 +108,19 @@ export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
         const limit = Math.min(budget.remainingBytes, MAX_RPC_SESSION_EVENT_TEXT_BYTES);
         const { head, tail, bytes } = takeUtf8(text, limit);
         if (head.length === 0) break;
-        yield* emitLog(correlationId, stream, head);
+        yield* emitLog(stream, head);
         budget.remainingBytes -= bytes;
         text = tail;
       }
       if (text.length > 0 && !budget.truncated) {
         budget.truncated = true;
-        yield* emitLog(correlationId, "stderr", OUTPUT_TRUNCATED_MESSAGE);
+        yield* emitLog("stderr", OUTPUT_TRUNCATED_MESSAGE);
       }
     });
 
   const runCommand = (
     environment: AgentEnvironment,
     command: string[],
-    correlationId: string,
     logBudget: ProvisioningLogBudget,
   ): Effect.Effect<CommandOutput, SessionActorError> => {
     let stdout = "";
@@ -145,7 +137,6 @@ export const makeSessionReporter = Effect.fn("makeSessionReporter")(function* (
               stderr = appendBounded(stderr, text, MAX_CAPTURED_COMMAND_BYTES);
             }
             yield* emitBoundedOutput(
-              correlationId,
               output.stream,
               text,
               logBudget,

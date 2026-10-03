@@ -58,8 +58,7 @@ export function createSessionThinkingLevelController(
       : request?.level ?? options.confirmedLevel();
   const promptLevel = (state: SessionState) => state === "stopped" ? stoppedDraft : undefined;
   const observeConfirmed = () => {
-    request = undefined;
-    pending = false;
+    if (!pending && request?.level === options.confirmedLevel()) request = undefined;
   };
 
   async function cycle(state: SessionState): Promise<void> {

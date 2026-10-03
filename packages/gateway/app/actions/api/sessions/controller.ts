@@ -306,16 +306,10 @@ export default createController(routes.api.sessions, {
       );
       if (!session) return new Response("Session not found.", { status: 404 });
 
-      const afterCursor = parseCursor(context.request);
-      if (afterCursor === null) {
-        sessionRejection("invalid_event_cursor");
-        return new Response("Invalid event cursor.", { status: 400 });
-      }
-
       const stream = await sessionSpan("events.subscribe", () =>
         Effect.runPromise(
           createSessionEventStream(
-            context.services.runnerConnections.watchSession(workspaceId, sessionId, afterCursor),
+            context.services.runnerConnections.watchSession(workspaceId, sessionId),
           ),
           { signal: context.request.signal },
         ));
@@ -419,11 +413,4 @@ function parseSessionId(value: string): string | null {
 
 function apiError(error: string, status: number): Response {
   return Response.json({ error }, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-function parseCursor(request: Request): number | null {
-  const source = request.headers.get("last-event-id") ?? "0";
-  if (!/^\d+$/.test(source)) return null;
-  const cursor = Number(source);
-  return Number.isSafeInteger(cursor) ? cursor : null;
 }

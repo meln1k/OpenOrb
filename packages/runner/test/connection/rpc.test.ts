@@ -4,6 +4,7 @@ import { assert, assertEquals } from "@std/assert";
 import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
 import {
   AbortSessionAccepted,
+  AbortSessionPayload,
   GitFileUpdateAccepted,
   GitMutationRevision,
   PromptSessionAccepted,
@@ -21,7 +22,15 @@ import {
   WatchSessionEvent,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { SessionGitSnapshotId } from "@openorb/protocol/runner-bulk-api";
+import {
+  SessionArtifact,
+  SessionArtifactId,
+  SessionGitSnapshotId,
+} from "@openorb/protocol/runner-bulk-api";
+import {
+  MAX_RUNNER_BULK_CHUNK_BYTES,
+  MAX_RUNNER_BULK_RPC_FRAME_BYTES,
+} from "@openorb/protocol/runner-api-limits";
 import {
   Context,
   Deferred,
@@ -47,7 +56,7 @@ import {
   type RunnerRpcStartupError,
   runRunnerRpc,
 } from "../../src/connection/rpc.ts";
-import { runRunnerBulkRpc } from "../../src/connection/bulk-rpc.ts";
+import { runnerBulkWebSocket, runRunnerBulkRpc } from "../../src/connection/bulk-rpc.ts";
 import { SessionArtifactStore } from "../../src/session/artifact-store.ts";
 import { SessionEvents, type SessionStateChange } from "../../src/session/events.ts";
 import { RunnerSessionStore } from "../../src/session/store.ts";
@@ -73,7 +82,6 @@ const capacity = decode(RunnerCapacity)({
 
 function snapshot(
   state: "ready" | "running" | "stopped",
-  activeRunId?: string,
   sessionId = SESSION_ID,
 ) {
   return decode(RunnerSessionSnapshot)({
@@ -85,9 +93,9 @@ function snapshot(
     initialThinkingLevel: "high",
     orbSize: "small",
     state,
+    agentState: state === "running" ? "running" : state === "stopped" ? "paused" : "idle",
+    environmentState: state === "stopped" ? "stopped" : "running",
     issues: [],
-    lastEventCursor: state === "ready" ? 1 : 2,
-    ...(activeRunId === undefined ? {} : { activeRunId }),
   });
 }
 
@@ -109,21 +117,42 @@ Deno.test("runner requests TCP_NODELAY and streams large Unicode deltas through 
     Effect.scoped(Effect.gen(function* () {
       const expected = Array.from({ length: 64 }, (_, index) =>
         decode(WatchSessionEvent)({
-          runId: "01989d78-65ee-7f6a-a97e-0f16ad134c30",
-          cursor: index + 3,
-          event: {
-            type: "assistant.text.delta",
-            delta: `${index}: ${"🌍漢字 streaming\n".repeat(256)}`,
-          },
+          event: index === 0
+            ? {
+              type: "conversation.snapshot",
+              view: {
+                conversation: { id: 1 },
+                entries: [],
+                docs: {
+                  "pi.live": {
+                    text: "large snapshot 🌍漢字\n".repeat(400_000),
+                    numbers: [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER, 1790938800000],
+                  },
+                },
+              },
+            }
+            : {
+              type: "conversation.ops",
+              ops: [[
+                "a",
+                ["docs", "pi.live", "text"],
+                `${index}: ${"🌍漢字 streaming\n".repeat(index === 1 ? 400_000 : 256)}`,
+              ]],
+            },
         }));
       // SAFETY: This watch-only RPC scenario reaches only manifest loading on the store.
       const store = {
-        loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("running")], errors: [] }),
+        loadSessionManifest: () =>
+          Effect.succeed({
+            sessions: [snapshot("running")],
+            errors: [],
+          }),
       } as unknown as RunnerSessionStore;
       // SAFETY: The runner and session watches use only these two event service methods.
       const events = {
         watchStateChanges: () => Stream.empty,
-        watch: () => Stream.fromIterable(expected).pipe(Stream.rechunk(1)),
+        // One source batch exceeds 16 MiB; production RPC must rechunk before serialization.
+        watch: () => Stream.fromIterable(expected),
       } as unknown as SessionEvents;
       const harness = yield* makeGatewayHarness(TOKEN);
       yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
@@ -136,11 +165,19 @@ Deno.test("runner requests TCP_NODELAY and streams large Unicode deltas through 
         ),
         "runner did not publish its session",
       );
-      const received = yield* harness.gateway.watchSession(WORKSPACE_ID, SESSION_ID, 2).pipe(
+      const received = yield* harness.gateway.watchSession(WORKSPACE_ID, SESSION_ID).pipe(
         Stream.runCollect,
         Effect.timeout("10 seconds"),
       );
       assertEquals(Array.from(received), expected);
+      // A typed reply from another RPC proves the same control connection is still usable.
+      assertEquals(
+        yield* harness.gateway.abortSession({
+          workspaceId: WORKSPACE_ID,
+          sessionId: SESSION_ID,
+        }),
+        { status: "rejected", message: "The agent is not running." },
+      );
       // The gateway uses native Deno sockets; this observes the outbound ws TCP socket only.
       assert(
         noDelayCalls.includes(true),
@@ -159,10 +196,18 @@ Deno.test("runner requests TCP_NODELAY and streams large Unicode deltas through 
   assert(!JSON.stringify(logs).includes("🌍漢字"));
 });
 
-Deno.test("bulk Git patches cross the separate SchemaBinary channel as native bytes", () =>
+Deno.test("bulk Git patches and multi-chunk images cross the separate SchemaBinary channel as native bytes", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const snapshotId = decode(SessionGitSnapshotId)("a".repeat(64));
     const bytes = new TextEncoder().encode("full patch 🌍");
+    const image = new Uint8Array(MAX_RUNNER_BULK_CHUNK_BYTES + 19).map((_, i) => i % 251);
+    const artifact = new SessionArtifact({
+      id: SessionArtifactId.make("01989d78-65ee-8f6a-a97e-0f16ad134c10"),
+      fileName: "image.png",
+      mediaType: "image/png",
+      byteLength: image.length,
+    });
+    const reads: number[] = [];
     const store = {
       loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("ready")], errors: [] }),
       readGitSnapshotPatchChunk: () =>
@@ -181,7 +226,17 @@ Deno.test("bulk Git patches cross the separate SchemaBinary channel as native by
     );
     const bulk = yield* runRunnerBulkRpc(options).pipe(
       Effect.provideService(RunnerSessionStore, store),
-      Effect.provideService(SessionArtifactStore, unexpectedArtifactStore),
+      Effect.provideService(SessionArtifactStore, {
+        publish: unexpectedArtifactStore.publish,
+        readChunk: (sessionId, artifactId, offset, maxBytes) =>
+          Effect.sync(() => {
+            assertEquals(sessionId, SESSION_ID);
+            assertEquals(artifactId, artifact.id);
+            assertEquals(maxBytes, MAX_RUNNER_BULK_CHUNK_BYTES);
+            reads.push(offset);
+            return { artifact, bytes: image.slice(offset, offset + maxBytes) };
+          }),
+      }),
       Effect.exit,
       Effect.forkScoped,
     );
@@ -209,6 +264,23 @@ Deno.test("bulk Git patches cross the separate SchemaBinary channel as native by
     assert(chunk !== undefined);
     assertEquals(new TextDecoder().decode(chunk.bytes), "full patch 🌍");
 
+    const received = new Uint8Array(image.length);
+    for (const offset of [0, MAX_RUNNER_BULK_CHUNK_BYTES]) {
+      const result = yield* harness.gateway.readSessionArtifactChunk({
+        workspaceId: WORKSPACE_ID,
+        sessionId: SESSION_ID,
+        artifactId: artifact.id,
+        offset,
+      });
+      assert(result.status === "accepted");
+      assertEquals(result.acknowledgement.artifact, artifact);
+      assertEquals(result.acknowledgement.offset, offset);
+      received.set(result.acknowledgement.bytes, offset);
+    }
+    assertEquals(received, image);
+    assertEquals(reads, [0, MAX_RUNNER_BULK_CHUNK_BYTES]);
+    assertEquals(yield* harness.gateway.getSessionRunner(WORKSPACE_ID, SESSION_ID), RUNNER_ID);
+
     assert(yield* harness.gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
     const [controlExit, bulkExit] = yield* Effect.all([
       Fiber.await(control),
@@ -222,32 +294,24 @@ Deno.test("outbound adapter propagates permanent gateway rejection", async () =>
   const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
   const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
   const program = Effect.gen(function* () {
-    const closeObserved = yield* Deferred.make<void>();
     const socket = Socket.make({
       reader: Effect.succeed({
-        pull: Deferred.succeed(closeObserved, undefined).pipe(
-          Effect.andThen(Effect.fail(closeError(PERMANENT_REJECTION_CLOSE_CODE))),
-        ),
+        pull: Effect.fail(closeError(PERMANENT_REJECTION_CLOSE_CODE)),
         upgrade: () => Effect.void,
       }),
       writer: Effect.succeed({ write: () => Effect.void, writeAll: () => Effect.void }),
     });
     const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
-    const running = yield* makeOutboundSocketServer(socket, terminal).run((decorated) =>
+    const running = makeOutboundSocketServer(socket, terminal).run((decorated) =>
       Effect.scoped(Effect.flatMap(decorated.reader, (reader) => reader.pull))
-    ).pipe(Effect.exit, Effect.forkChild);
-
-    yield* Deferred.await(closeObserved);
-    yield* Effect.yieldNow;
-    const result = running.pollUnsafe();
-    assert(result !== undefined, "permanent rejection did not terminate the outbound adapter");
-    assert(Exit.isSuccess(result));
-    assertEquals(result.value._tag, "Failure");
+    );
+    const result = yield* Effect.raceFirst(running, Deferred.await(terminal)).pipe(Effect.result);
+    assert(result._tag === "Failure");
+    assert(result.failure._tag === "RunnerRpcStartupError");
+    assertEquals(result.failure.code, PERMANENT_REJECTION_CLOSE_CODE);
   });
 
-  // SAFETY: The socket test double supplies every service used by the adapter invocation.
-  const runnable = program as Effect.Effect<void>;
-  await Effect.runPromise(runnable.pipe(Effect.provide(Logger.layer([logger]))));
+  await Effect.runPromise(program.pipe(Effect.provide(Logger.layer([logger]))));
   assertEquals(logs.map((log) => log.message), [
     "connection.connecting",
     "connection.connected",
@@ -263,10 +327,16 @@ Deno.test("outbound adapter propagates permanent gateway rejection", async () =>
   assert(logs.every((log) => log.cause === undefined));
 });
 
-Deno.test("outbound socket limits every frame in read and write batches by UTF-8 bytes", () =>
+Deno.test("bulk socket limits every frame in read and write batches by UTF-8 bytes", () =>
   Effect.runPromise(
     Effect.scoped(Effect.gen(function* () {
-      let frames: [string | Uint8Array, ...(string | Uint8Array)[]] = ["éé", new Uint8Array(4)];
+      const limit = MAX_RUNNER_BULK_RPC_FRAME_BYTES;
+      const acceptedText = "é".repeat(limit / 2);
+      const oversizedText = acceptedText + "é";
+      let frames: [string | Uint8Array, ...(string | Uint8Array)[]] = [
+        acceptedText,
+        new Uint8Array(limit),
+      ];
       const written: (string | Uint8Array | Socket.CloseEvent)[] = [];
       let upgrades = 0;
       const underlying = Socket.make({
@@ -290,7 +360,7 @@ Deno.test("outbound socket limits every frame in read and write batches by UTF-8
       });
       const captured = yield* Deferred.make<Socket.Socket>();
       const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
-      yield* makeOutboundSocketServer(underlying, terminal, 4).run((socket) =>
+      yield* makeOutboundSocketServer(runnerBulkWebSocket(underlying), terminal).run((socket) =>
         Deferred.succeed(captured, socket).pipe(Effect.andThen(Effect.never))
       ).pipe(Effect.forkScoped);
       const socket = yield* Deferred.await(captured);
@@ -300,14 +370,16 @@ Deno.test("outbound socket limits every frame in read and write batches by UTF-8
       yield* reader.upgrade();
       assertEquals(upgrades, 1);
       yield* writer.writeAll(frames);
-      yield* writer.write("éé");
-      assertEquals(written, [...frames, "éé"]);
+      yield* writer.write(acceptedText);
+      assertEquals(written, [...frames, acceptedText]);
       written.length = 0;
 
-      frames = ["ok", "ééé"];
+      frames = ["ok", oversizedText];
       assert(Exit.isFailure(yield* Effect.exit(reader.pull)));
-      yield* writer.write("ééé");
-      yield* writer.writeAll(["ok", new Uint8Array(5)]);
+      assert(Exit.isFailure(yield* Effect.exit(writer.write(oversizedText))));
+      assert(
+        Exit.isFailure(yield* Effect.exit(writer.writeAll(["ok", new Uint8Array(limit + 1)]))),
+      );
       assertEquals(written, [
         new Socket.CloseEvent(4400, "Frame limit exceeded"),
         new Socket.CloseEvent(4400, "Frame limit exceeded"),
@@ -342,15 +414,14 @@ Deno.test("outbound reconnect logs the actual jittered delay and next attempt wi
       writer: Effect.succeed({ write: () => Effect.void, writeAll: () => Effect.void }),
     });
     const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
-    yield* makeOutboundSocketServer(socket, terminal).run((decorated) =>
+    const running = makeOutboundSocketServer(socket, terminal).run((decorated) =>
       Effect.scoped(Effect.flatMap(decorated.reader, (reader) => reader.pull))
-    ).pipe(Effect.exit);
+    );
+    yield* Effect.raceFirst(running, Deferred.await(terminal)).pipe(Effect.exit);
     assertEquals(opens, 2);
   });
-  // SAFETY: The socket double and handler require no external services.
-  const runnable = program as Effect.Effect<void>;
   await Effect.runPromise(
-    runnable.pipe(Effect.provide(Logger.layer([logger])), Effect.timeout("5 seconds")),
+    program.pipe(Effect.provide(Logger.layer([logger])), Effect.timeout("5 seconds")),
   );
   const retries = logs.filter((log) => log.message === "connection.reconnect-scheduled");
   assertEquals(retries.length, 1);
@@ -369,33 +440,36 @@ Deno.test("outbound reconnect logs the actual jittered delay and next attempt wi
 
 Deno.test("transient gateway restart preserves runner work and reconnects from durable state", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const activeRunId = "01989d78-65ee-7f6a-a97e-0f16ad134c30";
-    const messageId = "01989d78-65ee-7f6a-a97e-0f16ad134c31";
+    const submissionId = 42;
     const catalogSessionIds = new Set<string>();
     const promptWorkStarted = yield* Deferred.make<void>();
     const releasePromptWork = yield* Deferred.make<void>();
     const promptWorkCompleted = yield* Deferred.make<void>();
     const promptAcknowledgement = yield* Deferred.make<{
       readonly ok: true;
-      readonly runId: string;
-      readonly mode: "follow-up";
+      readonly submissionId: number;
     }>();
     const firstWatchStarted = yield* Deferred.make<void>();
     const firstWatchFinalized = yield* Deferred.make<void>();
     const durableWorkScope = yield* Effect.scope;
     const replayedEvent = decode(WatchSessionEvent)({
-      runId: activeRunId,
-      cursor: 3,
-      event: { type: "user.message", messageId, text: "Continued while disconnected" },
+      event: {
+        type: "conversation.snapshot",
+        view: {
+          conversation: { id: 1 },
+          entries: [],
+          docs: { "pi.live": { text: "Continued while disconnected" } },
+        },
+      },
     });
     let promptCalls = 0;
     let watchCalls = 0;
     let tombstoneCleanupCalls = 0;
     let manifestSnapshots = [
-      snapshot("running", activeRunId),
-      snapshot("ready", undefined, READY_SESSION_ID),
-      snapshot("stopped", undefined, STOPPED_SESSION_ID),
-      snapshot("ready", undefined, TOMBSTONED_SESSION_ID),
+      snapshot("running"),
+      snapshot("ready", READY_SESSION_ID),
+      snapshot("stopped", STOPPED_SESSION_ID),
+      snapshot("ready", TOMBSTONED_SESSION_ID),
     ];
     const tombstonedSessionIds = new Set([TOMBSTONED_SESSION_ID]);
     const store = {
@@ -403,8 +477,7 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
     } as unknown as RunnerSessionStore;
     const events = {
       watchStateChanges: () => Stream.empty,
-      watch: (_sessionId: string, afterCursor: number) => {
-        assertEquals(afterCursor, 2);
+      watch: (_sessionId: string) => {
         watchCalls++;
         if (watchCalls === 1) {
           return Stream.unwrap(
@@ -428,8 +501,7 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
                 promptAcknowledgement,
                 {
                   ok: true,
-                  runId: activeRunId,
-                  mode: "follow-up",
+                  submissionId,
                 } as const,
               );
             }),
@@ -439,7 +511,6 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
         }),
     };
     const supervisor = {
-      getActiveRunId: () => activeRunId,
       findActor: () => actor,
       findOrRestoreActor: () => Effect.succeed(actor),
       deleteSession: (sessionId: string) =>
@@ -503,7 +574,7 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
       },
     }).pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(promptWorkStarted);
-    const watching = yield* originalGateway.watchSession(WORKSPACE_ID, SESSION_ID, 2).pipe(
+    const watching = yield* originalGateway.watchSession(WORKSPACE_ID, SESSION_ID).pipe(
       Stream.runDrain,
       Effect.exit,
       Effect.forkChild({ startImmediately: true }),
@@ -546,7 +617,7 @@ Deno.test("transient gateway restart preserves runner work and reconnects from d
       "a transient restart terminated the runner layer",
     );
 
-    const replayed = yield* restartedGateway.watchSession(WORKSPACE_ID, SESSION_ID, 2).pipe(
+    const replayed = yield* restartedGateway.watchSession(WORKSPACE_ID, SESSION_ID).pipe(
       Stream.take(1),
       Stream.runCollect,
     );
@@ -673,7 +744,6 @@ Deno.test("Git file update RPC resolves and calls the session actor", () =>
         }),
     };
     const supervisor = {
-      getActiveRunId: () => undefined,
       findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
@@ -734,7 +804,6 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session actor",
         }),
     };
     const supervisor = {
-      getActiveRunId: () => undefined,
       findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
     const harness = yield* makeGatewayHarness(TOKEN);
@@ -774,10 +843,9 @@ Deno.test("Wake RPC dispatches model credentials to the resolved session actor",
 
 Deno.test("Prompt, thinking-level, and Abort RPCs resolve and call the session actor", () =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const activeRunId = "01989d78-65ee-7f6a-a97e-0f16ad134c30";
+    const submissionId = 42;
     const store = {
-      loadSessionManifest: () =>
-        Effect.succeed({ sessions: [snapshot("running", activeRunId)], errors: [] }),
+      loadSessionManifest: () => Effect.succeed({ sessions: [snapshot("running")], errors: [] }),
     } as unknown as RunnerSessionStore;
     const events = {
       watchStateChanges: () => Stream.empty,
@@ -788,21 +856,21 @@ Deno.test("Prompt, thinking-level, and Abort RPCs resolve and call the session a
       prompt: () =>
         Effect.sync(() => {
           calls.push("prompt");
-          return { ok: true as const, runId: activeRunId, mode: "follow-up" as const };
+          return { ok: true as const, submissionId };
         }),
       setThinkingLevel: () =>
         Effect.sync(() => {
           calls.push("thinking-level");
           return { ok: true as const, level: "xhigh" as const };
         }),
-      abort: () =>
+      abort: (payload: unknown) =>
         Effect.sync(() => {
+          assertEquals(payload, decode(AbortSessionPayload)({ sessionId: SESSION_ID }));
           calls.push("abort");
           return { ok: true as const };
         }),
     };
     const supervisor = {
-      getActiveRunId: () => activeRunId,
       findActor: () => actor,
       findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
@@ -833,6 +901,7 @@ Deno.test("Prompt, thinking-level, and Abort RPCs resolve and call the session a
     });
     assert(prompted.status === "accepted");
     assert(prompted.acknowledgement instanceof PromptSessionAccepted);
+    assertEquals(prompted.acknowledgement.submissionId, submissionId);
 
     const changed = yield* harness.gateway.setSessionThinkingLevel({
       workspaceId: WORKSPACE_ID,
@@ -869,7 +938,6 @@ Deno.test("Stop RPC lazily restores and calls a cold ready session actor", () =>
         }),
     };
     const supervisor = {
-      getActiveRunId: () => undefined,
       findActor: () => undefined,
       findOrRestoreActor: () => Effect.succeed(actor),
     } as unknown as SessionSupervisor;
@@ -914,13 +982,14 @@ Deno.test("Delete RPC rejects busy work, cleans an idle session, and publishes r
     let deleteCalls = 0;
     const supervisor = {
       deleteSession: () =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           deleteCalls++;
-          return busy
-            ? { ok: false as const, message: "Wait for active session work to finish." }
-            : { ok: true as const };
+          if (busy) {
+            return { ok: false as const, message: "Wait for active session work to finish." };
+          }
+          yield* events.publishRemoved(decode(SessionId)(SESSION_ID));
+          return { ok: true as const };
         }),
-      getActiveRunId: () => undefined,
       findActor: () => undefined,
       findOrRestoreActor: () => Effect.die("unexpected actor restore"),
       provision: () => Effect.die("unexpected provision"),
@@ -1016,7 +1085,6 @@ function provideRunnerServices(
   store: RunnerSessionStore,
   events: SessionEvents,
   supervisor: SessionSupervisor = {
-    getActiveRunId: () => undefined,
     findActor: () => undefined,
     findOrRestoreActor: () => Effect.die("unexpected actor restore"),
     provision: () => Effect.die("unexpected provision"),
@@ -1028,7 +1096,7 @@ function provideRunnerServices(
       Effect.provideService(
         SessionSupervisor,
         Object.assign(
-          { withQuarantineFailure: (snapshot: RunnerSessionSnapshot) => snapshot },
+          { withLiveState: (snapshot: RunnerSessionSnapshot) => snapshot },
           supervisor,
         ),
       ),

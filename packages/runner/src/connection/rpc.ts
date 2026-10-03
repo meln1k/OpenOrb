@@ -24,7 +24,10 @@ import {
   WakeRejected,
   WakeSessionAccepted,
 } from "@openorb/protocol/runner-api";
-import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import {
+  runnerControlRpcSerializationLayer,
+  runnerControlWebSocket,
+} from "@openorb/protocol/runner-control-transport";
 import * as RpcServer from "effect/rpc/RpcServer";
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
@@ -65,9 +68,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
       ),
       Effect.flatMap((acceptance) =>
         acceptance.ok
-          ? events.publishRemoved(payload.sessionId).pipe(
-            Effect.as(new DeleteSessionAccepted({})),
-          )
+          ? Effect.succeed(new DeleteSessionAccepted({}))
           : new DeleteRejected({ sessionId: payload.sessionId, message: acceptance.message })
       ),
     );
@@ -86,6 +87,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         Stream.provideService(RunnerSessionStore, store),
         Stream.provideService(SessionSupervisor, supervisor),
         Stream.provideService(SessionEvents, events),
+        Stream.rechunk(1),
       ),
     "session.provision": (payload) =>
       supervisor.provision(payload).pipe(
@@ -157,8 +159,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
             ? Effect.succeed(
               new PromptSessionAccepted({
                 clientRequestId: payload.clientRequestId,
-                runId: result.runId,
-                mode: result.mode,
+                submissionId: result.submissionId,
               }),
             )
             : new PromptRejected({ sessionId: payload.sessionId, message: result.message })
@@ -188,19 +189,15 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
       if (!actor) {
         return new AbortRejected({
           sessionId: payload.sessionId,
-          runId: payload.runId,
-          message: "That Pi run is no longer active.",
+          message: "The agent is not running.",
         });
       }
       return actor.abort(payload).pipe(
         Effect.flatMap((result) =>
-          result.ok
-            ? Effect.succeed(new AbortSessionAccepted({ runId: payload.runId }))
-            : new AbortRejected({
-              sessionId: payload.sessionId,
-              runId: payload.runId,
-              message: result.message,
-            })
+          result.ok ? Effect.succeed(new AbortSessionAccepted({})) : new AbortRejected({
+            sessionId: payload.sessionId,
+            message: result.message,
+          })
         ),
       );
     },
@@ -281,18 +278,21 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           ),
         ),
       ),
-    "session.watch": ({ sessionId, afterCursor }) => events.watch(sessionId, afterCursor),
+    "session.watch": ({ sessionId }) => events.watch(sessionId).pipe(Stream.rechunk(1)),
   }));
   const socketUrl = new URL("/api/runners/connect", options.gatewayUrl);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
   const socketLayer = runnerWebSocketLayer(socketUrl.toString());
   const serverLayer = Layer.effect(
     SocketServer.SocketServer,
-    Effect.map(Socket.Socket, (socket) => makeOutboundSocketServer(socket, terminal)),
+    Effect.map(
+      Socket.Socket,
+      (socket) => makeOutboundSocketServer(runnerControlWebSocket(socket), terminal),
+    ),
   ).pipe(Layer.provide(socketLayer));
   const protocol = RpcServer.layerProtocolSocketServer.pipe(
     Layer.provide(serverLayer),
-    Layer.provide(RpcSerialization.layerJson),
+    Layer.provide(runnerControlRpcSerializationLayer),
   );
   const launched = Layer.launch(
     RpcServer.layer(RunnerApi).pipe(

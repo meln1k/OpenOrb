@@ -153,7 +153,7 @@ async function runAcceptance(): Promise<void> {
   await waitForText(changesPanel, INITIAL_FILE);
   await waitForText(changesPanel, initialMarker);
 
-  await page.getByRole("button", { name: "Stop Gondolin VM" }).click();
+  await page.getByRole("button", { name: "Stop Session", exact: true }).click();
   await waitForSessionState(page, "stopped");
   await assertPersistentRootDisk();
 

@@ -5,7 +5,42 @@ import {
   SessionChangesResource,
   type SessionChangesViewOwner,
 } from "./session-changes-resource.tsx";
-import { SessionPageController } from "./session-page-controller.tsx";
+import { SessionPageController as LiveSessionPageController } from "./session-page-controller.tsx";
+
+/** Git mutation fixtures explicitly start with an available environment. */
+class SessionPageController extends LiveSessionPageController {
+  constructor(state: "ready", issues: readonly never[]) {
+    super(state, issues, "idle", "running");
+  }
+}
+
+Deno.test("Git actions use the actual environment, never the catalog summary or agent state", async () => {
+  const lifetime = new AbortController();
+  const page = new LiveSessionPageController("running", [], "running", "stopped");
+  const changes = new SessionChangesResource("csrf", "session", lifetime.signal);
+  changes.connect(page);
+  assertEquals(changes.canMutate, false);
+  await changes.updateFile("stage", "file.ts");
+  page.apply({
+    type: "session.state",
+    stage: "stopping",
+    agentState: "paused",
+    environmentState: "stopping",
+    checkoutState: "available",
+    issues: [],
+  });
+  assertEquals(changes.canMutate, false);
+  page.apply({
+    type: "session.state",
+    stage: "stopped",
+    agentState: "paused",
+    environmentState: "running",
+    checkoutState: "available",
+    issues: [],
+  });
+  assertEquals(changes.canMutate, true);
+  lifetime.abort();
+});
 
 Deno.test("session changes share one lazy refresh pipeline across responsive views", async () => {
   const originalFetch = globalThis.fetch;

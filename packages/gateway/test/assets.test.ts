@@ -33,6 +33,7 @@ Deno.test("serves browser UI dependencies without exposing server modules", asyn
       "/assets/npm/@remix-run/ui/dist/combobox.js",
       "/assets/npm/@remix-run/ui/dist/select.js",
       "/assets/npm/@remix-run/ui/dist/popover.js",
+      "/assets/npm/@earendil-works/chord/dist/delta/index.js",
     ]
   ) {
     const response = await assetServer.fetch(new Request(new URL(href, "http://assets.test")));
@@ -47,6 +48,8 @@ Deno.test("serves browser UI dependencies without exposing server modules", asyn
       "/assets/app/ui/settings/settings-navigation.tsx",
       "/assets/app/actions/sessions/controller.tsx",
       "/assets/app/actions/sessions/page.tsx",
+      "/assets/npm/@earendil-works/pi-durable/dist/index.js",
+      "/assets/npm/@earendil-works/chord/dist/index.js",
       "/assets/npm/.deno/remix@3.0.0-rc.5/node_modules/remix/dist/component/server.js",
       "/assets/npm/.deno/remix@3.0.0-rc.5/node_modules/remix/dist/component/test.js",
       "/assets/npm/.deno/@remix-run+component@0.8.0/node_modules/@remix-run/component/dist/server/stream.js",

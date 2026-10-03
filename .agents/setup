@@ -41,6 +41,7 @@ install_system_packages() {
   esac
 
   local packages=(
+    build-essential
     ca-certificates
     cpio
     curl
@@ -244,23 +245,46 @@ install_dependencies() {
   deno install --frozen
 }
 
-install_motel() {
-  local version=0.2.6
-  local package_json="$HOME/.bun/install/global/node_modules/@kitlangton/motel/package.json"
-  if command -v motel >/dev/null 2>&1 && [[ -f "$package_json" ]] &&
-    [[ "$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$package_json" | head -n 1)" == "$version" ]]; then
-    echo "Motel $version already installed."
+install_gotel() {
+  local version=v0.0.0-20260906113606-1bc41cbc7240
+  local go_version=1.27.1
+  local toolchain="$HOME/.local/share/gotel/go-$go_version"
+  if [[ ! -x "$toolchain/bin/go" ]]; then
+    local architecture checksum
+    case "$(uname -m)" in
+      x86_64)
+        architecture=amd64
+        checksum=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+        ;;
+      aarch64 | arm64)
+        architecture=arm64
+        checksum=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
+        ;;
+      *) echo 'GoTel requires Linux amd64 or arm64.' >&2; return 1 ;;
+    esac
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    curl --fail --location --silent --show-error \
+      "https://go.dev/dl/go$go_version.linux-$architecture.tar.gz" \
+      --output "$temp_dir/go.tar.gz"
+    echo "$checksum  $temp_dir/go.tar.gz" | sha256sum --check
+    tar -xzf "$temp_dir/go.tar.gz" -C "$temp_dir"
+    mkdir -p "$(dirname "$toolchain")"
+    mv "$temp_dir/go" "$toolchain"
+    rm -rf -- "$temp_dir"
+  fi
+
+  if command -v gotel >/dev/null 2>&1 && command -v gotel-mcp >/dev/null 2>&1 &&
+    "$toolchain/bin/go" version -m "$(command -v gotel)" | grep -Fq "$version"; then
+    echo "GoTel $version already installed."
     return
   fi
 
-  if ! command -v bun >/dev/null 2>&1; then
-    echo 'Bun is required only by the optional Motel development tool, but is unavailable.' >&2
-    return 1
-  fi
-
-  bun add --global "@kitlangton/motel@$version"
-  as_root ln -sfn "$HOME/.bun/bin/motel" /usr/local/bin/motel
-  motel --help >/dev/null
+  GOBIN="$HOME/.local/bin" CGO_ENABLED=1 GOMAXPROCS=2 \
+    "$toolchain/bin/go" install "github.com/meln1k/gotel/cmd/...@$version"
+  as_root ln -sfn "$HOME/.local/bin/gotel" /usr/local/bin/gotel
+  as_root ln -sfn "$HOME/.local/bin/gotel-mcp" /usr/local/bin/gotel-mcp
+  gotel help >/dev/null
 }
 
 step 'Install system packages' install_system_packages
@@ -271,7 +295,7 @@ step 'Clone Remix 3 RC 5 reference repository' clone_remix_repository
 step 'Configure PostgreSQL' configure_postgres
 step 'Create local gateway environment' create_local_environment
 step 'Install locked Deno dependencies' install_dependencies
-step 'Install Motel local observability tool' install_motel
+step 'Install GoTel local observability tool' install_gotel
 
 echo
 echo 'Orb setup complete.'

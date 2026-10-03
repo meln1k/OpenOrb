@@ -1,4 +1,6 @@
 import type {
+  AgentState,
+  EnvironmentState,
   SessionEvent,
   SessionIssue,
   SessionProvisioningStage,
@@ -9,30 +11,42 @@ import { type Handle, type RemixNode, TypedEventTarget } from "remix/component";
 
 import { routes } from "@/app/routes.ts";
 import {
+  ConversationFrameError,
   runnerSessionStateForProvisioningStage,
   type SessionState,
 } from "@/app/ui/session/session-transcript-state.ts";
 
 interface SessionPageEventMap {
   readonly connection: Event;
+  readonly invalid: Event;
   readonly session: CustomEvent<SessionEvent>;
 }
 
 export interface SessionPageProjection {
   readonly connectionInterrupted: boolean;
   readonly sessionState: SessionState;
+  readonly agentState: AgentState | null;
+  readonly environmentState: EnvironmentState | null;
   readonly stage: SessionProvisioningStage | null;
   readonly issues: readonly SessionIssue[];
 }
 
 export class SessionPageController extends TypedEventTarget<SessionPageEventMap> {
   #projection: SessionPageProjection;
+  #awaitingSnapshot = true;
 
-  constructor(initialState: SessionState, initialIssues: readonly SessionIssue[]) {
+  constructor(
+    initialState: SessionState,
+    initialIssues: readonly SessionIssue[],
+    agentState: AgentState | null = null,
+    environmentState: EnvironmentState | null = null,
+  ) {
     super();
     this.#projection = {
       connectionInterrupted: initialState === "offline",
       sessionState: initialState,
+      agentState,
+      environmentState,
       stage: null,
       issues: initialIssues,
     };
@@ -43,10 +57,16 @@ export class SessionPageController extends TypedEventTarget<SessionPageEventMap>
   }
 
   apply(event: SessionEvent): void {
+    if (event.type === "conversation.snapshot") this.#awaitingSnapshot = false;
+    if (event.type === "conversation.ops" && this.#awaitingSnapshot) {
+      throw new ConversationFrameError("Expected a fresh conversation snapshot.");
+    }
     if (event.type === "session.state") {
       this.#projection = {
         ...this.#projection,
         sessionState: runnerSessionStateForProvisioningStage(event.stage),
+        agentState: event.agentState,
+        environmentState: event.environmentState,
         stage: event.stage,
         issues: event.issues,
       };
@@ -55,9 +75,15 @@ export class SessionPageController extends TypedEventTarget<SessionPageEventMap>
   }
 
   setConnectionInterrupted(interrupted: boolean): void {
+    if (interrupted) this.#awaitingSnapshot = true;
     if (this.#projection.connectionInterrupted === interrupted) return;
     this.#projection = { ...this.#projection, connectionInterrupted: interrupted };
     this.dispatchEvent(new Event("connection"));
+  }
+
+  invalidateStream(): void {
+    this.setConnectionInterrupted(true);
+    this.dispatchEvent(new Event("invalid"));
   }
 }
 
@@ -65,6 +91,8 @@ interface SessionPageScopeProps {
   readonly children?: RemixNode;
   readonly csrfToken: string;
   readonly initialState: SessionState;
+  readonly initialAgentState: AgentState | null;
+  readonly initialEnvironmentState: EnvironmentState | null;
   readonly initialIssues: readonly SessionIssue[];
   readonly sessionId: string;
 }
@@ -75,21 +103,22 @@ export function SessionPageScope(
   const controller = new SessionPageController(
     handle.props.initialState,
     handle.props.initialIssues,
+    handle.props.initialAgentState ?? null,
+    handle.props.initialEnvironmentState ?? null,
   );
   handle.context.set(controller);
 
   handle.queueTask(() => {
-    if (handle.props.initialState === "ready" || handle.props.initialState === "running") {
-      const body = new FormData();
-      body.set("_csrf", handle.props.csrfToken);
-      void fetch(routes.api.sessions.wake.href({ sessionId: handle.props.sessionId }), {
-        method: "POST",
-        body,
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-        signal: handle.signal,
-      }).catch(() => undefined);
-    }
+    const body = new FormData();
+    body.set("_csrf", handle.props.csrfToken);
+    // Wake once on page entry, not on stream updates: Stop must stay stopped in this view.
+    void fetch(routes.api.sessions.wake.href({ sessionId: handle.props.sessionId }), {
+      method: "POST",
+      body,
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal: handle.signal,
+    }).catch(() => undefined);
 
     const stream = new EventSource(
       routes.api.sessions.events.href({ sessionId: handle.props.sessionId }),
@@ -100,8 +129,16 @@ export function SessionPageScope(
       const encoded = parseSafe(string(), message.data);
       if (!encoded.success) return;
       const event = parseSessionEvent(encoded.value);
-      if (event) controller.apply(event);
+      const [, error] = trySync(() => {
+        if (!event) throw new ConversationFrameError("Invalid session frame.");
+        controller.apply(event);
+      }, () => true);
+      if (error !== undefined) {
+        controller.invalidateStream();
+        return;
+      }
     });
+    controller.addEventListener("invalid", () => stream.close(), { signal: handle.signal });
     stream.addEventListener("error", () => controller.setConnectionInterrupted(true));
     handle.signal.addEventListener("abort", () => stream.close(), { once: true });
   });

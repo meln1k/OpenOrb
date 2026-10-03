@@ -48,6 +48,7 @@ export const assetServer = createAssetServer({
     "packages/gateway/app/routes.ts",
     "packages/protocol/src/browser-session-git-snapshot.ts",
     "packages/protocol/src/browser-session-events.ts",
+    "packages/protocol/src/conversation-frame.ts",
     "packages/protocol/src/model-provider.ts",
     "packages/protocol/src/orb-size.ts",
     "packages/protocol/src/runner-api-limits.ts",
@@ -64,6 +65,8 @@ export const assetServer = createAssetServer({
     "node_modules/.deno/@remix-run+component@0.8.0/node_modules/@remix-run/component/dist/**/*.js",
     "node_modules/.deno/@remix-run+ui@0.12.0/node_modules/@remix-run/ui/dist/**/*.js",
     "node_modules/.deno/es-module-lexer@2.3.2/node_modules/es-module-lexer/dist/lexer.js",
+    "node_modules/.deno/@earendil-works+chord@1.0.0/node_modules/@earendil-works/chord/dist/delta/*.js",
+    "node_modules/.deno/@earendil-works+chord@1.0.0/node_modules/@earendil-works/chord/dist/json.js",
   ],
   denyFiles: [
     "node_modules/.deno/remix@3.0.0-rc.5/node_modules/remix/dist/component/{server,test}.js",

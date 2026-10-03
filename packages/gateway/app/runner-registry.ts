@@ -21,7 +21,6 @@ import {
   ProvisionRejected,
   ProvisionSessionPayload,
   type ProvisionSessionSuccess,
-  RunId,
   RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   type RunnerCapacity,
@@ -61,7 +60,10 @@ import type * as RpcClient from "effect/rpc/RpcClient";
 import * as RpcClientApi from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
-import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import {
+  runnerControlRpcSerializationLayer,
+  runnerControlWebSocket,
+} from "@openorb/protocol/runner-control-transport";
 import * as Socket from "effect/socket/Socket";
 
 import type { AuthenticatedRunner, RunnerRepository } from "@/app/data/runner-repository.ts";
@@ -189,7 +191,6 @@ export interface RunnerRegistryService {
   readonly watchSession: (
     workspaceId: WorkspaceId,
     sessionId: string,
-    afterCursor: number,
   ) => Stream.Stream<typeof WatchSessionEvent.Type, unknown>;
   readonly disconnectRunner: (workspaceId: WorkspaceId, runnerId: string) => Effect.Effect<boolean>;
 }
@@ -309,8 +310,7 @@ export function makeRunnerRegistry(
       abortSession: (input) => observeOperation("abort", input, abortSession(runtime, input)),
       stopSession: (input) => observeOperation("stop", input, stopSession(runtime, input)),
       deleteSession: (input) => deleteSession(runtime, input),
-      watchSession: (workspaceId, sessionId, afterCursor) =>
-        watchSession(runtime, workspaceId, sessionId, afterCursor),
+      watchSession: (workspaceId, sessionId) => watchSession(runtime, workspaceId, sessionId),
       disconnectRunner: (workspaceId, runnerId) => disconnectRunner(runtime, workspaceId, runnerId),
     });
   });
@@ -333,8 +333,8 @@ const accept = Effect.fn("RunnerRegistry.accept")(
       );
     const protocol = yield* RpcClientApi.makeProtocolSocket({ retryPolicy: Schedule.recurs(0) })
       .pipe(
-        Effect.provideService(Socket.Socket, socket),
-        Effect.provide(RpcSerialization.layerJson),
+        Effect.provideService(Socket.Socket, runnerControlWebSocket(socket)),
+        Effect.provide(runnerControlRpcSerializationLayer),
         Effect.provideService(Scope.Scope, scope),
       );
     const client = yield* RpcClientApi.make(RunnerApi).pipe(
@@ -920,7 +920,10 @@ const updateSessionGitFile = Effect.fn("RunnerRegistry.updateSessionGitFile")(
       registry,
       input.workspaceId,
       input.sessionId,
-      () => undefined,
+      (snapshot) =>
+        snapshot.environmentState === "running"
+          ? undefined
+          : "The environment must be running to change Git files.",
     );
     if (routed.status === "unavailable") return unavailable(routed.message);
     if (routed.status === "rejected") {
@@ -1027,8 +1030,7 @@ const promptSession = Effect.fn("RunnerRegistry.promptSession")(
       input.sessionId,
       (snapshot) => {
         if (
-          snapshot.state !== "ready" && snapshot.state !== "running" &&
-          snapshot.state !== "stopped"
+          snapshot.agentState === "error"
         ) {
           return "The session cannot accept a prompt right now.";
         }
@@ -1049,7 +1051,9 @@ const promptSession = Effect.fn("RunnerRegistry.promptSession")(
       clientRequestId,
     }).pipe(
       Effect.timeout(
-        routed.snapshot.state === "stopped" ? COLD_CONTINUATION_TIMEOUT_MS : OPERATION_TIMEOUT_MS,
+        routed.snapshot.agentState === "paused"
+          ? COLD_CONTINUATION_TIMEOUT_MS
+          : OPERATION_TIMEOUT_MS,
       ),
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
       Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
@@ -1062,10 +1066,7 @@ const setSessionThinkingLevel = Effect.fn("RunnerRegistry.setSessionThinkingLeve
       registry,
       input.workspaceId,
       input.sessionId,
-      (snapshot) =>
-        snapshot.state === "ready" || snapshot.state === "running"
-          ? undefined
-          : "The session environment is not running.",
+      (snapshot) => snapshot.agentState !== "error" ? undefined : "The agent is unavailable.",
     );
     if (routed.status === "unavailable") return unavailable(routed.message);
     if (routed.status === "rejected") {
@@ -1126,17 +1127,15 @@ const abortSession = Effect.fn("RunnerRegistry.abortSession")(
       registry,
       input.workspaceId,
       input.sessionId,
-      (snapshot) => snapshot.activeRunId ? undefined : "There is no active Pi run to abort.",
+      (snapshot) => snapshot.agentState === "running" ? undefined : "The agent is not running.",
     );
     if (routed.status === "unavailable") return unavailable(routed.message);
     if (routed.status === "rejected") {
       return { status: "rejected" as const, message: routed.message };
     }
     const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
-    const runId = Schema.decodeUnknownSync(RunId)(routed.snapshot.activeRunId);
     return yield* routed.connection.runtime.client["session.abort"]({
       sessionId,
-      runId,
     }).pipe(
       Effect.timeout(OPERATION_TIMEOUT_MS),
       Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
@@ -1151,7 +1150,7 @@ const stopSession = Effect.fn("RunnerRegistry.stopSession")(
       input.workspaceId,
       input.sessionId,
       (snapshot) =>
-        snapshot.state === "ready" || snapshot.state === "running"
+        snapshot.agentState !== "paused" || snapshot.environmentState !== "stopped"
           ? undefined
           : "The session cannot be stopped right now.",
     );
@@ -1217,7 +1216,6 @@ function watchSession(
   registry: RegistryRuntime,
   workspaceId: WorkspaceId,
   sessionId: string,
-  afterCursor: number,
 ) {
   return Stream.unwrap(Effect.gen(function* () {
     const decoded = Schema.decodeUnknownOption(SessionId)(sessionId);
@@ -1234,7 +1232,6 @@ function watchSession(
     }
     return connection.runtime.client["session.watch"]({
       sessionId: decoded.value,
-      afterCursor,
     });
   }));
 }

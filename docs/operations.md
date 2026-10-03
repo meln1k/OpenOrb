@@ -10,24 +10,42 @@ Treat the gateway, runner, and protocol as one release unit. Check out the same 
 SHA on the gateway and every source-installed runner; do not mix independently updated checkouts.
 Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as
 `OPENORB_REVISION` below. A standalone runner must come from the release for that same source
-revision. Protocol version **21** is source-owned and is not a separately upgradeable public API.
+revision. Protocol version **25** is source-owned and is not a separately upgradeable public API.
 
 The exact runtime and application pins in this release graph are:
 
-| Component                              | Pin                                              |
-| -------------------------------------- | ------------------------------------------------ |
-| Deno / standalone runner denort        | 2.9.5                                            |
-| Gondolin                               | 0.12.0                                           |
-| OpenOrb guest image                    | `release-1` (Debian snapshot `20260803T000000Z`) |
-| Pi AI / Pi coding-agent direct imports | 1.0.0                                            |
-| Remix                                  | 3.0.0-rc.5                                       |
-| Runner protocol                        | 21                                               |
+| Component                       | Pin                                              |
+| ------------------------------- | ------------------------------------------------ |
+| Deno / standalone runner denort | 2.9.5                                            |
+| Gondolin                        | 0.12.0                                           |
+| OpenOrb guest image             | `release-1` (Debian snapshot `20260803T000000Z`) |
+| Pi AI / Pi Durable / Chord      | 1.0.0                                            |
+| Remix                           | 3.0.0-rc.5                                       |
+| Runner protocol                 | 25                                               |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
 build IDs, hashes, sizes, and immutable URLs are in
 `packages/runner/src/environment/gondolin/guest-image/release.ts`; follow the
 [guest image release process](guest-image.md), rather than rebuilding an asset under an existing
 release ID.
+
+Protocol 25 uses UTF-8 JSON inside SchemaBinary framing on the binary control WebSocket. Runner and
+gateway must be upgraded together; neither the former CBOR format nor unframed JSON text messages
+are supported. Logical control messages are capped at 16 MiB and split into WebSocket messages of at
+most 1 MiB. Reassembly is per connection and is discarded on disconnect; reconnect still obtains a
+fresh conversation snapshot. Images and Git patches continue to use the separate bulk channel.
+Chunking does not make arbitrarily large conversations unbounded or remove the need for compaction.
+
+Streaming RPC handlers emit one event per RPC envelope, so queue batching cannot combine
+individually valid events into an oversized message. The control transport owns its limits; the
+outbound adapter only reconnects. Bulk retains its own frame limit. Values use Effect's JSON schema
+codecs, including strings for schema-declared bigints. Ordinary numbers retain JavaScript's usual
+precision limits; there is no custom numeric conversion.
+
+Prompt acknowledgements carry the Durable `submissionId` and echoed `clientRequestId`, not a run
+group or admission mode. Duplicate request IDs return the existing submission without resuming
+paused agent work. Abort targets the Session's conversation and leaves its environment running.
+Runner snapshots and session events no longer carry synthetic run IDs.
 
 ## Deploy the gateway behind Caddy
 
@@ -169,11 +187,12 @@ start it again. Restore it only to the same trusted runner identity and the matc
 and guest-asset release, preserving owner `openorb-runner`, directory mode `0700`, and identity-file
 mode `0600`.
 
-Do not claim a crash-consistent copy of a running directory is a session backup. Journals, Pi
-`session.jsonl`, each session's `root-disk.qcow2`, deletion markers, and Session Journals can change
-independently while a session runs. QEMU mutates the persistent root disk in place while its VM is
-running, so copying it concurrently can produce a corrupt or internally inconsistent backup. Stop
-the service first; filesystem snapshots alone do not coordinate with an active VM.
+Do not claim a crash-consistent copy of a running directory is a session backup. Durable's
+`harness/harness.sqlite` and its WAL/SHM sidecars, each session's `root-disk.qcow2`, deletion
+markers, and Session Journals can change independently while a session runs. QEMU mutates the
+persistent root disk in place while its VM is running, so copying it concurrently can produce a
+corrupt or internally inconsistent backup. Stop the service first; filesystem snapshots alone do not
+coordinate with an active VM.
 
 Even a consistent runner backup is not a gateway backup and does not make sessions portable or
 provide migration/HA. Keep the matching guest assets or allow the same immutable release assets to
@@ -181,6 +200,12 @@ be downloaded and verified. After restore, run `doctor` before starting the serv
 corrupt `root-disk.qcow2` prevents that Session from being resumed; the Project Checkout is on that
 disk, not separately stored on the host. The explicit **Restart environment** recovery reopens the
 preserved disk after a Stop durability or VM-start failure and never substitutes an older copy.
+
+Pi Durable is a clean break from the former Pi JSONL format. Old development sessions are not
+converted; create new sessions after upgrading. Stop Session pauses checkpointed agent work and
+durably stops compute; Wake resumes it. Abort cancels work without stopping compute. Agent-issued
+environment restart can force a hung VM to close and reports possible loss of unsynced writes.
+Opening a transcript is read-only and never wakes the Session.
 
 ## Troubleshooting
 

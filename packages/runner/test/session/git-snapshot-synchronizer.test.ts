@@ -47,6 +47,8 @@ const METADATA: RunnerSessionMetadata = {
   ),
   createdAt: Schema.decodeUnknownSync(RunnerSessionCreatedAt)("2026-08-27T12:00:00Z"),
   state: "running",
+  agentState: "running",
+  environmentState: "running",
   checkoutState: "available",
   issues: [],
   baseCommit: "0123456789abcdef0123456789abcdef01234567",
@@ -85,6 +87,10 @@ const ENVIRONMENT: AgentEnvironment = {
   access: () => Effect.die("unexpected access"),
   writeFile: () => Effect.die("unexpected write"),
   makeDirectory: () => Effect.die("unexpected directory"),
+  stat: () => Effect.die("unexpected stat"),
+  listDirectory: () => Effect.die("unexpected list"),
+  renameFile: () => Effect.die("unexpected rename"),
+  remove: () => Effect.die("unexpected remove"),
   detectImageMimeType: () => Effect.die("unexpected image detection"),
   stop: Effect.die("unexpected stop"),
 };
@@ -93,15 +99,13 @@ Deno.test("Git Snapshot publication remains pending and retries separately", asy
   const store = new MemoryGitSnapshotStore();
   const generation = new SnapshotGeneration();
   let attempts = 0;
-  const correlations: string[] = [];
   const synchronizer = makeGitSnapshotSynchronizer({
     sessionId: SESSION_ID,
     store,
     generate: generation.generate,
-    publishUpdated: (correlationId) =>
+    publishUpdated: () =>
       Effect.suspend(() => {
         attempts++;
-        correlations.push(correlationId);
         return attempts === 1 ? Effect.fail("publication failed") : Effect.void;
       }),
   });
@@ -113,17 +117,16 @@ Deno.test("Git Snapshot publication remains pending and retries separately", asy
   assertEquals(store.writes, 1);
   assertEquals(attempts, 0);
 
-  await assertRejects(() => Effect.runPromise(synchronizer.publishPending("first-publication")));
+  await assertRejects(() => Effect.runPromise(synchronizer.publishPending()));
   assertEquals(store.state?.notificationPending, true);
   assertEquals(store.writes, 1);
 
-  await Effect.runPromise(synchronizer.publishPending("retry-publication"));
+  await Effect.runPromise(synchronizer.publishPending());
   assertEquals(store.state?.notificationPending, false);
   assertEquals(attempts, 2);
   assertEquals(store.writes, 2);
-  assertEquals(correlations, ["first-publication", "retry-publication"]);
 
-  await Effect.runPromise(synchronizer.publishPending("already-published"));
+  await Effect.runPromise(synchronizer.publishPending());
   assertEquals(attempts, 2);
   assertEquals(store.writes, 2);
 });

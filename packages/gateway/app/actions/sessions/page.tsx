@@ -66,6 +66,8 @@ export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
       csrfToken={csrfToken}
       error={error}
       initialState={state}
+      initialAgentState={snapshot?.agentState ?? null}
+      initialEnvironmentState={snapshot?.environmentState ?? null}
       initialIssues={[...issues]}
       initialThinkingLevel={initialThinkingLevel}
       sessionId={session.id}

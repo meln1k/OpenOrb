@@ -8,16 +8,29 @@ import {
 import {
   MAX_SESSION_ARTIFACT_BYTES,
   MAX_SESSION_ARTIFACT_TOTAL_BYTES,
-  MAX_SESSION_ARTIFACTS,
   type SessionId,
 } from "@openorb/protocol/runner-api";
 import { Context, Data, Effect, FileSystem, Layer, Option, Path, Schema, Semaphore } from "effect";
+import { createHash } from "node:crypto";
 
 const SESSIONS_DIRECTORY = "sessions";
 const ARTIFACTS_DIRECTORY = "artifacts";
 const TEMPORARY_FILE_SUFFIX = ".tmp";
 const strictSchemaOptions = { onExcessProperty: "error" } as const;
 const SessionArtifactJson = Schema.fromJsonString(SessionArtifact);
+
+export function detectMediaType(bytes: Uint8Array): SessionArtifactMediaType | null {
+  const starts = (signature: number[]) => signature.every((value, index) => bytes[index] === value);
+  const ascii = (offset: number, text: string) =>
+    Array.from(text).every((char, index) => bytes[offset + index] === char.charCodeAt(0));
+  if (starts([137, 80, 78, 71, 13, 10, 26, 10])) return "image/png";
+  if (starts([255, 216, 255])) return "image/jpeg";
+  if (ascii(0, "GIF87a") || ascii(0, "GIF89a")) return "image/gif";
+  if (ascii(0, "RIFF") && ascii(8, "WEBP")) return "image/webp";
+  if (ascii(4, "ftyp")) return "video/mp4";
+  if (starts([26, 69, 223, 163])) return "video/webm";
+  return null;
+}
 
 interface PublishedSessionArtifact {
   readonly fileName: string;
@@ -140,6 +153,19 @@ export function makeSessionArtifactStore(
             const directoryCreated = yield* ensurePrivateDirectory(fs, directory);
             if (directoryCreated) yield* syncDirectory(fs, sessionPath);
             yield* reconcileArtifacts(sessionId);
+            // Content-addressed UUIDv8: reconnects and offline projection reuse committed media.
+            const hash = createHash("sha256").update(JSON.stringify([
+              input.fileName,
+              input.mediaType,
+            ])).update(input.bytes).digest("hex");
+            const id = Schema.decodeUnknownSync(SessionArtifactId)(
+              `${hash.slice(0, 8)}-${hash.slice(8, 12)}-8${hash.slice(13, 16)}-a${
+                hash.slice(17, 20)
+              }-${hash.slice(20, 32)}`,
+            );
+            if (yield* fs.exists(metadataPath(sessionId, id)).pipe(Effect.mapError(storeError))) {
+              return yield* readArtifact(sessionId, id);
+            }
             const entries = yield* fs.readDirectory(directory).pipe(Effect.mapError(storeError));
             const artifacts = yield* Effect.forEach(
               entries.filter((entry) => entry.endsWith(".json")),
@@ -153,11 +179,6 @@ export function makeSessionArtifactStore(
                 );
               },
             );
-            if (artifacts.length >= MAX_SESSION_ARTIFACTS) {
-              return yield* new SessionArtifactStoreError(
-                `A session can publish at most ${MAX_SESSION_ARTIFACTS} media files.`,
-              );
-            }
             const totalBytes = artifacts.reduce(
               (total, artifact) => total + artifact.byteLength,
               0,
@@ -168,7 +189,6 @@ export function makeSessionArtifactStore(
               );
             }
 
-            const id = Schema.decodeUnknownSync(SessionArtifactId)(crypto.randomUUID());
             const artifact = new SessionArtifact({
               id,
               fileName: input.fileName,

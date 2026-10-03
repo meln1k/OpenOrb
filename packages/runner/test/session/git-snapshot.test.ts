@@ -3,9 +3,11 @@ import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
 import * as DenoPath from "@effect/platform-deno/DenoPath";
 import {
   GitAuthor,
+  GitMutationRevision,
   ProjectId,
   RunnerId,
   RunnerSessionCreatedAt,
+  SessionGitSnapshot,
   SessionId,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
@@ -20,12 +22,11 @@ import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin
 import { Journal } from "@/src/session/persistent-actor/journal.ts";
 import { RunnerSessionDefinition } from "@/src/session/definition.ts";
 import {
-  generateSessionGitSnapshot,
   generateSessionGitSnapshotBundle,
+  sameGitSnapshotContents,
   updateSessionGitFile,
 } from "@/src/session/git-snapshot.ts";
 import { sessionJournalLayer } from "@/src/session/persistent-actor/session-journal.ts";
-import { sessionMetadata } from "@/src/session/actor/state.ts";
 import { RunnerSessionStore, runnerSessionStoreLayer } from "@/src/session/store.ts";
 import {
   gondolinTestEnvironmentOptions,
@@ -169,9 +170,16 @@ class GitSnapshotEnvironment implements AgentEnvironment {
   access: AgentEnvironment["access"] = () => Effect.void;
   writeFile: AgentEnvironment["writeFile"] = (path, content) =>
     Effect.sync(() => {
-      this.files.set(path, content);
+      this.files.set(
+        path,
+        Schema.is(Schema.String)(content) ? content : new TextDecoder().decode(content),
+      );
     });
   makeDirectory: AgentEnvironment["makeDirectory"] = () => Effect.void;
+  stat = () => Effect.die("unexpected stat");
+  listDirectory = () => Effect.die("unexpected list");
+  renameFile = () => Effect.die("unexpected rename");
+  remove = () => Effect.die("unexpected remove");
   detectImageMimeType: AgentEnvironment["detectImageMimeType"] = () => Effect.succeed(null);
 }
 
@@ -250,6 +258,42 @@ function emitCommandOutput(
   });
 }
 
+Deno.test("Git Snapshot semantic equality includes mutation coverage", () => {
+  const first = new SessionGitSnapshot({
+    mutationRevision: GitMutationRevision.make(1),
+    generatedAt: "2026-08-27T10:00:00Z",
+    branch: "openorb/snapshot-test",
+    head: BASE_COMMIT,
+    completeness: "complete",
+    stale: false,
+    truncated: false,
+    sections: {
+      staged: { files: [], patch: "", truncated: false },
+      unstaged: { files: [], patch: "", truncated: false },
+    },
+  });
+  const later = new SessionGitSnapshot({
+    ...first,
+    generatedAt: "2026-08-27T10:00:15Z",
+    stale: true,
+  });
+  assertEquals(sameGitSnapshotContents(first, later), true);
+  assertEquals(
+    sameGitSnapshotContents(
+      first,
+      new SessionGitSnapshot({ ...later, completeness: "incomplete" }),
+    ),
+    false,
+  );
+  assertEquals(
+    sameGitSnapshotContents(
+      first,
+      new SessionGitSnapshot({ ...later, mutationRevision: GitMutationRevision.make(2) }),
+    ),
+    false,
+  );
+});
+
 Deno.test("Git Snapshot is generated through bounded direct guest commands", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {
@@ -261,11 +305,13 @@ Deno.test("Git Snapshot is generated through bounded direct guest commands", asy
       ),
       CREATED_AT,
     ));
-    const metadata = sessionMetadata(
-      await Effect.runPromise(fixture.startInitialRun(SESSION_ID, "available", BASE_COMMIT)),
+    const { metadata } = await Effect.runPromise(
+      fixture.startInitialRun(SESSION_ID, "available", BASE_COMMIT),
     );
     const environment = new GitSnapshotEnvironment();
-    const snapshot = await Effect.runPromise(generateSessionGitSnapshot(environment, metadata));
+    const { snapshot } = await Effect.runPromise(
+      generateSessionGitSnapshotBundle(environment, metadata),
+    );
 
     assertEquals(snapshot.completeness, "complete");
     assertEquals(snapshot.branch, "openorb/snapshot-test");
@@ -432,8 +478,8 @@ Deno.test("Git file updates proxy fixed direct mutation commands", async () => {
       ),
       CREATED_AT,
     ));
-    const metadata = sessionMetadata(
-      await Effect.runPromise(fixture.completeInitialRun(SESSION_ID, "available", BASE_COMMIT)),
+    const { metadata } = await Effect.runPromise(
+      fixture.completeInitialRun(SESSION_ID, "available", BASE_COMMIT),
     );
     const environment = new GitMutationEnvironment();
 
@@ -501,8 +547,8 @@ Deno.test("Git Snapshot bounds large file lists and binary/control patch output"
       ),
       CREATED_AT,
     ));
-    const metadata = sessionMetadata(
-      await Effect.runPromise(fixture.startInitialRun(SESSION_ID, "available", BASE_COMMIT)),
+    const { metadata } = await Effect.runPromise(
+      fixture.startInitialRun(SESSION_ID, "available", BASE_COMMIT),
     );
     const generated = await Effect.runPromise(
       generateSessionGitSnapshotBundle(new GitSnapshotEnvironment("bounds"), metadata),
@@ -657,10 +703,8 @@ Deno.test({
             if (output.stream === "stdout") revision += output.text;
           }),
       }));
-      const metadata = sessionMetadata(
-        await Effect.runPromise(
-          fixture.startInitialRun(SESSION_ID, "available", revision.trim()),
-        ),
+      const { metadata } = await Effect.runPromise(
+        fixture.startInitialRun(SESSION_ID, "available", revision.trim()),
       );
       const snapshotDiagnostics: string[] = [];
       const snapshotEnvironment: AgentEnvironment = {
@@ -685,8 +729,8 @@ Deno.test({
           );
         },
       };
-      const snapshot = await Effect.runPromise(
-        generateSessionGitSnapshot(snapshotEnvironment, metadata),
+      const { snapshot } = await Effect.runPromise(
+        generateSessionGitSnapshotBundle(snapshotEnvironment, metadata),
       );
 
       assertEquals(snapshot.completeness, "complete", snapshotDiagnostics.join("\n"));

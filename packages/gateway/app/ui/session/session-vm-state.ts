@@ -1,52 +1,21 @@
-import type { SessionProvisioningStage } from "@openorb/protocol/browser-session-events";
+import type { EnvironmentState } from "@openorb/protocol/browser-session-events";
 
-import type { SessionState } from "@/app/ui/session/session-transcript-state.ts";
+export type SessionVmPhase = "starting" | "active" | "stopping" | "sleeping" | "failed" | "offline";
 
-export type SessionVmPhase =
-  | "starting"
-  | "active"
-  | "waking"
-  | "stopping"
-  | "sleeping"
-  | "failed"
-  | "offline";
-
-export function initialSessionVmPhase(state: SessionState): SessionVmPhase {
+export function sessionVmPhase(state: EnvironmentState | null): SessionVmPhase {
   switch (state) {
-    case "created":
-    case "provisioning":
+    case "starting":
       return "starting";
     case "running":
-    case "ready":
       return "active";
+    case "stopping":
+      return "stopping";
     case "stopped":
       return "sleeping";
     case "error":
       return "failed";
-    case "offline":
+    case null:
       return "offline";
-  }
-}
-
-export function sessionVmPhaseForStage(stage: SessionProvisioningStage): SessionVmPhase {
-  switch (stage) {
-    case "created":
-    case "starting-vm":
-    case "cloning":
-    case "creating-branch":
-    case "setup":
-      return "starting";
-    case "resuming":
-      return "waking";
-    case "stopping":
-      return "stopping";
-    case "running":
-    case "ready":
-      return "active";
-    case "stopped":
-      return "sleeping";
-    case "failed":
-      return "failed";
   }
 }
 
@@ -55,5 +24,5 @@ export function sessionVmPhaseLabel(phase: SessionVmPhase): string {
 }
 
 export function isSessionVmTransitioning(phase: SessionVmPhase): boolean {
-  return phase === "starting" || phase === "waking" || phase === "stopping";
+  return phase === "starting" || phase === "stopping";
 }

@@ -1,8 +1,6 @@
 import { Effect, Predicate, Schedule, Schema, Stream } from "effect";
 import {
-  type RunId,
   RunnerCapacity,
-  RunnerSessionSnapshot,
   type RunnerStateEvent,
   RunnerWatchError,
 } from "@openorb/protocol/runner-api";
@@ -11,7 +9,7 @@ import { SessionEvents } from "../session/events.ts";
 import { RunnerSessionStore } from "../session/store.ts";
 import { SessionSupervisor } from "../session/supervisor.ts";
 
-const WATCH_HANDOFF_BUFFER_CAPACITY = "unbounded";
+const WATCH_HANDOFF_BUFFER_CAPACITY = 64;
 
 export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
   return Stream.unwrap(Effect.gen(function* () {
@@ -19,8 +17,8 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
     const supervisor = yield* SessionSupervisor;
     const events = yield* SessionEvents;
     let revision = 0;
-    // Start consuming state notifications before any manifest I/O. The unbounded handoff queue
-    // cannot silently slide/drop notifications while the initial snapshot is being assembled.
+    // Subscribe before manifest I/O. Both handoff and upstream buffers are bounded; overflow
+    // fails the watch so the gateway reconnects for a new manifest rather than missing removals.
     const stateChanges = yield* events.watchStateChanges().pipe(
       Stream.toQueue({ capacity: WATCH_HANDOFF_BUFFER_CAPACITY }),
     );
@@ -41,13 +39,10 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
     const capacity = yield* Schema.decodeUnknownEffect(RunnerCapacity)(reportedCapacity).pipe(
       Effect.catch(() => new RunnerWatchError({ message: "Runner capacity was invalid." })),
     );
-    const sessions = manifest.sessions.map((session) => {
-      const activeRunId = supervisor.getActiveRunId(session.id);
-      return {
-        type: "snapshot.session" as const,
-        session: supervisor.withQuarantineFailure(withActiveRun(session, activeRunId)),
-      };
-    });
+    const sessions = manifest.sessions.map((session) => ({
+      type: "snapshot.session" as const,
+      session: supervisor.withLiveState(session),
+    }));
     const snapshot = Stream.fromIterable([...sessions, {
       type: "snapshot.complete" as const,
       revision,
@@ -92,8 +87,7 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
             new RunnerWatchError({ message: "Runner session state could not be read." })
           ),
           Effect.map((session) => {
-            const activeRunId = supervisor.getActiveRunId(session.id);
-            const current = supervisor.withQuarantineFailure(withActiveRun(session, activeRunId));
+            const current = supervisor.withLiveState(session);
             const encoded = JSON.stringify(current);
             if (lastSessionValues.get(current.id) === encoded) return null;
             lastSessionValues.set(current.id, encoded);
@@ -118,16 +112,6 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
       ),
     );
   }));
-}
-
-function withActiveRun(
-  session: RunnerSessionSnapshot,
-  activeRunId: string | undefined,
-): RunnerSessionSnapshot {
-  if (session.state !== "running" || activeRunId === undefined) return session;
-  // SAFETY: Active Pi run identifiers are generated UUIDs and satisfy the RunId brand.
-  const runId = activeRunId as RunId;
-  return new RunnerSessionSnapshot({ ...session, activeRunId: runId });
 }
 
 function readCapacity(getCapacity: () => Promise<RunnerCapacity>) {

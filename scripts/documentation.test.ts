@@ -71,7 +71,7 @@ Deno.test("operations documentation records the recovery contract and release pi
       "Deno / standalone runner denort",
       "Gondolin",
       "OpenOrb guest image",
-      "Pi AI / Pi coding-agent",
+      "Pi AI / Pi Durable",
       "Remix",
       "Runner protocol",
     ]
@@ -88,7 +88,7 @@ Deno.test("operations documentation records the recovery contract and release pi
   assert(release.includes('id: "mvp-7"'));
   assert(release.includes('id: "release-1"'));
   assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_1"));
-  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 21"));
+  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 25"));
   for (const pin of ["2.9.5", "0.12.0", "1.0.0", "3.0.0-rc.5"]) {
     assert(
       operations.includes(pin) &&
@@ -113,7 +113,8 @@ Deno.test("release guide and workflows preserve acceptance traceability and secr
       "DefaultResourceLoader",
       "Hostile `.pi` resources/settings",
       "All Pi file and shell tools execute through Gondolin",
-      "Git and model credentials remain mediated and do not appear in logs or tool output",
+      "Git credentials remain mediated; model credentials are not supplied to the guest",
+      "Conversation content has no credential-redaction filter.",
       "GH_TOKEN",
       "remain in the guest namespace and cannot access runner-host files",
     ]

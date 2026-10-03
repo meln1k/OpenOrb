@@ -269,8 +269,7 @@ export default createController(routes.app.sessions, {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
       }
       if (
-        snapshot.state !== "ready" && snapshot.state !== "running" &&
-        snapshot.state !== "stopped"
+        snapshot.agentState === "error"
       ) {
         return await sessionCommandError(
           context,
@@ -396,7 +395,7 @@ export default createController(routes.app.sessions, {
       if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
       }
-      if (snapshot.state !== "running") {
+      if (snapshot.agentState !== "running") {
         return await sessionCommandError(context, "There is no active Pi run to abort.", 409);
       }
 
@@ -431,7 +430,7 @@ export default createController(routes.app.sessions, {
       if (!snapshot || !runnerId) {
         return await sessionCommandError(context, "The pinned runner is offline.", 503);
       }
-      if (snapshot.state !== "ready" && snapshot.state !== "running") {
+      if (snapshot.agentState === "paused" && snapshot.environmentState === "stopped") {
         return await sessionCommandError(
           context,
           "The session cannot be stopped right now.",
@@ -498,7 +497,7 @@ export default createController(routes.app.sessions, {
       const snapshot = await Effect.runPromise(
         context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
       );
-      if (!snapshot || snapshot.state !== "error") {
+      if (!snapshot || snapshot.agentState !== "error" && snapshot.environmentState !== "error") {
         return await renderDetailPage(
           context,
           "Only a failed session with an offered recovery action can be retried.",

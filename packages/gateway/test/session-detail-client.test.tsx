@@ -10,6 +10,8 @@ Deno.test("session detail defaults mobile navigation to the agent view", async (
       csrfToken="csrf-token"
       error={undefined}
       initialState="ready"
+      initialAgentState="idle"
+      initialEnvironmentState="running"
       initialIssues={[]}
       initialThinkingLevel="max"
       sessionId="session-id"
@@ -47,6 +49,8 @@ Deno.test("session composer replaces send with stop during an active turn", asyn
       csrfToken="csrf-token"
       error={undefined}
       initialState="running"
+      initialAgentState="running"
+      initialEnvironmentState="stopped"
       initialIssues={[]}
       initialThinkingLevel="high"
       sessionId="session-id"
@@ -56,6 +60,8 @@ Deno.test("session composer replaces send with stop during an active turn", asyn
   );
 
   assertMatch(html, /aria-label="Stop active turn"/);
+  assertStringIncludes(html, "Agent: running · Environment: stopped");
+  assertStringIncludes(html, 'aria-label="Stop Session"');
   assertMatch(html, /data-slot="stop-icon"/);
   assertNotMatch(html, /aria-label="Send prompt"/);
 });

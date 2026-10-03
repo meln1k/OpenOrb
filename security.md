@@ -18,14 +18,18 @@ not leave an orphan Workspace or create another administrator.
 
 - Session repositories, files, and Git metadata are untrusted. Native host Git never consumes a
   session checkout; clone, branch, status, diff, fetch, commit, and push execute inside Gondolin.
-- Pi runs on the trusted runner host with an explicit resource loader that discovers no project or
-  global Pi resources and with in-memory settings. Its file and shell tools are Gondolin-backed.
+- Pi Durable runs on the trusted runner host with an explicit registry and in-memory credentials. It
+  discovers no project or global Pi resources. Its file and shell tools are Gondolin-backed;
+  host-side environment control never waits for guest readiness.
 - Each Session owns one Project Checkout and one isolated Agent Environment. Its private root disk,
   including the checkout and non-tmpfs guest state, persists together with runner-owned Harness
   State, Session Journal, Git Snapshots, and logs; RAM and processes do not.
 - Provider credentials remain on the gateway and trusted runner. GitHub operations receive a
   guest-visible placeholder that is substituted only for `github.com` and `api.github.com`; the real
   token must not enter guest files, environment values, process arguments, logs, or tool output.
+- Durable conversation content is not scanned or redacted for credentials. Input, model responses,
+  and tool output are persisted as supplied; a credential echoed into that content can be stored and
+  shown to Session viewers. Credential isolation, not output filtering, is the boundary.
 - Workspace generic secrets remain encrypted at rest and transient in runner commands. Gondolin
   exposes only guest placeholders and substitutes real values in outbound HTTP headers. Configured
   host patterns restrict substitution; omitting allowed hosts permits substitution for any public
@@ -36,13 +40,30 @@ not leave an orphan Workspace or create another administrator.
   DNS-rebinding targets while preserving guest-local loopback.
 - PostgreSQL is the gateway's only durable persistence. Complete Session state remains runner-owned;
   the gateway stores only configuration, the minimal Session catalog, and deletion markers.
-- Published Media is copied from `/workspace/.openorb/artifacts` into size- and count-bounded,
-  private Session storage on the runner. Browsers can read it only through the authenticated,
-  Workspace-scoped gateway route. The route serves a fixed allowlist of non-scriptable image and
-  video MIME types with `nosniff`; arbitrary guest paths, SVG, HTML, and remote image embeds are not
-  mounted in the transcript.
-- Ambiguous prompt, Abort, Git, and lifecycle handoffs are reported to the user and are never
-  retried automatically. OpenOrb does not claim exactly-once execution.
+- Published Media is copied from `/workspace/.openorb/artifacts` into private Session storage on the
+  runner, limited to 64 MiB per artifact and 1 GiB total per Session, with no artifact-count cap.
+  Browsers can read it only through the authenticated, Workspace-scoped gateway route. The route
+  serves a fixed allowlist of non-scriptable image and video MIME types with `nosniff`; arbitrary
+  guest paths, SVG, HTML, and remote image embeds are not mounted in the transcript.
+- Ambiguous command handoffs are reported rather than retried automatically. Durable deduplicates
+  admitted inputs by request ID and recovers checkpointed work on Wake. Model requests may repeat;
+  interrupted unsafe tools report possible partial execution. OpenOrb does not claim exactly-once
+  execution.
+- Conversation streams carry snapshots and structural updates. Reconnect replaces the baseline;
+  subscribing alone never wakes compute. Opening a session page separately sends a CSRF-protected
+  Wake request; stream updates and reconnects do not repeat it. Live and offline harness ownership
+  is serialized. Inline conversation images retain their bytes in Durable/model context but cross
+  the control stream only as Session artifact references. The same bounded private media store, MIME
+  allowlist, authenticated gateway route, and chunked bulk WebSocket serve those images without
+  waking compute. Conversation images use Pi's declared MIME type, checked against the image
+  allowlist without inspecting byte signatures again; raw guest files still use signature detection.
+  Unsupported images or failed publication produce placeholders, never inline-byte fallback. Control
+  RPC uses UTF-8 JSON with bounded SchemaBinary reassembly across binary WebSocket chunks (1 MiB per
+  chunk, 16 MiB per logical frame). JSON is decoded only after frame reassembly; malformed UTF-8 and
+  JSON are rejected. Chunking is transport-only: it does not bypass RPC validation or per-field
+  limits. Disconnect discards partial frames; no partial RPC payload is dispatched. The control
+  channel has no CBOR decoder or tagged-bignum expansion; application bigints use the RPC schema's
+  string representation. Identification still requires decoding bounded input before authentication.
 
 The executable release criteria and regression evidence for these boundaries are maintained in the
 [release acceptance guide](docs/release-acceptance.md).
@@ -63,11 +84,12 @@ durability guarantee still depends on the runner filesystem and physical storage
 `fsync` correctly.
 
 The root disk always has the stable session path `root-disk.qcow2`. Its initial sparse 40 GiB file
-is file-synced and atomically published before first use. An explicit Stop cancels an active Agent
-Run and closes Pi before recording the final Git Snapshot; an idle Stop has no active work to
-cancel. Stop then runs guest `/bin/sync` and explicitly stops and closes the VM without deleting the
-disk. The runner calls host `fsync` on `root-disk.qcow2` and its session directory before journaling
-`stop.completed`.
+is file-synced and atomically published before first use. Stop Session closes the harness
+recoverably before recording the final Git Snapshot. It then runs guest `/bin/sync`, stops the VM,
+and calls host `fsync` on `root-disk.qcow2` and its directory before journaling `stop.completed`.
+Abort cancels agent work, queued inputs, and owned background work without stopping compute. Agent
+environment control leaves the harness running. Forced restart may lose unsynced writes and does not
+claim a graceful Stop; disk ownership is retained until the previous VM has closed.
 
 After a runner interruption in `Stopping`, reconciliation cannot prove that the guest sync and VM
 exit finished, so the Session fails with the explicit `restart-environment` recovery action. The

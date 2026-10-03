@@ -84,6 +84,8 @@ Deno.test({
           jsx(SessionPageScope, {
             csrfToken: "browser-csrf",
             initialState: "ready",
+            initialAgentState: "idle",
+            initialEnvironmentState: "running",
             initialIssues: [],
             sessionId: "browser-session",
             children: jsx(SessionChangesScope, {
@@ -103,6 +105,21 @@ Deno.test({
       const url = new URL(request.url);
       if (url.pathname.startsWith("/assets/")) {
         return await assetServer.fetch(request) ?? new Response(null, { status: 404 });
+      }
+      if (url.pathname.endsWith("/events")) {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(`event: session\ndata: ${
+                JSON.stringify({
+                  type: "conversation.snapshot",
+                  view: { conversation: { id: 0 }, entries: [], docs: {} },
+                })
+              }\n\n`));
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
       }
       if (url.pathname.endsWith("/git-snapshot")) {
         snapshotRequests++;

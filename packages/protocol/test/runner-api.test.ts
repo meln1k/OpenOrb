@@ -10,12 +10,11 @@ import {
   AbortSessionPayload,
   type CapacityExceeded,
   ClientRequestId,
+  ConversationViewSchema,
   type DeleteFailed,
   type DeleteRejected,
   DeleteSessionAccepted,
   DeleteSessionPayload,
-  DurableSessionEvent,
-  EphemeralSessionEvent,
   GitFileUpdateAccepted,
   type GitFileUpdateRejected,
   GitMutationRevision,
@@ -30,7 +29,6 @@ import {
   ProvisionSessionPayload,
   ProvisionSessionSuccess,
   ReadSessionGitSnapshotPayload,
-  RunId,
   RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   RunnerCapacity,
@@ -54,6 +52,7 @@ import {
   type StopRejected,
   StopSessionAccepted,
   StopSessionPayload,
+  SubmissionId,
   UpdateSessionGitFilePayload,
   type WakeRejected,
   WakeSessionAccepted,
@@ -93,7 +92,7 @@ const SESSION_ID = SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
 const WORKSPACE_ID = WorkspaceId.make("01989d78-65ee-7f6a-a97e-0f16ad134c12");
 const PROJECT_ID = ProjectId.make("01989d78-65ee-7f6a-a97e-0f16ad134c10");
 const RUNNER_ID = RunnerId.make("01989d78-65ee-7f6a-a97e-0f16ad134c11");
-const RUN_ID = RunId.make("run-1");
+const SUBMISSION_ID = 42;
 const CLIENT_REQUEST_ID = ClientRequestId.make("prompt-request-1");
 const RUNNER_TOKEN = `openorb_runner_${"a".repeat(43)}`;
 
@@ -198,10 +197,33 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
   assertEquals(
     Schema.decodeUnknownSync(AbortSessionPayload)({
       sessionId: SESSION_ID,
-      runId: RUN_ID,
-    }).runId,
-    RUN_ID,
+    }).sessionId,
+    SESSION_ID,
   );
+});
+
+Deno.test("submission IDs are Durable non-negative safe integers, not run labels", () => {
+  for (const id of [0, 2, 42, Number.MAX_SAFE_INTEGER]) {
+    assertEquals(Schema.decodeUnknownSync(SubmissionId)(id), id);
+    assertEquals(
+      Schema.decodeUnknownSync(PromptSessionAccepted)({
+        clientRequestId: CLIENT_REQUEST_ID,
+        submissionId: id,
+      }).submissionId,
+      id,
+    );
+  }
+  for (const id of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "42", "run-1", null]) {
+    assertThrows(() => Schema.decodeUnknownSync(SubmissionId)(id));
+  }
+  assertThrows(() =>
+    Schema.decodeUnknownSync(PromptSessionAccepted)({
+      clientRequestId: CLIENT_REQUEST_ID,
+      runId: "run-1",
+      mode: "started",
+    })
+  );
+  assertEquals(RUNNER_PROTOCOL_VERSION, 25);
 });
 
 Deno.test("session model runtime accepts only explicit credential transports", () => {
@@ -279,56 +301,50 @@ Deno.test("environment secrets reserve enough room for the RPC request envelope"
   assertThrows(() => Schema.decodeUnknownSync(SessionEnvironmentSecrets)(oversizedSecrets));
 });
 
-Deno.test("WatchSession events always state their run attribution", () => {
-  assertEquals(
-    Schema.decodeUnknownSync(WatchSessionEvent)({
-      runId: null,
-      cursor: 1,
-      event: { type: "user.message", messageId: "message-1", text: "Hello" },
-    }).runId,
-    null,
+Deno.test("WatchSession events wrap only the session event", () => {
+  const snapshot = {
+    event: {
+      type: "conversation.snapshot" as const,
+      view: { conversation: { id: 0 }, entries: [], docs: {} },
+    },
+  };
+  assertEquals<unknown>(
+    Schema.decodeUnknownSync(WatchSessionEvent)(snapshot),
+    snapshot,
   );
   assertEquals(
     Schema.decodeUnknownSync(WatchSessionEvent)({
-      runId: RUN_ID,
-      event: { type: "assistant.text.delta", delta: "Hi" },
-    }).runId,
-    RUN_ID,
+      event: { type: "conversation.ops", ops: [["s", ["docs", "pi.live"], {}]] },
+    }).event.type,
+    "conversation.ops",
   );
   const snapshotUpdated = Schema.decodeUnknownSync(WatchSessionEvent)({
-    runId: RUN_ID,
     event: { type: "git.snapshot.updated" },
   });
   assertEquals(snapshotUpdated.event.type, "git.snapshot.updated");
   assertEquals(
-    Schema.decodeUnknownSync(EphemeralSessionEvent)(snapshotUpdated.event).type,
+    Schema.decodeUnknownSync(SessionEvent)(snapshotUpdated.event).type,
     "git.snapshot.updated",
   );
-  assertThrows(() =>
-    Schema.decodeUnknownSync(WatchSessionEvent)({
-      cursor: 1,
-      event: { type: "user.message", messageId: "message-1", text: "Hello" },
-    })
-  );
+  assertThrows(() => Schema.decodeUnknownSync(WatchSessionEvent)({}));
 });
 
-Deno.test("one SessionEvent schema validates durable and ephemeral wire payloads", () => {
-  const durable = {
-    type: "user.message" as const,
-    messageId: "message-1",
-    text: "Hello",
-  };
-  const ephemeral = {
-    type: "assistant.text.delta" as const,
-    delta: "Hi",
-  };
-
-  assertEquals(Schema.decodeUnknownSync(SessionEvent)(durable), durable);
-  assertEquals(Schema.decodeUnknownSync(SessionEvent)(ephemeral), ephemeral);
-  assertEquals(Schema.decodeUnknownSync(DurableSessionEvent)(durable), durable);
-  assertEquals(Schema.decodeUnknownSync(EphemeralSessionEvent)(ephemeral), ephemeral);
-  assertThrows(() => Schema.decodeUnknownSync(DurableSessionEvent)(ephemeral));
-  assertThrows(() => Schema.decodeUnknownSync(EphemeralSessionEvent)(durable));
+Deno.test("structural frames reject normalized events, host objects and malformed ops", () => {
+  const view = { conversation: { id: 0 }, entries: [], docs: {} };
+  assertEquals<unknown>(Schema.decodeUnknownSync(ConversationViewSchema)(view), view);
+  for (
+    const invalid of [
+      { type: "assistant.text.delta", delta: "old" },
+      { type: "conversation.ops", ops: [["s", "compressed-path", 1]] },
+      { type: "conversation.ops", ops: [["s", ["__proto__", "polluted"], true]] },
+      { type: "conversation.ops", ops: [["r", { handle: () => {} }]] },
+      { type: "conversation.snapshot", view: { ...view, docs: { host: new Date() } } },
+      { type: "conversation.snapshot", view: { ...view, entries: [{ id: 1 }] } },
+    ]
+  ) assertThrows(() => Schema.decodeUnknownSync(SessionEvent)(invalid));
+  assertThrows(() =>
+    Schema.decodeUnknownSync(RunnerSessionSnapshot)({ ...sessionSnapshot(), agentState: undefined })
+  );
 });
 
 Deno.test("session issues are categorized, bounded, and carry explicit recovery", () => {
@@ -605,14 +621,13 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
       Effect.succeed(
         new PromptSessionAccepted({
           clientRequestId,
-          runId: RUN_ID,
-          mode: "started",
+          submissionId: SUBMISSION_ID,
         }),
       ),
     "session.thinking-level.set": ({ level }) =>
       Effect.succeed(new SetSessionThinkingLevelAccepted({ level })),
     "session.wake": () => Effect.succeed(new WakeSessionAccepted({})),
-    "session.abort": ({ runId }) => Effect.succeed(new AbortSessionAccepted({ runId })),
+    "session.abort": () => Effect.succeed(new AbortSessionAccepted({})),
     "session.stop": () => Effect.succeed(new StopSessionAccepted({})),
     "session.delete": () => Effect.succeed(new DeleteSessionAccepted({})),
     "session.git-snapshot.read": () =>
@@ -642,9 +657,14 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
       Effect.succeed(new GitFileUpdateAccepted({ mutationRevision })),
     "session.watch": () =>
       Stream.make({
-        runId: null,
-        cursor: 1,
-        event: { type: "user.message" as const, messageId: "message-1", text: "Hello" },
+        event: {
+          type: "conversation.snapshot" as const,
+          view: Schema.decodeUnknownSync(ConversationViewSchema)({
+            conversation: { id: 0 },
+            entries: [],
+            docs: {},
+          }),
+        },
       }),
   });
   const promptPayload = new PromptSessionPayload({
@@ -653,7 +673,7 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
     prompt: "Continue.",
     modelRuntime: new SessionModelRuntime(modelRuntime()),
   });
-  const abortPayload = new AbortSessionPayload({ sessionId: SESSION_ID, runId: RUN_ID });
+  const abortPayload = new AbortSessionPayload({ sessionId: SESSION_ID });
   const stopPayload = new StopSessionPayload({ sessionId: SESSION_ID });
   const deletePayload = new DeleteSessionPayload({ sessionId: SESSION_ID });
   const wakePayload = new WakeSessionPayload({
@@ -661,7 +681,7 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
     modelRuntime: new SessionModelRuntime(modelRuntime()),
     githubToken: "github-token",
   });
-  const watchPayload = new WatchSessionPayload({ sessionId: SESSION_ID, afterCursor: 0 });
+  const watchPayload = new WatchSessionPayload({ sessionId: SESSION_ID });
   const snapshotPayload = new ReadSessionGitSnapshotPayload({ sessionId: SESSION_ID });
   const updatePayload = new UpdateSessionGitFilePayload({
     sessionId: SESSION_ID,
@@ -690,14 +710,11 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
       SESSION_ID,
     );
     assertEquals(
-      (yield* client["session.prompt"](promptPayload)).runId,
-      RUN_ID,
+      (yield* client["session.prompt"](promptPayload)).submissionId,
+      SUBMISSION_ID,
     );
     assert((yield* client["session.wake"](wakePayload)) instanceof WakeSessionAccepted);
-    assertEquals(
-      (yield* client["session.abort"](abortPayload)).runId,
-      RUN_ID,
-    );
+    assert((yield* client["session.abort"](abortPayload)) instanceof AbortSessionAccepted);
     assert((yield* client["session.stop"](stopPayload)) instanceof StopSessionAccepted);
     assert((yield* client["session.delete"](deletePayload)) instanceof DeleteSessionAccepted);
     assertEquals(
@@ -711,8 +728,8 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
     assertEquals(
       Array.from(
         yield* client["session.watch"](watchPayload).pipe(Stream.runCollect),
-      )[0]?.runId,
-      null,
+      )[0]?.event.type,
+      "conversation.snapshot",
     );
   })));
 });
@@ -744,8 +761,9 @@ function sessionSnapshot(): RunnerSessionSnapshot {
     initialThinkingLevel: "max",
     orbSize: "medium",
     state: "ready",
+    agentState: "idle",
+    environmentState: "running",
     issues: [],
-    lastEventCursor: 0,
   });
 }
 

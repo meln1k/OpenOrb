@@ -27,8 +27,8 @@ import {
   appendOptimisticUserMessage,
   createSessionTranscriptState,
   failOptimisticUserMessage,
-  isSessionBusy,
   reduceSessionTranscriptState,
+  type SessionState,
   type ToolEntry,
   totalSessionUsage,
   type TranscriptEntry,
@@ -55,6 +55,20 @@ const readToolArgumentsSchema = object(
 );
 export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   const page = handle.context.get(SessionPageScope);
+  const agentControlState = (): SessionState => {
+    switch (page.projection.agentState) {
+      case "idle":
+        return "ready";
+      case "running":
+        return "running";
+      case "paused":
+        return "stopped";
+      case "error":
+        return "error";
+      case null:
+        return "offline";
+    }
+  };
   let transcriptState = createSessionTranscriptState(
     page.projection.sessionState,
     handle.props.initialThinkingLevel,
@@ -76,7 +90,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
     update: async () => {
       await handle.update();
     },
-  }, page.projection.sessionState);
+  }, agentControlState());
 
   const scheduleUpdate = () => {
     if (updateFrame !== undefined) return;
@@ -90,15 +104,19 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
     page.addEventListener("connection", scheduleUpdate, { signal: handle.signal });
     page.addEventListener("session", (message) => {
       const event = message.detail;
-      if (event.type === "session.state" && event.stage !== "running") abortPending = false;
-      const next = reduceSessionTranscriptState(
-        transcriptState,
-        event,
-        page.projection.sessionState,
+      const [next, frameError] = trySync(
+        () => reduceSessionTranscriptState(transcriptState, event),
+        () => true,
       );
-      if (event.type === "thinking-level.changed") thinking.observeConfirmed();
+      if (frameError !== undefined) {
+        actionError = "Conversation synchronization failed. Reload to obtain a fresh snapshot.";
+        page.invalidateStream();
+        scheduleUpdate();
+        return;
+      }
       if (next === transcriptState) return;
       transcriptState = next;
+      thinking.observeConfirmed();
       scheduleUpdate();
     }, { signal: handle.signal });
     document.addEventListener("keydown", (event) => {
@@ -108,8 +126,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
       ) return;
       if (document.querySelector("dialog[open]")) return;
       event.preventDefault();
-      const { connectionInterrupted, sessionState } = page.projection;
-      if (!connectionInterrupted) void thinking.cycle(sessionState);
+      if (!page.projection.connectionInterrupted) void thinking.cycle(agentControlState());
     }, { capture: true, signal: handle.signal });
     handle.signal.addEventListener("abort", () => {
       if (updateFrame !== undefined) cancelAnimationFrame(updateFrame);
@@ -121,7 +138,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   ) {
     event.preventDefault();
     if (
-      page.projection.sessionState !== "running" ||
+      page.projection.agentState !== "running" ||
       page.projection.connectionInterrupted || abortPending
     ) return;
 
@@ -153,8 +170,12 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
     if (handle.signal.aborted) return;
     if (response.ok) {
       const accepted = await actionResponseAccepted(response);
-      if (handle.signal.aborted || accepted) return;
+      if (handle.signal.aborted) return;
       abortPending = false;
+      if (accepted) {
+        await handle.update();
+        return;
+      }
       actionError =
         "Abort acknowledgement was invalid. The run may still be stopping; wait for session state before trying again.";
       await handle.update();
@@ -168,14 +189,16 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   const abortSubmit = on<HTMLFormElement, "submit">("submit", submitAbort);
 
   return () => {
-    const { connectionInterrupted, sessionState } = page.projection;
+    const { connectionInterrupted } = page.projection;
+    const sessionState = agentControlState();
     thinking.syncSessionState(sessionState);
     const thinkingLevel = thinking.displayedLevel(sessionState);
     const promptThinkingLevel = thinking.promptLevel(sessionState);
     const currentActivityId = activeActivityId(transcriptState);
-    const busy = isSessionBusy(sessionState) && !connectionInterrupted;
+    const busy = page.projection.agentState === "running" && !connectionInterrupted;
     const hasActiveRun = sessionState === "running";
-    const vmCanAcceptPrompt = sessionState === "ready" || sessionState === "stopped";
+    const vmCanAcceptPrompt = sessionState === "ready" || sessionState === "stopped" ||
+      sessionState === "running";
     const canSubmitPrompt = vmCanAcceptPrompt &&
       !connectionInterrupted && !abortPending && !promptRequestPending;
     const canAbort = hasActiveRun && !connectionInterrupted && !abortPending;
@@ -211,7 +234,8 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
           connectionInterrupted={connectionInterrupted}
           csrfToken={handle.props.csrfToken}
           issues={page.projection.issues}
-          recoveryAllowed={sessionState === "error"}
+          recoveryAllowed={page.projection.agentState === "error" ||
+            page.projection.environmentState === "error"}
           sessionId={handle.props.sessionId}
         />
         {actionError ? <p role="alert" mix={actionErrorStyle}>{actionError}</p> : null}
@@ -322,6 +346,8 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
               if (requestError !== undefined) {
                 if (handle.signal.aborted) return;
                 promptRequestPending = false;
+                actionError =
+                  "Message acknowledgement was lost. Delivery is uncertain; check the live session before trying again.";
                 transcriptState = failOptimisticUserMessage(
                   transcriptState,
                   optimisticId,
@@ -336,6 +362,8 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
                 if (handle.signal.aborted) return;
                 promptRequestPending = false;
                 if (!accepted) {
+                  actionError =
+                    "Message acknowledgement was invalid. Delivery is uncertain; check the live session before trying again.";
                   transcriptState = failOptimisticUserMessage(
                     transcriptState,
                     optimisticId,
@@ -354,6 +382,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
               if (handle.signal.aborted) return;
 
               promptRequestPending = false;
+              actionError = deliveryError;
               transcriptState = failOptimisticUserMessage(
                 transcriptState,
                 optimisticId,
@@ -561,7 +590,7 @@ function renderTranscriptEntry(
                 <Icon
                   name={entry.toolName === "bash"
                     ? "terminal"
-                    : entry.toolName === "read"
+                    : entry.toolName === "read" || entry.toolName === "readImage"
                     ? "book-open-text"
                     : "wrench"}
                 />
@@ -577,6 +606,9 @@ function renderTranscriptEntry(
                 )}
             </MarkerContent>
           </Marker>
+          {(entry.toolName === "read" || entry.toolName === "readImage") && entry.result
+            ? <AssistantMarkdown text={entry.result} completed sessionId={sessionId} />
+            : null}
         </MessageScrollerItem>
       );
     }
@@ -646,7 +678,9 @@ function commandForBashTool(entry: ToolEntry): string | undefined {
 
 function pathForReadTool(entry: ToolEntry): string | undefined {
   const argumentsText = entry.arguments;
-  if (entry.toolName !== "read" || argumentsText === undefined) return undefined;
+  if (
+    (entry.toolName !== "read" && entry.toolName !== "readImage") || argumentsText === undefined
+  ) return undefined;
   const [argumentsValue, parseError] = trySync(
     () => JSON.parse(argumentsText),
     () => true,

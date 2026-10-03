@@ -86,6 +86,7 @@ export interface SessionChangesViewOwner {
 }
 
 export class SessionChangesResource extends TypedEventTarget<SessionChangesEventMap> {
+  #page: SessionPageController | undefined;
   readonly #activeViews = new Set<SessionChangesViewOwner>();
   readonly #csrfToken: string;
   readonly #sessionId: string;
@@ -116,13 +117,21 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     return this.#projection;
   }
 
+  get canMutate(): boolean {
+    return this.#page?.projection.environmentState === "running" &&
+      !this.#page.projection.connectionInterrupted;
+  }
+
   connect(page: SessionPageController): void {
     if (this.#connected) return;
     this.#connected = true;
+    this.#page = page;
     page.addEventListener("session", (message) => {
       if (message.detail.type === "git.snapshot.updated") void this.#requestRefresh();
+      if (message.detail.type === "session.state") this.dispatchEvent(new Event("change"));
     }, { signal: this.#signal });
     page.addEventListener("connection", () => {
+      this.dispatchEvent(new Event("change"));
       if (!page.projection.connectionInterrupted) void this.#requestRefresh();
     }, { signal: this.#signal });
   }
@@ -141,6 +150,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     path: string,
     previousPath?: string,
   ): Promise<void> {
+    if (!this.canMutate) return;
     const generation = ++this.#mutationGeneration;
     const request = {
       path,

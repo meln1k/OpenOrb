@@ -23,7 +23,7 @@ import {
   StopSessionAccepted,
   type UserId,
   WakeSessionAccepted,
-  type WatchSessionEvent,
+  WatchSessionEvent,
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema, Stream } from "effect";
@@ -83,7 +83,7 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   deletions: DeleteSessionInput[] = [];
   gitFileUpdates: UpdateSessionGitFileInput[] = [];
   events: (typeof WatchSessionEvent.Type)[] = [];
-  afterCursors: number[] = [];
+  subscriptions = 0;
   subscriptionUnsubscribes = 0;
   beforeAcceptance: ((input: ProvisionSessionInput) => Promise<void>) | undefined = undefined;
   reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
@@ -226,8 +226,9 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
         initialThinkingLevel: input.payload.modelRuntime.thinkingLevel,
         orbSize: input.payload.orbSize,
         state: "created",
+        agentState: "idle",
+        environmentState: "starting",
         issues: [],
-        lastEventCursor: 0,
       });
       await this.reconcileAcceptance?.(snapshot);
       this.sessionId = input.sessionId;
@@ -294,26 +295,12 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   watchSession(
     workspaceId: WorkspaceId,
     sessionId: string,
-    afterCursor: number,
   ): Stream.Stream<typeof WatchSessionEvent.Type, unknown> {
-    this.afterCursors.push(afterCursor);
+    this.subscriptions++;
     if (workspaceId !== this.workspaceId || sessionId !== this.sessionId) {
       return Stream.fail(new Error("The pinned runner is offline."));
     }
-    const durableCursors = this.events.flatMap((event) => "cursor" in event ? [event.cursor] : []);
-    const lastCursor = Math.max(0, ...durableCursors);
-    const reset = afterCursor === 0 || afterCursor > lastCursor;
-    const resetEvents: (typeof WatchSessionEvent.Type)[] = reset
-      ? [{ runId: null, event: { type: "conversation.reset" } }]
-      : [];
-    return Stream.fromIterable(
-      [
-        ...resetEvents,
-        ...this.events.filter((event) =>
-          !("cursor" in event) || reset || event.cursor > afterCursor
-        ),
-      ],
-    )
+    return Stream.fromIterable(this.events)
       .pipe(
         Stream.concat(Stream.never),
         Stream.ensuring(Effect.sync(() => {
@@ -622,8 +609,9 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         initialThinkingLevel: "high",
         orbSize: "medium",
         state: "ready",
+        agentState: "idle",
+        environmentState: "running",
         issues: [],
-        lastEventCursor: 1,
       }),
       Schema.decodeUnknownSync(RunnerSessionSnapshot)({
         id: newerSessionId,
@@ -634,8 +622,9 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         initialThinkingLevel: "high",
         orbSize: "medium",
         state: "ready",
+        agentState: "idle",
+        environmentState: "running",
         issues: [],
-        lastEventCursor: 1,
       }),
     ]);
     assert(additionalCatalog);
@@ -646,12 +635,29 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
 
     connections.events = [{
-      runId: null,
-      cursor: 1,
-      event: { type: "user.message", messageId: "pi:user:1", text: INITIAL_PROMPT },
+      event: Schema.decodeUnknownSync(WatchSessionEvent)({
+        event: {
+          type: "conversation.snapshot",
+          view: {
+            conversation: { id: 0 },
+            entries: [{
+              id: 1,
+              conversationId: 0,
+              kind: "pi.user",
+              model: [{ role: "user", content: INITIAL_PROMPT }],
+            }],
+            docs: {},
+          },
+        },
+      }).event,
     }];
     assert(connections.snapshot);
-    connections.snapshot = { ...connections.snapshot, state: "ready" };
+    connections.snapshot = {
+      ...connections.snapshot,
+      state: "ready",
+      agentState: "idle",
+      environmentState: "running",
+    };
     const detail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
@@ -699,8 +705,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       detailHtml,
       new RegExp(`action="/app/sessions/${provision.sessionId}/stop"`),
     );
-    assertMatch(detailHtml, /aria-label="Gondolin VM: Active"/);
-    assertMatch(detailHtml, /aria-label="Stop Gondolin VM"/);
+    assertMatch(detailHtml, /aria-label="Agent: idle · Environment: running"/);
+    assertMatch(detailHtml, /aria-label="Stop Session"/);
     assertNotMatch(detailHtml, /data-session-toolbar/);
     assertNotMatch(detailHtml, />Abort<\/button>/);
     assertNotMatch(detailHtml, /data-session-events/);
@@ -1005,16 +1011,21 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       sessionId: provision.sessionId,
     }]);
 
-    connections.snapshot = { ...connections.snapshot, state: "stopped" };
+    connections.snapshot = {
+      ...connections.snapshot,
+      state: "stopped",
+      agentState: "paused",
+      environmentState: "stopped",
+    };
     const stoppedDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
     const stoppedHtml = await stoppedDetail.text();
     assertNotMatch(stoppedHtml, /data-session-stopped/);
     assertMatch(stoppedHtml, /aria-label="Continue session"/);
-    assertMatch(stoppedHtml, /aria-label="Gondolin VM: Sleeping"/);
-    assertMatch(stoppedHtml, /aria-label="Start Gondolin VM"/);
-    assertNotMatch(stoppedHtml, /aria-label="Stop Gondolin VM"/);
+    assertMatch(stoppedHtml, /aria-label="Agent: paused · Environment: stopped"/);
+    assertMatch(stoppedHtml, /aria-label="Wake"/);
+    assertNotMatch(stoppedHtml, /aria-label="Stop Session"/);
     const coldWake = await fetch(new URL(wakeHref, server.baseUrl), {
       method: "POST",
       headers: { Accept: "application/json", Cookie: client.cookie },
@@ -1072,7 +1083,12 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       },
     });
 
-    connections.snapshot = { ...connections.snapshot, state: "running" };
+    connections.snapshot = {
+      ...connections.snapshot,
+      state: "running",
+      agentState: "running",
+      environmentState: "running",
+    };
     const runningDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
@@ -1098,7 +1114,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
     assertMatch(
       runningHtml,
-      /<button(?=[^>]*aria-label="Stop Gondolin VM")(?![^>]*disabled)[^>]*>/,
+      /<button(?=[^>]*aria-label="Stop Session")(?![^>]*disabled)[^>]*>/,
     );
     assertNotMatch(runningHtml, /aria-label="Send prompt"/);
     assertNotMatch(runningHtml, />Abort<\/button>/);
@@ -1155,7 +1171,12 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       sessionId: provision.sessionId,
     }]);
 
-    connections.snapshot = { ...connections.snapshot, state: "ready" };
+    connections.snapshot = {
+      ...connections.snapshot,
+      state: "ready",
+      agentState: "idle",
+      environmentState: "running",
+    };
     const staleAbort = await fetch(new URL(abortHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -1177,7 +1198,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       "Conversation history is unavailable while the pinned runner is offline.",
     );
     assertMatch(offlineHtml, /data-runner-disconnected/);
-    assertMatch(offlineHtml, /aria-label="Gondolin VM: Offline"/);
+    assertMatch(offlineHtml, /aria-label="Agent: unknown · Environment: unknown"/);
     assertMatch(
       offlineHtml,
       /<textarea(?=[^>]*aria-label="Continue session")(?![^>]*disabled)[^>]*>/,
@@ -1253,6 +1274,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     connections.snapshot = {
       ...connections.snapshot,
       state: "error",
+      agentState: "error",
+      environmentState: "error",
       issues: [{
         category: "vm-start",
         severity: "failure",
@@ -1335,7 +1358,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const reader = eventResponse.body?.getReader();
     assert(reader);
     let replayText = "";
-    while (!replayText.includes("id: 1\nevent: session")) {
+    while (!replayText.includes("conversation.snapshot")) {
       const replayChunk = await reader.read();
       assertEquals(replayChunk.done, false);
       replayText += new TextDecoder().decode(replayChunk.value);
@@ -1343,10 +1366,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     abort.abort();
     assertString(
       replayText,
-      'id:\nevent: session\ndata: {"type":"conversation.reset"}',
+      'event: session\ndata: {"type":"conversation.snapshot"',
     );
-    assertString(replayText, "id: 1\nevent: session");
-    assertEquals(connections.afterCursors, [0]);
+    assertEquals(replayText.includes("id:"), false);
+    assertEquals(connections.subscriptions, 1);
     await waitFor(() => connections.subscriptionUnsubscribes === 1);
 
     const keepaliveAbort = new AbortController();
@@ -1361,6 +1384,8 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const keepaliveReader = keepaliveResponse.body?.getReader();
     assert(keepaliveReader);
     try {
+      const replacement = await keepaliveReader.read();
+      assertString(new TextDecoder().decode(replacement.value), "conversation.snapshot");
       const keepalive = await Promise.race([
         keepaliveReader.read(),
         new Promise<never>((_, reject) =>
@@ -1371,7 +1396,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     } finally {
       keepaliveAbort.abort();
     }
-    assertEquals(connections.afterCursors, [0, 1]);
+    assertEquals(connections.subscriptions, 2);
     await waitFor(() => connections.subscriptionUnsubscribes === 2);
 
     connections.sessionId = null;
@@ -1827,8 +1852,9 @@ function deletionSnapshot(
     initialThinkingLevel: "high",
     orbSize: "medium",
     state: "ready",
+    agentState: "idle",
+    environmentState: "running",
     issues: [],
-    lastEventCursor: 1,
   });
 }
 

@@ -42,17 +42,3 @@ export function appendSessionIssues(
 export function clearFailureIssues(issues: readonly SessionIssue[]): readonly SessionIssue[] {
   return issues.filter((issue) => issue.severity !== "failure");
 }
-
-export function clearIssueCategories(
-  issues: readonly SessionIssue[],
-  categories: readonly SessionIssueCategory[],
-): readonly SessionIssue[] {
-  return issues.filter((issue) => !categories.includes(issue.category));
-}
-
-export function currentRecovery(
-  issues: readonly SessionIssue[],
-): Exclude<SessionRecoveryAction, "none" | "retry-provisioning"> | undefined {
-  const recovery = issues.findLast((issue) => issue.severity === "failure")?.recovery;
-  return recovery === "restart-environment" ? recovery : undefined;
-}

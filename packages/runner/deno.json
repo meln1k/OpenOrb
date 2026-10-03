@@ -22,7 +22,6 @@
     "@/": "./",
     "@earendil-works/gondolin": "npm:@earendil-works/gondolin@0.12.0",
     "@earendil-works/pi-ai": "npm:@earendil-works/pi-ai@1.0.0",
-    "@earendil-works/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@1.0.0",
     "@effect/platform-node": "npm:@effect/platform-node@4.0.0",
     "@opentelemetry/api": "npm:@opentelemetry/api@1.9.0",
     "@remix-run/data-schema": "npm:@remix-run/data-schema@0.3.0",

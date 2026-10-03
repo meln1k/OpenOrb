@@ -396,6 +396,7 @@ const markdownStyle = css({
     maxWidth: "100%",
   },
   "& img, & video": {
+    boxSizing: "border-box",
     display: "block",
     maxWidth: "100%",
     maxHeight: "70vh",

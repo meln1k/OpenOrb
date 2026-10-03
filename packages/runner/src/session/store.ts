@@ -3,7 +3,6 @@ import {
   initialPromptPreview,
   RunnerId,
   RunnerSessionSnapshot,
-  type RunnerSessionState,
   SessionGitSnapshot,
   SessionId,
 } from "@openorb/protocol/runner-api";
@@ -12,10 +11,10 @@ import type {
   SessionGitSnapshotId,
 } from "@openorb/protocol/runner-bulk-api";
 import { Context, Data, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
+import { lstat } from "node:fs/promises";
 
-import { readPiSessionEvents } from "../harness/pi/history.ts";
 import { Journal } from "./persistent-actor/journal.ts";
-import { recoverSessionState, type RunnerSessionMetadata, sessionMetadata } from "./actor/state.ts";
+import { replaySessionState, type RunnerSessionMetadata } from "./actor/state.ts";
 
 export type { RunnerSessionMetadata } from "./actor/state.ts";
 
@@ -49,11 +48,6 @@ export interface RunnerSessionGitPatchChunk {
 
 export type SessionStorageDisposition = "created" | "existing";
 
-export interface RunnerSessionPiPaths {
-  agentDirectory: string;
-  sessionFile: string;
-}
-
 export interface RunnerSessionManifestError {
   sessionDirectory: string;
   message: string;
@@ -71,7 +65,7 @@ export type RunnerSessionStoreOperation =
   | "read-metadata"
   | "get-root-disk-path"
   | "sync-root-disk"
-  | "get-pi-paths"
+  | "get-harness-directory"
   | "read-git-snapshot"
   | "advance-git-mutation-revision"
   | "write-git-snapshot"
@@ -102,9 +96,9 @@ export interface RunnerSessionStore {
   readonly syncSessionRootDisk: (
     sessionId: SessionId,
   ) => Effect.Effect<void, RunnerSessionStoreError>;
-  readonly getSessionPiPaths: (
+  readonly getSessionHarnessDirectory: (
     sessionId: SessionId,
-  ) => Effect.Effect<RunnerSessionPiPaths, RunnerSessionStoreError>;
+  ) => Effect.Effect<string, RunnerSessionStoreError>;
   readonly readGitSnapshot: (
     sessionId: SessionId,
   ) => Effect.Effect<SessionGitSnapshot, RunnerSessionStoreError>;
@@ -154,7 +148,6 @@ export function makeRunnerSessionStore(
     const runnerId = yield* Schema.decodeUnknownEffect(RunnerId)(config.runnerId).pipe(
       Effect.mapError(storeError("initialize", "The runner ID is invalid")),
     );
-    const piSessionFile = paths.join("pi", "session.jsonl");
     const gitSnapshotFile = "git-snapshot.json";
     const gitPatchFile = (snapshotId: string, section: SessionGitPatchSection) =>
       `git-snapshot-${snapshotId}-${section}.patch`;
@@ -215,11 +208,14 @@ export function makeRunnerSessionStore(
       Effect.gen(function* () {
         const path = sessionPath(sessionId);
         yield* assertDirectory(fs, path, "Runner session directory");
-        const state = yield* recoverSessionState(sessionId).pipe(
+        const { state } = yield* replaySessionState(sessionId).pipe(
           Effect.provideService(Journal, journal),
           Effect.mapError(sessionDataError),
         );
-        const metadata = sessionMetadata(state);
+        if (state === undefined) {
+          return yield* new RunnerSessionDataError("The session event journal is empty.");
+        }
+        const metadata = state.metadata;
         if (metadata.id !== sessionId) {
           return yield* new RunnerSessionDataError(
             `Session directory ${sessionId} contains events for ${metadata.id}.`,
@@ -251,20 +247,7 @@ export function makeRunnerSessionStore(
           } satisfies RunnerSessionManifest;
         }
         const metadata = metadataResult.success;
-        const historyResult = yield* Effect.result(
-          asyncBoundary(() =>
-            readPiSessionEvents(paths.join(sessionPath(metadata.id), piSessionFile))
-          ),
-        );
-        return historyResult._tag === "Failure"
-          ? {
-            sessions: [snapshotFrom(metadata, 0, "error")],
-            errors: [{
-              sessionDirectory: entry,
-              message: errorMessage(historyResult.failure),
-            }],
-          }
-          : { sessions: [snapshotFrom(metadata, historyResult.success.length)], errors: [] };
+        return { sessions: [snapshotFrom(metadata)], errors: [] };
       });
     };
 
@@ -346,15 +329,11 @@ export function makeRunnerSessionStore(
           if (disposition === "existing") return disposition;
           return yield* Effect.gen(function* () {
             yield* Effect.forEach(
-              ["pi", "logs", "snapshots"],
+              ["harness", "logs", "snapshots"],
               (directory) =>
                 fileSystem(fs.makeDirectory(paths.join(path, directory), { mode: 0o700 })),
               { discard: true },
             );
-            yield* fileSystem(
-              fs.makeDirectory(paths.join(path, "pi", "agent"), { mode: 0o700 }),
-            );
-            yield* writeNewPrivateFile(fs, paths.join(path, piSessionFile), new Uint8Array());
             yield* syncDirectory(fs, path);
             yield* syncDirectory(fs, paths.dirname(path));
             return disposition;
@@ -437,23 +416,28 @@ export function makeRunnerSessionStore(
           ))),
       ),
 
-      getSessionPiPaths: Effect.fn("RunnerSessionStore.getSessionPiPaths")(
+      getSessionHarnessDirectory: Effect.fn("RunnerSessionStore.getSessionHarnessDirectory")(
         function* (sessionId: SessionId) {
           const metadata = yield* readMetadataValue(sessionId);
-          const piDirectory = paths.join(sessionPath(metadata.id), "pi");
-          const agentDirectory = paths.join(piDirectory, "agent");
-          const sessionFile = paths.join(sessionPath(metadata.id), piSessionFile);
-          yield* assertDirectory(fs, piDirectory, "Runner session Pi directory");
-          yield* assertDirectory(fs, agentDirectory, "Runner session Pi agent directory");
-          yield* assertRegularFile(fs, sessionFile, "Runner session Pi session file");
-          return {
-            agentDirectory: yield* fileSystem(fs.realPath(agentDirectory)),
-            sessionFile: yield* fileSystem(fs.realPath(sessionFile)),
-          };
+          const directory = paths.join(sessionPath(metadata.id), "harness");
+          const info = yield* Effect.tryPromise({
+            try: () => lstat(directory),
+            catch: sessionDataError,
+          });
+          if (!info.isDirectory() || info.isSymbolicLink()) {
+            return yield* new RunnerSessionDataError(
+              "Runner session harness storage must be a private directory.",
+            );
+          }
+          yield* fileSystem(fs.chmod(directory, 0o700));
+          return yield* fileSystem(fs.realPath(directory));
         },
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(
-            storeError("get-pi-paths", `Could not access runner session ${sessionId} Pi storage`),
+            storeError(
+              "get-harness-directory",
+              `Could not access runner session ${sessionId} harness storage`,
+            ),
           )),
       ),
 
@@ -556,10 +540,7 @@ export function makeRunnerSessionStore(
       getSessionSnapshot: Effect.fn("RunnerSessionStore.getSessionSnapshot")(
         function* (sessionId: SessionId) {
           const metadata = yield* readMetadataValue(sessionId);
-          const history = yield* asyncBoundary(() =>
-            readPiSessionEvents(paths.join(sessionPath(metadata.id), piSessionFile))
-          );
-          return snapshotFrom(metadata, history.length);
+          return snapshotFrom(metadata);
         },
         (effect, sessionId) =>
           effect.pipe(Effect.mapError(
@@ -599,12 +580,6 @@ export function runnerSessionStoreLayer(
   return Layer.effect(RunnerSessionStore, makeRunnerSessionStore(config));
 }
 
-function asyncBoundary<A>(
-  evaluate: () => PromiseLike<A>,
-): Effect.Effect<A, RunnerSessionDataError> {
-  return Effect.tryPromise({ try: evaluate, catch: sessionDataError });
-}
-
 function createSessionDirectory(
   fs: FileSystem.FileSystem,
   path: string,
@@ -620,8 +595,6 @@ function createSessionDirectory(
 
 function snapshotFrom(
   metadata: RunnerSessionMetadata,
-  lastEventCursor: number,
-  state: RunnerSessionState = metadata.state,
 ): RunnerSessionSnapshot {
   return new RunnerSessionSnapshot({
     id: metadata.id,
@@ -631,9 +604,10 @@ function snapshotFrom(
     model: metadata.definition.model,
     initialThinkingLevel: metadata.definition.initialThinkingLevel,
     orbSize: metadata.definition.orbSize,
-    state,
+    state: metadata.state,
+    agentState: metadata.agentState,
+    environmentState: metadata.environmentState,
     issues: metadata.issues,
-    lastEventCursor,
   });
 }
 

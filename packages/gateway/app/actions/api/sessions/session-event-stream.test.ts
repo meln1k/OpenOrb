@@ -1,44 +1,62 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { WatchSessionEvent } from "@openorb/protocol/runner-api";
+import { HistoryReadError, SessionId, WatchSessionEvent } from "@openorb/protocol/runner-api";
 import { Deferred, Effect, Schema, Stream } from "effect";
 
 import { createSessionEventStream } from "@/app/actions/api/sessions/session-event-stream.ts";
 
 const encoder = new TextDecoder();
 
-Deno.test("SSE encodes durable cursors and redacts read results", async () => {
+Deno.test("SSE forwards raw structural frames without cursors or semantic rewriting", async () => {
   const event = Schema.decodeUnknownSync(WatchSessionEvent)({
-    runId: null,
-    cursor: 7,
     event: {
-      type: "tool.completed",
-      toolCallId: "tool-1",
-      toolName: "read",
-      result: "secret",
-      isError: false,
+      type: "conversation.ops",
+      ops: [["s", ["docs", "pi.live"], { tools: [{ name: "read", output: "raw output" }] }]],
     },
   });
   const body = await Effect.runPromise(createSessionEventStream(Stream.make(event)));
   const chunk = await body.getReader().read();
   assert(!chunk.done);
   const text = encoder.decode(chunk.value);
-  assertStringIncludes(text, "id: 7");
-  assertStringIncludes(text, '"result":""');
-  assertEquals(text.includes("secret"), false);
+  assertEquals(text.includes("id:"), false);
+  assertStringIncludes(text, '"output":"raw output"');
+  assertStringIncludes(text, JSON.stringify(event.event));
 });
 
-Deno.test("SSE reset clears the EventSource cursor with an empty id", async () => {
+Deno.test("SSE snapshot is a full replacement with no EventSource id", async () => {
   const event = Schema.decodeUnknownSync(WatchSessionEvent)({
-    runId: null,
-    event: { type: "conversation.reset" },
+    event: {
+      type: "conversation.snapshot",
+      view: { conversation: { id: 0 }, entries: [], docs: {} },
+    },
   });
   const body = await Effect.runPromise(createSessionEventStream(Stream.make(event)));
   const chunk = await body.getReader().read();
   assert(!chunk.done);
   assertEquals(
     encoder.decode(chunk.value),
-    'id:\nevent: session\ndata: {"type":"conversation.reset"}\n\n',
+    `event: session\ndata: ${JSON.stringify(event.event)}\n\n`,
   );
+});
+
+Deno.test("SSE preserves every operation batch for a slow consumer", async () => {
+  const events = Array.from(
+    { length: 512 },
+    (_, index) =>
+      Schema.decodeUnknownSync(WatchSessionEvent)({
+        event: { type: "conversation.ops", ops: [["s", ["docs", "counter"], { value: index }]] },
+      }),
+  );
+  const stream = await Effect.runPromise(createSessionEventStream(Stream.fromIterable(events)));
+  const reader = stream.getReader();
+  let text = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    text += encoder.decode(chunk.value);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assertEquals(text.split("event: session").length - 1, events.length);
+  for (const event of events) assertStringIncludes(text, JSON.stringify(event.event));
 });
 
 Deno.test("SSE closes when the runner watch ends instead of retaining only keepalives", async () => {
@@ -49,12 +67,28 @@ Deno.test("SSE closes when the runner watch ends instead of retaining only keepa
   assertEquals(await body.getReader().read(), { value: undefined, done: true });
 });
 
-Deno.test("SSE closes cleanly when the runner watch fails so EventSource can reconnect", async () => {
+Deno.test("SSE closes cleanly after a baseline when the runner watch overflows so EventSource can reconnect", async () => {
+  const event = Schema.decodeUnknownSync(WatchSessionEvent)({
+    event: {
+      type: "conversation.snapshot",
+      view: { conversation: { id: 0 }, entries: [], docs: {} },
+    },
+  });
   const body = await Effect.runPromise(
-    createSessionEventStream(Stream.fail(new Error("Runner disconnected."))),
+    createSessionEventStream(
+      Stream.make(event).pipe(Stream.concat(Stream.fail(
+        new HistoryReadError({
+          sessionId: SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134c10"),
+          message: "Session subscriber fell behind; reconnect for a fresh snapshot.",
+        }),
+      ))),
+    ),
   );
 
-  assertEquals(await body.getReader().read(), { value: undefined, done: true });
+  assertEquals(
+    await new Response(body).text(),
+    `event: session\ndata: ${JSON.stringify(event.event)}\n\n`,
+  );
 });
 
 Deno.test("cancelling SSE interrupts the matching Effect stream", async () => {

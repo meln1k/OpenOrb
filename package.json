@@ -7,6 +7,10 @@
     "typecheck": "deno check",
     "typecheck:effect": "deno run -A npm:@effect/language-service diagnostics --project tsconfig.json --strict"
   },
+  "dependencies": {
+    "@earendil-works/chord": "1.0.0",
+    "@earendil-works/pi-durable": "1.0.0"
+  },
   "devDependencies": {
     "@effect/language-service": "^0.87.2",
     "playwright": "1.55.0",

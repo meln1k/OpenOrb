@@ -11,7 +11,7 @@ import {
   MAX_RUNNER_BULK_CHUNK_BYTES,
   MAX_RUNNER_BULK_RPC_FRAME_BYTES,
 } from "@openorb/protocol/runner-api-limits";
-import { Deferred, Effect, Layer, Schedule, Stream } from "effect";
+import { Deferred, Effect, Layer, Predicate, Schedule, Stream } from "effect";
 import * as RpcServer from "effect/rpc/RpcServer";
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
@@ -94,7 +94,7 @@ export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
     SocketServer.SocketServer,
     Effect.map(
       Socket.Socket,
-      (socket) => makeOutboundSocketServer(socket, terminal, MAX_RUNNER_BULK_RPC_FRAME_BYTES),
+      (socket) => makeOutboundSocketServer(runnerBulkWebSocket(socket), terminal),
     ),
   ).pipe(Layer.provide(socketLayer));
   const protocol = RpcServer.layerProtocolSocketServer.pipe(
@@ -113,3 +113,37 @@ export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
     Effect.annotateLogs({ component: "openorb-runner", runnerId: options.runnerId }),
   );
 });
+
+/** Bulk frames are already bounded chunks; unlike control, they need no transport splitting. */
+export function runnerBulkWebSocket(socket: Socket.Socket): Socket.Socket {
+  const fits = (frame: string | Uint8Array) =>
+    (Predicate.isString(frame) ? new TextEncoder().encode(frame).byteLength : frame.byteLength) <=
+      MAX_RUNNER_BULK_RPC_FRAME_BYTES;
+  return Socket.make({
+    reader: Effect.gen(function* () {
+      const reader = yield* socket.reader;
+      const writer = yield* socket.writer;
+      return {
+        ...reader,
+        pull: reader.pull.pipe(
+          Effect.tap((frames) => frames.every(fits) ? Effect.void : closeOverflow(writer)),
+        ),
+      };
+    }),
+    writer: Effect.map(socket.writer, (writer) => ({
+      write: (frame) =>
+        Socket.isCloseEvent(frame) || fits(frame) ? writer.write(frame) : closeOverflow(writer),
+      writeAll: (frames) => frames.every(fits) ? writer.writeAll(frames) : closeOverflow(writer),
+    })),
+  });
+}
+
+function closeOverflow(writer: Socket.Writer): Effect.Effect<never, Socket.SocketError> {
+  return writer.write(new Socket.CloseEvent(4400, "Frame limit exceeded")).pipe(
+    Effect.andThen(Effect.fail(
+      new Socket.SocketError({
+        reason: new Socket.SocketCloseError({ code: 4400, closeReason: "Frame limit exceeded" }),
+      }),
+    )),
+  );
+}

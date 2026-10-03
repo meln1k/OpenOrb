@@ -13,21 +13,17 @@ export function currentSessionRecovery(
 }
 
 export function sessionWakeKind(
-  snapshot: Pick<RunnerSessionSnapshot, "state" | "issues">,
+  snapshot: Pick<RunnerSessionSnapshot, "agentState" | "environmentState" | "issues">,
   recovery: SessionEnvironmentRecoveryMode | undefined,
 ): "warm" | "cold" | undefined {
-  switch (snapshot.state) {
-    case "ready":
-    case "running":
-      return recovery === undefined ? "warm" : undefined;
-    case "stopped":
-      return recovery === undefined ? "cold" : undefined;
-    case "error":
-      return recovery !== undefined && currentSessionRecovery(snapshot.issues) === recovery
-        ? "cold"
-        : undefined;
-    case "created":
-    case "provisioning":
-      return undefined;
+  if (snapshot.environmentState === "stopping") return undefined;
+  if (snapshot.agentState === "error" || snapshot.environmentState === "error") {
+    return recovery !== undefined && currentSessionRecovery(snapshot.issues) === recovery
+      ? "cold"
+      : undefined;
   }
+  if (recovery !== undefined) return undefined;
+  return snapshot.environmentState === "stopped" || snapshot.agentState === "paused"
+    ? "cold"
+    : "warm";
 }

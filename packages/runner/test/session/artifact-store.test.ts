@@ -58,6 +58,35 @@ Deno.test("published session media remains private, immutable, and readable in r
   }
 });
 
+Deno.test("publishes more than 32 distinct artifacts without evicting earlier media", async () => {
+  const workingDirectory = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(workingDirectory, "sessions", SESSION_ID), { recursive: true });
+    const store = await Effect.runPromise(
+      makeSessionArtifactStore({ workingDirectory }).pipe(Effect.provide(platform)),
+    );
+    const ids = [];
+    for (let n = 0; n < 33; n++) {
+      const artifact = await Effect.runPromise(store.publish(SESSION_ID, {
+        fileName: "image.png",
+        mediaType: "image/png",
+        bytes: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, n]),
+      }));
+      ids.push(artifact.id);
+    }
+    assertEquals(new Set(ids).size, 33);
+    const restarted = await Effect.runPromise(
+      makeSessionArtifactStore({ workingDirectory }).pipe(Effect.provide(platform)),
+    );
+    for (const n of [0, 31, 32]) {
+      const chunk = await Effect.runPromise(restarted.readChunk(SESSION_ID, ids[n]!, 0, 9));
+      assertEquals(chunk.bytes, new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, n]));
+    }
+  } finally {
+    await Deno.remove(workingDirectory, { recursive: true });
+  }
+});
+
 Deno.test("reconciles interrupted publications before quota accounting", async () => {
   const workingDirectory = await Deno.makeTempDir();
   try {

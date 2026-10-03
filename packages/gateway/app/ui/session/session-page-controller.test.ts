@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 
 import { SessionPageController } from "./session-page-controller.tsx";
 
@@ -12,6 +12,8 @@ Deno.test("session page controller publishes one lifecycle projection before ses
   controller.apply({
     type: "session.state",
     stage: "resuming",
+    agentState: "running",
+    environmentState: "starting",
     checkoutState: "available",
     issues: [],
   });
@@ -20,6 +22,8 @@ Deno.test("session page controller publishes one lifecycle projection before ses
   assertEquals(controller.projection, {
     connectionInterrupted: false,
     sessionState: "provisioning",
+    agentState: "running",
+    environmentState: "starting",
     stage: "resuming",
     issues: [],
   });
@@ -35,6 +39,8 @@ Deno.test("session page controller keeps failures visible across runner disconne
   controller.apply({
     type: "session.state",
     stage: "failed",
+    agentState: "running",
+    environmentState: "error",
     checkoutState: "unavailable",
     issues: [{
       category: "clone",
@@ -50,4 +56,23 @@ Deno.test("session page controller keeps failures visible across runner disconne
   controller.setConnectionInterrupted(false);
   assertEquals(controller.projection.connectionInterrupted, false);
   assertEquals(controller.projection.issues[0]?.diagnostics, "fatal: repository unavailable");
+});
+
+Deno.test("independent lifecycle and reconnect require a replacement snapshot", () => {
+  const controller = new SessionPageController("running", [], "running", "stopped");
+  assertEquals(controller.projection.agentState, "running");
+  assertEquals(controller.projection.environmentState, "stopped");
+  controller.apply({
+    type: "session.state",
+    stage: "stopping",
+    agentState: "paused",
+    environmentState: "stopping",
+    checkoutState: "available",
+    issues: [],
+  });
+  assertEquals(controller.projection.agentState, "paused");
+  assertEquals(controller.projection.environmentState, "stopping");
+  controller.setConnectionInterrupted(true);
+  controller.setConnectionInterrupted(false);
+  assertThrows(() => controller.apply({ type: "conversation.ops", ops: [] }));
 });

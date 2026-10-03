@@ -570,6 +570,7 @@ const messageScrollerViewportStyle = css({
 });
 
 const messageScrollerContentStyle = css({
+  boxSizing: "border-box",
   display: "flex",
   flexDirection: "column",
   gap: `${CONTENT_GAP_PX}px`,

@@ -49,7 +49,10 @@ import * as HttpServer from "effect/http/HttpServer";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as NetAddress from "effect/net/NetAddress";
-import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import {
+  runnerControlRpcSerializationLayer,
+  runnerControlWebSocket,
+} from "@openorb/protocol/runner-control-transport";
 import * as RpcServer from "effect/rpc/RpcServer";
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
@@ -78,8 +81,7 @@ const capacity = decode(RunnerCapacity)({
 
 function snapshot(
   id: string,
-  activeRunId?: string,
-  state: "ready" | "running" | "stopped" | "error" = activeRunId ? "running" : "ready",
+  state: "ready" | "running" | "stopped" | "error" = "ready",
   issues: RunnerSessionSnapshot["issues"] = [],
 ) {
   return decode(RunnerSessionSnapshot)({
@@ -92,8 +94,14 @@ function snapshot(
     orbSize: "small",
     state,
     issues,
-    lastEventCursor: 3,
-    ...(activeRunId ? { activeRunId } : {}),
+    agentState: state === "running"
+      ? "running"
+      : state === "stopped"
+      ? "paused"
+      : state === "error"
+      ? "error"
+      : "idle",
+    environmentState: state === "stopped" ? "stopped" : state === "error" ? "error" : "running",
   });
 }
 
@@ -252,7 +260,8 @@ function handlers(probe: Probe) {
               orbSize: request.orbSize,
               state: "created",
               issues: [],
-              lastEventCursor: 0,
+              agentState: "idle",
+              environmentState: "starting",
             }
             : snapshot(request.sessionId),
           ref: request.mode === "create" ? request.ref : "main",
@@ -269,8 +278,7 @@ function handlers(probe: Probe) {
         }
         return decode(PromptSessionAccepted)({
           clientRequestId: request.clientRequestId,
-          runId: "run-prompt",
-          mode: "started",
+          submissionId: 42,
         });
       }),
     "session.thinking-level.set": (request) =>
@@ -296,7 +304,7 @@ function handlers(probe: Probe) {
     "session.abort": (request) =>
       Effect.sync(() => {
         probe.abortRequests.push(request);
-        return decode(AbortSessionAccepted)({ runId: request.runId });
+        return new AbortSessionAccepted({});
       }),
     "session.stop": (request) =>
       Effect.sync(() => {
@@ -343,8 +351,7 @@ function handlers(probe: Probe) {
         };
         probe.sessionWatches.push(watch);
         const initial: typeof WatchSessionEvent.Type = {
-          runId: null,
-          event: { type: "agent.started" },
+          event: { type: "git.snapshot.updated" },
         };
         return Stream.make(initial).pipe(
           Stream.concat(Stream.fromQueue(watch.events)),
@@ -381,7 +388,7 @@ const connectRunner = Effect.fn(function* (url: string, probe: Probe) {
       ({
         address: NetAddress.socketAddressFromInputUnsafe({ address: "127.0.0.1", port: 0 }),
         run: (handler) =>
-          handler(observeClose(socket, probe)).pipe(
+          handler(runnerControlWebSocket(observeClose(socket, probe))).pipe(
             Effect.ensuring(Deferred.succeed(probe.connectionFinalized, undefined)),
             Effect.exit,
             Effect.andThen(Effect.never),
@@ -390,7 +397,7 @@ const connectRunner = Effect.fn(function* (url: string, probe: Probe) {
   ).pipe(Layer.provide(socketLayer));
   const protocol = RpcServer.layerProtocolSocketServer.pipe(
     Layer.provide(socketServer),
-    Layer.provide(RpcSerialization.layerJson),
+    Layer.provide(runnerControlRpcSerializationLayer),
   );
   yield* Layer.launch(
     RpcServer.layer(RunnerApi).pipe(
@@ -449,7 +456,7 @@ Deno.test("gateway lifecycle logs admission, state changes, cleanup retries and 
           decode(RunnerStateEvent)({
             type: "session.updated",
             revision,
-            session: snapshot(SESSION_1, undefined, "stopped"),
+            session: snapshot(SESSION_1, "stopped"),
           }),
         );
       }
@@ -601,12 +608,12 @@ Deno.test("WatchSession stream cancellation reaches the runner handler finalizer
       () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
     );
-    yield* gateway.watchSession(WORKSPACE_ID, SESSION_1, 0).pipe(Stream.take(1), Stream.runDrain);
+    yield* gateway.watchSession(WORKSPACE_ID, SESSION_1).pipe(Stream.take(1), Stream.runDrain);
     assertEquals(probe.sessionWatches.length, 1);
     yield* Deferred.await(probe.sessionWatches[0]!.finalized);
     assertEquals(
       probe.sessionWatches[0]!.request,
-      decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 0 }),
+      decode(WatchSessionPayload)({ sessionId: SESSION_1 }),
     );
   }))));
 
@@ -623,15 +630,15 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
 
     const firstReceived = yield* Deferred.make<void>();
     const secondContinued = yield* Deferred.make<void>();
-    const first = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1, 3).pipe(
+    const first = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1).pipe(
       Stream.tap(() => Deferred.succeed(firstReceived, undefined)),
       Stream.runDrain,
       Effect.forkChild({ startImmediately: true }),
     );
     yield* Deferred.await(firstReceived);
-    const second = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1, 3).pipe(
+    const second = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1).pipe(
       Stream.tap((item) =>
-        item.event.type === "assistant.text.delta" && item.event.delta === "second-continues"
+        item.event.type === "provisioning.log" && item.event.text === "second-continues"
           ? Deferred.succeed(secondContinued, undefined)
           : Effect.void
       ),
@@ -642,7 +649,7 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
       () => Effect.sync(() => probe.sessionWatches.length === 2),
       "second watch did not start",
     );
-    const third = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1, 4).pipe(
+    const third = yield* gateway.watchSession(WORKSPACE_ID, SESSION_1).pipe(
       Stream.runDrain,
       Effect.forkChild({ startImmediately: true }),
     );
@@ -653,15 +660,15 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
 
     assertEquals(
       probe.sessionWatches[0]!.request,
-      decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 3 }),
+      decode(WatchSessionPayload)({ sessionId: SESSION_1 }),
     );
     assertEquals(
       probe.sessionWatches[1]!.request,
-      decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 3 }),
+      decode(WatchSessionPayload)({ sessionId: SESSION_1 }),
     );
     assertEquals(
       probe.sessionWatches[2]!.request,
-      decode(WatchSessionPayload)({ sessionId: SESSION_1, afterCursor: 4 }),
+      decode(WatchSessionPayload)({ sessionId: SESSION_1 }),
     );
     yield* Fiber.interrupt(first);
     yield* Deferred.await(probe.sessionWatches[0]!.finalized);
@@ -670,8 +677,7 @@ Deno.test("each browser gets an independent WatchSession RPC and cancellation sc
     yield* Queue.offer(
       probe.sessionWatches[1]!.events,
       decode(WatchSessionEvent)({
-        runId: "run-active",
-        event: { type: "assistant.text.delta", delta: "second-continues" },
+        event: { type: "provisioning.log", stream: "stdout", text: "second-continues" },
       }),
     );
     yield* Deferred.await(secondContinued);
@@ -688,7 +694,7 @@ Deno.test("Wake routes model and GitHub credentials to a stopped session's runne
     const { gateway, url } = yield* makeHarness();
     const probe = yield* makeProbe();
     yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [snapshot(SESSION_1, undefined, "stopped")]);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1, "stopped")]);
     yield* waitUntil(
       () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
@@ -723,7 +729,7 @@ Deno.test("Wake routes only the recovery offered by the runner snapshot", () =>
     const { gateway, url } = yield* makeHarness();
     const probe = yield* makeProbe();
     yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [snapshot(SESSION_1, undefined, "error", [{
+    yield* publishSnapshot(probe, [snapshot(SESSION_1, "error", [{
       category: "vm-stop",
       severity: "failure",
       message: "The VM stopped before its root disk could be synchronized.",
@@ -781,7 +787,7 @@ Deno.test("Stop routes ready and running sessions to the pinned runner", () =>
       decode(RunnerStateEvent)({
         type: "session.updated",
         revision: 2,
-        session: snapshot(SESSION_1, "run-active"),
+        session: snapshot(SESSION_1, "running"),
       }),
     );
     yield* waitUntil(
@@ -1054,7 +1060,13 @@ Deno.test("concurrent Prompt and Abort both reach the runner for serialized hand
     };
     probe.promptBlock = promptBlock;
     yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [snapshot(SESSION_1, "run-active")]);
+    yield* publishSnapshot(probe, [
+      decode(RunnerSessionSnapshot)({
+        ...snapshot(SESSION_1, "running"),
+        state: "stopped",
+        environmentState: "stopped",
+      }),
+    ]);
     yield* waitUntil(
       () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
@@ -1080,6 +1092,19 @@ Deno.test("concurrent Prompt and Abort both reach the runner for serialized hand
     assertEquals(abort.status, "accepted");
     assertEquals(probe.promptRequests.length, 1);
     assertEquals(probe.abortRequests.length, 1);
+    assertEquals(
+      (yield* gateway.stopSession({ workspaceId: WORKSPACE_ID, sessionId: SESSION_1 })).status,
+      "accepted",
+    );
+    assertEquals(
+      (yield* gateway.updateSessionGitFile({
+        workspaceId: WORKSPACE_ID,
+        sessionId: SESSION_1,
+        action: "stage",
+        path: "file.ts",
+      })).status,
+      "rejected",
+    );
   }))));
 
 Deno.test("thinking-level changes preserve typed rejection and delivery uncertainty", () =>
@@ -1203,7 +1228,7 @@ Deno.test("typed commands reach handlers during a run and disconnect finalizes t
     const { gateway, url } = yield* makeHarness();
     const probe = yield* makeProbe();
     yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [snapshot(SESSION_1, "run-active")]);
+    yield* publishSnapshot(probe, [snapshot(SESSION_1, "running")]);
     yield* waitUntil(
       () => gateway.getSessionRunner(WORKSPACE_ID, SESSION_1).pipe(Effect.map((id) => id !== null)),
       "route missing",
@@ -1269,7 +1294,7 @@ Deno.test("typed commands reach handlers during a run and disconnect finalizes t
     assertEquals(provisionRequest.gitAuthor, GIT_AUTHOR);
     assertEquals(probe.promptRequests.length, 1);
     assertEquals(probe.abortRequests, [
-      decode(AbortSessionPayload)({ sessionId: SESSION_1, runId: "run-active" }),
+      decode(AbortSessionPayload)({ sessionId: SESSION_1 }),
     ]);
     assertEquals(
       probe.gitSnapshotRequests.map((request) =>

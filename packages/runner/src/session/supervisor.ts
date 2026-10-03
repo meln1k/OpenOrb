@@ -31,6 +31,7 @@ import { runnerSessionDefinitionsEqual } from "./definition.ts";
 import { SessionEvents } from "./events.ts";
 import { type DeletionAcceptance, type SessionActor, SessionActorFactory } from "./actor/index.ts";
 import { appendSessionIssues } from "./actor/issues.ts";
+import { publicSessionState } from "./actor/state.ts";
 import {
   type RunnerSessionMetadata,
   RunnerSessionStore,
@@ -61,8 +62,7 @@ type SessionSlot =
 
 export interface SessionSupervisor {
   readonly activeSessionCount: () => number;
-  readonly getActiveRunId: (sessionId: SessionId) => string | undefined;
-  readonly withQuarantineFailure: (snapshot: RunnerSessionSnapshot) => RunnerSessionSnapshot;
+  readonly withLiveState: (snapshot: RunnerSessionSnapshot) => RunnerSessionSnapshot;
   readonly findActor: (sessionId: SessionId) => SessionActor | undefined;
   readonly findOrRestoreActor: (
     sessionId: SessionId,
@@ -174,7 +174,6 @@ export function makeSessionSupervisor(
             metadata: metadata.success,
             mode: "reconcile",
             trigger: "actor-crash",
-            correlationId: crypto.randomUUID(),
             idleTimeoutMs,
           }));
           if (spawned._tag === "Failure") {
@@ -214,9 +213,11 @@ export function makeSessionSupervisor(
         );
         const metadata = yield* store.readMetadata(sessionId).pipe(Effect.option);
         if (Option.isNone(metadata)) return;
-        yield* events.publishLive(sessionId, crypto.randomUUID(), {
+        yield* events.publishLive(sessionId, {
           type: "session.state",
           stage: "failed",
+          agentState: "error",
+          environmentState: metadata.value.environmentState,
           checkoutState: metadata.value.checkoutState,
           issues: appendSessionIssues(metadata.value.issues, [issue]),
         }).pipe(Effect.orDie);
@@ -280,6 +281,8 @@ export function makeSessionSupervisor(
           runnerId: options.runnerId,
           createdAt: DateTime.formatIso(yield* DateTime.now),
           state: "created",
+          agentState: "idle",
+          environmentState: "stopped",
           checkoutState: "pending",
           issues: [],
         };
@@ -307,7 +310,6 @@ export function makeSessionSupervisor(
           metadata,
           mode: "reconcile",
           trigger: "provision-request",
-          correlationId: crypto.randomUUID(),
           idleTimeoutMs,
         });
         yield* actor.shutdown;
@@ -411,7 +413,6 @@ export function makeSessionSupervisor(
           ? {
             metadata,
             mode: "restore" as const,
-            correlationId: crypto.randomUUID(),
             idleTimeoutMs,
           }
           : {
@@ -427,7 +428,6 @@ export function makeSessionSupervisor(
                 thinkingLevel: metadata.definition.initialThinkingLevel,
               })
               : payload.modelRuntime,
-            correlationId: crypto.randomUUID(),
             idleTimeoutMs,
           };
         const spawned = yield* Effect.result(actorFactory.spawn(actorInput));
@@ -473,7 +473,6 @@ export function makeSessionSupervisor(
         const actor = yield* actorFactory.spawn({
           metadata: metadata.value,
           mode: "restore",
-          correlationId: crypto.randomUUID(),
           idleTimeoutMs,
         }).pipe(
           Effect.catch(() => logRestorationFailure(sessionId, 1).pipe(Effect.as(undefined))),
@@ -539,7 +538,7 @@ export function makeSessionSupervisor(
           );
         }
 
-        yield* store.removeSessionStorage(sessionId).pipe(
+        yield* events.publishRemoved(sessionId, store.removeSessionStorage(sessionId)).pipe(
           Effect.tapError(() =>
             Effect.logWarning("deletion.cleanup-failed").pipe(
               Effect.annotateLogs({
@@ -572,12 +571,21 @@ export function makeSessionSupervisor(
         }
         return count;
       },
-      getActiveRunId: (sessionId) => getActor(sessionId)?.activeRunId,
-      withQuarantineFailure: (snapshot) => {
+      withLiveState: (snapshot) => {
         const slot = getSlot(snapshot.id);
+        if (slot?._tag === "Running") {
+          const { agentState, environmentState } = slot.actor;
+          return new RunnerSessionSnapshotValue({
+            ...snapshot,
+            agentState,
+            environmentState,
+            state: publicSessionState(agentState, environmentState),
+          });
+        }
         return slot?._tag !== "Quarantined" ? snapshot : new RunnerSessionSnapshotValue({
           ...snapshot,
           state: "error",
+          agentState: "error",
           issues: appendSessionIssues(snapshot.issues, [slot.issue]),
         });
       },
@@ -653,7 +661,6 @@ function reconcilePersistedSessions(
             metadata,
             mode: "reconcile",
             trigger: "runner-start",
-            correlationId: crypto.randomUUID(),
             idleTimeoutMs,
           });
           yield* actor.shutdown;

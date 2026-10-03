@@ -1,12 +1,16 @@
 import {
   assert,
   assertEquals,
+  AssertionError,
   assertRejects,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
 import { SessionId } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Logger, Schema, Scope } from "effect";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { getOrThrow } from "@earendil-works/pi-durable/env";
+import { createGuestExecutionEnv } from "../../../src/harness/durable/environment.ts";
 
 import {
   createOpenOrbGondolinSandboxOptions,
@@ -15,8 +19,7 @@ import {
   OPENORB_GUEST_MARKER,
 } from "@/src/environment/gondolin/layer.ts";
 import { resolveAgentPath } from "@/src/environment/agent-environment.ts";
-import { createOpenOrbPiSession } from "@/src/harness/pi/session.ts";
-import { createPiTools } from "@/src/harness/pi/tools.ts";
+import { durableTestOptions, guestTools } from "./durable-test-helpers.ts";
 import {
   gondolinTestEnvironmentOptions,
   installLocalGuestImage,
@@ -25,9 +28,6 @@ import {
 const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c10",
 );
-const CONVERSATION_PROJECTION = {
-  activate: () => Effect.succeed({ update() {}, dispose() {} }),
-};
 
 Deno.test("Linux Gondolin VMs expose host CPU virtualization through KVM", () => {
   const options = createOpenOrbGondolinSandboxOptions("/guest-image");
@@ -143,7 +143,12 @@ Deno.test({
         ]))).exitCode,
         0,
       );
-      for (const path of ["/dev/zero", "/tmp/openorb-oversized-read"]) {
+      for (
+        const [path, message] of [
+          ["/dev/zero", "Guest file could not be read"],
+          ["/tmp/openorb-oversized-read", "Guest file exceeds the 16777216-byte read limit."],
+        ] as const
+      ) {
         await assertRejects(
           () =>
             withWatchdog(
@@ -152,7 +157,7 @@ Deno.test({
               `Guest read of ${path} did not settle`,
             ),
           Error,
-          "Guest file could not be read",
+          message,
         );
       }
     } finally {
@@ -576,7 +581,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "real Pi tools execute only in Gondolin and recover after cancellation",
+  name: "Durable tools execute only in Gondolin and recover after cancellation",
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {
     const temporaryDirectory = await Deno.makeTempDir();
@@ -597,40 +602,15 @@ Deno.test({
     });
     const runtime = opened.runtime;
     const softwareEmulation = gondolinTestEnvironmentOptions().softwareEmulation === true;
-    const piSessionFile = `${temporaryDirectory}/pi-session.jsonl`;
-    await Deno.writeTextFile(piSessionFile, "");
-    const pi = await Effect.runPromise(Effect.scoped(createOpenOrbPiSession({
-      sessionId: SESSION_ID,
-      runnerSessionFile: piSessionFile,
-      runnerAgentDirectory: `${temporaryDirectory}/pi-agent`,
-      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
-      branchName: "openorb/gondolin-environment-test",
-      modelRuntime: {
-        model: "opencode-go/deepseek-v4-flash",
-        thinkingLevel: "high",
-        credential: { type: "api_key", value: "test-model-provider-key" },
-      },
-      tools: createPiTools(runtime),
-      conversationProjection: CONVERSATION_PROJECTION,
-    })));
+    const { tools, execute } = guestTools(durableTestOptions(runtime, temporaryDirectory));
 
     try {
       assertEquals(
-        pi.session.getAllTools().map((tool) => tool.name).sort(),
-        ["bash", "edit", "read", "write"],
-      );
-      const tools = new Map(pi.session.agent.state.tools.map((tool) => [tool.name, tool]));
-      const read = tools.get("read");
-      const write = tools.get("write");
-      const edit = tools.get("edit");
-      const bash = tools.get("bash");
-      assert(read && write && edit && bash);
-      assert(
-        createPiTools(runtime).find((tool) => tool.name === "edit")?.renderCall,
-        "edit must override Pi's host-reading fallback renderer",
+        tools.map((tool) => tool.name).sort(),
+        ["bash", "edit", "environment", "publish_media", "read", "readImage", "write"],
       );
 
-      const imageProbe = await bash.execute("guest-image", {
+      const imageProbe = await execute("bash", {
         command: [
           "set -eu",
           'test "$(cat /etc/openorb-image-release)" = release-1',
@@ -673,24 +653,12 @@ Deno.test({
         ].join("\n"),
         timeout: 600,
       });
-      assertStringIncludes(
-        imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
-        "git version",
-      );
-      assertStringIncludes(
-        imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
-        "gh version",
-      );
-      assertStringIncludes(
-        imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
-        "agent-browser 0.35.0",
-      );
-      assertStringIncludes(
-        imageProbe.content[0]?.type === "text" ? imageProbe.content[0].text : "",
-        "image-ok",
-      );
+      assertStringIncludes(imageProbe.output, "git version");
+      assertStringIncludes(imageProbe.output, "gh version");
+      assertStringIncludes(imageProbe.output, "agent-browser 0.35.0");
+      assertStringIncludes(imageProbe.output, "image-ok");
 
-      const browserProbe = await bash.execute("guest-image-browser", {
+      const browserProbe = await execute("bash", {
         command: [
           "set -eu",
           "browser_session=openorb-image-smoke",
@@ -709,26 +677,30 @@ Deno.test({
         ].join("\n"),
         timeout: 420,
       });
-      assertStringIncludes(
-        browserProbe.content[0]?.type === "text" ? browserProbe.content[0].text : "",
-        "browser-ok",
+      assertStringIncludes(browserProbe.output, "browser-ok");
+      const screenshot = await execute("readImage", { path: "/tmp/openorb-image-smoke.png" });
+      const image = screenshot.result.content?.find((content) => content.type === "image");
+      assert(image && image.mimeType === "image/png");
+      assertEquals(
+        Uint8Array.from(atob(image.data), (char) => char.charCodeAt(0)),
+        await Effect.runPromise(runtime.readFile("/tmp/openorb-image-smoke.png")),
       );
 
-      await write.execute("write", { path: "nested/message.txt", content: "before\n" });
+      await execute("write", { path: "nested/message.txt", content: "before\n" });
       assertEquals(
         new TextDecoder().decode(await Effect.runPromise(runtime.readFile("nested/message.txt"))),
         "before\n",
       );
 
-      const readResult = await read.execute("read", { path: "nested/message.txt" });
-      assertEquals(readResult.content, [{ type: "text", text: "before\n" }]);
-      const fileUrlReadResult = await read.execute("read-file-url", {
+      const readResult = await execute("read", { path: "nested/message.txt" });
+      assertEquals(readResult.text, "before\n");
+      const fileUrlReadResult = await execute("read", {
         path: "file:///workspace/nested/message.txt",
       });
-      assertEquals(fileUrlReadResult.content, [{ type: "text", text: "before\n" }]);
+      assertEquals(fileUrlReadResult.text, "before\n");
 
-      await write.execute("write-index", { path: "index.html", content: "before\n" });
-      await edit.execute("edit", {
+      await execute("write", { path: "index.html", content: "before\n" });
+      await execute("edit", {
         path: "index.html",
         edits: [{ oldText: "before", newText: "after" }],
       });
@@ -739,28 +711,28 @@ Deno.test({
 
       // Host-shaped absolute paths remain in the guest namespace. The existing runner-host
       // file must neither satisfy the initial read nor receive the subsequent guest mutations.
-      await assertRejects(() => read.execute("read-host-shaped-guest", { path: hostSecretPath }));
-      await write.execute("write-host-shaped-guest", {
+      await assertRejects(() => execute("read", { path: hostSecretPath }));
+      await execute("write", {
         path: hostSecretPath,
         content: "guest before\n",
       });
-      await edit.execute("edit-host-shaped-guest", {
+      await execute("edit", {
         path: hostSecretPath,
         edits: [{ oldText: "before", newText: "after" }],
       });
-      const guestAbsoluteRead = await read.execute("read-host-shaped-guest", {
+      const guestAbsoluteRead = await execute("read", {
         path: hostSecretPath,
       });
-      assertEquals(guestAbsoluteRead.content, [{ type: "text", text: "guest after\n" }]);
+      assertEquals(guestAbsoluteRead.text, "guest after\n");
 
-      await write.execute("write-traversal-guest", {
+      await execute("write", {
         path: "../../openorb-guest-root.txt",
         content: "guest root\n",
       });
-      const traversalRead = await read.execute("read-traversal-guest", {
+      const traversalRead = await execute("read", {
         path: "/openorb-guest-root.txt",
       });
-      assertEquals(traversalRead.content, [{ type: "text", text: "guest root\n" }]);
+      assertEquals(traversalRead.text, "guest root\n");
 
       for (
         const [symlink, target] of [
@@ -780,32 +752,32 @@ Deno.test({
       }
 
       for (const symlink of ["absolute-guest-link", "relative-guest-link"]) {
-        await write.execute("reset-guest-target", {
+        await execute("write", {
           path: hostSecretPath,
           content: "guest before\n",
         });
         assertEquals(
-          (await read.execute("read-guest-link", { path: symlink })).content,
-          [{ type: "text", text: "guest before\n" }],
+          (await execute("read", { path: symlink })).text,
+          "guest before\n",
         );
-        await write.execute("write-guest-link", {
+        await execute("write", {
           path: symlink,
           content: `${symlink} before\n`,
         });
-        await edit.execute("edit-guest-link", {
+        await execute("edit", {
           path: symlink,
           edits: [{ oldText: "before", newText: "after" }],
         });
         assertEquals(
-          (await read.execute("read-guest-target", { path: hostSecretPath })).content,
-          [{ type: "text", text: `${symlink} after\n` }],
+          (await execute("read", { path: hostSecretPath })).text,
+          `${symlink} after\n`,
         );
       }
       assertEquals(await Deno.readTextFile(hostSecretPath), "runner-host-secret");
 
       const updates: string[] = [];
-      const markerResult = await bash.execute(
-        "bash-marker",
+      const markerResult = await execute(
+        "bash",
         {
           command:
             `if [ -n "\${OPENORB_HOST_PROCESS_MARKER:-}" ]; then printf host > "\$OPENORB_HOST_PROCESS_MARKER"; fi\n` +
@@ -813,15 +785,9 @@ Deno.test({
             `printf first; sleep 0.2; printf second; sleep 0.2; printf ":\$${OPENORB_GUEST_MARKER}"`,
           timeout: 10,
         },
-        undefined,
-        (update) => {
-          const text = update.content.find((content) => content.type === "text")?.text;
-          if (text) updates.push(text);
-        },
+        { onOutput: (text) => updates.push(text) },
       );
-      const markerOutput = markerResult.content.find((content) => content.type === "text")?.text ??
-        "";
-      assertStringIncludes(markerOutput, "firstsecond:1");
+      assertStringIncludes(markerResult.output, "firstsecond:1");
       assert(updates.some((update) => update.includes("first")), "Bash output did not stream");
       assertEquals(
         new TextDecoder().decode(
@@ -831,61 +797,159 @@ Deno.test({
       );
       await assertRejects(() => Deno.stat(hostProcessMarker), Deno.errors.NotFound);
 
-      const linkResult = await bash.execute(
-        "bash-link",
+      const linkResult = await execute(
+        "bash",
         { command: "cat relative-guest-link", timeout: 10 },
       );
-      assertStringIncludes(
-        linkResult.content[0]?.type === "text" ? linkResult.content[0].text : "",
-        "relative-guest-link after",
-      );
+      assertStringIncludes(linkResult.output, "relative-guest-link after");
       assertEquals(await Deno.readTextFile(hostSecretPath), "runner-host-secret");
 
-      await assertRejects(
-        () =>
-          bash.execute("bash-timeout", {
+      // Gondolin owns command deadlines after readiness, including its bounded host wait.
+      const timedOut = await withWatchdog(
+        execute(
+          "bash",
+          {
             command: "sleep 1; printf too-late > timed-out-marker",
             timeout: 0.1,
-          }),
-        Error,
-        "Command exited with code 124",
+          },
+          { expectError: true },
+        ),
+        5_000,
+        "Durable bash timeout did not settle",
+      );
+      assert(
+        timedOut.diagnostics.some((entry) =>
+          entry.message === "Command exited with code 124" ||
+          entry.message === "Command exited with code 137"
+        ),
       );
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       await Effect.runPromise(
         Effect.flip(runtime.access("timed-out-marker")),
       );
-      const afterTimeout = await bash.execute("bash-after-timeout", {
+      const afterTimeout = await execute("bash", {
         command: "printf recovered",
         timeout: 10,
       });
-      assertStringIncludes(
-        afterTimeout.content[0]?.type === "text" ? afterTimeout.content[0].text : "",
-        "recovered",
-      );
+      assertStringIncludes(afterTimeout.output, "recovered");
 
       const abortController = new AbortController();
-      const abortPromise = bash.execute(
-        "bash-abort",
+      const abortPromise = execute(
+        "bash",
         { command: "sleep 1; printf too-late > aborted-marker", timeout: 10 },
-        abortController.signal,
+        { signal: abortController.signal },
       );
-      setTimeout(() => abortController.abort(), 100);
-      await assertRejects(() => abortPromise, Error, "Command aborted");
+      const abortTimer = setTimeout(() => abortController.abort(), 100);
+      try {
+        const error = await assertRejects(
+          () => withWatchdog(abortPromise, 5_000, "Durable bash cancellation did not settle"),
+          Error,
+        );
+        assert(!(error instanceof AssertionError));
+        assert(!error.message.includes("Durable bash cancellation did not settle"));
+      } finally {
+        clearTimeout(abortTimer);
+      }
+      assert(abortController.signal.aborted);
       // Abort abandons the wait; descendants are allowed to finish in the retained VM.
-      const afterAbort = await bash.execute("bash-after-abort", {
+      const afterAbort = await execute("bash", {
         command: "printf reusable",
         timeout: 10,
       });
-      assertStringIncludes(
-        afterAbort.content[0]?.type === "text" ? afterAbort.content[0].text : "",
-        "reusable",
-      );
+      assertStringIncludes(afterAbort.output, "reusable");
     } finally {
-      pi.session.dispose();
       await opened.close();
       if (originalHostMarker === undefined) Deno.env.delete("OPENORB_HOST_PROCESS_MARKER");
       else Deno.env.set("OPENORB_HOST_PROCESS_MARKER", originalHostMarker);
       await Deno.remove(temporaryDirectory, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "Durable filesystem capabilities operate entirely inside Gondolin",
+  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
+  async fn() {
+    const directory = await Deno.makeTempDir();
+    const hostFile = `${directory}/host-only`;
+    await Deno.writeTextFile(hostFile, "untouched");
+    const guestImage = await installLocalGuestImage(directory);
+    const opened = await openRuntime({
+      rootDiskPath: `${directory}/root-disk.qcow2`,
+      guestImage,
+      sessionLabel: "Durable filesystem integration",
+      cpuCount: 2,
+      memoryMiB: 1024,
+    });
+    const env = createGuestExecutionEnv(opened.runtime, "filesystem-integration");
+    try {
+      const root = "/workspace/durable-filesystem";
+      const path = `${root}/nested/quo'te😀.bin`;
+      const bytes = new Uint8Array([99, 0, 255, 13, 10, 88]);
+      getOrThrow(await env.writeFile(path, bytes.subarray(1, 5), context));
+      assertEquals(
+        getOrThrow(await env.readBinaryFile(path, context)),
+        new Uint8Array([0, 255, 13, 10]),
+      );
+      const info = getOrThrow(await env.fileInfo(path, context));
+      assertEquals({ name: info.name, path: info.path, kind: info.kind, size: info.size }, {
+        name: "quo'te😀.bin",
+        path,
+        kind: "file",
+        size: 4,
+      });
+      assert(info.mtimeMs > 0);
+      assertEquals(getOrThrow(await env.listDir(`${root}/nested`, context)), [info]);
+      getOrThrow(await env.writeFile(`${root}/target`, "replace me", context));
+      getOrThrow(await env.renameFile(path, `${root}/target`, context));
+      assertEquals(getOrThrow(await env.exists(path, context)), false);
+      assertEquals(
+        getOrThrow(await env.readBinaryFile(`${root}/target`, context)),
+        bytes.subarray(1, 5),
+      );
+      const mkdir = await env.createDir(`${root}/missing/child`, { recursive: false }, context);
+      assert(!mkdir.ok && mkdir.error.code === "unknown");
+      getOrThrow(await env.createDir(`${root}/missing/child`, undefined, context));
+      assertEquals(
+        (await Effect.runPromise(opened.runtime.run([
+          "/usr/bin/ln",
+          "-s",
+          `${root}/target`,
+          `${root}/link`,
+        ]))).exitCode,
+        0,
+      );
+      const canonical = await env.canonicalPath(`${root}/link`, context);
+      assert(!canonical.ok && canonical.error.code === "not_supported");
+      // Gondolin stat follows symlinks; it does not expose lstat.
+      assertEquals(getOrThrow(await env.fileInfo(`${root}/link`, context)).kind, "file");
+      const listing = getOrThrow(await env.listDir(root, context));
+      assertEquals(listing.map(({ name, kind }) => [name, kind]).sort(), [
+        ["link", "file"],
+        ["missing", "directory"],
+        ["nested", "directory"],
+        ["target", "file"],
+      ]);
+      getOrThrow(await env.remove(`${root}/link`, { recursive: true }, context));
+      assert(getOrThrow(await env.exists(`${root}/target`, context)));
+      const nonRecursive = await env.remove(root, undefined, context);
+      assert(!nonRecursive.ok);
+
+      const textFile = `${root}/lines`;
+      const text = "a".repeat(65535) + "😀\r\nlast";
+      getOrThrow(await env.writeFile(textFile, text, context));
+      assertEquals(getOrThrow(await env.readTextFile(textFile, context)), text);
+      getOrThrow(await env.remove(textFile, undefined, context));
+      getOrThrow(await env.remove(textFile, { force: true }, context));
+      getOrThrow(await env.writeFile(hostFile, "guest only", context));
+      assertEquals(getOrThrow(await env.readTextFile(hostFile, context)), "guest only");
+      getOrThrow(await env.remove(hostFile, undefined, context));
+      assertEquals(await Deno.readTextFile(hostFile), "untouched");
+      getOrThrow(await env.remove(root, { recursive: true }, context));
+      assertEquals(getOrThrow(await env.exists(root, context)), false);
+    } finally {
+      await opened.close();
+      await Deno.remove(directory, { recursive: true });
     }
   },
 });

@@ -13,12 +13,9 @@ import {
   type SessionPageProjection,
   SessionPageScope,
 } from "@/app/ui/session/session-page-controller.tsx";
-import type { SessionState } from "@/app/ui/session/session-transcript-state.ts";
 import {
-  initialSessionVmPhase,
   isSessionVmTransitioning,
-  type SessionVmPhase,
-  sessionVmPhaseForStage,
+  sessionVmPhase,
   sessionVmPhaseLabel,
 } from "@/app/ui/session/session-vm-state.ts";
 
@@ -37,14 +34,6 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
   handle.queueTask(() => {
     page.addEventListener("session", (message) => {
       if (message.detail.type === "session.state") {
-        if (
-          pendingAction !== undefined &&
-          (actionReachedTarget(pendingAction, page.projection.sessionState) ||
-            page.projection.sessionState === "error")
-        ) {
-          pendingAction = undefined;
-        }
-        actionError = undefined;
         void handle.update();
       }
     }, { signal: handle.signal });
@@ -53,17 +42,13 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
 
   async function submitVmAction(event: Dispatched<SubmitEvent, HTMLFormElement>) {
     event.preventDefault();
-    const sessionState = page.projection.sessionState;
-    const action = actionForState(sessionState);
+    const action = actionForState(page.projection);
     if (action === undefined || pendingAction !== undefined) return;
-    const requestedAction: VmAction = action;
     const form = event.currentTarget;
 
     function rejectAction(message: string) {
       pendingAction = undefined;
-      actionError = actionReachedTarget(requestedAction, page.projection.sessionState)
-        ? undefined
-        : message;
+      actionError = message;
     }
 
     pendingAction = action;
@@ -84,26 +69,24 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
     if (requestError !== undefined) {
       if (handle.signal.aborted) return;
       rejectAction(
-        `The VM ${action} acknowledgement was lost. Check its live state before retrying.`,
+        `The session ${action} acknowledgement was lost. Check its live state before retrying.`,
       );
       await handle.update();
       return;
     }
     if (handle.signal.aborted) return;
     if (!response.ok) {
-      rejectAction(await actionResponseError(response, `VM ${action} was not accepted`));
+      rejectAction(await actionResponseError(response, `Session ${action} was not accepted`));
       if (!handle.signal.aborted) await handle.update();
       return;
     }
     if (!await actionResponseAccepted(response)) {
-      rejectAction(`The VM ${action} acknowledgement was invalid. Check its live state.`);
+      rejectAction(`The session ${action} acknowledgement was invalid. Check its live state.`);
       await handle.update();
       return;
     }
 
-    if (actionReachedTarget(requestedAction, page.projection.sessionState)) {
-      pendingAction = undefined;
-    }
+    pendingAction = undefined;
     actionError = undefined;
     await handle.update();
   }
@@ -111,46 +94,50 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
   const vmActionSubmit = on<HTMLFormElement, "submit">("submit", submitVmAction);
 
   return () => {
-    const sessionState = page.projection.sessionState;
-    const vmPhase = phaseForProjection(page.projection);
-    const action = pendingAction ?? displayAction(sessionState, vmPhase);
+    const vmPhase = sessionVmPhase(page.projection.environmentState);
+    const action = pendingAction ?? actionForState(page.projection);
     const canSubmit = !page.projection.connectionInterrupted &&
-      pendingAction === undefined && actionForState(sessionState) === action;
+      pendingAction === undefined && action !== undefined;
     const transitioning = pendingAction !== undefined || isSessionVmTransitioning(vmPhase);
     const phaseLabel = sessionVmPhaseLabel(vmPhase);
-    const actionLabel = action === "start" ? "Start Gondolin VM" : "Stop Gondolin VM";
+    const actionLabel = action === "start" ? "Wake" : "Stop Session";
+    const lifecycleLabel = `Agent: ${page.projection.agentState ?? "unknown"} · Environment: ${
+      page.projection.environmentState ?? "unknown"
+    }`;
     const actionTitle = canSubmit
       ? actionLabel
       : page.projection.connectionInterrupted
-      ? "Gondolin VM controls are unavailable while the connection is interrupted"
+      ? "Session controls are unavailable while the connection is interrupted"
       : pendingAction !== undefined
-      ? `${pendingAction === "start" ? "Starting" : "Stopping"} Gondolin VM`
-      : sessionState === "running"
-      ? "Abort the active turn before stopping the Gondolin VM"
+      ? `${pendingAction === "start" ? "Waking" : "Stopping"} session`
       : `${phaseLabel} Gondolin VM`;
 
     return (
       <div
         id={handle.id}
-        aria-label="Gondolin VM controls"
+        aria-label="Session controls"
         data-session-vm-control
         mix={vmControlStyle}
       >
         {actionError
           ? <span role="alert" title={actionError} mix={vmActionErrorStyle}>{actionError}</span>
           : null}
+        <span role="status" data-agent-environment-status>{lifecycleLabel}</span>
         <Tooltip>
           <TooltipTrigger
             role="status"
             tabIndex={0}
-            aria-label={`Gondolin VM: ${phaseLabel}`}
+            aria-label={lifecycleLabel}
             data-session-vm-status
             data-phase={vmPhase}
             mix={vmStatusStyle}
           >
             <span aria-hidden="true" data-slot="vm-state-indicator" />
           </TooltipTrigger>
-          <TooltipContent side="bottom">Gondolin VM: {phaseLabel}</TooltipContent>
+          <TooltipContent side="bottom">
+            Stop Session pauses the agent and stops its environment. Environment tools do not pause
+            the agent.
+          </TooltipContent>
         </Tooltip>
         {action === undefined ? null : (
           <form
@@ -181,36 +168,27 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
   };
 }
 
-function phaseForProjection(projection: SessionPageProjection): SessionVmPhase {
-  return projection.stage === null
-    ? initialSessionVmPhase(projection.sessionState)
-    : sessionVmPhaseForStage(projection.stage);
-}
-
-function actionForState(state: SessionState): VmAction | undefined {
-  return state === "stopped"
-    ? "start"
-    : state === "ready" || state === "running"
-    ? "stop"
-    : undefined;
-}
-
-function actionReachedTarget(action: VmAction, state: SessionState): boolean {
-  return action === "start" ? state === "ready" : state === "stopped";
-}
-
-function displayAction(state: SessionState, phase: SessionVmPhase): VmAction | undefined {
-  if (state === "stopped" || phase === "waking" || phase === "starting") return "start";
-  if (state === "ready" || state === "running" || phase === "stopping") return "stop";
-  return undefined;
+export function actionForState(
+  state: Pick<SessionPageProjection, "agentState" | "environmentState">,
+): VmAction | undefined {
+  if (
+    state.agentState === null || state.environmentState === null ||
+    state.environmentState === "stopping"
+  ) return undefined;
+  return state.agentState === "paused" ? "start" : "stop";
 }
 
 const vmControlStyle = css({
   display: "flex",
   alignItems: "center",
-  flexShrink: 0,
+  flexWrap: "wrap",
+  justifyContent: "flex-end",
+  flexShrink: 1,
   gap: "4px",
+  fontSize: "12px",
+  color: "var(--muted-foreground)",
   minWidth: 0,
+  maxWidth: "100%",
   marginLeft: "auto",
 });
 const vmStatusStyle = css({
@@ -247,10 +225,10 @@ const vmSpinnerStyle = css({
   "@media (prefers-reduced-motion: reduce)": { animation: "none" },
 });
 const vmActionErrorStyle = css({
-  maxWidth: "220px",
-  overflow: "hidden",
+  order: 1,
+  flexBasis: "100%",
   color: "var(--destructive)",
   fontSize: "12px",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
+  textAlign: "right",
+  overflowWrap: "anywhere",
 });

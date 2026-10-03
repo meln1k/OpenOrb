@@ -1,10 +1,11 @@
 import { Effect, Schema } from "effect";
 
 import {
-  DurableSessionEvent,
-  EphemeralSessionEvent,
+  AgentState,
+  EnvironmentState,
   RunnerCheckoutState,
   SessionEnvironmentRecoveryMode,
+  SessionEvent,
   SessionIssues,
 } from "./runner-api-session-events.ts";
 import {
@@ -24,7 +25,7 @@ export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
 export const MAX_SESSION_SECRET_HOSTS = 32;
 export const MAX_SESSION_SECRET_HOST_CHARACTERS = 253;
-export const RUNNER_PROTOCOL_VERSION = 21;
+export const RUNNER_PROTOCOL_VERSION = 25;
 
 export * from "./runner-api-limits.ts";
 
@@ -44,15 +45,17 @@ export type UserId = typeof UserId.Type;
 export const WorkspaceId = Uuid.pipe(Schema.brand("WorkspaceId"));
 export type WorkspaceId = typeof WorkspaceId.Type;
 
-export const RunId = boundedString(1, 100, "Run identifiers").pipe(Schema.brand("RunId"));
-export type RunId = typeof RunId.Type;
+export const SubmissionId = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+);
+export type SubmissionId = typeof SubmissionId.Type;
 
 export const ClientRequestId = boundedString(1, 100, "Client request identifiers").pipe(
   Schema.brand("ClientRequestId"),
 );
 export type ClientRequestId = typeof ClientRequestId.Type;
 
-export const SessionCursor = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const RunnerRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 export const GitMutationRevision = Schema.Int.check(
@@ -158,9 +161,9 @@ export class RunnerSessionSnapshot extends Schema.Class<RunnerSessionSnapshot>(
   initialThinkingLevel: ThinkingLevel,
   orbSize: OrbSize,
   state: RunnerSessionState,
+  agentState: AgentState,
+  environmentState: EnvironmentState,
   issues: SessionIssues,
-  lastEventCursor: SessionCursor,
-  activeRunId: Schema.optionalKey(RunId),
 }) {}
 
 const ObservedAt = NonNegativeInt;
@@ -386,8 +389,7 @@ export class PromptSessionAccepted extends Schema.Class<PromptSessionAccepted>(
   "PromptSessionAccepted",
 )({
   clientRequestId: ClientRequestId,
-  runId: RunId,
-  mode: Schema.Literals(["started", "follow-up"]),
+  submissionId: SubmissionId,
 }) {}
 
 export class SetSessionThinkingLevelPayload extends Schema.Class<SetSessionThinkingLevelPayload>(
@@ -415,14 +417,11 @@ export class WakeSessionAccepted
 
 export class AbortSessionPayload extends Schema.Class<AbortSessionPayload>("AbortSessionPayload")({
   sessionId: SessionId,
-  runId: RunId,
 }) {}
 
 export class AbortSessionAccepted extends Schema.Class<AbortSessionAccepted>(
   "AbortSessionAccepted",
-)({
-  runId: RunId,
-}) {}
+)({}) {}
 
 export class StopSessionPayload extends Schema.Class<StopSessionPayload>("StopSessionPayload")({
   sessionId: SessionId,
@@ -444,7 +443,6 @@ export class DeleteSessionAccepted extends Schema.Class<DeleteSessionAccepted>(
 
 export class WatchSessionPayload extends Schema.Class<WatchSessionPayload>("WatchSessionPayload")({
   sessionId: SessionId,
-  afterCursor: SessionCursor,
 }) {}
 
 export class ReadSessionGitSnapshotPayload
@@ -591,21 +589,9 @@ export class GitFileUpdateAccepted extends Schema.Class<GitFileUpdateAccepted>(
   mutationRevision: GitMutationRevision,
 }) {}
 
-const DurableSessionEventDelivery = Schema.Struct({
-  runId: Schema.NullOr(RunId),
-  cursor: Schema.Int.check(Schema.isGreaterThan(0)),
-  event: DurableSessionEvent,
+export const WatchSessionEvent = Schema.Struct({
+  event: SessionEvent,
 });
-
-const EphemeralSessionEventDelivery = Schema.Struct({
-  runId: Schema.NullOr(RunId),
-  event: EphemeralSessionEvent,
-});
-
-export const WatchSessionEvent = Schema.Union([
-  DurableSessionEventDelivery,
-  EphemeralSessionEventDelivery,
-]);
 
 export class RunnerIdentityError extends Schema.TaggedError<RunnerIdentityError>()(
   "RunnerIdentityError",
@@ -655,7 +641,7 @@ export class WakeRejected extends Schema.TaggedError<WakeRejected>()(
 
 export class AbortRejected extends Schema.TaggedError<AbortRejected>()(
   "AbortRejected",
-  { sessionId: SessionId, runId: RunId, message: SafeMessage },
+  { sessionId: SessionId, message: SafeMessage },
 ) {}
 
 export class StopRejected extends Schema.TaggedError<StopRejected>()(

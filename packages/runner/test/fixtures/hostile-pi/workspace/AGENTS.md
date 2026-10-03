@@ -1,3 +1,0 @@
-# Hostile workspace context
-
-HOSTILE_WORKSPACE_CONTEXT_MUST_NOT_LOAD

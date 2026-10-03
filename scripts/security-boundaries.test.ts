@@ -2,7 +2,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 
 const RUNNER_SOURCE_ROOT = "packages/runner/src";
 
-Deno.test("runner source keeps Pi construction and tools behind the audited boundary", async () => {
+Deno.test("runner source keeps Durable construction and tools behind the audited boundary", async () => {
   const sources = await typescriptSourcesUnder(RUNNER_SOURCE_ROOT);
   const defaultLoaderUsers: string[] = [];
   const agentSessionFactories: string[] = [];
@@ -11,7 +11,9 @@ Deno.test("runner source keeps Pi construction and tools behind the audited boun
   for (const path of sources) {
     const source = await Deno.readTextFile(path);
     if (source.includes("DefaultResourceLoader")) defaultLoaderUsers.push(path);
-    if (source.includes("createAgentSession(") || source.includes("createAgentSession)")) {
+    assert(!source.includes("@earendil-works/pi-coding-agent"), `${path} imports the retired SDK`);
+    assert(!source.includes("NodeExecutionEnv"), `${path} exposes host execution`);
+    if (source.includes("Harness.open(")) {
       agentSessionFactories.push(path);
     }
     if (source.includes("node:child_process") || source.includes("new Deno.Command")) {
@@ -24,25 +26,30 @@ Deno.test("runner source keeps Pi construction and tools behind the audited boun
   }
 
   assertEquals(defaultLoaderUsers, []);
-  assertEquals(agentSessionFactories, ["packages/runner/src/harness/pi/session.ts"]);
+  assertEquals(agentSessionFactories, [
+    "packages/runner/src/harness/durable/layer.ts",
+    "packages/runner/src/harness/durable/storage.ts",
+  ]);
   assertEquals(hostProcessUsers, [
     "packages/runner/src/environment/gondolin/persistent-root-disk.ts",
     "packages/runner/src/runtime/prerequisites.ts",
   ]);
 
-  const factory = await Deno.readTextFile("packages/runner/src/harness/pi/session.ts");
-  assertStringIncludes(factory, "SettingsManager.inMemory(");
-  assertStringIncludes(factory, "const resourceLoader: ResourceLoader = {");
-  assertStringIncludes(factory, "getSkills: () => ({ skills: [], diagnostics: [] })");
-  assertStringIncludes(factory, "getAgentsFiles: () => ({ agentsFiles: [] })");
-  assertStringIncludes(factory, "getAppendSystemPrompt: () => []");
-
-  const tools = await Deno.readTextFile("packages/runner/src/harness/pi/tools.ts");
+  const factory = await Deno.readTextFile("packages/runner/src/harness/durable/layer.ts");
+  assertStringIncludes(factory, "createRegistry()");
+  assertStringIncludes(factory, "createGuestExecutionEnv(options.environment");
+  const models = await Deno.readTextFile("packages/runner/src/harness/durable/models.ts");
+  assertStringIncludes(models, "InMemoryCredentialStore");
+  const tools = (await Promise.all([
+    "packages/runner/src/harness/durable/tools.ts",
+    "packages/runner/src/harness/durable/environment.ts",
+  ].map((path) => Deno.readTextFile(path)))).join("\n");
   for (
     const operation of [
-      "environment.readFile",
-      "environment.writeFile",
-      "environment.runShell",
+      "guest.readFile",
+      "guest.writeFile",
+      "guest.run(",
+      "guest.runShell",
     ]
   ) {
     assertStringIncludes(tools, operation);

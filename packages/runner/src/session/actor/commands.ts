@@ -1,296 +1,55 @@
 import type {
-  AbortSessionPayload,
-  PromptSessionPayload,
-  RunId,
+  GitMutationRevision,
   SessionEnvironmentSecret,
-  SessionIssue,
   SessionModelRuntime,
-  SetSessionThinkingLevelPayload,
-  StopSessionPayload,
-  UpdateSessionGitFilePayload,
-  WakeSessionPayload,
+  SubmissionId,
+  ThinkingLevel,
 } from "@openorb/protocol/runner-api";
-import type { Deferred, Effect } from "effect";
+import type { RunnerSessionMetadata } from "./state.ts";
 
-import type { AgentEnvironment } from "../../environment/agent-environment.ts";
-import type { ActiveAgentRun } from "../../harness/agent-harness.ts";
-import type { SessionActorError } from "./actor-error.ts";
-import type { OpenAgentSession } from "./agent-runtime.ts";
-import type { RunnerSessionMetadata } from "../store.ts";
-import type { GitFileUpdateAcceptance } from "../git-snapshot-coordinator.ts";
-
-export type { GitFileUpdateAcceptance } from "../git-snapshot-coordinator.ts";
-
+export type GitFileUpdateAcceptance =
+  | { readonly ok: true; readonly mutationRevision: GitMutationRevision }
+  | { readonly ok: false; readonly message: string };
+export type WakeAcceptance = { readonly ok: true } | {
+  readonly ok: false;
+  readonly message: string;
+};
+export type AbortAcceptance = WakeAcceptance;
+export type StopAcceptance = WakeAcceptance;
+export type DeletionAcceptance = WakeAcceptance;
 export type PromptAcceptance =
-  | { readonly ok: true; readonly runId: RunId; readonly mode: "started" | "follow-up" }
+  | { readonly ok: true; readonly submissionId: SubmissionId }
   | { readonly ok: false; readonly message: string };
-
-export type AbortAcceptance =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly message: string };
-
 export type ThinkingLevelAcceptance =
-  | { readonly ok: true; readonly level: SetSessionThinkingLevelPayload["level"] }
-  | { readonly ok: false; readonly message: string };
-
-export type WakeAcceptance =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly message: string };
-
-export type StopAcceptance =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly message: string };
-
-export type DeletionAcceptance =
-  | { readonly ok: true }
+  | { readonly ok: true; readonly level: ThinkingLevel }
   | { readonly ok: false; readonly message: string };
 
 interface SessionActorInputBase {
   readonly metadata: RunnerSessionMetadata;
-  readonly correlationId: string;
   readonly idleTimeoutMs: number;
 }
-
 export type SessionActorInput =
-  | (SessionActorInputBase & {
-    readonly mode: "restore";
-  })
-  | (SessionActorInputBase & {
-    readonly mode: "reconcile";
-    readonly trigger: "runner-start" | "provision-request" | "actor-crash";
-  })
-  | (SessionActorInputBase & {
-    readonly mode: "create" | "retry";
-    readonly githubToken?: string | undefined;
-    readonly environmentSecrets?: readonly SessionEnvironmentSecret[] | undefined;
-    readonly modelRuntime: SessionModelRuntime;
-  });
+  & SessionActorInputBase
+  & (
+    | { readonly mode: "restore" }
+    | {
+      readonly mode: "reconcile";
+      readonly trigger: "runner-start" | "provision-request" | "actor-crash";
+    }
+    | {
+      readonly mode: "create" | "retry";
+      readonly githubToken?: string | undefined;
+      readonly environmentSecrets?: readonly SessionEnvironmentSecret[] | undefined;
+      readonly modelRuntime: SessionModelRuntime;
+    }
+  );
 
 export interface ProvisioningLogBudget {
   remainingBytes: number;
   truncated: boolean;
   secrets: string[];
 }
-
 export interface ProvisioningUpdate {
   readonly checkoutState: RunnerSessionMetadata["checkoutState"];
   readonly baseCommit?: string;
 }
-
-export type ActorCommand =
-  | {
-    readonly kind: "command";
-    readonly _tag: "Wake";
-    readonly payload: WakeSessionPayload;
-    readonly reply: Deferred.Deferred<WakeAcceptance>;
-  }
-  | {
-    readonly kind: "command";
-    readonly _tag: "Prompt";
-    readonly payload: PromptSessionPayload;
-    readonly reply: Deferred.Deferred<PromptAcceptance>;
-  }
-  | {
-    readonly kind: "command";
-    readonly _tag: "Abort";
-    readonly payload: AbortSessionPayload;
-    readonly reply: Deferred.Deferred<AbortAcceptance>;
-  }
-  | {
-    readonly kind: "command";
-    readonly _tag: "SetThinkingLevel";
-    readonly payload: SetSessionThinkingLevelPayload;
-    readonly reply: Deferred.Deferred<ThinkingLevelAcceptance>;
-  }
-  | {
-    readonly kind: "command";
-    readonly _tag: "Stop";
-    readonly payload: StopSessionPayload;
-    readonly idle: boolean;
-    readonly reply: Deferred.Deferred<StopAcceptance>;
-  }
-  | {
-    readonly kind: "command";
-    readonly _tag: "UpdateGitFile";
-    readonly payload: UpdateSessionGitFilePayload;
-    readonly reply: Deferred.Deferred<GitFileUpdateAcceptance>;
-  }
-  | {
-    readonly kind: "command";
-    readonly _tag: "Delete";
-    readonly reply: Deferred.Deferred<DeletionAcceptance>;
-  };
-
-export type RestorationContinuation =
-  | {
-    readonly _tag: "Wake";
-    readonly payload: WakeSessionPayload;
-    readonly reply: Deferred.Deferred<WakeAcceptance>;
-  }
-  | {
-    readonly _tag: "Prompt";
-    readonly payload: PromptSessionPayload;
-    readonly runId: RunId;
-    readonly reply: Deferred.Deferred<PromptAcceptance>;
-  };
-
-export type RunCompletion =
-  | {
-    readonly _tag: "Provisioning";
-    readonly correlationId: string;
-    readonly logBudget: ProvisioningLogBudget;
-    readonly issues: readonly SessionIssue[];
-  }
-  | {
-    readonly _tag: "Prompt";
-    readonly reply: Deferred.Deferred<PromptAcceptance>;
-  };
-
-export type InternalCommand =
-  | {
-    readonly kind: "internal";
-    readonly _tag: "Initialize";
-    readonly reply: Deferred.Deferred<void, SessionActorError>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "ProvisioningUpdated";
-    readonly input: ProvisioningUpdate;
-    readonly reply: Deferred.Deferred<RunnerSessionMetadata, SessionActorError>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "ProvisioningEnvironmentStarted";
-    readonly environment: AgentEnvironment;
-    readonly reply: Deferred.Deferred<void, SessionActorError>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "ProvisioningPrepared";
-    readonly environment: AgentEnvironment;
-    readonly modelRuntime: SessionModelRuntime;
-    readonly correlationId: string;
-    readonly logBudget: ProvisioningLogBudget;
-    readonly issues: readonly SessionIssue[];
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "ProvisioningFailed";
-    readonly correlationId: string;
-    readonly logBudget: ProvisioningLogBudget;
-    readonly error: SessionActorError;
-    readonly issue: SessionIssue;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "WakeOpened";
-    readonly wakeId: string;
-    readonly agentSession: OpenAgentSession;
-    readonly reply: Deferred.Deferred<WakeAcceptance>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "WakeOpenFailed";
-    readonly wakeId: string;
-    readonly issue: SessionIssue;
-    readonly reply: Deferred.Deferred<WakeAcceptance>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "RunStarted";
-    readonly runId: RunId;
-    readonly run: ActiveAgentRun;
-    readonly agentSession: OpenAgentSession;
-    readonly openedAgentSession: boolean;
-    readonly acceptedAt: string;
-    readonly completion: RunCompletion;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "RunStartFailed";
-    readonly runId: RunId;
-    readonly error: SessionActorError;
-    readonly openedAgentSession?: OpenAgentSession;
-    readonly completion: RunCompletion;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "FollowUpAccepted";
-    readonly runId: RunId;
-    readonly followUpId: string;
-    readonly acceptedAt: string;
-    readonly reply: Deferred.Deferred<PromptAcceptance>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "FollowUpFailed";
-    readonly runId: RunId;
-    readonly followUpId: string;
-    readonly reply: Deferred.Deferred<PromptAcceptance>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "RunSettled";
-    readonly runId: RunId;
-    readonly error?: SessionActorError;
-    readonly completion: RunCompletion;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "AbortConfirmed";
-    readonly runId: RunId;
-    readonly reply: Deferred.Deferred<AbortAcceptance>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "AbortFailed";
-    readonly runId: RunId;
-    readonly reply: Deferred.Deferred<AbortAcceptance>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "StopCompleted";
-    readonly stopId: string;
-    readonly correlationId: string;
-    readonly reply: Deferred.Deferred<StopAcceptance>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "StopFailed";
-    readonly stopId: string;
-    readonly environmentUsable: boolean;
-    readonly agentSessionClosed: boolean;
-    readonly correlationId: string;
-    readonly issue: SessionIssue;
-    readonly reply: Deferred.Deferred<StopAcceptance>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "RestorationCompleted";
-    readonly restorationId: string;
-    readonly environment: AgentEnvironment;
-    readonly release: Effect.Effect<void>;
-    readonly correlationId: string;
-    readonly continuation: RestorationContinuation;
-    readonly issues: readonly SessionIssue[];
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "RestorationFailed";
-    readonly restorationId: string;
-    readonly correlationId: string;
-    readonly continuation: RestorationContinuation;
-    readonly issue: SessionIssue;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "RefreshGitSnapshot";
-    readonly reply: Deferred.Deferred<void, unknown>;
-  }
-  | {
-    readonly kind: "internal";
-    readonly _tag: "RecordIssue";
-    readonly issue: SessionIssue;
-  };
-
-export type SessionCommand = ActorCommand | InternalCommand;

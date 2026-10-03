@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 
-import { VM, type VMOptions } from "@earendil-works/gondolin";
+import { VM, type VmFs, type VMOptions } from "@earendil-works/gondolin";
 import { Effect, Layer, type Scope, Semaphore } from "effect";
 import type { Result } from "@openorb/result";
 import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
@@ -529,42 +529,29 @@ function makeGondolinEnvironment(
         });
       },
     );
-    const writeFile: AgentEnvironment["writeFile"] = Effect.fn("AgentEnvironment.writeFile")(
-      function* (path, content) {
-        const activeVm = yield* getVm;
-        yield* Effect.tryPromise({
-          try: async () => {
-            const result = await activeVm.vm.exec(
-              ["/usr/bin/tee", "--", resolveAgentPath(path)],
-              { stdin: content, stdout: "ignore" },
-            );
-            if (!result.ok) {
-              throw new AgentEnvironmentError("Guest file could not be written.", undefined);
-            }
-          },
-          catch: (cause) => new AgentEnvironmentError("Guest file could not be written.", cause),
-        });
-      },
-    );
-    const makeDirectory: AgentEnvironment["makeDirectory"] = Effect.fn(
-      "AgentEnvironment.makeDirectory",
-    )(function* (path) {
-      const activeVm = yield* getVm;
-      yield* Effect.tryPromise({
-        try: async () => {
-          const result = await activeVm.vm.exec([
-            "/usr/bin/mkdir",
-            "-p",
-            "--",
-            resolveAgentPath(path),
-          ]);
-          if (!result.ok) {
-            throw new AgentEnvironmentError("Guest directory could not be created.", undefined);
-          }
-        },
-        catch: (cause) => new AgentEnvironmentError("Guest directory could not be created.", cause),
-      });
-    });
+    const filesystem = <A>(operation: (fs: VmFs, signal: AbortSignal) => Promise<A>) =>
+      getVm.pipe(Effect.flatMap(({ vm }) =>
+        Effect.tryPromise({
+          try: (signal) => operation(vm.fs, signal),
+          catch: (cause) => new AgentEnvironmentError("Guest filesystem operation failed.", cause),
+        })
+      ));
+    const writeFile: AgentEnvironment["writeFile"] = (path, content) =>
+      filesystem((fs, signal) => fs.writeFile(resolveAgentPath(path), content, { signal }));
+    const makeDirectory: AgentEnvironment["makeDirectory"] = (path, options) =>
+      filesystem((fs, signal) =>
+        fs.mkdir(resolveAgentPath(path), { recursive: options?.recursive ?? true, signal })
+      );
+    const stat: AgentEnvironment["stat"] = (path) =>
+      filesystem((fs, signal) => fs.stat(resolveAgentPath(path), { signal }));
+    const listDirectory: AgentEnvironment["listDirectory"] = (path) =>
+      filesystem((fs, signal) => fs.listDir(resolveAgentPath(path), { signal }));
+    const renameFile: AgentEnvironment["renameFile"] = (source, destination) =>
+      filesystem((fs, signal) =>
+        fs.rename(resolveAgentPath(source), resolveAgentPath(destination), { signal })
+      );
+    const remove: AgentEnvironment["remove"] = (path, options) =>
+      filesystem((fs, signal) => fs.deleteFile(resolveAgentPath(path), { ...options, signal }));
     const detectImageMimeType: AgentEnvironment["detectImageMimeType"] = (path) =>
       Effect.sync(() => {
         const extension = path.toLowerCase().match(/\.[^.\/]+$/)?.[0];
@@ -613,6 +600,10 @@ function makeGondolinEnvironment(
       access,
       writeFile,
       makeDirectory,
+      stat,
+      listDirectory,
+      renameFile,
+      remove,
       detectImageMimeType,
       stop: close,
     };

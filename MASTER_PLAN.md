@@ -2,6 +2,11 @@
 
 > Living reference document for implementation. Update this document whenever a product or architectural decision changes.
 
+The settled agent contracts follow the
+[Durable integration decision](docs/adr/0004-durable-agent-independent-environment.md),
+[domain vocabulary](CONTEXT.md), and [security boundaries](security.md). Milestones and explicitly
+planned features below retain product goals, not alternative runtime contracts.
+
 ## 1. Product summary
 
 OpenOrb is an open-source, self-hostable system for running Pi coding-agent sessions on spare user-owned compute.
@@ -49,13 +54,13 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Predefined per-session CPU and memory requests
 - Runner resource reporting and reservation
 - One fresh repository checkout and Gondolin VM per session
-- Host-side Pi SDK integration
+- Host-side Pi Durable Agent Harness
 - Central API-key model credentials and custom compatible model definitions
 - Linear conversation UI
 - Streaming assistant text, thinking, tool calls, and tool results
-- Pi-native `followUp()` and `steer()` behavior while the runner is connected
-- Runner-local pending delivery while the assigned runner is connected, waking, or provisioning; durability ends at Pi handoff
-- Conversation-only “edit last message”; workspace changes remain
+- Durable Submissions, including Follow-ups while the agent is busy
+- Runner-owned Harness State for admitted input, queued work, and recovery; offline runners reject sends
+- Planned conversation-only “edit last message”; workspace changes remain
 - Aggregate Git diff and changed-file view
 - Read-only file browser
 - Browser terminal
@@ -66,7 +71,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Agent-initiated Git fetch, commit, and push without exposing real credentials to the VM
 - User-defined push branch names
 - Project `.agents/setup` and `.agents/resume` hooks, executed only inside Gondolin
-- Explicit allowlist-only Pi `ResourceLoader` with no project resource discovery and in-memory Pi settings
+- Explicit trusted Durable registry, in-memory credentials, and no project or global Pi discovery
 - Batteries-included Gondolin guest image
 - Ephemeral guest package caches
 - Archive and explicit deletion
@@ -100,14 +105,21 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - **Gateway:** The self-hosted Remix web application, API, scheduler, secret store, runner gateway, and preview gateway.
 - **Runner:** A native Linux service running Pi, managing Gondolin/session storage, and orchestrating Git operations inside the guest.
 - **Project:** Repository configuration, credentials, secrets, defaults, and policies shared by sessions.
-- **Session:** One linear user-visible Pi conversation, one checkout on a persistent root disk, one pinned runner, and at most one running Gondolin VM.
+- **Session:** A durable association between a conversation and its Project Checkout, pinned to one runner, with at most one running Gondolin VM.
 - **Draft session:** A session whose first prompt has not been sent. Its runner selection can still change.
 - **Workspace:** The tenant that owns projects, credentials, secrets, runners, enrollment credentials, and the session catalog. Each user belongs directly to one Workspace.
 - **Project Checkout:** The session-specific checkout at `/workspace` on Gondolin's persistent root disk.
-- **Turn:** One Pi model response plus its tool calls. One user prompt may produce multiple turns.
-- **Run:** All work resulting from an accepted prompt, including retries, compaction, and Pi-native queued continuations, until Pi is fully settled.
-- **Pending delivery:** A normal user message durably held by the assigned runner before it is handed to Pi.
-- **Pi queue:** Pi’s process-local steering/follow-up queue. It is live-only, has no stable item IDs, and is not part of Pi JSONL until delivery.
+- **Agent Harness:** Provider-neutral agent capability used by the runner; currently implemented with Pi Durable.
+- **Harness State:** Durable conversation, queued inputs, and unfinished agent work needed to continue a Session.
+- **Submission:** One admitted input with its own stable identity, whether it starts work or becomes a Follow-up.
+- **Agent Run:** A continuous period of agent activity, including Follow-ups and automatic continuations, ending when the agent settles.
+- **Follow-up:** Input added to the current Agent Run rather than starting another.
+- **Conversation View:** The current active transcript, queued input, agent configuration, usage, and live progress shown to a viewer.
+- **Session Journal:** Runner-owned infrastructure and configuration facts, separate from Harness State.
+- **Agent Environment:** Live isolated compute capabilities and the Project Checkout available to the harness.
+- **Stop Session / Wake:** Recoverably pause agent work and durably stop compute / resume both.
+- **Abort:** Cancel agent work and queued inputs without stopping the Agent Environment.
+- **Environment Control:** Agent-initiated start, stop, or restart of compute without pausing the harness.
 - **Lease:** A reason a VM must remain awake, such as active agent work, a terminal, provisioning, or a preview.
 - **Managed preview:** A preview with a restart command that can wake and resume after VM Stop.
 - **Live-only preview:** A published port without a restart command; it expires when the VM Stops.
@@ -119,7 +131,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 |---|---|
 | Initial audience | Single user on trusted user-owned compute |
 | VM mapping | One Gondolin VM per session |
-| Pi placement | Pi SDK runs on the runner host |
+| Pi placement | Pi Durable runs on the trusted runner host behind the Agent Harness interface |
 | Tool execution | Pi read/write/edit/bash operations execute through Gondolin |
 | Repository | Fresh clone per session, performed inside Gondolin |
 | Workspace storage | Private per-session qcow2 root disk; `/workspace` and `.git` are untrusted guest bytes, not a host mount |
@@ -127,11 +139,12 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Session placement | Auto-select runner; user may override before first prompt; immutable afterward |
 | Resource scheduling | Sessions select `tiny`, `small`, `medium`, `large`, or `xxlarge`; runners advertise total/reserved/free resources |
 | Idle lifecycle | Stop after 15 minutes without relevant activity; retain the persistent root disk |
-| Conversation | Linear UI; Pi tree remains an internal implementation detail |
-| Edit last | Conversation-only rewind; do not roll back files or VM state |
-| While running | Normal send calls Pi `followUp()`; an explicit “Steer now” action calls `steer()` |
-| Pi pending queue | Live-only and process-local; no edit, cancel, promotion, replay, or durability promise after handoff |
-| Offline/waking runner | Reject sends while the runner is offline; a connected runner may durably hold messages while waking/provisioning until Pi handoff |
+| Conversation | Linear active Conversation View; not an archive of pre-compaction entries |
+| Edit last | Planned conversation-only edit; do not roll back files or VM state; Durable interface still to be designed |
+| While running | Normal send admits a Durable Submission with `whenBusy: "followUp"` |
+| Queued input | Owned durably by the harness; no separate OpenOrb handoff queue or per-item mutation API |
+| Offline/waking runner | Reject sends while the runner is offline; host-side admission and model work do not wait for guest readiness |
+| Stop / Wake / Abort | Stop pauses recoverably before stopping compute; Wake resumes checkpoints; Abort cancels conversation work without stopping compute |
 | Model credentials | Centralized in gateway; API keys first |
 | Git credentials | Centralized HTTPS tokens and SSH private keys |
 | Git push | Agent may push, with credentials mediated outside the guest |
@@ -144,10 +157,10 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Gateway UI | Remix 3, end-to-end TypeScript |
 | Gateway persistence | PostgreSQL only, for Workspace-owned gateway configuration, a five-column live-session catalog (`workspace_id` plus four catalog fields), and three-column deletion markers (`workspace_id`, session ID, deletion time); no Redis, secondary database/KV store, or durable local gateway files |
 | Tenant ownership | Direct `users.workspace_id`; tenant repository methods receive authenticated `workspaceId`, tenant uniqueness is composite with `workspace_id`, and foreign keys prevent cross-Workspace references. Passwords and Git author identity use `userId`. No memberships, new roles, tenant abstractions, or Workspace-selection UI |
-| Runner persistence | Ordinary files/directories only for metadata, JSONL, logs, persistent root disks, Git Snapshots, and journals; no runner database |
+| Runner persistence | Private per-Session Durable SQLite for Harness State; separate files for Session Journal, logs, root disk, Git Snapshots, and media |
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
-| Runner transport | One outbound Effect RPC WebSocket for MVP; a separately scoped binary data plane is future work |
-| Pi workspace resources | No project resource discovery in MVP; use an explicit empty/allowlist-only `ResourceLoader` and in-memory settings |
+| Runner transport | Outbound Effect RPC control WebSocket plus authenticated bulk WebSocket for media/Git patches; generic terminal/preview tunneling remains planned |
+| Pi workspace resources | Explicit trusted Durable registry; no project/global discovery or ambient credentials |
 | Project guidance | Project files are available only through Gondolin-backed tools; Pi does not host-load `AGENTS.md`, `CLAUDE.md`, skills, prompts, packages, settings, or extensions |
 | Guest image | Batteries-included OpenOrb Gondolin image |
 | Caches | Guest package caches are tmpfs-backed and do not survive Stop; shared host caches are deferred |
@@ -167,7 +180,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
                                  │    ├── PostgreSQL + encrypted secret store
                                  │    ├── Scheduler and runner registry
                                  │    ├── Effect RPC runner registry
-                                 │    ├── Future binary tunnel gateway
+                                 │    ├── Bulk media/Git patch gateway
                                  │    └── Wildcard preview gateway
                                  │
                                  │             ▲
@@ -176,7 +189,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
                                  │          Runner behind NAT
                                  │          ├── Effect RPC identity and state streams
                                  │          ├── Session/workspace storage
-                                 │          ├── Pi SDK runtime
+                                 │          ├── Pi Durable Agent Harness + SQLite
                                  │          ├── Git service
                                  │          ├── Gondolin lifecycle manager
                                  │          ├── Terminal bridge
@@ -200,35 +213,31 @@ A future optional direct or SDN-backed data path may change the separate data-pl
 
 ## 7. Repository and package shape
 
-Recommended monorepo shape:
+Current package boundaries:
 
 ```text
 packages/
   gateway/                 Remix 3 gateway
   runner/                  published Linux runner CLI/service
   protocol/                shared runtime schemas and wire types
-  domain/                  entities, state types, shared policy
-  gateway-core/            scheduler, runner registry, events, secret broker
-  runner-core/             runner orchestration and RPC handlers
-  pi-runtime/              Pi SDK adapter and normalized events
-  gondolin-runtime/        VM lifecycle, tools, terminal, preview ingress
-  git-service/             guest Git orchestration, safe snapshots, and credential mediation
-  test-support/            fixtures, fake runner, fake model, protocol harness
+  result/                  small shared result helpers
+  runner/src/harness/       Agent Harness interface and Durable adapter
+  runner/src/environment/   Agent Environment interface and Gondolin provider
+  runner/src/session/       lifecycle actors, journal, views, Git Snapshots, media
 images/
-  developer/               OpenOrb Gondolin image build configuration
-scripts/
-  install-runner.*
+  guest/                   OpenOrb Gondolin image build configuration
+scripts/                   build, release, and verification tasks
 docs/
-  protocol.md
-  security.md
+  adr/
   operations.md
+security.md
 MASTER_PLAN.md
 ```
 
 Use a Deno-native workspace with strict TypeScript and require stable Deno 2.9.5 or newer for development,
 gateway deployment, and source runners. Pin CI, lockfile generation, and release runner compilation to Deno 2.9.5 for reproducibility. `deno.json`/`deno.lock` are
-authoritative for application runtime dependencies. Retain one private root `package.json` only for
-Effect setup scripts, Effect-aware diagnostics, and local TypeScript tooling. Deno installs and runs
+authoritative together with the private root `package.json`, which pins Pi Durable and Chord and
+contains Effect setup scripts, Effect-aware diagnostics, and local TypeScript tooling. Deno installs and runs
 that tooling. Do not add npm/Bun application scripts or pnpm files. Deno generates and owns the local
 `node_modules` tree required by those tools and Remix's browser-asset compiler. This does not require
 npm tooling or a Node.js runtime. Exact `npm:` compatibility dependencies remain locked by Deno.
@@ -240,13 +249,15 @@ Browser/gateway contracts should prefer Web APIs (`Request`, `Response`, `Readab
 ### 8.1 Technology
 
 - Remix 3 from the `remix` package
-- Pin an exact beta release; never track `next` implicitly in lockfiles
+- Pin an exact release (currently RC.5); never track `next` implicitly in lockfiles
 - Use Remix 3 conventions rather than Remix v2 conventions
 - `app/routes.ts` is the typed URL contract
 - Controllers under `app/actions`
 - Middleware for auth, sessions, CSRF, database, and request context
 - `remix/ui`, not React
-- Browser `/assets` serves only `packages/gateway/app/assets/**`; the Deno-owned `node_modules` tree is never mapped or allowed in the asset server, because unauthenticated requests could otherwise compile server-only dependencies (including the transitive `.deno` layout). When a client entry first needs an npm package, audit the complete browser dependency closure and expose only the required files.
+- Browser `/assets` serves an explicit allowlist of application modules and audited browser dependency
+  files, including Chord's structural-delta code. Never broadly expose server dependencies or the
+  Deno-owned `node_modules` tree; audit each browser dependency closure before expanding access.
 - Effect `DenoHttpServer` owns the Deno HTTP/WebSocket lifecycle
 - The runner upgrade is an Effect HTTP handler; other requests delegate to Remix's Fetch-oriented router through `HttpEffect.fromWebHandler`
 - `remix/data-schema` for runtime validation
@@ -353,7 +364,7 @@ automation.
 
 ### 9.3 Outbound connections
 
-Each connected runner maintains one outbound Effect RPC WebSocket:
+Each connected runner maintains an outbound Effect RPC control WebSocket:
 
 ```text
 wss://openorb.example.com/api/runners/connect
@@ -364,31 +375,29 @@ as the RPC client. The API contains typed identity, runner-state, provisioning, 
 session-event procedures. Effect owns framing, schema decoding, request correlation, stream
 acknowledgement, interruption, and ping/pong.
 
-A future terminal/preview milestone adds a separately authenticated outbound binary data socket. It
-is not a second runner path or part of the current MVP transport.
+A separately authenticated outbound bulk WebSocket at `/api/runners/connect/bulk` serves bounded
+chunks of cached Git patches and Session media without waking compute. Generic terminal/preview
+tunneling is still planned; its flow-control design must preserve control-channel responsiveness.
 
 ## 10. Runner storage
 
-The runner persists state in ordinary files and directories, not a database. Sensitive identity and token files use restrictive filesystem permissions.
+The runner owns all full Session persistence. Pi Durable stores Harness State in a private
+per-Session SQLite database; infrastructure/configuration facts remain in the separate Session
+Journal. Sensitive identity, token, harness, and disk files use restrictive filesystem permissions.
 
-Recommended layout:
+Session storage layout (under the runner's working directory):
 
 ```text
 /var/lib/openorb-runner/
-  runner.json
-  identity/
-    ed25519.key
   images/
   sessions/
     <session-id>/
-      events.jsonl
+      events.jsonl         infrastructure/configuration Session Journal only
       root-disk.qcow2
-      pi/
-        session.jsonl
-        agent/
-      runtime/
-        services/
-        logs/
+      harness/
+        harness.sqlite
+      artifacts/
+      logs/
       snapshots/
         git-snapshot.json
 ```
@@ -396,11 +405,12 @@ Recommended layout:
 The runner is authoritative for all complete live-session data; the gateway duplicates only the immutable Workspace owner and four catalog fields described below and retains minimal Workspace-owned deleted-session ID/time markers:
 
 - Session metadata and pinned-runner identity
-- Raw Pi JSONL
-- Runner-local pending message handoff records
+- Durable Harness State: conversation entries, Submissions, queued inputs, tasks, and recovery
+- Session Journal infrastructure and configuration facts, not a second agent task state machine
 - Working tree and Git objects, treated as untrusted bytes by the host
 - Full file contents
 - Host-owned cached Git Snapshots produced by guest-side Git
+- Private Published Media and projected conversation-image artifacts
 - Preview definitions, access policy, and capability hashes
 - Persistent 40 GiB sparse `root-disk.qcow2`
 - Guest service logs
@@ -434,7 +444,7 @@ No runner ID, title, status, branch, model selection, transcript, message, tool,
 
 ## 11. Domain model
 
-Workspace-owned project/configuration entities, the five-column `SessionCatalogEntry`, and minimal Workspace/session/time deletion markers are persisted by the gateway. Passwords and Git author identity remain user-owned. Complete session entities, pending messages, previews, events, and runtime state are persisted only by their owning runner and merely proxied by the gateway.
+Workspace-owned project/configuration entities, the five-column `SessionCatalogEntry`, and minimal Workspace/session/time deletion markers are persisted by the gateway. Passwords and Git author identity remain user-owned. Complete Session entities, Harness State, previews, infrastructure events, and runtime state are persisted only by their owning runner and merely proxied by the gateway.
 
 ### 11.1 Project
 
@@ -522,32 +532,12 @@ interface Session {
 
 ### 11.4 Orthogonal runtime state
 
-Do not create one giant state enum. Represent independent dimensions:
-
-```ts
-interface SessionRuntimeState {
-  lifecycle: "draft" | "active" | "archived" | "error"
-  provisioning:
-    | "pending"
-    | "reserving"
-    | "cloning"
-    | "starting-vm"
-    | "setup"
-    | "ready"
-    | "failed"
-  runner: "unassigned" | "online" | "offline" | "revoked"
-  vm:
-    | "absent"
-    | "starting"
-    | "running"
-    | "stopping"
-    | "stopped"
-    | "resuming"
-    | "failed"
-  agent: "idle" | "running" | "aborting" | "failed"
-  git: "clean" | "dirty" | "pushing" | "failed"
-}
-```
+Do not create one giant state enum. The current wire contract exposes separate agent state
+(`idle`, `running`, `paused`, `error`), environment state (`starting`, `running`, `stopping`,
+`stopped`, `error`), checkout availability, provisioning stage, and bounded issues/recovery actions.
+See [the runtime schemas](packages/protocol/src/runner-api-session-events.ts). Agent work can be
+running while compute is stopped or starting. Runner connectivity and planned archive/preview
+state must not collapse those independent dimensions.
 
 ### 11.5 Preview
 
@@ -578,28 +568,15 @@ interface Preview {
 }
 ```
 
-### 11.6 Pending delivery
+### 11.6 Submissions and queued input
 
-This model covers only messages that have not yet been handed to Pi. It does not mirror Pi’s in-memory queue.
-
-```ts
-type PendingMessageState =
-  | "waiting-for-capacity"
-  | "waiting-for-session"
-  | "handing-off"
-  | "delivery-uncertain"
-
-interface PendingMessage {
-  id: string
-  sessionId: string
-  clientRequestId: string
-  content: ContentBlock[]
-  state: PendingMessageState
-  createdAt: string
-}
-```
-
-Pending messages live only in the assigned runner’s local session store. A waiting message may be cancelled through the gateway proxy with a compare-and-set transition before handoff begins. It is not editable; the user cancels and sends a replacement. Once state becomes `handing-off`, cancellation is rejected. If the runner is offline, reads, sends, and cancellation are unavailable.
+Durable admits each input under the caller's stable `clientRequestId` and returns a `submissionId`.
+The identity belongs to that input, including a Follow-up, not to an Agent Run. Harness State owns
+the queue and unfinished tasks across close/reopen. The Conversation View exposes queued input;
+OpenOrb does not persist another queue or custom acceptance receipts. A duplicate acknowledgement
+reads the existing submission without invoking `submit`, which would enable scheduling even for a
+duplicate. Abort cancels conversation work, queued input, and owned background work. There is no
+current per-item edit/cancel/promote contract.
 
 ## 12. Resource scheduling
 
@@ -641,7 +618,7 @@ A runner observation is advisory; `ProvisionSession` acceptance is authoritative
 Stopped sessions retain their persistent root disk but do not reserve CPU or memory. On wake, the
 pinned runner must reacquire resources. If unavailable:
 
-- Keep the prompt queued as `waiting-for-capacity`.
+- Preserve already-admitted Harness State; do not create a separate capacity-waiting prompt queue.
 - Show the condition in the UI.
 - Do not migrate automatically.
 - Retry when subsequent `WatchRunner` observations show capacity.
@@ -657,55 +634,54 @@ pinned runner must reacquire resources. If unavailable:
 4. Sending the first prompt reserves an online runner.
 5. Runner creates the session locally, durably stores the full initial prompt, and becomes permanently assigned.
 6. After runner confirmation, gateway stores only the Workspace owner and four catalog data fields with the trimmed prompt preview; the runner assignment remains in the live routing index, not the catalog row.
-7. Runner creates the persistent session root disk, boots Gondolin with requested resources, and
-   creates `/workspace` inside the guest.
-8. Git inside Gondolin clones the repository through mediated HTTPS/SSH credentials and reports the exact base commit.
-9. Git inside Gondolin creates the local working branch.
-10. Runner stores the reported base/branch state outside the guest-writable workspace.
-11. Runner runs `.agents/setup` once inside Gondolin.
-12. Runner creates the persistent Pi session and dispatches the first message.
+7. Runner opens the Durable harness and admits the initial input concurrently with environment
+   startup. Model work and trusted prompt preparation do not wait for guest readiness.
+8. The environment creates the persistent session root disk, boots Gondolin with requested resources,
+   and creates `/workspace` inside the guest.
+9. Git inside Gondolin clones the repository through mediated HTTPS/SSH credentials and reports the exact base commit.
+10. Git inside Gondolin creates the local working branch.
+11. Runner stores the reported base/branch state outside the guest-writable workspace.
+12. Runner runs `.agents/setup` once inside Gondolin. Guest tools wait cancellably for readiness;
+    host-side environment control is available immediately.
 
 Provisioning logs stream to the browser as session events.
 
 ### 13.2 Subsequent normal message
 
 1. Gateway resolves the session through its live runner index; if the assigned runner is offline, reject the send.
-2. Runner durably stores the message in its local session store with a unique `clientRequestId` before acknowledging HTTP acceptance.
-3. If the VM is stopped or lacks capacity, wake/reserve it and retain the runner-local pending record.
-4. Recreate transient Gondolin policy, ingress, and secret placeholders around the persistent disk.
-5. Run `.agents/resume` and open Pi’s existing JSONL session.
-6. Invoke `PromptSession` once with the stable `clientRequestId`; do not retry it automatically after an ambiguous transport outcome.
-7. Runner calls `session.prompt()` if Pi is idle or `session.followUp()` if Pi is currently streaming. For idle prompts, use Pi’s documented preflight acceptance callback rather than waiting for the complete run.
-8. When Pi reports preflight acceptance or `followUp()` returns successfully, `PromptSession` returns the explicit `runId` and whether the prompt started a run or became a follow-up.
-9. If it was a follow-up, subsequent queue state is Pi-owned and process-local until Pi emits the user message.
-10. Stream normalized Pi events, refresh the Git Snapshot on the active-run cadence, perform the final awaited flush when Pi settles, and start the idle timer if no lease remains.
+2. Invoke `PromptSession` with a stable `clientRequestId`. The runner serializes admission and opens
+   or updates the harness using credentials held only in memory.
+3. Durable admits the input with `whenBusy: "followUp"`; acceptance returns `clientRequestId` and
+   `submissionId`, not completion of the Agent Run.
+4. If the Session was paused, harness opening and environment startup proceed independently. The
+   environment reopens the same disk, recreates transient policy/placeholders, and runs `.agents/resume`.
+5. If the agent itself stopped compute through Environment Control, ordinary tools fail explicitly
+   until the environment is started; admission does not depend on a ready guest.
+6. Do not automatically retry an ambiguous RPC outcome. Durable deduplicates admitted request IDs;
+   explicit reconciliation must not enable scheduling merely to acknowledge a duplicate.
+7. Stream the Conversation View, refresh guest-generated Git Snapshots while compute is available,
+   and start the idle timer when work settles and no lease remains.
 
 ### 13.3 Message while running
 
-The UI exposes two send actions matching Pi directly:
+Normal send admits a Follow-up with its own Submission identity. Durable owns its persistence,
+delivery, and recovery. The browser renders the queue from the Conversation View rather than
+maintaining a second source of truth. Stop Session preserves unfinished work; Abort cancels it.
 
-- **Follow up** (default): submit a normal message; the runner calls `session.followUp()` when Pi is streaming.
-- **Steer now**: call `session.steer()` immediately. Steering is accepted only when the pinned runner is connected, the VM/session is ready, and Pi is running.
-
-After either SDK method accepts a message:
-
-- The item may be displayed from Pi’s live queue-update events.
-- It has no stable OpenOrb item ID or mutation controls.
-- It cannot be edited, cancelled, or promoted between queues.
-- It is not durably represented in Pi JSONL until Pi actually delivers it as a user message.
-- A runner-process crash can lose it; OpenOrb does not silently replay it because replay could duplicate a message Pi already accepted.
-
-If steering is unavailable, return a conflict response and let the user send a normal pending message instead. Extension commands are not supported through follow-up or steering.
+An explicit steering action remains a product goal requiring a Durable-based interface decision;
+it is not implemented by the current Agent Harness or runner RPC API. Do not expose the removed
+SDK steering or handoff-queue mutation APIs as current behavior.
 
 ### 13.4 Edit last message
 
-Allowed only when:
+Planned behavior, not a current Agent Harness operation. Allow only when:
 
 - Agent is idle
 - There are no already-delivered later user messages
 - The target is the last visible user message
 
-Implementation uses Pi’s internal tree/session APIs to move the active conversation path before the last prompt and append the edited prompt. The abandoned response remains in raw Pi history but is hidden from the linear OpenOrb UI.
+The Durable-based editing interface and treatment of abandoned responses need a separate design.
+Do not assume an active Conversation View provides an archive of entries before compaction.
 
 **Project Checkout and VM changes are not reverted.** The UI must say that the retry runs on the current checkout.
 
@@ -724,27 +700,28 @@ Lease types:
 
 Relevant activity resets the timer:
 
-- Prompt/steering work
+- Agent work and admitted Follow-ups
 - Terminal input/output
 - Preview HTTP requests
 - Preview WebSocket traffic
 - Setup/resume work
 
-At timeout:
+At timeout, use the same recoverable Stop Session ordering as explicit Stop:
 
-1. Stop accepting new live-only preview streams.
-2. Mark live-only previews expired.
-3. Stop managed services cleanly with a short deadline.
-4. Close terminal sessions.
-5. Run a final controlled status/diff operation inside Gondolin and atomically store the Git Snapshot outside the workspace.
-6. Run guest `/bin/sync`.
-7. Close Pi.
-8. Explicitly stop and close the Gondolin VM without deleting `root-disk.qcow2`.
-9. Call host `fsync` on `root-disk.qcow2` and its session directory.
-10. Append `stop.completed` to the Session Journal and set VM state to `stopped`.
+1. Close Durable recoverably before cancelling guest operations or collecting the final Git Snapshot.
+2. As terminal/preview support is implemented, stop new live-only streams, expire those previews,
+   close terminals, and stop managed services within a bounded deadline.
+3. Run a final controlled status/diff operation inside Gondolin and atomically store the Git Snapshot outside the workspace.
+4. Run guest `/bin/sync`.
+5. Explicitly stop and close the Gondolin VM without deleting `root-disk.qcow2`.
+6. Call host `fsync` on `root-disk.qcow2` and its session directory.
+7. Append `stop.completed` to the Session Journal and set environment state to `stopped`.
 
-Wake opens the same disk in a new VM and runs `.agents/resume`. RAM, processes, and tmpfs-backed
-guest paths do not survive Stop.
+Wake resumes checkpointed agent work concurrently with opening the same disk in a new VM and
+running `.agents/resume`. RAM, processes, and tmpfs-backed guest paths do not survive Stop.
+Abort instead cancels conversation work without stopping compute. The host-side `environment`
+tool can stop or restart compute without pausing the agent; forced restart reports possible
+unsynced-data loss and must wait for exclusive disk ownership before attaching a replacement VM.
 
 ### 13.6 Archive and delete
 
@@ -753,130 +730,81 @@ Archive:
 - Stop the VM and retain its persistent root disk.
 - Expire preview access.
 - Hide the session from the active list.
-- Retain transcript, checkout, Pi JSONL, `root-disk.qcow2`, and logs.
+- Retain Harness State, checkout, Session Journal, `root-disk.qcow2`, and logs.
 
 Delete:
 
 - Require explicit confirmation.
 - If the owning runner is online and any agent, provisioning, setup/resume, maintenance, terminal, or preview work is active, reject deletion until that work settles; do not interrupt it implicitly.
 - In one PostgreSQL transaction, write a durable deleted-session marker containing only Workspace ID, session ID, and deletion time, remove the five-column catalog row, and remove any persisted gateway configuration that is scoped only to that session. Remove the ephemeral Workspace-scoped route immediately afterward.
-- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, the persistent root disk and its checkout, Pi JSONL, logs, and Git Snapshots.
+- If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, the persistent root disk and its checkout, Harness State, media, logs, and Git Snapshots.
 - If the runner is offline or permanently lost, deletion still succeeds at the control plane. The marker prevents a stale runner disk or backup from recreating the catalog entry.
 - If a runner later reports a tombstoned session, do not route or reinsert it. Repeatedly request runner cleanup; if the runner reports active work, wait for it to settle rather than interrupting it.
 - Retain the deleted-session marker after runner cleanup so a later stale snapshot cannot resurrect the ID.
 
 ## 14. Pi integration
 
-### 14.1 SDK usage
+### 14.1 Durable harness
 
-Use `@earendil-works/pi-coding-agent` directly rather than spawning RPC mode.
+Use `@earendil-works/pi-durable` behind the
+[Agent Harness interface](packages/runner/src/harness/agent-harness.ts). The
+[Durable adapter](packages/runner/src/harness/durable/layer.ts) opens a private SQLite store,
+an explicit registry, and a root conversation. Durable owns entries, documents, Submissions, queued
+input, task checkpoints, compaction, and recovery. OpenOrb does not implement another agent task
+state machine. There is no conversion or compatibility path for disposable pre-migration sessions.
 
-The adapter owns:
+The scoped harness supports submit, explicit resume, conversation-wide abort, model/thinking
+configuration, and complete Conversation Views. Closing it pauses recoverably. Opening for
+observation alone does not resume scheduling. One Session owner serializes live harness access,
+offline view reads, close, and deletion.
 
-- `ModelRuntime`
-- Persistent `SessionManager`
-- `AgentSession`/runtime creation
-- Event subscription
-- Prompt, follow-up, steering, abort, model, and thinking operations
-- Compaction/retry state
-- Session disposal and restoration
+Pi AI uses a per-open `InMemoryCredentialStore`; ambient environment/file authentication is disabled.
+Provider credentials are never written to harness configuration or guest files.
 
-Use runtime API keys (`ModelRuntime.setRuntimeApiKey`) so provider credentials remain in runner memory and are never written to a Pi `auth.json`.
+### 14.2 Guest tools and independent environment control
 
-### 14.2 Tool replacement
+The explicit registry exposes guest-backed `read`, `write`, `edit`, and `bash`, plus
+`publish_media` and host-side `environment` control. Durable's `ExecutionEnv` is backed exclusively
+by the Agent Environment; `NodeExecutionEnv` and host-filesystem fallbacks are forbidden.
 
-Replace Pi’s built-in tools with Gondolin-backed operations, following Gondolin’s existing Pi example:
+Relative paths resolve from `/workspace`. Absolute paths address the guest filesystem, never the
+runner host. Guest operations wait cancellably during boot/setup/resume and fail explicitly while
+compute is stopped. The host-side `environment` tool can start, stop, or restart compute even while
+the guest is unavailable, without pausing the agent. Replacement VMs must not overlap disk ownership.
 
-- `read`
-- `write`
-- `edit`
-- `bash`
-- Any enabled grep/find/list helpers
-- User shell commands
+`publish_media` copies bounded allowlisted image/video bytes from `/workspace/.openorb/artifacts`
+into private Session-owned storage. Browser media access is authenticated and Workspace-scoped;
+arbitrary guest paths and remote embeds are not transcript mounts.
 
-Relative paths resolve from `/workspace`. Absolute paths address the guest filesystem and must never
-be interpreted as runner-host paths. The non-tmpfs root disk is persistent; only `/workspace` is
-included in Git review.
+### 14.3 Trusted registry and resource boundary
 
-### 14.3 Allowlist-only resource and settings boundary
+Only OpenOrb-owned tools and prompt sections are installed in the Durable registry. Neither project
+nor global Pi settings, packages, extensions, skills, prompts, themes, context files, or system-prompt
+fragments are discovered on the host. Trusted prompt preparation never requires a ready guest.
+It explains guest-only tools, independent Environment Control, disk-only persistence, and Git policy.
 
-The untrusted workspace must never be passed to Pi’s default discovery machinery. OpenOrb must follow Pi 0.83’s **full control** SDK pattern:
+Repository files such as `AGENTS.md`, `CLAUDE.md`, `.agents/skills/**`, and `.pi/**` remain untrusted
+guest files. The model can inspect them through guest tools and execute associated scripts only
+inside Gondolin. Security tests must reject host discovery and host tool fallbacks.
 
-- Never instantiate, wrap, subclass, or delegate to `DefaultResourceLoader` for a session.
-- Provide an explicit OpenOrb-owned object implementing the `ResourceLoader` interface.
-- Use `SettingsManager.inMemory(...)`; never use `SettingsManager.create(...)` for a session.
-- Never load workspace `.pi/settings.json`, user/global Pi settings, package declarations, or settings-selected resource paths.
-- Point Pi’s `agentDir` and any model/auth metadata paths at runner-owned locations outside the workspace, while supplying model credentials through runtime APIs.
-- Treat `cwd` as an untrusted tool-path value only; the custom loader must not use it for discovery.
-- Route all Pi session construction through one `OpenOrbPiSessionFactory`; every SDK session creation call must explicitly pass both `resourceLoader` and `settingsManager`, so omission cannot silently activate defaults.
+A future centrally managed **Agent Profile** may add explicitly approved resources from trusted
+configuration/storage. Its registry integration still needs design; it must not enable checkout
+discovery or host execution of scripts referenced by passive skill metadata.
 
-For the MVP, the project-resource allowlist is deliberately empty. The loader returns:
+### 14.4 Conversation View projection
 
-- No extensions and a fresh empty extension runtime
-- No skills
-- No prompt templates
-- No themes
-- No agent/context files
-- No externally discovered system-prompt fragments
-- No project system-prompt override
-- No package resources
+Consume Durable's complete Conversation Views, not deltas replayed into a second source replica.
+Redact secrets and project media references before diffing the browser-facing view. Send an initial
+`conversation.snapshot` followed by `conversation.ops` containing Chord structural operations.
+Slow viewers coalesce to the latest view and receive a delta from their own last-delivered view.
+Reconnect replaces the baseline, with no transcript replay cursor.
+The active view includes queued input and live progress, but is not a pre-compaction archive.
 
-An OpenOrb-owned builder creates a trusted Pi-style system prompt without reading the workspace. It preserves Pi's normal role, configured-tool inventory, and tool guidance, but omits Pi self-documentation instructions because their runner-host package paths are unavailable to guest-backed tools. OpenOrb-owned environment, Stop/wake lifecycle, and Git policy follow the Pi-style base prompt. The prompt explains that Pi runs outside Gondolin, all provided filesystem and shell tools target the guest, `/workspace` lives on the persistent root disk, and wake does not restore RAM, processes, or tmpfs-backed paths.
-
-The implementation should structurally resemble:
-
-```ts
-const settingsManager = SettingsManager.inMemory(openOrbSettings)
-
-const resourceLoader: ResourceLoader = {
-  getExtensions: () => ({
-    extensions: [],
-    errors: [],
-    runtime: createExtensionRuntime(),
-  }),
-  getSkills: () => ({ skills: [], diagnostics: [] }),
-  getPrompts: () => ({ prompts: [], diagnostics: [] }),
-  getThemes: () => ({ themes: [], diagnostics: [] }),
-  getAgentsFiles: () => ({ agentsFiles: [] }),
-  getSystemPrompt: () => buildTrustedOpenOrbPiStylePrompt(configuredTools),
-  getSystemPromptSource: () => undefined,
-  getAppendSystemPrompt: () => [],
-  getAppendSystemPromptSources: () => [],
-  extendResources: () => {},
-  reload: async () => {},
-}
-```
-
-Repository files such as `AGENTS.md`, `CLAUDE.md`, `.agents/skills/**`, `.pi/skills/**`, and `.pi/prompts/**` remain ordinary untrusted workspace files. They are not scanned or parsed by the runner host. The model may inspect them only by invoking Gondolin-backed `read`, `find`, or `bash` tools. Any referenced or skill-associated script can therefore execute only through a Gondolin-backed tool inside the guest.
-
-Add restricted-import/lint rules that forbid `DefaultResourceLoader` in runner packages and forbid direct Pi session construction outside `OpenOrbPiSessionFactory`. A test must fail if session creation observes any workspace-discovered extension, package, setting, prompt, skill, theme, context file, or system-prompt fragment.
-
-A future centrally managed **Agent Profile** may add explicitly approved resources. Such resources must be selected by gateway configuration, copied into immutable runner-owned storage outside the checkout, and returned directly by the allowlist loader. Project Checkout discovery must remain disabled, and scripts referenced by passive skill metadata must remain executable only through Gondolin-backed tools.
-
-### 14.4 Event normalization
-
-Normalize Pi events for the browser while preserving Pi identifiers:
-
-```ts
-type SessionEvent =
-  | { type: "session.state"; state: SessionRuntimeState }
-  | { type: "assistant.text.delta"; messageId: string; delta: string }
-  | { type: "assistant.thinking.delta"; messageId: string; delta: string }
-  | { type: "assistant.message.completed"; message: AssistantMessage }
-  | { type: "tool.started"; toolCall: ToolCall }
-  | { type: "tool.updated"; toolCallId: string; output: ToolOutput }
-  | { type: "tool.completed"; toolCallId: string; result: ToolResult }
-  | { type: "pending-delivery.changed"; pending: PendingMessage[] }
-  | { type: "pi.queue.changed"; followUps: string[]; steering: string[] }
-  | { type: "usage.changed"; usage: SessionUsage }
-  | { type: "workspace.changed"; summary: DiffSummary }
-  | { type: "preview.changed"; preview: Preview }
-  | { type: "runner.changed"; runner: RunnerSummary }
-```
-
-Persist completed semantic records and cursors on the runner, not the gateway. Live deltas are best-effort traffic. On browser reconnect, the gateway opens `WatchSession(afterCursor)` so the runner projects completed state from Pi JSONL and then continues with live events.
-
-Use Pi’s fully settled event when available. Do not sleep on a low-level `turn_end` or retryable `agent_end`.
+Inline model images retain their bytes in Harness State/model context; browser control frames carry
+Session artifact references only. Unsupported images or publication failures become placeholders,
+never inline-byte fallback. Session infrastructure state and provisioning logs remain separate
+Session Events. Neither gateway persistence nor the Session Journal maintains a second conversation
+transcript.
 
 ## 15. Gondolin integration
 
@@ -889,7 +817,7 @@ Use Pi’s fully settled event when available. Do not sleep on a low-level `turn
 - Private sparse 40 GiB qcow2 active root disk stored at a stable per-session path
 - `/workspace` is an ordinary directory on the root disk; no host workspace VFS is mounted
 - Package caches use tmpfs until an explicit safe cache design is added
-- Runtime/service logs use a session runtime mount
+- Guest log paths may be tmpfs-backed; runner-captured logs live in private Session storage, not a host workspace mount
 - Internal ranges blocked by default
 - HTTP/HTTPS mediated through host hooks
 - Generic TCP denied except explicit mappings and SSH Git proxy
@@ -898,10 +826,10 @@ Use Pi’s fully settled event when available. Do not sleep on a low-level `turn
 
 - One sparse 40 GiB `root-disk.qcow2` exists at a stable path in each Session directory.
 - `/workspace` and all other non-tmpfs root-disk paths persist on that disk.
-- An explicit Stop cancels an active Agent Run and closes Pi before collecting the final Git
-  Snapshot.
-- An idle Stop runs a final Git Snapshot and guest `/bin/sync` before closing Pi. Both paths then
-  explicitly stop and close the VM without deleting the disk.
+- Explicit and idle Stop Session both close Durable recoverably before collecting the final Git
+  Snapshot and running guest `/bin/sync`, then stop and close the VM without deleting the disk.
+- Abort cancels agent work and queued inputs without stopping compute; Environment Control stops
+  or restarts compute without pausing the harness.
 - The runner calls host `fsync` on the disk and Session directory before journaling
   `stop.completed`.
 - A runner interrupted in `Stopping` cannot confirm guest sync and VM exit, so it preserves the
@@ -916,8 +844,9 @@ Setup documentation must tell projects not to rely on persistence under tmpfs-ba
 
 - Run executable `.agents/setup` once after a fresh clone and initial boot.
 - Capture stdout/stderr into session logs and stream them as provisioning events.
-- Surface a non-zero setup exit as a visible warning, then continue to Pi so the prompt can diagnose or repair the project.
-- Run executable `.agents/resume` on every wake before Pi continues.
+- Surface a non-zero setup exit as a visible warning and release guest readiness so the agent can diagnose or repair the project.
+- Run executable `.agents/resume` on every environment wake before guest tools become ready; model
+  work may already be running concurrently.
 - Use a bounded blocking period; surface failure rather than silently continuing.
 - Hooks execute inside Gondolin from `/workspace`.
 
@@ -961,9 +890,12 @@ Defer OAuth/subscription credentials because refresh-token concurrency and provi
 
 1. Gateway stores encrypted provider configuration.
 2. Browser lists only redacted metadata.
-3. The browser submits one `provider/model` reference and no credential value. On run start, the gateway splits the reference only at its first `/`, resolves that provider's configured credential, and sends the model reference, thinking level, and credential only in the authenticated `ProvisionSession` or `PromptSession` RPC payload.
+3. The browser selects one `provider/model` reference and no credential value. For provisioning,
+   prompt admission, or Wake, the gateway resolves the Session's selection, splits the reference only
+   at its first `/`, and sends the model reference, thinking level, and credential in the authenticated
+   `ProvisionSession`, `PromptSession`, or `WakeSession` RPC payload.
 4. Runner keeps credentials in memory.
-5. Runner configures Pi `ModelRuntime` at runtime.
+5. Runner configures Pi AI's in-memory credential store and the Durable conversation's model.
 6. Model credentials never enter Gondolin.
 7. Runner reports Pi/model catalog compatibility; the gateway hides unsupported model choices.
 
@@ -1217,6 +1149,10 @@ Never accept arbitrary runner-side hostnames or ports from a browser request.
 
 The browser API is internal and may evolve before a stable public API is declared. It still uses shared runtime schemas and explicit response types. Session-list/catalog responses may come from the four persisted metadata fields. Every full session-scoped read or mutation requires the owning runner to be connected and is proxied to that runner.
 
+The route tables below are product API sketches except for the current conversation routes in
+section 20.6. Implemented URLs are defined by
+[the typed gateway routes](packages/gateway/app/routes.ts); planned endpoints are not public API promises.
+
 ### 20.1 Authentication
 
 ```http
@@ -1300,28 +1236,24 @@ interface CreateSessionInput {
 ### 20.6 Conversation and delivery
 
 ```http
-GET    /api/sessions/:sessionId/messages
-POST   /api/sessions/:sessionId/messages
-POST   /api/sessions/:sessionId/steer
-POST   /api/sessions/:sessionId/abort
-POST   /api/sessions/:sessionId/edit-last
-GET    /api/sessions/:sessionId/pending-messages
-DELETE /api/sessions/:sessionId/pending-messages/:messageId
-GET    /api/sessions/:sessionId/events?after=<cursor>
+POST   /app/sessions/:sessionId/messages
+POST   /app/sessions/:sessionId/thinking-level
+POST   /app/sessions/:sessionId/abort
+POST   /app/sessions/:sessionId/stop
+POST   /api/sessions/:sessionId/wake
+GET    /api/sessions/:sessionId/events
 ```
 
-Normal message input:
+The message form supplies a text prompt and optional thinking level. The gateway resolves the
+Session's model/credentials, generates a `clientRequestId` for that command, and proxies
+`PromptSession`; successful admission identifies the Durable Submission. Runner-offline sends fail;
+ambiguous command outcomes are shown rather than automatically retried. Queued inputs belong to
+Harness State, not a separate pending-message API.
 
-```ts
-interface SendMessageInput {
-  clientRequestId: string
-  content: ContentBlock[]
-}
-```
-
-`POST /messages` returns `202 Accepted` only after the online owning runner durably stores the message before attempting delivery. The durability promise covers only that runner-local pre-handoff record. If the runner is offline, return `503 Service Unavailable`. `DELETE` is proxied to the runner and succeeds only while the record is still waiting; it returns `409 Conflict` once handoff starts.
-
-`POST /steer` uses the same input shape but is a direct, live Pi operation. It returns success only after `session.steer()` accepts the message and returns `409 Conflict` when the runner/session/agent is unavailable. Steering is not durably queued or automatically retried.
+Abort targets the Session's conversation. Stop is a recoverable pause plus durable compute stop.
+Opening the session page separately sends a CSRF-protected Wake request. Subscribing to or
+reconnecting the event stream never sends Wake or enables harness scheduling. Planned steering and
+edit-last controls need Durable-based contracts before routes are added.
 
 ### 20.7 Workspace and Git
 
@@ -1364,22 +1296,23 @@ Use binary frames for output where practical.
 ## 21. SSE event delivery
 
 ```http
-GET /api/sessions/:sessionId/events?after=184
+GET /api/sessions/:sessionId/events
 Accept: text/event-stream
 ```
 
 Requirements:
 
-- Runner-owned monotonic conversation position derived from the active Pi JSONL branch
-- Support `Last-Event-ID`
+- Initial `conversation.snapshot` followed by Chord `conversation.ops` on the projected view
+- No SSE event IDs, `Last-Event-ID` replay, or transcript cursors
 - Send periodic keepalives
-- Ask the runner to project completed conversation state from Pi JSONL after cursor expiration/compaction
-- Do not persist event history in the gateway
-- Do not persist every token delta
-- Coalesce high-frequency live deltas
-- Pi JSONL is the sole durable conversation transcript. The runner projects bounded wire/UI events from it and stores lifecycle, pending-delivery, preview, and other non-conversation state only in their owning metadata/journals.
-- Relay Pi queue updates live without treating them as durable history
-- Browser reconnect must not duplicate completed messages
+- Reconnect replaces the entire browser baseline from runner-owned Harness State
+- Coalesce pending conversation updates to the latest view; compute each viewer's next delta from its last-delivered view
+- Keep infrastructure events in a separate bounded queue; overflow fails only that watch and SSE reconnect supplies a fresh baseline
+- Redact secrets and project inline images to private artifact references before diffing
+- Keep live/offline harness ownership serialized; observation never wakes compute or resumes work
+- Do not persist conversation/event history in the gateway or a second runner transcript
+- Carry queue, usage, configuration, and progress in the Conversation View; keep infrastructure events separate
+- Browser snapshot replacement and validated structural application must not duplicate messages
 
 The session list may use a separate lightweight global SSE stream for runner/session status, or poll initially. Do not overload every session stream with unrelated status.
 
@@ -1388,6 +1321,11 @@ The session list may use a separate lightweight global SSE stream for runner/ses
 Effect Schema declarations in `@openorb/protocol` are the sole runner wire contract. Effect RPC
 owns JSON framing, runtime decoding, in-connection correlation, stream acknowledgement, remote
 interruption, and ping/pong. OpenOrb does not maintain a parallel wire contract or runtime path.
+
+Control payloads are UTF-8 JSON reassembled through bounded SchemaBinary framing: at most 1 MiB per
+binary WebSocket chunk and 16 MiB per logical frame. Decode only after complete reassembly; reject
+malformed UTF-8/JSON and discard partial frames on disconnect. Chunking does not bypass RPC schemas
+or per-field limits. The control path has no CBOR decoder; schema bigints use strings.
 
 ### 22.1 Connection admission
 
@@ -1412,18 +1350,24 @@ Credentials never appear in the URL or WebSocket subprotocol and must be redacte
 | `runner.identify` | Unary | Return identity and protocol version for admission |
 | `runner.watch` | Stream | Deliver initial session snapshot, capacity/liveness observations, and later session changes |
 | `session.provision` | Unary | Accept new or explicit-retry provisioning into runner-owned durable state |
-| `session.prompt` | Unary | Accept one prompt or Pi-native follow-up |
-| `session.abort` | Unary | Abort one exact active `runId` |
-| `session.watch` | Stream | Project durable Pi JSONL history after a cursor and continue with live events |
+| `session.prompt` | Unary | Admit a Submission, including a Follow-up when busy |
+| `session.thinking-level.set` | Unary | Configure the open harness's thinking level |
+| `session.wake` | Unary | Resume checkpointed work and start compute independently |
+| `session.abort` | Unary | Cancel conversation work, queued input, and owned background work without stopping compute |
+| `session.stop` | Unary | Close the harness recoverably, then durably stop compute |
+| `session.delete` | Unary | Clean up runner-owned Session data |
+| `session.watch` | Stream | Send a Conversation View snapshot, structural updates, and infrastructure events |
+| `session.git-snapshot.read` | Unary | Read the cached Git Snapshot |
+| `session.git-file.update` | Unary | Stage or unstage through guest Git |
 
-Later status, diff, archive, delete, and data-channel preparation operations join the same typed RPC
+Later archive and terminal/preview operations join the same typed RPC
 group. They are domain procedures, not generic command/result messages.
 
 ### 22.3 Identity, retry, and handoff
 
 Effect RPC request IDs are transport correlation only. Stable domain identifiers remain explicit:
-the provisioning session ID, each prompt `clientRequestId`, each Pi `runId`, and each session cursor.
-None is derived from an RPC request ID.
+the provisioning Session ID, each prompt `clientRequestId`, and each Durable `submissionId`.
+None is derived from an RPC request ID. There is no OpenOrb Agent Run identifier or transcript cursor.
 
 `ProvisionSession` performs one short idempotent acceptance transaction: validate, create or prepare
 runner-local metadata, transfer the long-running work to the process-owned supervisor, and return a
@@ -1431,11 +1375,14 @@ durable snapshot. A disconnect after transfer may lose the response without stop
 The gateway does not blindly retry; an explicit same-session retry is reconciled against durable
 metadata and a later `WatchRunner` snapshot can reveal successful acceptance.
 
-`PromptSession` and `AbortSession` are serialized per session. Prompt reports the explicit active
-`runId`; Abort must target that exact run. Neither operation is automatically retried after a timeout
-or disconnect because Pi may already have accepted the prompt or begun stopping the run. The gateway
-surfaces that outcome as uncertain and requires explicit user action. Pi-native follow-up state is
-process-local and is never reconstructed from gateway data.
+Prompt admission is serialized per Session. `PromptSession` returns the admitted `submissionId`;
+Durable request-ID deduplication replaces custom receipt documents and admission observers.
+Duplicate acknowledgements only read the persisted Submission: calling even a duplicate `submit`
+would enable scheduling. `AbortSession` takes only `sessionId` and acts on the conversation.
+Neither command is automatically retried after timeout/disconnect. Surface uncertainty for explicit
+reconciliation. Checkpoint recovery on Wake is distinct from retrying an ambiguous gateway command;
+model requests may repeat and interrupted unsafe tools may report partial execution. There is no
+exactly-once execution guarantee or reconstruction of harness queues from gateway state.
 
 ### 22.4 `WatchRunner`
 
@@ -1452,19 +1399,24 @@ state; PostgreSQL is never used to reconstruct runner-owned session data.
 
 ### 22.5 `WatchSession` and SSE
 
-`WatchSession({ sessionId, afterCursor })` combines cursor-bearing completed conversation events
-read from Pi JSONL with bounded best-effort live events. Pi JSONL remains the sole durable
-conversation source. Each browser owns a request-scoped runner RPC stream; the gateway filters
-browser-visible events, encodes SSE records, and merges keepalive comments without sharing or
-caching watch streams.
+`WatchSession({ sessionId })` reads the complete current Conversation View under the runner's scoped
+ownership and sends a projected snapshot plus infrastructure state. Live updates are structural
+diffs of complete projected views. A stopped Session can be observed from SQLite without scheduling
+work or starting a VM; offline reads cannot race a live owner or deletion.
 
-Each watcher subscribes before its initial JSONL read. A latest-wins, payload-free conversation
-notification causes it to reread JSONL and emit every missing cursor suffix, while ephemeral events
-remain separately bounded and lossy. A history failure or runner disconnect closes SSE so the same
-native `EventSource` reconnects from `Last-Event-ID`; browser cancellation interrupts only its
-matching runner stream.
+Each browser owns a request-scoped runner RPC stream. The gateway encodes its records and merges
+keepalive comments without caching a conversation copy. The runner keeps one shared latest projected
+view and a sliding one-slot change notification per viewer. Each viewer computes its next delta on
+consumption, against its own last-delivered view; intermediate conversation updates can be skipped
+without breaking the delta chain. Infrastructure events remain ordered in a separate bounded queue;
+its overflow fails the slow watch without blocking the harness or other viewers. Overflow, read failure, or disconnect closes SSE; native
+`EventSource` reconnect gets a new snapshot, not a missing suffix. Browser cancellation interrupts
+only the matching watch stream, not agent work.
 
 ## 23. Future runner binary data protocol
+
+This section plans generic terminal/preview tunnels, not the existing chunked media/Git-patch bulk
+RPC or the control channel's SchemaBinary framing.
 
 ### 23.1 Logical frame types
 
@@ -1491,7 +1443,8 @@ type TunnelFrame =
   | { type: "reset"; channelId: string; reason: string }
 ```
 
-Define an exact compact binary encoding in `docs/protocol.md` before implementation. Keep metadata small and runtime validated.
+Document the exact encoding and integration with existing bulk transport before implementation.
+Keep metadata small and runtime validated.
 
 ### 23.2 Requirements
 
@@ -1510,61 +1463,25 @@ The Effect RPC connection must remain usable even if the future data connection 
 
 ## 24. Internal runner interfaces
 
-```ts
-interface AgentRuntime {
-  start(config: AgentSessionConfig): Promise<void>
-  prompt(input: AgentPrompt): Promise<void>
-  followUp(input: AgentPrompt): Promise<void>
-  steer(input: AgentPrompt): Promise<void>
-  editLast(input: AgentPrompt): Promise<void>
-  abort(): Promise<void>
-  setModel(model: ModelSelection): Promise<void>
-  subscribe(listener: (event: AgentEvent) => void): () => void
-  dispose(): Promise<void>
-}
-```
+Use the current source contracts rather than parallel illustrative SDK interfaces:
 
-```ts
-interface VmManager {
-  ensureRunning(reason: WakeReason): Promise<RunningVm>
-  acquireLease(type: LeaseType): Promise<VmLease>
-  stop(): Promise<void>
-  getState(): SessionRuntimeState["vm"]
-}
-```
-
-```ts
-interface GitService {
-  // Every method executes Git inside the session's Gondolin VM.
-  clone(vm: RunningVm, config: CloneConfig): Promise<CloneResult>
-  status(vm: RunningVm): Promise<GitStatus>
-  diff(vm: RunningVm): Promise<WorkspaceDiff>
-  commit(vm: RunningVm, input: CommitInput): Promise<CommitResult>
-  push(vm: RunningVm, input: PushInput): Promise<PushResult>
-  getCachedSnapshot(): Promise<CachedGitSnapshot | undefined>
-}
-```
-
-```ts
-interface PreviewManager {
-  publish(config: PreviewConfig): Promise<Preview>
-  openHttpStream(previewId: string, request: TunnelRequest): Promise<TunnelResponse>
-  openWebSocket(previewId: string, request: TunnelRequest): Promise<TunnelStream>
-  stop(previewId: string): Promise<void>
-}
-```
-
-```ts
-interface WorkspaceService {
-  // File access treats workspace content as untrusted bytes and executes nothing.
-  list(path: string): Promise<FileEntry[]>
-  read(path: string): Promise<File>
-}
-```
+- [Agent Harness](packages/runner/src/harness/agent-harness.ts): scoped open; submit returns a
+  Submission ID; resume, abort, model/thinking configuration, and complete view observation.
+- [Agent Environment and Provider](packages/runner/src/environment/agent-environment.ts): guest
+  capabilities and acquisition over a durable root disk. The harness receives a readiness-aware
+  guest proxy plus a separate host-side control callback.
+- [Session actor](packages/runner/src/session/actor/session.ts): admission and recoverable
+  harness ownership, independent environment startup, Wake, Stop, and Abort.
+- [Environment actor](packages/runner/src/session/actor/environment.ts): readiness, guest operation
+  cancellation, sync/stop, bounded restart, and exclusive disk attachment.
+- Git review and mutations execute only inside Gondolin; cached snapshots are runner-owned.
+  Planned file browsing must use bounded guest reads, never a host checkout adapter.
+- Planned terminal/preview services need scoped ownership, leases, bounded streams, and guest-only
+  destinations. Their exact internal interfaces remain implementation work.
 
 `RunnerApi` and the process-scoped runner connection supervisor own the transport boundary. Do not
-introduce a generic OpenOrb transport abstraction or mirror Effect RPC types. The future data
-connection is a separate scoped service. These boundaries allow Pi, Gondolin, Git, RPC, and
+introduce a generic OpenOrb transport abstraction or mirror Effect RPC types. Bulk transfer is a
+separate scoped service; generic tunnels remain planned. These boundaries allow Pi, Gondolin, Git, RPC, and
 data-plane details to be tested independently.
 
 ## 25. Persistence ownership
@@ -1590,13 +1507,14 @@ Gateway PostgreSQL is the gateway's only durable persistence. It stores configur
 
 It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, root-disk state, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
 
-Each runner owns a file-backed local Session Journal in addition to the filesystem layout in section 10. It persists:
+Runner-owned persistence has separate authorities:
 
-- Session identity, project snapshot/reference, and pinned runner
-- Conversation/tool/usage records and event cursors
-- Pending handoff state
-- Preview definitions/capability hashes
-- Git Snapshots and session state
+- Durable's private per-Session SQLite database owns conversation entries, documents, Submissions,
+  queued input, task checkpoints, usage, and recovery.
+- The file-backed Session Journal owns infrastructure/configuration facts such as Session identity,
+  project definition, placement, and environment lifecycle; it is not another agent task state machine.
+- Root disks, Git Snapshots, Published Media, and logs retain their own private storage.
+- Planned preview definitions/capability hashes remain runner-local, never gateway conversation data.
 
 The gateway keeps a Workspace-scoped in-memory session routing index populated by complete, reconciled `WatchRunner` snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot entry also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the Workspace-owned control-plane marker without waiting for the runner.
 
@@ -1622,7 +1540,7 @@ Gateway PostgreSQL guidelines:
 │ Project/ref     │ Streaming assistant output  │ Changes             │
 │ Status          │ Thinking (collapsed)        │ Files               │
 │ Runner          │ Tool calls/results          │ Terminal            │
-│ Resource size   │ Pending/Pi queue status      │ Previews            │
+│ Resource size   │ Durable queued input        │ Previews            │
 │                 │ Composer + model controls   │ Session details     │
 └─────────────────┴─────────────────────────────┴─────────────────────┘
 ```
@@ -1635,8 +1553,8 @@ Gateway PostgreSQL guidelines:
 - Model, thinking level, predefined orb size, and draft runner selection live in a composer/settings sheet.
 - Runner selector becomes read-only after first send.
 - Terminal can enter dedicated full-screen mode.
-- Runner-local pending messages remain visible and cancellable through the proxy before handoff while the runner is connected.
-- Pi-native follow-up/steering items are visible while connected but have no edit/cancel/promote actions.
+- Durable queued input is visible through the Conversation View while the runner is connected.
+- Distinguish recoverable Stop, Wake, and conversation-wide Abort; there are no current per-item queue mutation controls.
 - Preview opens in a new tab or dedicated embedded frame depending on browser limitations.
 
 ### 26.3 Session status communication
@@ -1649,8 +1567,9 @@ Always distinguish:
 - Running setup
 - Waking VM
 - Agent running
-- Message pending delivery
-- Follow-up/steering held in Pi’s live queue
+- Durable Follow-up queued
+- Agent paused, checkpointed work retained
+- Agent running with environment stopped or starting
 - Idle, VM awake
 - Stopped, persistent disk retained
 - Runner offline
@@ -1688,8 +1607,8 @@ Untrusted or constrained:
 - Stopped-session review uses a host-owned cached Git Snapshot generated inside Gondolin, not host Git.
 - Workspace generic secrets use Gondolin placeholder substitution. Allowed destinations are
   optional; omission intentionally allows all public HTTP(S) hosts.
-- Pi uses an explicit allowlist-only `ResourceLoader`; `DefaultResourceLoader` is forbidden for untrusted workspaces.
-- Pi uses `SettingsManager.inMemory(...)` and never loads workspace or global Pi settings/packages.
+- Pi Durable uses an explicit trusted registry and a guest-only execution adapter; host execution fallbacks are forbidden.
+- Pi AI credentials are in memory with ambient environment/file authentication disabled; no workspace/global settings or packages are loaded.
 - No project context, prompt, skill, theme, package, extension, or system-prompt resource is host-discovered in the MVP.
 - Pi/the model can access project files and skill-associated scripts only through Gondolin-backed tools.
 - Project Checkout path APIs reject traversal and symlink escape.
@@ -1704,7 +1623,7 @@ Untrusted or constrained:
 
 Treat `.git` as executable configuration, not passive data. The agent can rewrite helpers, hooks, SSH commands, diff/textconv drivers, filters, fsmonitor commands, URL rewrites, and includes. The host must therefore never invoke Git with the session workspace as a repository or working tree.
 
-This prohibition applies even to apparently read-only commands such as `git status`, `git diff`, `git log`, and `git rev-parse`; Git configuration and attributes can cause subprocess execution. It also applies after the VM stops, when the workspace remains on the host filesystem.
+This prohibition applies even to apparently read-only commands such as `git status`, `git diff`, `git log`, and `git rev-parse`; Git configuration and attributes can cause subprocess execution. It also applies after the VM stops, when the checkout remains inside the opaque persistent root disk, not on a host workspace mount.
 
 Only code inside Gondolin may interpret Git metadata. Host-owned Git Snapshots must live outside guest-writable mounts, be treated as untrusted display data, and never be evaluated as commands or configuration.
 
@@ -1712,7 +1631,9 @@ Only code inside Gondolin may interpret Git metadata. Host-owned Git Snapshots m
 
 Pi resource discovery is a host-code execution boundary, not a convenience feature. Default discovery can involve settings, packages, extension paths, system-prompt files, context files, skills, prompts, and themes. Filtering results after discovery is insufficient because executable extensions may already have been imported or initialized.
 
-The runner therefore constructs the `ResourceLoader` itself and returns only trusted in-memory resources. It never calls `DefaultResourceLoader`, never scans the workspace for Pi resources, and never loads `.pi/settings.json`. In the MVP all project resource collections are empty. The only host-provided prompt material is OpenOrb-owned.
+The runner therefore installs only explicit OpenOrb-owned tools and prompt sections in Durable's
+registry. It never scans the workspace or global directories for Pi resources and never loads
+`.pi/settings.json`. Host-provided prompt material is trusted and independent of guest readiness.
 
 Project documentation remains accessible to the agent through Gondolin-backed file tools. This preserves the VM boundary: reading or executing a script associated with a repository skill happens inside Gondolin, never through host-side Pi discovery.
 
@@ -1773,7 +1694,7 @@ Runner:
 - Setup/resume duration
 - Git operation duration
 - Open terminal/preview channels
-- Event spool backlog
+- Conversation stream resets and queued-work counts
 
 ### 28.3 Audit events
 
@@ -1805,7 +1726,7 @@ Session-scoped audit records remain on the owning runner:
 
 - Runner reconnects automatically with exponential backoff and jitter, answers `IdentifyRunner`, and starts a fresh `WatchRunner` stream.
 - Gateway retains minimal Workspace-owned catalog rows and deleted-session markers, upserts a missing five-column row under the authenticated runner's owner from a valid non-tombstoned snapshot entry, rejects tombstoned entries, and atomically rebuilds all Workspace-scoped in-memory routes/live session state after the completion boundary; it recovers no full sessions or RPC operations from PostgreSQL.
-- Browser SSE reconnects through the runner-owned cursor after the runner is available.
+- Browser SSE reconnect replaces its baseline with a fresh Conversation View after the runner is available; it does not Wake the Session.
 - Stable domain IDs and runner-owned state support reconciliation; ambiguous prompt/Abort handoffs remain explicit.
 
 ### VM start/wake failure
@@ -1824,15 +1745,14 @@ Session-scoped audit records remain on the owning runner:
 ### Setup/resume failure
 
 - Stream logs and show the exact failed hook.
-- A failed `.agents/setup` emits a visible warning and continues to Pi so the prompt can repair the project.
-- A failed `.agents/resume` emits a visible warning and continues to Pi so the prompt can diagnose
-  or repair the project.
+- Failed `.agents/setup` or `.agents/resume` emits a visible warning and releases guest readiness
+  so the agent can diagnose or repair the project. Host-side model work need not wait for either hook.
 
 ### Pi/model failure
 
-- Preserve Pi JSONL; no second normalized conversation log exists.
+- Preserve Durable Harness State; no second normalized conversation log exists.
 - Surface provider errors and retry status.
-- Respect Pi’s retry/compaction lifecycle before declaring the run settled.
+- Derive activity from Durable's current view, including unfinished work, before declaring the Agent Run settled.
 
 ### Tunnel failure
 
@@ -1842,12 +1762,14 @@ Session-scoped audit records remain on the owning runner:
 
 ### Message handoff or runner-process crash
 
-- Messages already stored in runner-local pending delivery remain durable across runner process restart.
-- Nothing can be queued while the runner itself is unreachable.
-- Pi-native follow-up and steering queues disappear if the Pi/runner process dies.
-- Never reconstruct those queues from the gateway live projection.
-- If Pi JSONL or current runner state proves Pi accepted a message, do not submit it again.
-- If a crash leaves handoff ambiguous, mark `delivery-uncertain` and require explicit user resend rather than choosing between loss and duplication invisibly.
+- Admitted Submissions, Follow-ups, and task checkpoints survive in runner-owned Durable SQLite.
+- Nothing can be submitted through the gateway while the runner is unreachable.
+- Runner restoration and read-only observation do not automatically resume work; Wake does.
+- Never reconstruct harness queues from the gateway projection or the Session Journal.
+- Resolve duplicate request IDs by reading existing Submissions, without scheduling through `submit`.
+- Report ambiguous command outcomes for explicit reconciliation rather than silently retrying.
+- Recovery is not exactly-once: model requests may repeat; interrupted unsafe tools report possible
+  partial execution rather than being blindly replayed. Guest processes and RAM do not survive.
 
 ### Disk pressure
 
@@ -1866,34 +1788,37 @@ Session-scoped audit records remain on the owning runner:
 - Resource accounting
 - Session state transitions
 - Deleted-session marker transaction and anti-resurrection guard
-- Pending-message FIFO ordering and cancellation-before-handoff state guard
-- Pi `prompt()`/`followUp()`/`steer()` selection from current agent state
+- Durable request-ID deduplication and stable Submission identity, including Follow-ups
+- Duplicate acknowledgement does not call `submit` or enable scheduling
+- Recoverable Stop versus Abort versus independent Environment Control
 - Path normalization and symlink escape protection
 - Preview auth/capability exchange
 - Secret encryption/redaction
 - Git URL/repository policy
 - Controlled guest Git argument/environment construction
 - Cached Git Snapshot parsing and terminal-control sanitization
-- Pi event normalization
-- Allowlist-only `ResourceLoader` always returns empty project resource collections
-- In-memory Pi settings ignore hostile workspace/global settings files
+- Conversation View projection, media redaction, and validated Chord operations
+- Explicit Durable registry ignores hostile workspace/global resources
+- In-memory credentials disable ambient environment/file authentication
 - Binary channel flow control
 
 ### 30.2 Contract tests
 
 - `IdentifyRunner` admission and rejection across application protocol versions
 - Idempotent provisioning reconciliation after a dropped RPC result
-- Non-idempotent prompt handoff transitions to `delivery-uncertain` rather than automatic resubmission
-- Pi JSONL conversation projection/replay and deduplication through an unpersisted gateway proxy
+- Ambiguous prompt outcomes remain explicit without automatic command resubmission
+- Durable admission deduplication and checkpoint recovery through an unpersisted gateway proxy
 - Complete `WatchRunner` snapshot reconciliation and atomic in-memory route rebuilding, including tombstoned-entry rejection and cleanup request
 - Binary open/data/window/end/reset behavior
-- SSE cursor reconnect using runner-owned Pi history through the gateway proxy
+- Conversation updates coalesce for slow viewers; infrastructure overflow and SSE reconnect replace the baseline
+- Observation never wakes compute
+- Live/offline harness ownership, close, and deletion are serialized
 - Preview HTTP header/body streaming
 - Preview WebSocket tunneling
 
 ### 30.3 Integration tests
 
-Use real Pi SDK with a fake deterministic model where possible and real Gondolin/QEMU in Linux CI where available.
+Use real Pi Durable with a fake deterministic model where possible and real Gondolin/QEMU in Linux CI where available.
 
 Scenarios:
 
@@ -1905,11 +1830,13 @@ Scenarios:
 - Stopped-session diff uses a final guest-generated cached Git Snapshot and wakes for refresh
 - Provision setup hook
 - Prompt → tools → settled → Stop → wake same disk → continue
-- Pi-native follow-up and steering with no post-handoff mutation controls
-- Runner-local waking/provisioning pending delivery
+- Stop during active work → reopen → Wake resumes checkpoints and queued Follow-ups
+- Abort cancels queued inputs and owned background work but leaves compute running
+- Model generation and environment control do not wait for guest boot/setup/resume
+- Environment stop/restart leaves the harness running and prevents overlapping disk attachment
 - Offline runner rejects message submission and exposes only the minimal catalog card, not cached full session data
-- Crash during Pi handoff produces `delivery-uncertain` and no automatic replay
-- Edit last without workspace rollback
+- Ambiguous command handoff is visible; interrupted unsafe tools are not blindly repeated
+- Planned edit last without workspace rollback, once its Durable interface is settled
 - Diff review and wake-for-file browsing while the VM is stopped
 - Browser terminal through data tunnel
 - Managed preview wake/restart
@@ -1920,7 +1847,7 @@ Scenarios:
 ### 30.4 Security tests
 
 - A hostile workspace containing `.pi/extensions`, `.pi/settings.json`, package resources, prompt/system-prompt files, context files, skills, and themes cannot execute host code or alter the resources/system prompt returned to Pi
-- Runner source/build checks forbid `DefaultResourceLoader` and session use of file-backed `SettingsManager.create(...)`
+- Runner source/build checks forbid project discovery, ambient auth, and host execution adapters
 - Pi/the model reaches workspace `AGENTS.md`, `CLAUDE.md`, and skill-associated scripts only through Gondolin-backed tools
 - Project Checkout traversal and escaping symlink denied
 - Preview cannot target runner LAN/loopback arbitrarily
@@ -1939,8 +1866,8 @@ Scenarios:
 - Server route/controller tests first, following Remix 3 guidance
 - Desktop and mobile viewport coverage
 - Reconnect while assistant streams
-- Pending-message cancellation before handoff
-- Follow-up and explicit “Steer now” controls without post-handoff mutation actions
+- Durable queued input and distinct Stop/Wake/Abort controls
+- Planned steering/edit-last controls only after their Durable contracts are defined
 - Runner/resource selection before first send
 - Runner lock after first send
 - Terminal resize/input
@@ -1954,12 +1881,12 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 ### Milestone 0 — Foundation and contracts
 
 - Create a Deno 2.9.5 TypeScript workspace with Deno-native manifests, lockfile, tasks, formatting, linting, checking, and tests.
-- Pin Remix 3 beta and core dependency versions.
+- Pin Remix 3 and core dependency versions.
 - Establish formatting, linting, tests, and CI.
 - Define domain IDs, Effect Schema/RPC contracts, and the application protocol-version policy.
 - Add architecture decision records for trust model, outbound tunnels, PostgreSQL, Pi-on-host, runner file storage, and the no-workspace-resource-discovery boundary.
-- Implement and unit-test the explicit empty/allowlist-only Pi `ResourceLoader` and in-memory `SettingsManager` factory.
-- Add static enforcement forbidding `DefaultResourceLoader`, file-backed Pi settings, and direct Pi session construction outside the audited OpenOrb factory.
+- Implement and unit-test the explicit trusted Durable registry, guest execution adapter, and in-memory credentials.
+- Enforce the audited harness boundary, with no host resource discovery, ambient auth, or host tool fallback.
 - Create fake runner/model test harness.
 
 **Exit:** Gateway and fake runner can perform `IdentifyRunner` admission and a typed RPC call in tests, and a Pi session created over a hostile fixture workspace exposes only trusted OpenOrb resources without executing workspace code.
@@ -2005,21 +1932,25 @@ from the same root disk, and preserve workspace state without Pi yet.
 
 ### Milestone 4 — Pi runtime and conversation
 
-- Host-side Pi SDK adapter
+- Host-side Pi Durable Agent Harness
 - Central model config delivery
-- Milestone 0’s allowlist-only Pi resource loader and in-memory settings, with no workspace discovery
+- Milestone 0's trusted registry and in-memory credentials, with no workspace/global discovery
 - Gondolin-backed Pi tools
-- Persistent Pi JSONL
-- Bounded Pi-to-wire event projection with no second durable transcript
+- Private per-Session SQLite Harness State; separate infrastructure/configuration journal
+- Complete Conversation View projection, snapshots and Chord operations, no second durable transcript
 - HTTP prompt API and SSE stream
-- Pi-native follow-up, direct steering, and abort
-- Runner-local pre-handoff pending delivery while connected/waking
+- Submission identity, durable Follow-ups, request-ID deduplication, and conversation-wide Abort
+- Recoverable Stop/Wake and independent host-side Environment Control
+- Model work concurrent with guest startup; cancellable guest readiness waits
 - Offline runner rejection with only the minimal catalog card available
-- Ambiguous-handoff state without automatic replay
+- Ambiguous-command reporting, checkpoint recovery, and partial unsafe-tool execution warnings
 - Model/thinking controls
-- Edit-last conversation semantics
+- Planned steering and edit-last semantics, pending Durable interface decisions
 
-**Exit:** User can complete and continue a real streamed Pi session from desktop/mobile, with conversation state replayed from runner-owned Pi JSONL and only the Workspace owner plus four live-session catalog fields and minimal Workspace/session/time deletion markers stored by the gateway.
+**Exit:** User can complete, pause, Wake, and continue a streamed Durable Session from desktop/mobile,
+with queued work retained and reconnect replacing the Conversation View. Only the Workspace owner
+plus four live-session catalog fields and minimal Workspace/session/time deletion markers are
+stored by the gateway. Steering and edit-last remain explicit planned gaps until their contracts land.
 
 ### Milestone 5 — Review surfaces
 
@@ -2027,11 +1958,13 @@ from the same root disk, and preserve workspace state without Pi yet.
 - Hostile `.git/config` regression tests
 - Changed-file navigation
 - Read-only file browser
-- Runner-owned Pi conversation replay through the gateway proxy
+- Runner-owned active Conversation View through the gateway proxy without waking compute
 - Explicit unavailable state while the runner is offline
 - Session archive on the online owning runner, online/offline deletion with durable anti-resurrection markers, and disk reporting
 
-**Exit:** While the owning runner is connected, the user can inspect an agent’s complete result from runner-owned data. The user can delete the session while the runner is online or offline without allowing a stale snapshot to resurrect it.
+**Exit:** While the owning runner is connected, the user can inspect the active Conversation View
+and guest-generated Git result from runner-owned data, without a pre-compaction archive promise.
+The user can delete the session while the runner is online or offline without allowing a stale snapshot to resurrect it.
 
 ### Milestone 6 — Generic binary tunnel and terminal
 
@@ -2097,11 +2030,11 @@ A release is MVP-complete when all of the following are true:
 4. A Linux runner behind NAT enrolls using only gateway URL and enrollment token.
 5. Runner reports free CPU/memory/disk and accepts a requested session size.
 6. User can override the automatic runner before the first message and cannot move the session afterward.
-7. Session boots an isolated Gondolin VM, clones the repository inside it, runs setup, and starts host-side Pi.
+7. Session starts host-side Durable work concurrently with isolated Gondolin boot, guest clone, and setup; guest tools wait cancellably for readiness.
 8. Chat, thinking, tool calls, and tool output stream to desktop and mobile UI.
-9. While Pi is running, the UI exposes normal follow-up and explicit “Steer now” actions; Pi-accepted queue items are visible when connected but are not editable, cancellable, promotable, or claimed durable.
-10. Sends are rejected while the assigned runner is offline; while connected/waking, pending messages are stored only on that runner until handoff, and ambiguous handoff is surfaced instead of silently replayed.
-11. VM Stops after 15 minutes idle, retains its root disk, and wakes from that same disk for subsequent work.
+9. While the agent is running, normal sends become durable Follow-ups with stable Submission IDs and visible queue state. Explicit steering remains planned and requires a Durable contract; there are no current per-item queue mutation controls.
+10. Sends are rejected while the assigned runner is offline. Admitted input and unfinished work persist in runner-owned Harness State; request-ID deduplication does not promise exactly-once execution, and ambiguous commands are not silently retried.
+11. After 15 minutes idle, Stop Session closes the harness recoverably and durably stops compute; Wake resumes checkpointed work and the same root disk. Abort cancels conversation work without stopping compute, and Environment Control does not pause the agent.
 12. While the owning runner is connected, the user can review the runner-owned guest-generated aggregate diff while the VM is stopped and wake it to browse files, without native host Git interpreting the checkout.
 13. Browser terminal works without any inbound runner port.
 14. Agent can fetch, commit, and push to a private repository without obtaining the real credential in the guest.
@@ -2114,7 +2047,7 @@ A release is MVP-complete when all of the following are true:
 
 ## 33. Known risks and mitigations
 
-### Remix 3 beta churn
+### Remix 3 release-candidate churn
 
 **Risk:** APIs and UI conventions may change.
 
@@ -2128,15 +2061,21 @@ A release is MVP-complete when all of the following are true:
 
 ### Pi discovery defaults
 
-**Risk:** A future refactor could omit the custom loader or use file-backed settings, re-enabling executable project extension/package discovery on the trusted runner.
+**Risk:** A future harness or registry refactor could introduce project/global resource discovery,
+ambient authentication, or a host execution adapter on the trusted runner.
 
-**Mitigation:** Establish the full-control loader in Milestone 0, centralize SDK session creation in one audited factory, forbid `DefaultResourceLoader` and `SettingsManager.create(...)` in runner session code, test hostile workspaces, and require a security review for any new resource type.
+**Mitigation:** Keep an explicit trusted Durable registry, guest-only execution, and in-memory
+credentials. Test hostile workspaces and require security review for new tools or resource types.
 
-### Pi in-memory message queues
+### Durable recovery and uncertain execution
 
-**Risk:** `followUp()` and `steer()` are process-local, lack stable editable/cancellable item APIs, and are not persisted to Pi JSONL before delivery. A process crash can lose accepted queue items, while blind replay can duplicate them.
+**Risk:** Request admission can succeed while its response is lost. Checkpoint recovery may repeat
+model requests, and interruption may leave an unsafe tool partially executed. Calling `submit` even
+for a duplicate can unexpectedly enable scheduling.
 
-**Mitigation:** Keep durability only before handoff, expose Pi-native behavior without mutation promises, never auto-replay accepted/ambiguous message commands, and surface `delivery-uncertain` for explicit user action.
+**Mitigation:** Let Durable own admission and recovery; acknowledge duplicates by reading the
+persisted Submission. Surface ambiguous commands and unsafe-tool partial execution, never promise
+exactly-once execution, and keep observation separate from Wake.
 
 ### Reverse tunnel complexity
 
@@ -2156,11 +2095,15 @@ A release is MVP-complete when all of the following are true:
 
 **Mitigation:** Show an explicit unavailable state, reject runner-backed session operations while offline, permit marker-backed offline deletion, add runner-side backups/exports later, and defer migration rather than implementing unsafe partial movement.
 
-### PostgreSQL load and runner file growth
+### PostgreSQL load and runner persistence growth
 
-**Risk:** Gateway configuration/catalog traffic can exhaust PostgreSQL connections, while runner-local session event files can grow or be left with a partial final append after a crash.
+**Risk:** Gateway configuration/catalog traffic can exhaust PostgreSQL connections. Durable databases
+and runner journals grow; a journal append may be incomplete after a crash.
 
-**Mitigation:** Keep all full session data out of gateway PostgreSQL, use a bounded connection pool and short transactions, append runner events to crash-checked files without persisting token deltas, and compact only through an explicit future policy.
+**Mitigation:** Keep full Session data out of gateway PostgreSQL and use a bounded pool with short
+transactions. Let Durable own database recovery/compaction; keep infrastructure journal appends
+crash-checked and separate from conversation data. Do not claim the active view archives compacted
+entries. Broader retention and journal compaction remain explicit future policies.
 
 ### Disk growth
 

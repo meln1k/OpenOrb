@@ -1,5 +1,6 @@
 import { Context, Data, type Effect, type Scope } from "effect";
 import type { SessionEnvironmentSecret } from "@openorb/protocol/runner-api";
+import type { Stats } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { posix } from "node:path";
 
@@ -45,9 +46,25 @@ export interface AgentEnvironment {
   readonly access: (path: string) => Effect.Effect<void, AgentEnvironmentError>;
   readonly writeFile: (
     path: string,
-    content: string,
+    content: string | Uint8Array,
   ) => Effect.Effect<void, AgentEnvironmentError>;
-  readonly makeDirectory: (path: string) => Effect.Effect<void, AgentEnvironmentError>;
+  readonly makeDirectory: (
+    path: string,
+    options?: { readonly recursive?: boolean },
+  ) => Effect.Effect<void, AgentEnvironmentError>;
+  readonly stat: (path: string) => Effect.Effect<
+    Pick<Stats, "isFile" | "isDirectory" | "size" | "mtimeMs">,
+    AgentEnvironmentError
+  >;
+  readonly listDirectory: (path: string) => Effect.Effect<string[], AgentEnvironmentError>;
+  readonly renameFile: (
+    source: string,
+    destination: string,
+  ) => Effect.Effect<void, AgentEnvironmentError>;
+  readonly remove: (
+    path: string,
+    options?: { readonly recursive?: boolean; readonly force?: boolean },
+  ) => Effect.Effect<void, AgentEnvironmentError>;
   readonly detectImageMimeType: (
     path: string,
   ) => Effect.Effect<string | null, AgentEnvironmentError>;

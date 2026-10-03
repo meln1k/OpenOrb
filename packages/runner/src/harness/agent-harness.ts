@@ -1,16 +1,18 @@
 import { Context, Data, type Effect, type Scope, type Stream } from "effect";
+import type { ConversationView } from "@earendil-works/pi-durable";
 import type {
-  EphemeralSessionEvent,
   SessionId,
   SessionModelRuntime,
+  SubmissionId,
   ThinkingLevel,
 } from "@openorb/protocol/runner-api";
 
-import type { AgentEnvironment } from "../environment/agent-environment.ts";
+import type { AgentEnvironment, AgentEnvironmentError } from "../environment/agent-environment.ts";
+
+export type { ConversationView };
 
 export interface AgentHarnessState {
-  readonly sessionFile: string;
-  readonly agentDirectory: string;
+  readonly directory: string;
 }
 
 export interface AgentHarnessOpenOptions {
@@ -22,14 +24,9 @@ export interface AgentHarnessOpenOptions {
   };
   readonly modelRuntime: SessionModelRuntime;
   readonly state: AgentHarnessState;
-}
-
-/** A single accepted run. Its finite event stream ends only after the run settles. */
-export interface ActiveAgentRun {
-  readonly events: Stream.Stream<EphemeralSessionEvent, AgentHarnessError>;
-  readonly followUp: (input: string) => Effect.Effect<void, AgentHarnessError>;
-  /** Clears pending follow-ups before aborting the underlying run. */
-  readonly abort: Effect.Effect<void, AgentHarnessError>;
+  readonly controlEnvironment: (
+    action: "start" | "stop" | "restart",
+  ) => Effect.Effect<{ state: "running" | "stopped"; forced: boolean }, AgentEnvironmentError>;
 }
 
 export interface AgentHarnessSession {
@@ -39,7 +36,14 @@ export interface AgentHarnessSession {
   readonly setThinkingLevel: (
     level: ThinkingLevel,
   ) => Effect.Effect<ThinkingLevel, AgentHarnessError>;
-  readonly start: (input: string) => Effect.Effect<ActiveAgentRun, AgentHarnessError>;
+  readonly submit: (
+    input: string,
+    requestId: string,
+  ) => Effect.Effect<SubmissionId, AgentHarnessError>;
+  readonly resume: Effect.Effect<void, AgentHarnessError>;
+  readonly abort: Effect.Effect<void, AgentHarnessError>;
+  readonly view: ConversationView;
+  readonly views: Stream.Stream<ConversationView, AgentHarnessError>;
 }
 
 export interface AgentHarness {

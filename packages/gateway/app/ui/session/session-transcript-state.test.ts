@@ -1,337 +1,232 @@
-import { assertEquals } from "@std/assert";
-
-import type { SessionEvent, SessionUsage } from "@openorb/protocol/browser-session-events";
+import { assertEquals, assertThrows } from "@std/assert";
+import type { JsonObject } from "@earendil-works/pi-durable";
+import { ConversationViewSchema } from "@openorb/protocol/runner-api";
+import { Schema } from "effect";
 import {
   appendOptimisticUserMessage,
   createSessionTranscriptState,
-  failOptimisticUserMessage,
   reduceSessionTranscriptState,
-  removeOptimisticUserMessage,
-  runnerSessionStateForProvisioningStage,
-  type SessionState,
-  type ToolEntry,
   totalSessionUsage,
-  type TranscriptEntry,
-} from "@/app/ui/session/session-transcript-state.ts";
+} from "./session-transcript-state.ts";
 
-Deno.test("starts with the thinking level selected during session setup", () => {
-  assertEquals(createSessionTranscriptState("provisioning", "max").thinkingLevel, "max");
+const view = (entries: readonly unknown[] = [], docs: JsonObject = {}) =>
+  Schema.decodeUnknownSync(ConversationViewSchema)({ conversation: { id: 0 }, entries, docs });
+const user = (id: number, text: string) => ({
+  id,
+  conversationId: 0,
+  kind: "pi.user",
+  model: [{ role: "user", content: text, timestamp: 1 }],
 });
+const assistant = {
+  role: "assistant",
+  content: [{ type: "text", text: "Final answer" }],
+  usage: { input: 10, output: 5, totalTokens: 15, cost: { total: 0.1 } },
+};
+const initial = () => createSessionTranscriptState("running", "high");
 
-Deno.test("tracks replayed thinking-level changes", () => {
-  const initial = createSessionTranscriptState("ready", "high");
-  const changed = reduceSessionTranscriptState(
-    initial,
-    { type: "thinking-level.changed", level: "max" },
-    "ready",
+Deno.test("snapshot replacement and Chord root replacement never append old transcript", () => {
+  let state = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view([user(1, "old")]),
+  });
+  state = reduceSessionTranscriptState(state, {
+    type: "conversation.snapshot",
+    view: view([user(2, "new")]),
+  });
+  assertEquals(state.entries, [{ role: "user", messageId: "2:0", text: "new" }]);
+  state = reduceSessionTranscriptState(state, {
+    type: "conversation.ops",
+    ops: [["r", { conversation: { id: 0 }, entries: [], docs: {} }]],
+  });
+  assertEquals(state.entries, []);
+  assertThrows(() =>
+    reduceSessionTranscriptState(initial(), { type: "conversation.ops", ops: [] })
   );
-
-  assertEquals(changed.thinkingLevel, "max");
 });
 
-Deno.test("commits streamed assistant content and usage under its durable message identity", () => {
-  const state = reduce([
-    { type: "message.started", role: "assistant" },
-    { type: "assistant.text.delta", delta: "Hello" },
-    { type: "assistant.thinking.delta", delta: "Reasoning" },
-    { type: "assistant.usage.updated", usage: usage(4, 2) },
-    {
-      type: "assistant.completed",
-      messageId: "entry-1",
-      text: "Hello world",
-      thinking: "Reasoning complete",
-      stopReason: "stop",
-      usage: usage(6, 3),
-    },
-  ]);
-
-  assertEquals(state.entries.filter((entry) => "role" in entry && entry.role === "assistant"), [
-    {
-      role: "assistant",
-      messageId: "entry-1",
-      text: "Hello world",
-      thinking: "Reasoning complete",
-      completed: true,
-    },
-  ]);
-  assertEquals([...state.usageByMessageId], [["entry-1", usage(6, 3)]]);
-  assertEquals(totalSessionUsage(state), usage(6, 3));
+Deno.test("partial removal and final entry in one atomic batch render exactly one answer", () => {
+  const before = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view([], { "pi.live": { generation: { message: assistant } } }),
+  });
+  const after = reduceSessionTranscriptState(before, {
+    type: "conversation.ops",
+    ops: [
+      ["d", ["docs", "pi.live", "generation"]],
+      ["p", ["entries"], 0, 0, [{
+        id: 1,
+        conversationId: 0,
+        kind: "pi.assistant",
+        model: [assistant],
+      }]],
+    ],
+  });
+  assertEquals(after.entries, [{
+    role: "assistant",
+    messageId: "1:0",
+    text: "Final answer",
+    thinking: "",
+    completed: true,
+  }]);
+  assertEquals(before.view?.docs["pi.live"]?.generation !== undefined, true);
 });
 
-Deno.test("conversation reset preserves provisioning output and discards incomplete content", () => {
-  const state = reduce([
-    { type: "provisioning.log", stream: "stdout", text: "Cloning repository\n" },
-    { type: "user.message", messageId: "user-old", text: "Old prompt" },
-    {
-      type: "assistant.completed",
-      messageId: "assistant-old",
-      text: "Old answer",
-      thinking: "",
-      stopReason: "stop",
-      usage: usage(2, 1),
-    },
-    { type: "message.started", role: "assistant" },
-    { type: "assistant.text.delta", delta: "Incomplete answer" },
-    { type: "conversation.reset" },
-    { type: "user.message", messageId: "user-new", text: "Current prompt" },
-  ]);
-
-  assertEquals(state.entries, [
-    {
-      role: "provisioning",
-      text: "Cloning repository\n",
-    },
-    { role: "user", messageId: "user-new", text: "Current prompt" },
-  ]);
-  assertEquals([...state.usageByMessageId], []);
+Deno.test("compaction shrinks active transcript but usage remains the durable ledger", () => {
+  let state = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view([user(1, "old")]),
+  });
+  state = reduceSessionTranscriptState(state, {
+    type: "conversation.snapshot",
+    view: view([
+      {
+        id: 2,
+        conversationId: 0,
+        kind: "pi.compaction",
+        head: 2,
+        model: [{ role: "user", content: "Summary" }],
+      },
+    ], {
+      "pi.usage": { models: { "provider/model": assistant.usage }, tools: {} },
+      "pi.agent": { thinkingLevel: "max" },
+      "pi.inbox": {
+        items: [{ id: 3, mode: "followUp", content: [{ type: "text", text: "Next" }] }],
+      },
+    }),
+  });
+  assertEquals(state.entries, [{ id: 2, label: "Context compacted", detail: "Summary" }]);
+  assertEquals(state.thinkingLevel, "max");
+  assertEquals(state.followUpQueue, ["Next"]);
+  assertEquals(totalSessionUsage(state).totalTokens, 15);
   assertEquals(state.contextUsage, undefined);
 });
 
-Deno.test("compaction invalidates context usage until a valid assistant completion replaces it", () => {
-  const beforeCompaction = reduce([
-    completedAssistant("assistant-1", usage(100, 10)),
-  ]);
-  assertEquals(beforeCompaction.contextUsage, usage(100, 10));
-
-  const compacted = reduceSessionTranscriptState(beforeCompaction, {
-    type: "context.compacted",
-    compactionId: "compaction-1",
-    summary: "Condensed prior work",
-    tokensBefore: 110,
-  }, "running");
-  assertEquals(compacted.contextUsage, undefined);
-
-  const recovered = reduceSessionTranscriptState(
-    compacted,
-    completedAssistant("assistant-2", usage(20, 5)),
-    "running",
-  );
-  assertEquals(recovered.contextUsage, usage(20, 5));
-});
-
-Deno.test("stream failure and explicit settlement finish transient transcript rows", () => {
-  const failed = reduce([
-    { type: "message.started", role: "assistant" },
-    { type: "assistant.text.delta", delta: "Partial answer" },
-    {
-      type: "tool.started",
-      toolCallId: "tool-1",
-      toolName: "bash",
-      arguments: '{"command":"pwd"}',
-    },
-    {
-      type: "assistant.stream.failed",
-      reason: "error",
-      errorMessage: "Provider unavailable",
-    },
-  ]);
-  assertEquals(
-    failed.entries.find((entry) => "role" in entry && entry.role === "assistant"),
-    {
-      role: "assistant",
-      text: "Partial answer",
-      thinking: "",
-      completed: true,
-    },
-  );
-  assertEquals(toolEntries(failed.entries)[0]?.active, false);
-
-  const settled = reduce([
-    { type: "message.started", role: "assistant" },
-    { type: "assistant.thinking.delta", delta: "Working" },
-    { type: "agent.settled" },
-  ]);
-  assertEquals(
-    settled.entries.find((entry) => "role" in entry && entry.role === "assistant"),
-    {
-      role: "assistant",
-      text: "",
-      thinking: "Working",
-      completed: true,
-    },
-  );
-});
-
-Deno.test("duplicate durable events are idempotent", () => {
-  const user: SessionEvent = {
-    type: "user.message",
-    messageId: "user-1",
-    text: "Inspect the repository",
-  };
-  const assistant = completedAssistant("assistant-1", usage(8, 3));
-  const state = reduce([user, assistant, user, assistant]);
-
-  assertEquals(state.entries.filter(isMessageEntry).length, 2);
-  assertEquals([...state.usageByMessageId], [["assistant-1", usage(8, 3)]]);
-  assertEquals(totalSessionUsage(state), usage(8, 3));
-});
-
-Deno.test("optimistic user messages reconcile with durable events or retain failures", () => {
-  const initial = createSessionTranscriptState("ready", "high");
-  const pending = appendOptimisticUserMessage(
-    initial,
-    "optimistic-1",
-    "Continue the implementation",
-  );
-  assertEquals(pending.entries, [{
-    role: "user",
-    messageId: "optimistic-1",
-    text: "Continue the implementation",
-    delivery: "pending",
-  }]);
-
-  const failed = failOptimisticUserMessage(
-    pending,
-    "optimistic-1",
-    "The pinned runner is offline.",
-  );
-  assertEquals(failed.entries, [{
-    role: "user",
-    messageId: "optimistic-1",
-    text: "Continue the implementation",
-    delivery: "failed",
-    deliveryError: "The pinned runner is offline.",
-  }]);
-
-  const reconciled = reduceSessionTranscriptState(failed, {
-    type: "user.message",
-    messageId: "pi-user-1",
-    text: "Continue the implementation",
-  }, "ready");
-  assertEquals(reconciled.entries, [{
-    role: "user",
-    messageId: "pi-user-1",
-    text: "Continue the implementation",
-  }]);
-});
-
-Deno.test("optimistic user messages reconcile after form line-ending normalization", () => {
-  const pending = appendOptimisticUserMessage(
-    createSessionTranscriptState("ready", "high"),
-    "optimistic-1",
-    "rate the reliability\n",
-  );
-
-  const reconciled = reduceSessionTranscriptState(pending, {
-    type: "user.message",
-    messageId: "pi-user-1",
-    text: "rate the reliability\r\n",
-  }, "ready");
-
-  assertEquals(reconciled.entries, [{
-    role: "user",
-    messageId: "pi-user-1",
-    text: "rate the reliability\r\n",
-  }]);
-});
-
-Deno.test("accepted follow-ups leave the optimistic transcript and track Pi's live queue", () => {
-  const initial = createSessionTranscriptState("running", "high");
-  const pending = appendOptimisticUserMessage(initial, "optimistic-1", "First follow-up");
-  const accepted = removeOptimisticUserMessage(pending, "optimistic-1");
-  assertEquals(accepted.entries, []);
-
-  const queued = reduceSessionTranscriptState(accepted, {
-    type: "queue.updated",
-    steering: [],
-    followUp: ["First follow-up", "Second follow-up"],
-  }, "running");
-  assertEquals(queued.followUpQueue, ["First follow-up", "Second follow-up"]);
-
-  const delivered = reduceSessionTranscriptState(queued, {
-    type: "queue.updated",
-    steering: [],
-    followUp: ["Second follow-up"],
-  }, "running");
-  assertEquals(delivered.followUpQueue, ["Second follow-up"]);
-
-  const ready = reduceSessionTranscriptState(delivered, {
+Deno.test("environment stopping never settles or discards a running agent partial", () => {
+  const before = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view([], { "pi.live": { generation: { message: assistant } } }),
+  });
+  const after = reduceSessionTranscriptState(before, {
     type: "session.state",
-    stage: "ready",
+    stage: "stopping",
+    agentState: "running",
+    environmentState: "stopping",
     checkoutState: "available",
     issues: [],
-  }, "ready");
-  assertEquals(ready.followUpQueue, []);
+  });
+  assertEquals(after.entries, before.entries);
+  assertEquals(after.status, "Agent running · Environment stopping");
 });
 
-Deno.test("VM lifecycle stages expose transcript-specific status", () => {
-  const stopping = reduceSessionTranscriptState(
-    createSessionTranscriptState("ready", "high"),
-    { type: "session.state", stage: "stopping", checkoutState: "available", issues: [] },
-    "provisioning",
-  );
-  assertEquals(stopping.status, "Stopping VM");
-
-  const stopped = reduceSessionTranscriptState(stopping, {
-    type: "session.state",
-    stage: "stopped",
-    checkoutState: "available",
-    issues: [],
-  }, "stopped");
-  assertEquals(stopped.status, "Stopped");
-
-  const resuming = reduceSessionTranscriptState(stopped, {
-    type: "session.state",
-    stage: "resuming",
-    checkoutState: "available",
-    issues: [],
-  }, "provisioning");
-  assertEquals(resuming.status, "Restarting environment");
+Deno.test("optimistic prompt survives replacement and only a newly observed matching entry reconciles it", () => {
+  let state = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view([user(1, "again")]),
+  });
+  state = appendOptimisticUserMessage(state, "pending-1", "again");
+  state = reduceSessionTranscriptState(state, {
+    type: "conversation.snapshot",
+    view: view([user(1, "again")]),
+  });
+  assertEquals(state.entries.length, 2);
+  state = reduceSessionTranscriptState(state, {
+    type: "conversation.snapshot",
+    view: view([user(1, "again"), user(2, "again")]),
+  });
+  assertEquals(state.entries.length, 2);
+  assertEquals(state.entries.some((entry) => "delivery" in entry), false);
 });
 
-Deno.test("agent and turn boundaries do not add transcript activity", () => {
-  const state = reduce([
-    { type: "agent.started" },
-    { type: "turn.started" },
-    { type: "turn.completed", toolResultCount: 2 },
-    { type: "agent.settled" },
-  ]);
-
-  assertEquals(state.entries, []);
-  assertEquals(state.nextActivityId, 1);
-  assertEquals(state.status, "Agent running");
+Deno.test("tool projection retains arguments and suppresses read output without rewriting replicated state", () => {
+  const mounted = view([
+    {
+      id: 1,
+      conversationId: 0,
+      kind: "pi.assistant",
+      model: [{
+        role: "assistant",
+        content: [{
+          type: "toolCall",
+          id: "call-1",
+          name: "read",
+          arguments: { path: "/workspace/a" },
+        }],
+      }],
+    },
+  ], {
+    "pi.live": {
+      tools: [{ callId: "call-1", name: "read", status: "running", output: "file contents" }],
+    },
+  });
+  const state = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: mounted,
+  });
+  assertEquals(state.entries, [{
+    role: "tool",
+    toolCallId: "call-1",
+    toolName: "read",
+    arguments: '{"path":"/workspace/a"}',
+    active: true,
+  }]);
+  assertEquals(state.view, mounted);
 });
 
-function reduce(events: SessionEvent[]) {
-  let sessionState: SessionState = "running";
-  let transcriptState = createSessionTranscriptState(sessionState, "high");
-  for (const event of events) {
-    if (event.type === "session.state") {
-      sessionState = runnerSessionStateForProvisioningStage(event.stage);
-    }
-    transcriptState = reduceSessionTranscriptState(transcriptState, event, sessionState);
-  }
-  return transcriptState;
-}
+for (const toolName of ["read", "readImage"]) {
+  Deno.test(`${toolName} images use artifact Markdown while text output stays hidden`, () => {
+    const artifactId = "01989d78-65ee-8f6a-a97e-0f16ad134c10";
+    const state = reduceSessionTranscriptState(initial(), {
+      type: "conversation.snapshot",
+      view: view([{
+        id: 1,
+        conversationId: 0,
+        kind: "pi.tool-result",
+        model: [{
+          role: "toolResult",
+          toolCallId: "read-image",
+          toolName,
+          content: [
+            { type: "text", text: "hidden file output" },
+            { type: "image", artifactId },
+            { type: "image", text: "[Image unavailable: unsupported format]" },
+          ],
+        }],
+      }]),
+    });
+    assertEquals(state.entries, [{
+      role: "tool",
+      toolCallId: "read-image",
+      toolName,
+      active: false,
+      isError: false,
+      result:
+        `\n\n![Image](openorb-artifact:image:${artifactId})\n\n[Image unavailable: unsupported format]`,
+    }]);
+  });
 
-function usage(inputTokens: number, outputTokens: number): SessionUsage {
-  return {
-    inputTokens,
-    outputTokens,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    totalTokens: inputTokens + outputTokens,
-    totalCost: inputTokens + outputTokens,
-  };
-}
-
-function completedAssistant(messageId: string, eventUsage: SessionUsage): SessionEvent {
-  return {
-    type: "assistant.completed",
-    messageId,
-    text: `Answer from ${messageId}`,
-    thinking: "",
-    stopReason: "stop",
-    usage: eventUsage,
-  };
-}
-
-function toolEntries(entries: readonly TranscriptEntry[]): ToolEntry[] {
-  return entries.filter(
-    (entry): entry is ToolEntry => "role" in entry && entry.role === "tool",
-  );
-}
-
-function isMessageEntry(entry: TranscriptEntry): boolean {
-  return "role" in entry && (entry.role === "user" || entry.role === "assistant");
+  Deno.test(`${toolName} errors retain diagnostic text`, () => {
+    const state = reduceSessionTranscriptState(initial(), {
+      type: "conversation.snapshot",
+      view: view([{
+        id: 1,
+        conversationId: 0,
+        kind: "pi.tool-result",
+        model: [{
+          role: "toolResult",
+          toolCallId: "failed-read",
+          toolName,
+          isError: true,
+          content: [{ type: "text", text: "Guest file could not be read." }],
+        }],
+      }]),
+    });
+    assertEquals(state.entries, [{
+      role: "tool",
+      toolCallId: "failed-read",
+      toolName,
+      active: false,
+      isError: true,
+      result: "Guest file could not be read.",
+    }]);
+  });
 }

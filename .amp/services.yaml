@@ -1,10 +1,10 @@
 services:
-  motel:
-    command: MOTEL_OTEL_HOST=127.0.0.1 MOTEL_OTEL_PORT="$PORT" motel server
+  gotel:
+    command: GOTEL_OTEL_HOST=127.0.0.1 GOTEL_OTEL_PORT="$PORT" gotel server
     port: 27686
   gateway:
     command: deno task dev:gateway
     port: 44100
     portal:
       title: OpenOrb
-      description: OpenOrb gateway with local OpenTelemetry export to Motel.
+      description: OpenOrb gateway with local OpenTelemetry export to GoTel.

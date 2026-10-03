@@ -17,9 +17,11 @@ across agent activity and idle periods.
 **Agent Harness**: The provider-neutral agent capability used by the runner, independent of any
 particular agent implementation or version. _Avoid_: Pi interface, Pi runtime
 
-**Harness State**: The durable provider-specific state needed by an Agent Harness to continue a
-Session. Pi's JSONL session log is one representation of Harness State. _Avoid_: Conversation
-journal
+**Harness State**: The durable conversation, queued inputs, and unfinished agent work needed by an
+Agent Harness to continue a Session. _Avoid_: Conversation journal
+
+**Submission**: One input admitted to a Session's conversation, with its own stable identity whether
+it starts work or becomes a Follow-up. _Avoid_: Run ID, acceptance receipt
 
 **Agent Run**: A continuous period of agent activity beginning with an accepted prompt, including
 follow-ups and automatic continuations, and ending when the agent settles. _Avoid_: Prompt run, turn
@@ -30,15 +32,11 @@ New run, prompt run
 **Session Event**: A fact about a Session expressed in OpenOrb's stable event vocabulary,
 independent of the provider-specific source that reported it.
 
-**Session Journal**: The runner-owned, per-Session append-only sequence of facts used to rebuild
-internal Session state and correlate asynchronous completions. It is separate from Session Events
-and provider-owned Harness State. _Avoid_: Metadata snapshot
+**Session Journal**: The runner-owned sequence of infrastructure and configuration facts for a
+Session. It is separate from the agent work owned by Harness State. _Avoid_: Conversation journal
 
-**Durable Session Event**: A Session Event backed by Harness State and addressable by a replay
-cursor.
-
-**Ephemeral Session Event**: A Session Event observed during live activity without a replay
-guarantee. _Avoid_: Durable event, conversation event
+**Conversation View**: The current active transcript, queued input, agent configuration, usage, and
+live progress presented to a Session viewer. _Avoid_: Event replay
 
 **Project Checkout**: The session-specific repository at `/workspace` inside the persistent Agent
 Environment root disk. _Avoid_: Host workspace, mounted workspace
@@ -62,7 +60,13 @@ session-owned root disk. _Avoid_: Workspace Runtime
 reopened by each new VM. It includes the Project Checkout and other non-tmpfs guest state, but not
 RAM, processes, or tmpfs-backed paths. _Avoid_: Workspace disk, host checkout
 
-**Stop**: The durability boundary that cancels and closes an active Agent Run when necessary,
-records a final Git Snapshot, syncs the guest filesystem, closes the Agent Harness, stops the VM
-without deleting its Persistent Root Disk, syncs that disk on the host, and journals completion.
-_Avoid_: Shutdown, suspend
+**Stop Session**: A recoverable pause of agent work together with a durable stop of its Agent
+Environment. _Avoid_: Abort, cancellation
+
+**Wake**: Resumption of a paused Session's agent work and Agent Environment. _Avoid_: New Session
+
+**Abort**: Cancellation of agent work and queued inputs without stopping the Agent Environment.
+_Avoid_: Stop Session
+
+**Environment Control**: Agent-initiated start, stop, or restart of the Agent Environment without
+pausing the agent itself. _Avoid_: Stop Session

@@ -32,6 +32,7 @@ export type PreparedSessionChanges = {
 };
 
 export type SessionChangeFilesProps = PreparedSessionChanges & {
+  readonly mutationsDisabled?: boolean;
   readonly onUpdate: (
     action: "stage" | "unstage",
     path: string,
@@ -82,9 +83,11 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
     context: ChangeHeaderContext,
   ) => {
     const row = rowsById.get(context.item.id);
-    return row === undefined
-      ? undefined
-      : createSessionChangeHeader(row, context.item.collapsed ?? false);
+    return row === undefined ? undefined : createSessionChangeHeader(
+      row,
+      context.item.collapsed ?? false,
+      handle.props.mutationsDisabled ?? false,
+    );
   };
 
   const codeViewOptions: CodeViewOptions<undefined> = {
@@ -132,6 +135,7 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
       return;
     }
     if (command !== "stage" && command !== "unstage") return;
+    if (handle.props.mutationsDisabled) return;
     const paths = sessionChangeMutationPaths(row);
     void handle.props.onUpdate(command, paths.path, paths.previousPath);
   };
@@ -154,6 +158,7 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
 function createSessionChangeHeader(
   row: PreparedSessionChangeRow,
   collapsed: boolean,
+  mutationsDisabled: boolean,
 ): HTMLElement {
   const { file, stats } = row;
   const action = row.state === "staged" ? "unstage" as const : "stage" as const;
@@ -238,6 +243,7 @@ function createSessionChangeHeader(
   header.append(toggle);
 
   const actionButton = document.createElement("button");
+  actionButton.disabled = mutationsDisabled;
   actionButton.type = "button";
   actionButton.dataset.changeFileCommand = action;
   actionButton.dataset.changeFileId = row.key;

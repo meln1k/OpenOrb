@@ -125,7 +125,9 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
                   : active
                   ? (
                     <SessionChangeFiles
+                      key={String(changes.canMutate)}
                       {...loaded.changes}
+                      mutationsDisabled={!changes.canMutate}
                       onUpdate={(action, path, previousPath) =>
                         changes.updateFile(action, path, previousPath)}
                     />

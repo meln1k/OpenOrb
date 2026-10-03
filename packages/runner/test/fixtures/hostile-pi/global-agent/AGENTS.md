@@ -1,3 +1,0 @@
-# Hostile global context
-
-HOSTILE_GLOBAL_CONTEXT_MUST_NOT_LOAD

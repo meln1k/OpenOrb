@@ -29,7 +29,7 @@ interface GitSnapshotSynchronizerOptions {
   readonly generate: (
     ...args: Parameters<typeof generateSessionGitSnapshotBundle>
   ) => Effect.Effect<SessionGitSnapshot | GeneratedSessionGitSnapshot, unknown>;
-  readonly publishUpdated: (correlationId: string) => Effect.Effect<void, unknown>;
+  readonly publishUpdated: () => Effect.Effect<void, unknown>;
 }
 
 export interface GitSnapshotSynchronizer {
@@ -37,7 +37,7 @@ export interface GitSnapshotSynchronizer {
     environment: AgentEnvironment,
     metadata: RunnerSessionMetadata,
   ) => Effect.Effect<SessionGitSnapshot, unknown>;
-  readonly publishPending: (correlationId: string) => Effect.Effect<void, unknown>;
+  readonly publishPending: () => Effect.Effect<void, unknown>;
 }
 
 export function makeGitSnapshotSynchronizer(
@@ -84,12 +84,10 @@ export function makeGitSnapshotSynchronizer(
       }
       return state.snapshot;
     }),
-    publishPending: Effect.fn("GitSnapshotSynchronizer.publishPending")(function* (
-      correlationId: string,
-    ) {
+    publishPending: Effect.fn("GitSnapshotSynchronizer.publishPending")(function* () {
       let state = yield* options.store.readGitSnapshotState(options.sessionId);
       if (state.notificationPending) {
-        yield* options.publishUpdated(correlationId);
+        yield* options.publishUpdated();
         state = { ...state, notificationPending: false };
         yield* options.store.writeGitSnapshotState(options.sessionId, state);
       }
