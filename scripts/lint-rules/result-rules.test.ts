@@ -278,11 +278,15 @@ Deno.test("application code cannot throw generic Error or catch exceptions", () 
 Deno.test("browser code may catch exceptions without requiring Result wrappers", () => {
   const source = "try { work(); } catch { recover(); }";
   assertEquals(
-    diagnostics(source, CATCH_RULE, "packages/gateway/app/ui/session/example.tsx"),
+    diagnostics(source, CATCH_RULE, "packages/gateway/app/actions/sessions/public/example.tsx"),
     [],
   );
   assertEquals(
-    diagnostics(source, CATCH_RULE, "packages/gateway/app/assets/client.ts"),
+    diagnostics(source, CATCH_RULE, "packages/gateway/app/ui/public/components/example.tsx"),
+    [],
+  );
+  assertEquals(
+    diagnostics(source, CATCH_RULE, "packages/gateway/app/public/client.ts"),
     [],
   );
   assertEquals(

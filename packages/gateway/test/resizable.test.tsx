@@ -1,8 +1,12 @@
 import { assertStringIncludes } from "@std/assert";
 import { renderToString } from "remix/component/server";
 
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/app/ui/components/index.ts";
-import { AppShellLayout } from "@/app/ui/shell.tsx";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/app/ui/public/components/index.ts";
+import { AppShellLayout } from "@/app/ui/public/shell.tsx";
 
 Deno.test("resizable components render the shadcn composition and sizing attributes", async () => {
   const html = await renderToString(

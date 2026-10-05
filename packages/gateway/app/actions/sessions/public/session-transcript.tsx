@@ -1,0 +1,1026 @@
+import type { SessionUsage } from "@openorb/protocol/browser-session-events";
+import type { SessionThinkingLevel } from "../../../../../protocol/src/thinking-level.ts";
+import { tryAsync, trySync } from "../../../../../result/src/index.ts";
+import { object, parseSafe, string } from "remix/data-schema";
+import { css, type Dispatched, type Handle, on } from "remix/component";
+
+import { routes } from "@/app/routes.ts";
+import { Button } from "@/app/ui/public/components/button.tsx";
+import { Icon } from "@/app/ui/public/components/icons.tsx";
+import { Marker, MarkerContent, MarkerIcon } from "@/app/ui/public/components/marker.tsx";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerViewport,
+} from "./message-scroller.tsx";
+import { media } from "@/app/ui/public/responsive.ts";
+import { actionResponseAccepted, actionResponseError } from "./session-action-response.ts";
+import { SessionFailureNotices } from "./session-failure-notices.tsx";
+import { AssistantMarkdown } from "./session-markdown.tsx";
+import {
+  activeActivityId,
+  appendOptimisticUserMessage,
+  createSessionTranscriptState,
+  failOptimisticUserMessage,
+  reduceSessionTranscriptState,
+  type SessionState,
+  type ToolEntry,
+  totalSessionUsage,
+  type TranscriptEntry,
+  usageContextTokens,
+} from "./session-transcript-state.ts";
+import { SessionPageScope } from "./session-page-controller.tsx";
+import { formatThinkingLevel } from "@/app/ui/public/session-thinking-level.ts";
+import { createSessionThinkingLevelController } from "./session-thinking-level-controller.ts";
+
+export type SessionTranscriptProps = {
+  contextWindow: number;
+  csrfToken: string;
+  initialThinkingLevel: SessionThinkingLevel;
+  sessionId: string;
+  thinkingLevels: readonly SessionThinkingLevel[];
+};
+const bashToolArgumentsSchema = object(
+  { command: string() },
+  { unknownKeys: "passthrough" },
+);
+const readToolArgumentsSchema = object(
+  { path: string() },
+  { unknownKeys: "passthrough" },
+);
+export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
+  const page = handle.context.get(SessionPageScope);
+  const agentControlState = (): SessionState => {
+    switch (page.projection.agentState) {
+      case "idle":
+        return "ready";
+      case "running":
+        return "running";
+      case "paused":
+        return "stopped";
+      case "error":
+        return "error";
+      case null:
+        return "offline";
+    }
+  };
+  let transcriptState = createSessionTranscriptState(
+    page.projection.sessionState,
+    handle.props.initialThinkingLevel,
+  );
+  let promptRequestPending = false;
+  // Optimistic keys live only in this transcript, not in the runner's history.
+  let nextOptimisticMessageId = 0;
+  let abortPending = false;
+  let actionError: string | undefined;
+  let updateFrame: number | undefined;
+  const abortFormId = `session-${handle.props.sessionId}-abort`;
+  const thinking = createSessionThinkingLevelController({
+    csrfToken: handle.props.csrfToken,
+    sessionId: handle.props.sessionId,
+    supportedLevels: handle.props.thinkingLevels,
+    signal: handle.signal,
+    confirmedLevel: () => transcriptState.thinkingLevel,
+    setError: (error) => actionError = error,
+    update: async () => {
+      await handle.update();
+    },
+  }, agentControlState());
+
+  const scheduleUpdate = () => {
+    if (updateFrame !== undefined) return;
+    updateFrame = requestAnimationFrame(() => {
+      updateFrame = undefined;
+      if (!handle.signal.aborted) void handle.update();
+    });
+  };
+
+  handle.queueTask(() => {
+    page.addEventListener("connection", scheduleUpdate, { signal: handle.signal });
+    page.addEventListener("session", (message) => {
+      const event = message.detail;
+      const [next, frameError] = trySync(
+        () => reduceSessionTranscriptState(transcriptState, event),
+        () => true,
+      );
+      if (frameError !== undefined) {
+        actionError = "Conversation synchronization failed. Reload to obtain a fresh snapshot.";
+        page.invalidateStream();
+        scheduleUpdate();
+        return;
+      }
+      if (next === transcriptState) return;
+      transcriptState = next;
+      thinking.observeConfirmed();
+      scheduleUpdate();
+    }, { signal: handle.signal });
+    document.addEventListener("keydown", (event) => {
+      if (
+        event.key !== "Tab" || !event.shiftKey || event.altKey || event.ctrlKey ||
+        event.metaKey || event.isComposing
+      ) return;
+      if (document.querySelector("dialog[open]")) return;
+      event.preventDefault();
+      if (!page.projection.connectionInterrupted) void thinking.cycle(agentControlState());
+    }, { capture: true, signal: handle.signal });
+    handle.signal.addEventListener("abort", () => {
+      if (updateFrame !== undefined) cancelAnimationFrame(updateFrame);
+    }, { once: true });
+  });
+
+  async function submitAbort(
+    event: Dispatched<SubmitEvent, HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (
+      page.projection.agentState !== "running" ||
+      page.projection.connectionInterrupted || abortPending
+    ) return;
+
+    const form = event.currentTarget;
+    abortPending = true;
+    actionError = undefined;
+    await handle.update();
+    if (handle.signal.aborted) return;
+
+    const [response, requestError] = await tryAsync(
+      fetch(form.action, {
+        method: "POST",
+        body: new FormData(form),
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        redirect: "manual",
+        signal: handle.signal,
+      }),
+      () => true,
+    );
+    if (requestError !== undefined) {
+      if (handle.signal.aborted) return;
+      abortPending = false;
+      actionError =
+        "Abort acknowledgement was lost. The run may still be stopping; wait for session state before trying again.";
+      await handle.update();
+      return;
+    }
+    if (handle.signal.aborted) return;
+    if (response.ok) {
+      const accepted = await actionResponseAccepted(response);
+      if (handle.signal.aborted) return;
+      abortPending = false;
+      if (accepted) {
+        await handle.update();
+        return;
+      }
+      actionError =
+        "Abort acknowledgement was invalid. The run may still be stopping; wait for session state before trying again.";
+      await handle.update();
+      return;
+    }
+    abortPending = false;
+    actionError = await actionResponseError(response, "Abort was not accepted");
+    if (!handle.signal.aborted) await handle.update();
+  }
+
+  const abortSubmit = on<HTMLFormElement, "submit">("submit", submitAbort);
+
+  return () => {
+    const { connectionInterrupted } = page.projection;
+    const sessionState = agentControlState();
+    thinking.syncSessionState(sessionState);
+    const thinkingLevel = thinking.displayedLevel(sessionState);
+    const promptThinkingLevel = thinking.promptLevel(sessionState);
+    const currentActivityId = activeActivityId(transcriptState);
+    const busy = page.projection.agentState === "running" && !connectionInterrupted;
+    const hasActiveRun = sessionState === "running";
+    const vmCanAcceptPrompt = sessionState === "ready" || sessionState === "stopped" ||
+      sessionState === "running";
+    const canSubmitPrompt = vmCanAcceptPrompt &&
+      !connectionInterrupted && !abortPending && !promptRequestPending;
+    const canAbort = hasActiveRun && !connectionInterrupted && !abortPending;
+    const usage = totalSessionUsage(transcriptState);
+    const status = connectionInterrupted
+      ? "Connection interrupted"
+      : abortPending
+      ? "Aborting…"
+      : transcriptState.status;
+
+    return (
+      <section
+        id={handle.id}
+        aria-label="Session conversation"
+        aria-keyshortcuts="Shift+Tab"
+        data-session-state={sessionState}
+        mix={sessionFrameStyle}
+      >
+        <span role="status" data-session-status mix={screenReaderOnlyStyle}>{status}</span>
+        {hasActiveRun
+          ? (
+            <form
+              id={abortFormId}
+              method="post"
+              action={routes.app.sessions.abort.href({ sessionId: handle.props.sessionId })}
+              mix={abortSubmit}
+            >
+              <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+            </form>
+          )
+          : null}
+        <SessionFailureNotices
+          connectionInterrupted={connectionInterrupted}
+          csrfToken={handle.props.csrfToken}
+          issues={page.projection.issues}
+          recoveryAllowed={page.projection.agentState === "error" ||
+            page.projection.environmentState === "error"}
+          sessionId={handle.props.sessionId}
+        />
+        {actionError ? <p role="alert" mix={actionErrorStyle}>{actionError}</p> : null}
+        <MessageScroller
+          autoScroll
+          defaultScrollPosition="last-anchor"
+          scrollPreviousItemPeek={64}
+        >
+          <MessageScrollerViewport>
+            <MessageScrollerContent
+              aria-busy={busy || undefined}
+              data-session-conversation
+            >
+              {transcriptState.warningVisible
+                ? (
+                  <MessageScrollerItem messageId="session:checkout-warning">
+                    <Marker data-session-warning mix={richMarkerStyle}>
+                      <MarkerIcon>
+                        <Icon name="activity" />
+                      </MarkerIcon>
+                      <MarkerContent>
+                        Repository checkout is unavailable. Provisioning completed without branch or
+                        setup steps.
+                      </MarkerContent>
+                    </Marker>
+                  </MessageScrollerItem>
+                )
+                : null}
+              {transcriptState.followUpQueue.length > 0
+                ? (
+                  <MessageScrollerItem messageId="session:follow-up-queue">
+                    <Marker data-follow-up-queue mix={richMarkerStyle}>
+                      <MarkerIcon>
+                        <Icon name="activity" />
+                      </MarkerIcon>
+                      <MarkerContent mix={queueDetailStyle}>
+                        <strong>
+                          {transcriptState.followUpQueue.length}{" "}
+                          follow-up{transcriptState.followUpQueue.length === 1 ? "" : "s"} queued
+                        </strong>
+                        <ol>
+                          {transcriptState.followUpQueue.map((prompt, index) => (
+                            <li key={`${index}:${prompt}`}>{prompt}</li>
+                          ))}
+                        </ol>
+                      </MarkerContent>
+                    </Marker>
+                  </MessageScrollerItem>
+                )
+                : null}
+              {transcriptState.entries.length === 0
+                ? (
+                  <MessageScrollerItem>
+                    <p data-conversation-placeholder mix={emptyConversationStyle}>
+                      {sessionState === "offline"
+                        ? "Conversation history is unavailable while the pinned runner is offline."
+                        : "Connecting to the orb"}
+                    </p>
+                  </MessageScrollerItem>
+                )
+                : transcriptState.entries.map((entry) =>
+                  renderTranscriptEntry(entry, currentActivityId, handle.props.sessionId)
+                )}
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          <MessageScrollerButton mix={scrollButtonStyle} />
+        </MessageScroller>
+        <form
+          method="post"
+          action={routes.app.sessions.message.href({ sessionId: handle.props.sessionId })}
+          data-thinking-level={thinkingLevel}
+          mix={[
+            sessionFooterItemStyle,
+            promptFormStyle,
+            on<HTMLFormElement, "submit">("submit", async (event) => {
+              event.preventDefault();
+              if (!canSubmitPrompt) return;
+
+              const form = event.currentTarget;
+              const formData = new FormData(form);
+              const prompt = parseSafe(string(), formData.get("prompt"));
+              if (!prompt.success || prompt.value.trim().length === 0) return;
+
+              const optimisticId = `optimistic:${nextOptimisticMessageId++}`;
+              actionError = undefined;
+              promptRequestPending = true;
+              transcriptState = appendOptimisticUserMessage(
+                transcriptState,
+                optimisticId,
+                prompt.value,
+              );
+              const action = form.action;
+              form.reset();
+              await handle.update();
+              if (handle.signal.aborted) return;
+
+              const [response, requestError] = await tryAsync(
+                fetch(action, {
+                  method: "POST",
+                  body: formData,
+                  credentials: "same-origin",
+                  headers: { Accept: "application/json" },
+                  redirect: "manual",
+                  signal: handle.signal,
+                }),
+                () => true,
+              );
+              if (requestError !== undefined) {
+                if (handle.signal.aborted) return;
+                promptRequestPending = false;
+                actionError =
+                  "Message acknowledgement was lost. Delivery is uncertain; check the live session before trying again.";
+                transcriptState = failOptimisticUserMessage(
+                  transcriptState,
+                  optimisticId,
+                  "Message acknowledgement was lost. Delivery is uncertain; check the live session before trying again.",
+                );
+                await handle.update();
+                return;
+              }
+              if (handle.signal.aborted) return;
+              if (response.ok) {
+                const accepted = await actionResponseAccepted(response);
+                if (handle.signal.aborted) return;
+                promptRequestPending = false;
+                if (!accepted) {
+                  actionError =
+                    "Message acknowledgement was invalid. Delivery is uncertain; check the live session before trying again.";
+                  transcriptState = failOptimisticUserMessage(
+                    transcriptState,
+                    optimisticId,
+                    "Message acknowledgement was invalid. Delivery is uncertain; check the live session before trying again.",
+                  );
+                  await handle.update();
+                  return;
+                }
+                await handle.update();
+                return;
+              }
+              const deliveryError = await actionResponseError(
+                response,
+                "Message was not accepted",
+              );
+              if (handle.signal.aborted) return;
+
+              promptRequestPending = false;
+              actionError = deliveryError;
+              transcriptState = failOptimisticUserMessage(
+                transcriptState,
+                optimisticId,
+                deliveryError,
+              );
+              await handle.update();
+            }),
+          ]}
+        >
+          <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+          {promptThinkingLevel === undefined ? null : (
+            <input
+              type="hidden"
+              name="thinkingLevel"
+              value={promptThinkingLevel}
+            />
+          )}
+          <textarea
+            name="prompt"
+            aria-label="Continue session"
+            placeholder="Continue the session…"
+            required
+            mix={[
+              promptInputStyle,
+              on<HTMLTextAreaElement, "keydown">("keydown", (event) => {
+                if (event.key !== "Enter" || event.isComposing || event.shiftKey) return;
+                event.preventDefault();
+                if (canSubmitPrompt) event.currentTarget.form?.requestSubmit();
+              }),
+            ]}
+          />
+          {hasActiveRun
+            ? (
+              <Button
+                type="submit"
+                form={abortFormId}
+                size="icon-lg"
+                aria-label="Stop active turn"
+                title={canAbort
+                  ? "Stop active turn"
+                  : abortPending
+                  ? "Stopping active turn"
+                  : "Active turn cannot be stopped"}
+                disabled={!canAbort}
+                mix={sendButtonStyle}
+              >
+                <span aria-hidden="true" data-slot="stop-icon" mix={stopIconStyle} />
+              </Button>
+            )
+            : (
+              <Button
+                type="submit"
+                size="icon-lg"
+                aria-label="Send prompt"
+                title={canSubmitPrompt
+                  ? "Send prompt"
+                  : promptRequestPending
+                  ? "Wait for prompt acknowledgement"
+                  : busy || abortPending
+                  ? "The VM is busy"
+                  : "The VM is not available"}
+                disabled={!canSubmitPrompt}
+                mix={sendButtonStyle}
+              >
+                <Icon name="arrow-right" size={16} />
+              </Button>
+            )}
+        </form>
+        {renderUsageStatus(
+          usage,
+          transcriptState.latestUsage,
+          transcriptState.contextUsage,
+          handle.props.contextWindow,
+          thinkingLevel,
+          thinking.requestPending(),
+        )}
+      </section>
+    );
+  };
+}
+
+function renderTranscriptEntry(
+  entry: TranscriptEntry,
+  activeActivityId: number | undefined,
+  sessionId: string,
+) {
+  if (!("role" in entry)) {
+    const active = entry.id === activeActivityId;
+    return (
+      <MessageScrollerItem key={`activity:${entry.id}`} messageId={`activity:${entry.id}`}>
+        <Marker
+          role={active ? "status" : undefined}
+          data-session-activity
+          mix={richMarkerStyle}
+        >
+          <MarkerIcon>
+            {active ? <span data-slot="spinner" mix={spinnerStyle} /> : <Icon name="activity" />}
+          </MarkerIcon>
+          <MarkerContent mix={markerDetailStyle}>
+            <strong>{entry.label}</strong>
+            {entry.detail
+              ? entry.detail.includes("\n") || entry.detail.length > 160
+                ? (
+                  <details>
+                    <summary>Details</summary>
+                    <pre>{entry.detail}</pre>
+                  </details>
+                )
+                : <span data-activity-detail>{entry.detail}</span>
+              : null}
+          </MarkerContent>
+        </Marker>
+      </MessageScrollerItem>
+    );
+  }
+
+  switch (entry.role) {
+    case "user":
+      return (
+        <MessageScrollerItem
+          key={`message:${entry.messageId}`}
+          messageId={`message:${entry.messageId}`}
+          scrollAnchor
+        >
+          <article
+            data-conversation-entry
+            data-role="user"
+            data-delivery={entry.delivery}
+            aria-invalid={entry.delivery === "failed" || undefined}
+            mix={userMessageStyle}
+          >
+            <p>{entry.text}</p>
+            {entry.delivery === "pending"
+              ? <small role="status" data-prompt-delivery>Sending…</small>
+              : entry.delivery === "failed"
+              ? <small role="alert" data-prompt-delivery>{entry.deliveryError}</small>
+              : null}
+          </article>
+        </MessageScrollerItem>
+      );
+    case "assistant": {
+      const hasText = entry.text.trim().length > 0;
+      const hasThinking = entry.thinking.trim().length > 0;
+      if (!hasText && !hasThinking) return null;
+      const assistantKey = entry.messageId === undefined
+        ? "assistant:active"
+        : `message:${entry.messageId}`;
+      return (
+        <MessageScrollerItem
+          key={assistantKey}
+          messageId={assistantKey}
+        >
+          <article data-conversation-entry data-role="assistant" mix={assistantMessageStyle}>
+            {hasThinking
+              ? (
+                <Marker
+                  role={entry.completed ? undefined : "status"}
+                  data-assistant-thinking
+                  mix={richMarkerStyle}
+                >
+                  <MarkerIcon>
+                    {entry.completed
+                      ? <Icon name="brain" />
+                      : <span data-slot="spinner" mix={spinnerStyle} />}
+                  </MarkerIcon>
+                  <MarkerContent mix={markerDetailStyle}>
+                    <details>
+                      <summary>Thinking</summary>
+                      <pre>{entry.thinking}</pre>
+                    </details>
+                  </MarkerContent>
+                </Marker>
+              )
+              : null}
+            {hasText
+              ? (
+                <AssistantMarkdown
+                  text={entry.text}
+                  completed={entry.completed}
+                  sessionId={sessionId}
+                />
+              )
+              : null}
+          </article>
+        </MessageScrollerItem>
+      );
+    }
+    case "tool": {
+      const readPath = pathForReadTool(entry);
+      return (
+        <MessageScrollerItem
+          key={`tool:${entry.toolCallId}`}
+          messageId={`tool:${entry.toolCallId}`}
+          mix={toolItemStyle}
+        >
+          <Marker
+            role={entry.active ? "status" : undefined}
+            data-conversation-entry
+            data-tool-call-id={entry.toolCallId}
+            data-role="tool"
+            mix={richMarkerStyle}
+          >
+            <MarkerIcon>
+              {entry.active ? <span data-slot="spinner" mix={spinnerStyle} /> : (
+                <Icon
+                  name={entry.toolName === "bash"
+                    ? "terminal"
+                    : entry.toolName === "read" || entry.toolName === "readImage"
+                    ? "book-open-text"
+                    : "wrench"}
+                />
+              )}
+            </MarkerIcon>
+            <MarkerContent mix={markerDetailStyle}>
+              {readPath === undefined
+                ? <ToolDetails key={entry.toolCallId} entry={entry} />
+                : (
+                  <span data-read-path title={readPath}>
+                    <span dir="ltr">{readPath}</span>
+                  </span>
+                )}
+            </MarkerContent>
+          </Marker>
+          {(entry.toolName === "read" || entry.toolName === "readImage") && entry.result
+            ? <AssistantMarkdown text={entry.result} completed sessionId={sessionId} />
+            : null}
+        </MessageScrollerItem>
+      );
+    }
+    case "provisioning":
+      return (
+        <MessageScrollerItem key="provisioning:output" messageId="provisioning:output">
+          <Marker data-session-output mix={richMarkerStyle}>
+            <MarkerIcon>
+              <Icon name="terminal" />
+            </MarkerIcon>
+            <MarkerContent mix={markerDetailStyle}>
+              <details>
+                <summary>Provisioning output</summary>
+                <pre>{entry.text}</pre>
+              </details>
+            </MarkerContent>
+          </Marker>
+        </MessageScrollerItem>
+      );
+  }
+}
+
+function ToolDetails(handle: Handle<{ entry: ToolEntry }>) {
+  let open = handle.props.entry.active && commandForBashTool(handle.props.entry) === undefined;
+  const toggle = on<HTMLDetailsElement, "toggle">("toggle", (event) => {
+    const nextOpen = event.currentTarget.open;
+    if (open === nextOpen) return;
+    open = nextOpen;
+    void handle.update();
+  });
+
+  return () => {
+    const entry = handle.props.entry;
+    const bashCommand = commandForBashTool(entry);
+    return (
+      <details open={open} mix={toggle}>
+        <summary title={bashCommand}>{bashCommand ?? entry.toolName}</summary>
+        {bashCommand === undefined && entry.arguments
+          ? <pre data-tool-arguments>{entry.arguments}</pre>
+          : null}
+        {entry.result === undefined && entry.partialResult
+          ? <pre data-tool-partial-result>{entry.partialResult}</pre>
+          : null}
+        {entry.result !== undefined
+          ? (
+            <pre data-tool-result data-error={String(entry.isError)}>
+              {entry.result || "No output"}
+            </pre>
+          )
+          : null}
+      </details>
+    );
+  };
+}
+
+function commandForBashTool(entry: ToolEntry): string | undefined {
+  const argumentsText = entry.arguments;
+  if (entry.toolName !== "bash" || argumentsText === undefined) return undefined;
+  const [argumentsValue, parseError] = trySync(
+    () => JSON.parse(argumentsText),
+    () => true,
+  );
+  if (parseError !== undefined) return undefined;
+  const parsed = parseSafe(bashToolArgumentsSchema, argumentsValue);
+  return parsed.success && parsed.value.command.length > 0 ? parsed.value.command : undefined;
+}
+
+function pathForReadTool(entry: ToolEntry): string | undefined {
+  const argumentsText = entry.arguments;
+  if (
+    (entry.toolName !== "read" && entry.toolName !== "readImage") || argumentsText === undefined
+  ) return undefined;
+  const [argumentsValue, parseError] = trySync(
+    () => JSON.parse(argumentsText),
+    () => true,
+  );
+  if (parseError !== undefined) return undefined;
+  const parsed = parseSafe(readToolArgumentsSchema, argumentsValue);
+  return parsed.success && parsed.value.path.length > 0 ? parsed.value.path : undefined;
+}
+
+function renderUsageStatus(
+  usage: SessionUsage,
+  latestUsage: SessionUsage | undefined,
+  contextUsage: SessionUsage | undefined,
+  contextWindow: number,
+  thinkingLevel: SessionThinkingLevel,
+  thinkingLevelPending: boolean,
+) {
+  const latestPromptTokens = latestUsage === undefined
+    ? 0
+    : latestUsage.inputTokens + latestUsage.cacheReadTokens + latestUsage.cacheWriteTokens;
+  const cacheHitRate = latestPromptTokens > 0 && latestUsage !== undefined
+    ? latestUsage.cacheReadTokens / latestPromptTokens * 100
+    : undefined;
+  const contextTokens = contextUsage === undefined ? 0 : usageContextTokens(contextUsage);
+  const contextPercent = contextUsage !== undefined && contextWindow > 0
+    ? contextTokens / contextWindow * 100
+    : undefined;
+
+  return (
+    <div data-session-usage mix={[sessionFooterItemStyle, sessionUsageStyle]}>
+      <span
+        data-thinking-level={thinkingLevel}
+        title="Thinking level · Shift+Tab to change"
+        aria-live="polite"
+      >
+        {formatThinkingLevel(thinkingLevel)}
+        {thinkingLevelPending ? "…" : ""}
+      </span>
+      {usage.inputTokens > 0
+        ? (
+          <span title="Cumulative input tokens">
+            <span mix={screenReaderOnlyStyle}>Input tokens:</span>
+            <span aria-hidden="true">↑</span>
+            {formatTokens(usage.inputTokens)}
+          </span>
+        )
+        : null}
+      {usage.outputTokens > 0
+        ? (
+          <span title="Cumulative output tokens">
+            <span mix={screenReaderOnlyStyle}>Output tokens:</span>
+            <span aria-hidden="true">↓</span>
+            {formatTokens(usage.outputTokens)}
+          </span>
+        )
+        : null}
+      {usage.cacheWriteTokens > 0
+        ? (
+          <span title="Cumulative prompt-cache writes">
+            <span mix={screenReaderOnlyStyle}>Prompt-cache write tokens:</span>
+            <span aria-hidden="true">W</span>
+            {formatTokens(usage.cacheWriteTokens)}
+          </span>
+        )
+        : null}
+      {(usage.cacheReadTokens > 0 || usage.cacheWriteTokens > 0) && cacheHitRate !== undefined
+        ? (
+          <span title="Latest prompt cache hit rate">
+            <span mix={screenReaderOnlyStyle}>Latest prompt cache hit rate:</span>
+            <span aria-hidden="true">CH</span>
+            {cacheHitRate.toFixed(1)}%
+          </span>
+        )
+        : null}
+      {usage.totalCost > 0
+        ? (
+          <span title="Cumulative model cost">
+            <span mix={screenReaderOnlyStyle}>Cumulative model cost in US dollars:</span>
+            <span aria-hidden="true">$</span>
+            {formatCost(usage.totalCost)}
+          </span>
+        )
+        : null}
+      {contextWindow > 0
+        ? (
+          <span title="Context window use">
+            <span aria-hidden="true">
+              {contextPercent === undefined ? "?" : `${contextPercent.toFixed(1)}%`}/
+              {formatTokens(contextWindow)}
+            </span>
+            <span mix={screenReaderOnlyStyle}>
+              {contextPercent === undefined
+                ? ` Context use unknown; ${contextWindow.toLocaleString("en")} token window`
+                : ` ${contextPercent.toFixed(1)} percent of ${
+                  contextWindow.toLocaleString("en")
+                } token context window used`}
+            </span>
+          </span>
+        )
+        : null}
+    </div>
+  );
+}
+
+function formatTokens(count: number): string {
+  if (count < 1_000) return count.toString();
+  if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
+  if (count < 1_000_000) return `${Math.round(count / 1_000)}k`;
+  if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(count / 1_000_000)}M`;
+}
+
+function formatCost(cost: number): string {
+  return cost < 0.01 ? cost.toFixed(4) : cost.toFixed(3);
+}
+
+const sessionFrameStyle = css({
+  display: "flex",
+  flexDirection: "column",
+  width: "100%",
+  maxWidth: "1100px",
+  height: "calc(100svh - 136px)",
+  minHeight: 0,
+  marginInline: "auto",
+  overflow: "hidden",
+  color: "var(--foreground)",
+  background: "transparent",
+  [media.md]: {
+    // Extend into 8px of shell padding without changing the frame's outer size.
+    height: "calc(100svh - 104px + 8px)",
+    minHeight: "440px",
+    marginBottom: "-8px",
+  },
+});
+const sessionFooterItemStyle = css({
+  boxSizing: "border-box",
+  flexShrink: 0,
+  width: "min(calc(100% - 16px), calc(50% + 400px))",
+  minWidth: 0,
+  marginInline: "auto",
+});
+const sessionUsageStyle = css({
+  display: "flex",
+  alignItems: "baseline",
+  justifyContent: "flex-start",
+  flexWrap: "wrap",
+  columnGap: "10px",
+  rowGap: "2px",
+  minHeight: "18px",
+  marginBlock: 0,
+  paddingInline: "12px",
+  color: "var(--muted-foreground)",
+  fontSize: "12px",
+  fontVariantNumeric: "tabular-nums",
+  "& > span": { whiteSpace: "nowrap" },
+});
+const actionErrorStyle = css({
+  flexShrink: 0,
+  margin: 0,
+  padding: "10px 16px",
+  color: "var(--destructive)",
+  background: "color-mix(in oklab, var(--destructive) 10%, transparent)",
+  fontSize: "13px",
+});
+const userMessageStyle = css({
+  display: "grid",
+  gap: "4px",
+  width: "fit-content",
+  maxWidth: "min(84%, 640px)",
+  marginLeft: "auto",
+  padding: "12px 16px",
+  color: "var(--accent-foreground)",
+  background: "var(--accent)",
+  borderRadius: "var(--radius-xl) var(--radius-xl) var(--radius-sm) var(--radius-xl)",
+  "& p": { margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+  "&[data-delivery='pending']": { opacity: 0.72 },
+  "&[data-delivery='failed']": {
+    color: "var(--destructive)",
+    background: "color-mix(in oklab, var(--destructive) 10%, var(--background))",
+  },
+  "& [data-prompt-delivery]": {
+    color: "var(--muted-foreground)",
+    fontSize: "11px",
+    lineHeight: 1.4,
+  },
+  "&[data-delivery='failed'] [data-prompt-delivery]": { color: "var(--destructive)" },
+});
+const assistantMessageStyle = css({
+  display: "grid",
+  gap: "16px",
+  minWidth: 0,
+  color: "var(--foreground)",
+});
+const toolItemStyle = css({ marginTop: "-16px" });
+const richMarkerStyle = css({ alignItems: "flex-start" });
+const markerDetailStyle = css({
+  display: "grid",
+  flex: 1,
+  gap: "6px",
+  "& strong, & summary, & [data-read-path]": {
+    color: "var(--muted-foreground)",
+    fontSize: "13px",
+    fontWeight: 500,
+  },
+  "& summary": {
+    boxSizing: "border-box",
+    width: "100%",
+    minWidth: 0,
+    maxWidth: "100%",
+    paddingLeft: "24px",
+    overflow: "hidden",
+    cursor: "pointer",
+    listStyle: "none",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  "& summary::marker": { content: "''" },
+  "& summary::-webkit-details-marker": { display: "none" },
+  "& [data-read-path]": {
+    display: "block",
+    minWidth: 0,
+    maxWidth: "100%",
+    overflow: "hidden",
+    direction: "rtl",
+    textAlign: "left",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  "& details": {
+    width: "calc(100% + 24px)",
+    minWidth: 0,
+    marginLeft: "-24px",
+  },
+  "& [data-activity-detail]": {
+    color: "var(--muted-foreground)",
+    fontSize: "12px",
+    lineHeight: 1.5,
+    whiteSpace: "pre-wrap",
+  },
+  "& pre": {
+    boxSizing: "border-box",
+    width: "100%",
+    maxHeight: "280px",
+    margin: "8px 0 0",
+    padding: "12px",
+    overflow: "auto",
+    color: "var(--foreground)",
+    background: "var(--muted)",
+    borderRadius: "var(--radius-md)",
+    fontFamily: "var(--font-mono)",
+    fontSize: "12px",
+    lineHeight: 1.55,
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+  },
+  "& [data-tool-result][data-error='true']": { color: "var(--destructive)" },
+});
+const queueDetailStyle = css({
+  display: "grid",
+  gap: "6px",
+  color: "var(--muted-foreground)",
+  fontSize: "13px",
+  "& strong": { color: "var(--foreground)", fontWeight: 500 },
+  "& ol": { display: "grid", gap: "4px", margin: 0, paddingLeft: "20px" },
+  "& li": { whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+});
+const emptyConversationStyle = css({
+  margin: 0,
+  color: "var(--muted-foreground)",
+  fontSize: "14px",
+  textAlign: "center",
+});
+const promptFormStyle = css({
+  display: "flex",
+  alignItems: "flex-end",
+  gap: "8px",
+  minHeight: "104px",
+  marginBlock: "0 8px",
+  padding: "12px",
+  background: "var(--background)",
+  border: "2px solid var(--border)",
+  borderRadius: "12px",
+  boxShadow: "0 1px 4px rgb(0 0 0 / 0.1)",
+  transition: "border-color 150ms ease",
+  "&[data-thinking-level='off']": { borderColor: "#9d9d9d" },
+  "&[data-thinking-level='minimal']": { borderColor: "#ffffff" },
+  "&[data-thinking-level='low']": { borderColor: "#1eff00" },
+  "&[data-thinking-level='medium']": { borderColor: "#0070dd" },
+  "&[data-thinking-level='high']": { borderColor: "#a335ee" },
+  "&[data-thinking-level='xhigh']": { borderColor: "#ff8000" },
+  "&[data-thinking-level='max']": { borderColor: "#e6cc80" },
+});
+const promptInputStyle = css({
+  boxSizing: "border-box",
+  flex: 1,
+  width: "100%",
+  minWidth: 0,
+  minHeight: "76px",
+  maxHeight: "160px",
+  padding: "8px",
+  color: "var(--foreground)",
+  background: "transparent",
+  border: 0,
+  borderRadius: 0,
+  outline: "none",
+  resize: "none",
+  font: "inherit",
+  fontSize: "14px",
+  lineHeight: 1.5,
+  "&:focus": { boxShadow: "none" },
+  "&:disabled": { cursor: "not-allowed", opacity: 0.6 },
+});
+const sendButtonStyle = css({
+  width: "33px",
+  height: "33px",
+  borderRadius: "999px",
+});
+const stopIconStyle = css({
+  width: "10px",
+  height: "10px",
+  background: "currentColor",
+  borderRadius: "2px",
+});
+const scrollButtonStyle = css({ border: 0 });
+const spinnerStyle = css({
+  display: "block",
+  width: "14px",
+  height: "14px",
+  border: "2px solid color-mix(in oklab, var(--muted-foreground) 35%, transparent)",
+  borderTopColor: "var(--muted-foreground)",
+  borderRadius: "999px",
+  animation: "openorb-session-spin 800ms linear infinite",
+  "@keyframes openorb-session-spin": { to: { transform: "rotate(360deg)" } },
+  "@media (prefers-reduced-motion: reduce)": { animation: "none" },
+});
+const screenReaderOnlyStyle = css({
+  position: "absolute",
+  width: "1px",
+  height: "1px",
+  padding: 0,
+  margin: "-1px",
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+});

@@ -13,7 +13,7 @@
   },
   "imports": {
     "@/": "./",
-    "@remix-run/data-schema": "npm:@remix-run/data-schema@0.3.0",
+    "@remix-run/data-schema": "npm:@remix-run/data-schema@1.0.0",
     "@std/assert": "jsr:@std/assert@1.0.19",
     "@std/uuid": "jsr:@std/uuid@1.1.1"
   },

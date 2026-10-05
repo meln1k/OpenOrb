@@ -204,7 +204,7 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     assertNotMatch(empty, /rmx-document/);
     assertMatch(empty, /href="\/app" aria-label="Close settings"/);
     assertNotMatch(empty, /data-slot="tabs"/);
-    assertNotMatch(empty, /\/assets\/app\/ui\/settings\//);
+    assertNotMatch(empty, /\/assets\/app\/actions\/settings\//);
     assertNotMatch(empty, /OPENCODE_API_KEY/);
     assertNotMatch(empty, new RegExp(OPENCODE_VALUE));
 

@@ -1,7 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { renderToString } from "remix/component/server";
 
-import { AppShellNavigation } from "@/app/ui/shell.tsx";
+import { AppShellNavigation } from "@/app/ui/public/shell.tsx";
 
 Deno.test("session navigation groups projects by recent activity", async () => {
   const html = await renderToString(

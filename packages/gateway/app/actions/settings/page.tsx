@@ -9,20 +9,20 @@ import type { RunnerEnrollmentToken } from "@/app/data/runner-repository.ts";
 import type { SecretEntry } from "@/app/data/secret-repository.ts";
 import type { ModelProviderOption } from "@/app/model-provider-catalog.ts";
 import { routes } from "@/app/routes.ts";
-import { Icon } from "@/app/ui/components/icons.tsx";
-import { designSystemStyle } from "@/app/ui/components/theme.ts";
+import { Icon } from "@/app/ui/public/components/icons.tsx";
+import { designSystemStyle } from "@/app/ui/public/components/theme.ts";
 import { Document } from "@/app/ui/document.tsx";
-import { media } from "@/app/ui/responsive.ts";
-import { GenericSecrets } from "@/app/ui/settings/generic-secrets.tsx";
-import { GitAuthorSection } from "@/app/ui/settings/git-author.tsx";
-import { GitHubCredentialSection } from "@/app/ui/settings/github-credential.tsx";
-import { ModelProviders } from "@/app/ui/settings/model-providers.tsx";
-import { RunnersSection } from "@/app/ui/settings/runners.tsx";
+import { media } from "@/app/ui/public/responsive.ts";
+import { GenericSecrets } from "./secrets/generic-secrets.tsx";
+import { GitAuthorSection } from "./git-author/git-author.tsx";
+import { GitHubCredentialSection } from "./github/github-credential.tsx";
+import { ModelProviders } from "./providers/model-providers.tsx";
+import { RunnersSection } from "./runners/runners.tsx";
 import {
   SettingsNavigation,
   type SettingsRunner,
   type SettingsSection,
-} from "@/app/ui/settings/settings-navigation.tsx";
+} from "./settings-navigation.tsx";
 
 export type { SettingsRunner };
 

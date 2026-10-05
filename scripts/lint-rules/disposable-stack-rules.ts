@@ -11,8 +11,7 @@ function isTestFile(filename: string): boolean {
 
 function isBrowserFile(filename: string): boolean {
   const path = filename.replaceAll("\\", "/");
-  return path.includes("packages/gateway/app/ui/") ||
-    path.endsWith("packages/gateway/app/assets/client.ts");
+  return /packages\/gateway\/app\/(?:.*\/)?public\//.test(path);
 }
 
 const preferDisposableStack = {

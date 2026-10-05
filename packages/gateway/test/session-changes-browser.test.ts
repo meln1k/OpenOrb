@@ -42,9 +42,9 @@ Deno.test({
     const importMap = await assetServer.getImportMap([
       import.meta.resolve("remix/component"),
       import.meta.resolve("remix/component/jsx-runtime"),
-      "packages/gateway/app/ui/session/session-page-controller.tsx",
-      "packages/gateway/app/ui/session/session-changes-panel.tsx",
-      "packages/gateway/app/ui/session/session-changes-resource.tsx",
+      "packages/gateway/app/actions/sessions/public/session-page-controller.tsx",
+      "packages/gateway/app/actions/sessions/public/session-changes-panel.tsx",
+      "packages/gateway/app/actions/sessions/public/session-changes-resource.tsx",
     ]);
     const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
     const html =
@@ -53,9 +53,9 @@ Deno.test({
       <script type="module">
         import { createRoot, Fragment } from ${JSON.stringify(uiHref)};
         import { jsx, jsxs } from ${JSON.stringify(jsxHref)};
-        import { SessionPageScope } from "/assets/app/ui/session/session-page-controller.tsx";
-        import { SessionChangesPanel } from "/assets/app/ui/session/session-changes-panel.tsx";
-        import { SessionChangesScope } from "/assets/app/ui/session/session-changes-resource.tsx";
+        import { SessionPageScope } from "/assets/app/actions/sessions/public/session-page-controller.tsx";
+        import { SessionChangesPanel } from "/assets/app/actions/sessions/public/session-changes-panel.tsx";
+        import { SessionChangesScope } from "/assets/app/actions/sessions/public/session-changes-resource.tsx";
 
         function HydrationProbe(handle) {
           const changes = handle.context.get(SessionChangesScope);

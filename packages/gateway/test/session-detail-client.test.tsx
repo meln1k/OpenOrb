@@ -1,7 +1,7 @@
 import { assertMatch, assertNotMatch, assertStringIncludes } from "@std/assert";
 import { renderToString } from "remix/component/server";
 
-import { SessionDetailClient } from "@/app/ui/session/session-detail-client.tsx";
+import { SessionDetailClient } from "@/app/actions/sessions/public/session-detail-client.tsx";
 
 Deno.test("session detail defaults mobile navigation to the agent view", async () => {
   const html = await renderToString(

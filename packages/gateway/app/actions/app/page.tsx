@@ -11,8 +11,8 @@ import {
   EmptyTitle,
   Icon,
   type IconName,
-} from "@/app/ui/components/index.ts";
-import { media } from "@/app/ui/responsive.ts";
+} from "@/app/ui/public/components/index.ts";
+import { media } from "@/app/ui/public/responsive.ts";
 import { AppShell, type AppShellProps } from "@/app/ui/app-shell.tsx";
 
 interface AppPageProps {

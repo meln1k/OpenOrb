@@ -15,7 +15,7 @@ import {
   FieldGroup,
   FieldLabel,
   Input,
-} from "@/app/ui/components/index.ts";
+} from "@/app/ui/public/components/index.ts";
 import { Document } from "@/app/ui/document.tsx";
 
 export interface AuthPageProps {

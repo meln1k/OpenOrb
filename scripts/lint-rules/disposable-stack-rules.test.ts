@@ -55,11 +55,15 @@ Deno.test("test cleanup may continue using try/finally", () => {
 Deno.test("browser cleanup may use try/finally without unsupported disposable syntax", () => {
   const source = "try { await exercise(); } finally { await cleanup(); }";
   assertEquals(
-    diagnostics(source, "packages/gateway/app/ui/session/example.tsx"),
+    diagnostics(source, "packages/gateway/app/actions/sessions/public/example.tsx"),
     [],
   );
   assertEquals(
-    diagnostics(source, "packages/gateway/app/assets/client.ts"),
+    diagnostics(source, "packages/gateway/app/ui/public/components/example.tsx"),
+    [],
+  );
+  assertEquals(
+    diagnostics(source, "packages/gateway/app/public/client.ts"),
     [],
   );
   assertEquals(

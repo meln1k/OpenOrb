@@ -27,9 +27,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/app/ui/components/index.ts";
+} from "@/app/ui/public/components/index.ts";
 import { AppShell } from "@/app/ui/app-shell.tsx";
-import { media } from "@/app/ui/responsive.ts";
+import { media } from "@/app/ui/public/responsive.ts";
 
 export interface ProjectsPageProps {
   composer: SessionComposerData;

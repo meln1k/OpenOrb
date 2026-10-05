@@ -22,8 +22,8 @@ Deno.test({
     const importMap = await assetServer.getImportMap([
       import.meta.resolve("remix/component"),
       import.meta.resolve("remix/component/jsx-runtime"),
-      "packages/gateway/app/ui/components/combobox.tsx",
-      "packages/gateway/app/ui/components/theme.ts",
+      "packages/gateway/app/ui/public/components/combobox.tsx",
+      "packages/gateway/app/ui/public/components/theme.ts",
     ]);
     const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
     const html =
@@ -31,8 +31,8 @@ Deno.test({
       <script type="module">
         import { createRoot, css } from ${JSON.stringify(uiHref)};
         import { jsx, jsxs } from ${JSON.stringify(jsxHref)};
-        import { Combobox, ComboboxOption } from "/assets/app/ui/components/combobox.tsx";
-        import { designSystemStyle } from "/assets/app/ui/components/theme.ts";
+        import { Combobox, ComboboxOption } from "/assets/app/ui/public/components/combobox.tsx";
+        import { designSystemStyle } from "/assets/app/ui/public/components/theme.ts";
 
         const pageStyle = css({
           minHeight: "100dvh", margin: 0, padding: "64px", background: "var(--background)"

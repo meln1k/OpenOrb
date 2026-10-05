@@ -20,7 +20,7 @@ The exact runtime and application pins in this release graph are:
 | Gondolin                        | 0.12.0                                           |
 | OpenOrb guest image             | `release-1` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi Durable / Chord      | 1.0.0                                            |
-| Remix                           | 3.0.0-rc.5                                       |
+| Remix                           | 3.0.0                                            |
 | Runner protocol                 | 25                                               |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific

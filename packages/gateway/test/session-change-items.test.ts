@@ -9,7 +9,7 @@ import {
   sessionChangeMutationPaths,
   sessionChangeRowKey,
   toggleSessionChangeItem,
-} from "@/app/ui/session/session-change-items.ts";
+} from "@/app/actions/sessions/public/session-change-items.ts";
 
 Deno.test("collapsed renderable changes stay lightweight until expanded", () => {
   const row = changeRow("unstaged", "src/value.ts", "before", "after", "initial");

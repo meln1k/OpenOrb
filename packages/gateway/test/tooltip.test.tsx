@@ -6,7 +6,7 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@/app/ui/components/index.ts";
+} from "@/app/ui/public/components/index.ts";
 
 Deno.test("tooltip composes an accessible trigger and positioned content", async () => {
   const html = await renderToString(

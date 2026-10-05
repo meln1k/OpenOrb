@@ -9,8 +9,8 @@ import type {
 import { modelContextWindow, modelThinkingLevels } from "@/app/model-provider-catalog.ts";
 import { routes } from "@/app/routes.ts";
 import type { SessionComposerData } from "@/app/session-composer-data.ts";
-import { SessionDetailClient } from "@/app/ui/session/session-detail-client.tsx";
-import { AppShellLayout, SESSION_WORKSPACE_FRAME } from "@/app/ui/shell.tsx";
+import { SessionDetailClient } from "./public/session-detail-client.tsx";
+import { AppShellLayout, SESSION_WORKSPACE_FRAME } from "@/app/ui/public/shell.tsx";
 import { Document } from "@/app/ui/document.tsx";
 
 interface SessionDetailPageProps {

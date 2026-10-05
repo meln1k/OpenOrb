@@ -457,7 +457,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(createHtml, /<dialog[^>]*id="openorb-new-session"[^>]* open/);
     assertStringIncludes(
       createHtml,
-      '"exportName":"SessionComposerClient","moduleUrl":"/assets/app/ui/session-composer.tsx","props":{"projects":[',
+      '"exportName":"SessionComposerClient","moduleUrl":"/assets/app/ui/public/session-composer.tsx","props":{"projects":[',
     );
     assertMatch(createHtml, /Write prompt…/);
     assertMatch(createHtml, /tiny · 1 CPU · 2 GB memory/);
@@ -672,7 +672,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(detailHtml, /aria-label="Breadcrumb"/);
     assertNotMatch(detailHtml, /Session <code>/);
     assertNotMatch(detailHtml, /<span>Repository<\/span>/);
-    assertMatch(detailHtml, /\/assets\/app\/ui\/session\/session-detail-client\.tsx/);
+    assertMatch(detailHtml, /\/assets\/app\/actions\/sessions\/public\/session-detail-client\.tsx/);
     assertMatch(detailHtml, /"exportName":"SessionDetailClient"/);
     assertStringIncludes(detailHtml, 'data-rmx-target="session-workspace"');
     assertStringIncludes(
@@ -681,11 +681,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
     assertMatch(
       detailHtml,
-      /<link data-rmx(?:-module-preload)? rel="modulepreload" href="\/assets\/app\/ui\/session\/session-detail-client\.tsx" \/>/,
+      /<link data-rmx(?:-module-preload)? rel="modulepreload" href="\/assets\/app\/actions\/sessions\/public\/session-detail-client\.tsx" \/>/,
     );
     assertMatch(
       detailHtml,
-      /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/app\/ui\/session\/session-changes-panel\.tsx"/,
+      /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/app\/actions\/sessions\/public\/session-changes-panel\.tsx"/,
     );
     assertMatch(
       detailHtml,

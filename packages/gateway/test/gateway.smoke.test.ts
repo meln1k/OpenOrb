@@ -39,11 +39,11 @@ Deno.test("serves process health and the gateway shell over HTTP", async () => {
       homeHtml,
       /<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content" \/>/,
     );
-    assertMatch(homeHtml, /<script type="module" src="\/assets\/app\/assets\/client\.ts">/);
+    assertMatch(homeHtml, /<script type="module" src="\/assets\/app\/public\/client\.ts">/);
     const importMapIndex = homeHtml.indexOf('<script data-rmx-import-map type="importmap">');
     const preloadIndex = homeHtml.indexOf('<link rel="modulepreload"');
     const moduleScriptIndex = homeHtml.indexOf(
-      '<script type="module" src="/assets/app/assets/client.ts">',
+      '<script type="module" src="/assets/app/public/client.ts">',
     );
     assert(importMapIndex >= 0);
     assert(preloadIndex > importMapIndex);

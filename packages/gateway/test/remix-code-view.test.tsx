@@ -9,7 +9,10 @@ import {
 } from "remix/component";
 import { renderToString } from "remix/component/server";
 
-import { RemixCodeView, type RemixCodeViewProps } from "@/app/ui/components/remix-code-view.tsx";
+import {
+  RemixCodeView,
+  type RemixCodeViewProps,
+} from "@/app/actions/sessions/public/remix-code-view.tsx";
 
 Deno.test("RemixCodeView gives Pierre ownership of the host contents", async () => {
   const controller = new AbortController();

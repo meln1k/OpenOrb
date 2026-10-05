@@ -33,9 +33,9 @@ Deno.test({
     const importMap = await assetServer.getImportMap([
       import.meta.resolve("remix/component"),
       import.meta.resolve("remix/component/jsx-runtime"),
-      "packages/gateway/app/ui/session/session-page-controller.tsx",
-      "packages/gateway/app/ui/session/session-transcript.tsx",
-      "packages/gateway/app/ui/session/session-vm-control.tsx",
+      "packages/gateway/app/actions/sessions/public/session-page-controller.tsx",
+      "packages/gateway/app/actions/sessions/public/session-transcript.tsx",
+      "packages/gateway/app/actions/sessions/public/session-vm-control.tsx",
     ]);
     const html = `<!doctype html><html><head><script type="importmap">${
       JSON.stringify(importMap).replaceAll("<", "\\u003c")
@@ -44,9 +44,9 @@ Deno.test({
       </head><body><main id="app"></main><script type="module">
       import { createRoot, Fragment } from ${JSON.stringify(uiHref)};
       import { jsx } from ${JSON.stringify(jsxHref)};
-      import { SessionPageScope } from "/assets/app/ui/session/session-page-controller.tsx";
-      import { SessionTranscript } from "/assets/app/ui/session/session-transcript.tsx";
-      import { SessionVmControl } from "/assets/app/ui/session/session-vm-control.tsx";
+      import { SessionPageScope } from "/assets/app/actions/sessions/public/session-page-controller.tsx";
+      import { SessionTranscript } from "/assets/app/actions/sessions/public/session-transcript.tsx";
+      import { SessionVmControl } from "/assets/app/actions/sessions/public/session-vm-control.tsx";
       const root = createRoot(document.getElementById("app"));
       globalThis.renderSession = (sessionId, initial = {}) => root.render(jsx(Fragment, {children:jsx(SessionPageScope, {
         csrfToken:"browser-csrf",sessionId,initialState:"stopped",initialAgentState:"paused",initialEnvironmentState:"stopped",initialIssues:[],...initial,

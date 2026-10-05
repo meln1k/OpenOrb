@@ -24,7 +24,7 @@ Deno.test({
     const importMap = await assetServer.getImportMap([
       import.meta.resolve("remix/component"),
       import.meta.resolve("remix/component/jsx-runtime"),
-      "packages/gateway/app/ui/components/sidebar.tsx",
+      "packages/gateway/app/ui/public/components/sidebar.tsx",
     ]);
     const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
     const html =
@@ -35,7 +35,7 @@ Deno.test({
         import {
           SidebarLayout,
           SidebarMobile,
-        } from "/assets/app/ui/components/sidebar.tsx";
+        } from "/assets/app/ui/public/components/sidebar.tsx";
 
         createRoot(document.getElementById("app")).render(
           jsxs(SidebarLayout, {

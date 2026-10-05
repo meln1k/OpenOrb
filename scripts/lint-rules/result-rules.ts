@@ -57,8 +57,7 @@ function isApplicationTestFile(filename: string): boolean {
 
 function isBrowserFile(filename: string): boolean {
   const path = normalizedPath(filename);
-  return path.includes("packages/gateway/app/ui/") ||
-    path.endsWith("packages/gateway/app/assets/client.ts");
+  return /packages\/gateway\/app\/(?:.*\/)?public\//.test(path);
 }
 
 function isResultPackage(source: Deno.lint.ImportDeclaration["source"]): boolean {

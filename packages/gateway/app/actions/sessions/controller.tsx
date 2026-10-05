@@ -30,8 +30,8 @@ import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
 import { isModelReference } from "@/app/model-provider-catalog.ts";
 import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
-import type { SessionComposerValues } from "@/app/ui/session-composer.tsx";
-import { SessionWorkspaceLoadError } from "@/app/ui/shell.tsx";
+import type { SessionComposerValues } from "@/app/ui/public/session-composer.tsx";
+import { SessionWorkspaceLoadError } from "@/app/ui/public/shell.tsx";
 import { currentSessionRecovery } from "@/app/utils/session-recovery.ts";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");

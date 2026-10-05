@@ -1,6 +1,6 @@
 import type { Handle } from "remix/component";
 
-import { AppShellLayout, type AppShellLayoutProps } from "@/app/ui/shell.tsx";
+import { AppShellLayout, type AppShellLayoutProps } from "@/app/ui/public/shell.tsx";
 import { Document } from "@/app/ui/document.tsx";
 
 export type AppShellProps = AppShellLayoutProps;
