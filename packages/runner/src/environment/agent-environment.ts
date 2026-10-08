@@ -23,7 +23,10 @@ export interface AgentEnvironmentShellOptions {
   readonly cwd: string;
   readonly signal?: AbortSignal;
   readonly timeoutSeconds?: number;
-  readonly onOutput: (data: Uint8Array) => Effect.Effect<void, unknown>;
+  readonly onOutput: (
+    data: Uint8Array,
+    stream: "stdout" | "stderr",
+  ) => Effect.Effect<void, unknown>;
 }
 
 export interface AgentEnvironmentCommandResult {
@@ -36,7 +39,7 @@ export interface AgentEnvironment {
     options?: AgentEnvironmentCommandOptions,
   ) => Effect.Effect<AgentEnvironmentCommandResult, AgentEnvironmentError>;
   readonly runShell: (
-    command: string,
+    command: string | readonly string[],
     options: AgentEnvironmentShellOptions,
   ) => Effect.Effect<AgentEnvironmentCommandResult, AgentEnvironmentError>;
   readonly readFile: (

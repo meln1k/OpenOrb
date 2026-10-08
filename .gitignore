@@ -7,3 +7,5 @@ dist/
 dogfood-output/
 .amp/portal-proxy.mjs
 .amp/portals/*
+.celld/
+.dev.vars

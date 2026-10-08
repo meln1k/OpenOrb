@@ -177,8 +177,14 @@ Deno.test("input, provider responses, and split guest output persist unchanged a
     ...guest.environment,
     runShell: (_command, options) =>
       Effect.gen(function* () {
-        yield* options.onOutput(new TextEncoder().encode(`output ${oldSecret.slice(0, 9)}`));
-        yield* options.onOutput(new TextEncoder().encode(`${oldSecret.slice(9)} ${newSecret} 🙂`));
+        yield* options.onOutput(
+          new TextEncoder().encode(`output ${oldSecret.slice(0, 9)}`),
+          "stdout",
+        );
+        yield* options.onOutput(
+          new TextEncoder().encode(`${oldSecret.slice(9)} ${newSecret} 🙂`),
+          "stdout",
+        );
         return { exitCode: 0 };
       }).pipe(Effect.orDie),
   });

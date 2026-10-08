@@ -41,8 +41,8 @@ export const assetServer = createAssetServer({
     "node_modules/.deno/@remix-run+component@1.0.0/node_modules/@remix-run/component/dist/**/*.js",
     "node_modules/.deno/@remix-run+ui@0.12.1/node_modules/@remix-run/ui/dist/**/*.js",
     "node_modules/.deno/es-module-lexer@2.3.2/node_modules/es-module-lexer/dist/lexer.js",
-    "node_modules/.deno/@earendil-works+chord@1.0.0/node_modules/@earendil-works/chord/dist/delta/*.js",
-    "node_modules/.deno/@earendil-works+chord@1.0.0/node_modules/@earendil-works/chord/dist/json.js",
+    "node_modules/.deno/@earendil-works+chord@1.1.0/node_modules/@earendil-works/chord/dist/delta/*.js",
+    "node_modules/.deno/@earendil-works+chord@1.1.0/node_modules/@earendil-works/chord/dist/json.js",
   ],
   denyFiles: [
     "packages/gateway/app/**/*.test.*",

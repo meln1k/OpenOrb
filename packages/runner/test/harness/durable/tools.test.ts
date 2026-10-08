@@ -138,7 +138,10 @@ Deno.test("bash requires finite positive timeout and propagates cancellation to 
   const started = Promise.withResolvers<void>();
   const guest = {
     ...environment,
-    runShell: (_command: string, options: Parameters<typeof environment.runShell>[1]) => {
+    runShell: (
+      _command: string | readonly string[],
+      options: Parameters<typeof environment.runShell>[1],
+    ) => {
       passedSignal = options.signal;
       calls++;
       return Effect.sync(() => started.resolve()).pipe(
@@ -185,7 +188,10 @@ Deno.test("bash delegates its command timeout without spending it on guest readi
   let timeoutSeconds: number | undefined;
   const guest = {
     ...environment,
-    runShell: (_command: string, options: Parameters<typeof environment.runShell>[1]) =>
+    runShell: (
+      _command: string | readonly string[],
+      options: Parameters<typeof environment.runShell>[1],
+    ) =>
       Effect.sleep(30).pipe(Effect.andThen(Effect.sync(() => {
         timeoutSeconds = options.timeoutSeconds;
         return { exitCode: 124 };
@@ -215,12 +221,15 @@ Deno.test({
     const bytes = new TextEncoder().encode("prefix 😀 suffix");
     const guest = {
       ...environment,
-      runShell: (command: string, options: Parameters<typeof environment.runShell>[1]) =>
+      runShell: (
+        command: string | readonly string[],
+        options: Parameters<typeof environment.runShell>[1],
+      ) =>
         Effect.gen(function* () {
           assertEquals(command, "guest-command");
           assertEquals(options.cwd, "/workspace");
           assertEquals(options.timeoutSeconds, 86400);
-          for (const byte of bytes) yield* options.onOutput(new Uint8Array([byte]));
+          for (const byte of bytes) yield* options.onOutput(new Uint8Array([byte]), "stdout");
           return { exitCode: 0 };
         }).pipe(Effect.orDie),
     };

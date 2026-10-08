@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 
 import { VM, type VmFs, type VMOptions } from "@earendil-works/gondolin";
-import { Effect, Layer, type Scope, Semaphore } from "effect";
+import { Effect, Layer, Schema, type Scope, Semaphore } from "effect";
 import type { Result } from "@openorb/result";
 import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
 
@@ -391,7 +391,9 @@ function makeGondolinEnvironment(
               cleanup.defer(() => clearTimeout(timer));
             }
             // Guest process-group cleanup is best effort; never reset the VM for a timeout.
-            const shellCommand = [activeVm.shellPath, "-lc", command];
+            const shellCommand = Schema.is(Schema.String)(command)
+              ? [activeVm.shellPath, "-lc", command]
+              : [...command];
             const process = activeVm.vm.exec(
               timeoutSeconds === undefined ? shellCommand : [
                 "/usr/bin/timeout",
@@ -408,7 +410,7 @@ function makeGondolinEnvironment(
               },
             );
             for await (const chunk of process.output()) {
-              const observerError = await runObserver(options.onOutput(chunk.data));
+              const observerError = await runObserver(options.onOutput(chunk.data, chunk.stream));
               if (observerError) throw observerError;
             }
             return { exitCode: (await process).exitCode };

@@ -2,6 +2,9 @@ services:
   gotel:
     command: GOTEL_OTEL_HOST=127.0.0.1 GOTEL_OTEL_PORT="$PORT" gotel server
     port: 27686
+  workspace:
+    command: deno task dev:workspace
+    port: 44200
   gateway:
     command: deno task dev:gateway
     port: 44100

@@ -17,16 +17,16 @@ export default createController(routes.auth.setup, {
   middleware: [csrf()],
   actions: {
     async index(context) {
-      const { store } = context.services;
-      if (await store.hasAdministrator()) {
+      const { workspace } = context.services;
+      if (await workspace.call("hasAdministrator")) {
         return redirect(routes.auth.login.index.href(), 303);
       }
 
       return context.render(<SetupPage csrfToken={getCsrfToken(context)} />);
     },
     async action(context) {
-      const { store } = context.services;
-      if (await store.hasAdministrator()) {
+      const { workspace } = context.services;
+      if (await workspace.call("hasAdministrator")) {
         return new Response("Administrator setup is already complete.", { status: 409 });
       }
 
@@ -48,7 +48,10 @@ export default createController(routes.auth.setup, {
         );
       }
 
-      const [created, persistenceError] = await store.createAdministrator(parsed.value.password);
+      const [created, persistenceError] = await workspace.call(
+        "createAdministrator",
+        parsed.value.password,
+      );
       if (persistenceError !== undefined) {
         return new Response("Administrator setup could not be completed.", { status: 500 });
       }

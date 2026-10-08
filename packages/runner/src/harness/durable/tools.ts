@@ -21,19 +21,36 @@ export function createDurableTools(
   artifacts: SessionArtifactStore,
 ): readonly ToolRegistration[] {
   const guest = options.environment;
+  const bash = createBashTool();
   return [
     createEditTool(),
     createWriteTool(),
     createReadTool(),
-    {
-      ...createBashTool(),
+    defineTool({
+      name: bash.name,
+      outputLimits: { retain: "tail" },
       description:
         "Execute a command exclusively in the guest. A positive timeout in seconds is required (at most 86400). Output retains the last 2000 lines or 50 KiB; full output is not saved.",
       parameters: Type.Object({
         command: Type.String(),
         timeout: Type.Number({ exclusiveMinimum: 0, maximum: 86400 }),
       }),
-    },
+      async execute(args, api, context) {
+        const env = api.env;
+        if (!env) throw new AgentEnvironmentError("Guest environment unavailable", undefined);
+        return await bash.execute(args, {
+          ...api,
+          env: {
+            ...env,
+            // OpenOrb intentionally keeps only bounded output, never upstream's full-output spill.
+            exec: (command, options, context) => {
+              const { spill: _spill, ...bounded } = options ?? {};
+              return env.exec(command, bounded, context);
+            },
+          },
+        }, context);
+      },
+    }),
     defineTool({
       name: "readImage",
       description:

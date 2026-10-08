@@ -21,7 +21,7 @@ export function memoryGuest() {
           : Effect.die("Unexpected guest command")
       ),
     runShell: (_command, options) =>
-      options.onOutput(new TextEncoder().encode("guest output")).pipe(
+      options.onOutput(new TextEncoder().encode("guest output"), "stdout").pipe(
         Effect.as({ exitCode: 0 }),
         Effect.mapError((cause) => new AgentEnvironmentError("output", cause)),
       ),

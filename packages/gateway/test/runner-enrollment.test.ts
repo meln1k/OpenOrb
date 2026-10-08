@@ -2,7 +2,7 @@ import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/asser
 import { runnerEnrollmentResponseSchema } from "@openorb/protocol";
 import { object, parse, string } from "remix/data-schema";
 
-import { createAppServices } from "@/app/middleware/services.ts";
+import { createAppServices } from "@/test/postgres-test.ts";
 import { createAppRouter } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
 import { createTestStore, createTestWorkspace } from "@/test/postgres-test.ts";

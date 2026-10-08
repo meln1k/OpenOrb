@@ -69,7 +69,7 @@ export default createController(routes.api.sessions, {
       if (!sessionId) return apiError("Session not found.", 404);
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
       const snapshot = await sessionSpan("runner.snapshot", () =>
@@ -87,11 +87,10 @@ export default createController(routes.api.sessions, {
           resolveSessionModelRuntime(
             workspaceId,
             snapshot.model,
-            context.services.store,
-            context.services.openAICodexAuthorization,
+            context.services.workspace,
           ),
-          context.services.store.getGitHubToken(workspaceId),
-          context.services.store.getEnvironmentSecrets(workspaceId),
+          context.services.workspace.call("getGitHubToken", workspaceId),
+          context.services.workspace.call("getEnvironmentSecrets", workspaceId),
         ]));
       if (modelCredentialError !== undefined) {
         return apiError("The saved model provider credential could not be read.", 500);
@@ -140,7 +139,7 @@ export default createController(routes.api.sessions, {
       }
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
       const updated = await sessionSpan("runner.git_file_update", () =>
@@ -172,7 +171,7 @@ export default createController(routes.api.sessions, {
       }
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
       );
       if (!session) return new Response("Session not found.", { status: 404 });
 
@@ -200,7 +199,7 @@ export default createController(routes.api.sessions, {
       const { sessionId, snapshotId, section, offset } = params.value;
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
       const result = await sessionSpan(
@@ -236,7 +235,7 @@ export default createController(routes.api.sessions, {
       }
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
       );
       if (!session) return new Response("Published media not found.", { status: 404 });
 
@@ -302,7 +301,7 @@ export default createController(routes.api.sessions, {
       }
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
+        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
       );
       if (!session) return new Response("Session not found.", { status: 404 });
 

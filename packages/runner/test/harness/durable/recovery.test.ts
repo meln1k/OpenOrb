@@ -90,7 +90,7 @@ Deno.test("bash tool retains bounded output in persisted live and result views",
   const options = optionsFor(directory, {
     ...guest.environment,
     runShell: (_command, options) =>
-      options.onOutput(new TextEncoder().encode("x".repeat(200000))).pipe(
+      options.onOutput(new TextEncoder().encode("x".repeat(200000)), "stdout").pipe(
         Effect.as({ exitCode: 0 }),
         Effect.orDie,
       ),

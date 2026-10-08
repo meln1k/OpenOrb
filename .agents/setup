@@ -289,6 +289,7 @@ install_gotel() {
 
 step 'Install system packages' install_system_packages
 step 'Install pinned Deno toolchain' install_deno
+step 'Install pinned celld and esbuild' bash "$repo_root/scripts/install-celld.sh"
 step 'Install Effect Solutions CLI' install_effect_solutions
 step 'Clone Effect v4 reference repository' clone_effect_repository
 step 'Clone Remix 3 RC 5 reference repository' clone_remix_repository

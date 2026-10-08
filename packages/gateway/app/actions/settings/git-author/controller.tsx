@@ -51,10 +51,14 @@ export default createController(routes.app.settings.gitAuthor, {
           400,
         );
       }
-      await context.services.store.saveGitAuthorConfiguration(context.auth.identity.userId, {
-        authorName: parsed.value.authorName.trim(),
-        authorEmail: parsed.value.authorEmail.trim(),
-      });
+      await context.services.workspace.call(
+        "saveGitAuthorConfiguration",
+        context.auth.identity.userId,
+        {
+          authorName: parsed.value.authorName.trim(),
+          authorEmail: parsed.value.authorEmail.trim(),
+        },
+      );
       return redirect(routes.app.settings.gitAuthor.index.href(), 303);
     },
   },
@@ -65,7 +69,8 @@ async function renderGitAuthor(
   error?: string,
   status = 200,
 ): Promise<Response> {
-  const gitAuthor = await context.services.store.getGitAuthorConfiguration(
+  const gitAuthor = await context.services.workspace.call(
+    "getGitAuthorConfiguration",
     context.auth.identity.userId,
   );
   return context.render(

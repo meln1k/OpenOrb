@@ -15,9 +15,13 @@
     "noUnusedLocals": true,
     "baseUrl": ".",
     "paths": {
+      "cloudflare:workers": ["packages/workspace/test/runtime.ts"],
+      "@cloudflare/workers-types": ["node_modules/@cloudflare/workers-types/index.ts"],
       "@openorb/protocol": ["packages/protocol/src/index.ts"],
       "@openorb/protocol/*": ["packages/protocol/src/*.ts"],
-      "@openorb/result": ["packages/result/src/index.ts"]
+      "@openorb/result": ["packages/result/src/index.ts"],
+      "@openorb/workspace": ["packages/workspace/src/client.ts"],
+      "@openorb/workspace/api": ["packages/workspace/src/api.ts"]
     },
     "plugins": [
       {

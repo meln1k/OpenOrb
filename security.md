@@ -6,10 +6,10 @@ Each user belongs directly to one Workspace. Browser authentication resolves `{u
 from persisted user and session records and rejects mismatches; request fields cannot choose tenant
 ownership. Passwords and Git author identity remain user-owned. Projects, encrypted secrets,
 provider/Git credentials, runners, enrollment credentials, session catalog rows, and deletion
-markers are scoped by immutable `workspace_id`, with tenant-relative uniqueness and composite
-foreign keys. Cross-Workspace identifiers are treated as not found. Runner tokens resolve ownership
-from trusted persistence, never from runner-supplied manifests. Encryption AAD binds `workspaceId`,
-credential key, and key version.
+markers are scoped by immutable Workspace IDs, with tenant-relative uniqueness and reference checks
+in the Workspace Durable Object. Cross-Workspace identifiers are treated as not found. Runner tokens
+resolve ownership from trusted persistence, never from runner-supplied manifests. Encryption AAD
+binds `workspaceId`, credential key, and key version.
 
 First setup atomically creates one Workspace and the single administrator; concurrent attempts must
 not leave an orphan Workspace or create another administrator.
@@ -29,9 +29,10 @@ not leave an orphan Workspace or create another administrator.
 - Each Session owns one Project Checkout and one isolated Agent Environment. Its private root disk,
   including the checkout and non-tmpfs guest state, persists together with runner-owned Harness
   State, Session Journal, Git Snapshots, and logs; RAM and processes do not.
-- Provider credentials remain on the gateway and trusted runner. GitHub operations receive a
-  guest-visible placeholder that is substituted only for `github.com` and `api.github.com`; the real
-  token must not enter guest files, environment values, process arguments, logs, or tool output.
+- Provider credentials persist encrypted in the Workspace DO; gateway and trusted runner commands
+  receive transient values. GitHub operations receive a guest-visible placeholder that is
+  substituted only for `github.com` and `api.github.com`; the real token must not enter guest files,
+  environment values, process arguments, logs, or tool output.
 - Durable conversation content is not scanned or redacted for credentials. Input, model responses,
   and tool output are persisted as supplied; a credential echoed into that content can be stored and
   shown to Session viewers. Credential isolation, not output filtering, is the boundary.
@@ -43,8 +44,14 @@ not leave an orphan Workspace or create another administrator.
 - Runners initiate one authenticated outbound connection to the gateway and require no inbound
   listener. Guest egress denies loopback, private, link-local, cloud-metadata, redirected, and
   DNS-rebinding targets while preserving guest-local loopback.
-- PostgreSQL is the gateway's only durable persistence. Complete Session state remains runner-owned;
-  the gateway stores only configuration, the minimal Session catalog, and deletion markers.
+- The celld Workspace Durable Object owns SQLite-backed configuration, browser sessions, runner
+  enrollment records, the minimal Session catalog, and deletion markers. Complete Session state
+  remains runner-owned. The gateway calls the Worker over HTTP and no longer opens PostgreSQL.
+- During this intermediate migration the Worker API deliberately has no authentication. It must
+  listen only on loopback and must not have a public portal or reverse-proxy route. Browser auth,
+  CSRF, runner token verification, and encrypted credentials remain enforced. OpenAI Codex device
+  authorization, alarm-driven polling, exchange, refresh, and revocation execute in the DO; Node
+  never handles its OAuth callbacks. PostgreSQL-to-DO data import is not implemented.
 - Published Media is copied from `/workspace/.openorb/artifacts` into private Session storage on the
   runner, limited to 64 MiB per artifact and 1 GiB total per Session, with no artifact-count cap.
   Browsers can read it only through the authenticated, Workspace-scoped gateway route. The route

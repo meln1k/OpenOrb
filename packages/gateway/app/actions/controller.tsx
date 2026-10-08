@@ -15,11 +15,11 @@ export default createController(routes, {
       return Response.json({ service: "openorb-gateway", status: "ok" });
     },
     async home(context) {
-      const { store } = context.services;
+      const { workspace } = context.services;
       if (context.auth.ok) {
         return redirect(routes.app.index.href(), 303);
       }
-      if (!(await store.hasAdministrator())) {
+      if (!(await workspace.call("hasAdministrator"))) {
         return redirect(routes.auth.setup.index.href(), 303);
       }
       return redirect(routes.auth.login.index.href(), 303);

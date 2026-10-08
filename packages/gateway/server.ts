@@ -1,5 +1,5 @@
 import { createAppServices } from "@/app/middleware/services.ts";
-import { createDefaultStore } from "@/app/data/store.ts";
+import { WorkspaceClient } from "@openorb/workspace";
 import { createAppRouter } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
 import {
@@ -7,7 +7,6 @@ import {
   runnerRegistryLayer,
   type RunnerRegistryService,
 } from "@/app/runner-registry.ts";
-import { migrate } from "@/db/migrate.ts";
 import * as DenoHttpClient from "@effect/platform-deno/DenoHttpClient";
 import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
@@ -39,38 +38,39 @@ function makeRemixHandler(
 }
 
 interface InitializedGateway {
-  store: Awaited<ReturnType<typeof createDefaultStore>>;
   router: ReturnType<typeof createAppRouter>;
   runnerRegistry: RunnerRegistryService;
 }
 
 const initializeGateway = Effect.fn("gateway.initialize")(function* () {
-  const store = yield* Effect.acquireRelease(
-    Effect.tryPromise({
-      try: () => createDefaultStore(),
-      catch: (cause) =>
-        new GatewayInitializationError("Gateway data store initialization failed.", cause),
-    }),
-    (store) => Effect.promise(() => store.close()),
-  );
-
+  const workspaceUrl = Deno.env.get("OPENORB_WORKSPACE_URL") ?? "http://127.0.0.1:44200";
+  const workspace = new WorkspaceClient(workspaceUrl);
   yield* Effect.tryPromise({
-    try: () => migrate(store.pool),
-    catch: (cause) => new GatewayInitializationError("Gateway database migration failed.", cause),
-  }).pipe(
-    Effect.withSpan("database.migrate"),
-  );
+    try: async () => {
+      const response = await fetch(new URL("/healthz", workspaceUrl), {
+        signal: AbortSignal.timeout(10_000),
+        redirect: "error",
+      });
+      await response.body?.cancel();
+      if (!response.ok) throw new GatewayInitializationError("Workspace unavailable", undefined);
+    },
+    catch: (cause) => new GatewayInitializationError("Workspace initialization failed.", cause),
+  });
 
-  const registryContext = yield* Layer.build(runnerRegistryLayer(store));
+  const registryContext = yield* Layer.build(runnerRegistryLayer({
+    authenticateRunner: (token) => workspace.call("authenticateRunner", token),
+    reconcileSessionManifestEntries: (workspaceId, entries) =>
+      workspace.call("reconcileSessionManifestEntries", workspaceId, entries),
+  }));
   const runnerRegistry = Context.get(registryContext, RunnerRegistry);
 
   const router = yield* Effect.try({
-    try: () => createAppRouter(createAppServices(store, runnerRegistry)),
+    try: () => createAppRouter(createAppServices(workspace, runnerRegistry)),
     catch: (cause) =>
       new GatewayInitializationError("Gateway services initialization failed.", cause),
   });
 
-  return { store, router, runnerRegistry } satisfies InitializedGateway;
+  return { router, runnerRegistry } satisfies InitializedGateway;
 });
 
 class GatewayInitializationError extends Error {

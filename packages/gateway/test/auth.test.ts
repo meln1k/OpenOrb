@@ -7,9 +7,8 @@ import { createMemorySessionStorage } from "remix/session-storage/memory";
 
 import { createAppRouter, createSessionCookie } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
-import { createAppServices } from "@/app/middleware/services.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
-import { createTestStore, createTestWorkspace } from "@/test/postgres-test.ts";
+import { createAppServices, createTestStore, createTestWorkspace } from "@/test/postgres-test.ts";
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");

@@ -1,0 +1,15 @@
+{
+  "name": "@openorb/workspace",
+  "exports": { ".": "./src/client.ts", "./api": "./src/api.ts" },
+  "imports": {
+    "@std/uuid": "jsr:@std/uuid@1.1.1",
+    "cloudflare:workers": "./test/runtime.ts"
+  },
+  "tasks": {
+    "build": "deno bundle --frozen --platform=browser --external=cloudflare:workers src/worker.ts -o dist/worker.js && echo 'export * from \"../src/worker.ts\"; export { default } from \"../src/worker.ts\";' > dist/worker.d.ts",
+    "build:test": "deno bundle --frozen --platform=browser --external=cloudflare:workers test/celld-worker.ts -o test/dist/worker.js",
+    "generate-types": "deno task build && WRANGLER_SEND_METRICS=false deno run -A --frozen npm:wrangler@4.148.0 types --include-runtime=false --strict-vars=false",
+    "prepare": "deno run --env-file=../gateway/.env --allow-env=OPENORB_MASTER_KEY --allow-write=.dev.vars src/prepare.ts",
+    "dev": "deno task prepare && deno task build && celld dev wrangler.jsonc --host 127.0.0.1 --port 44200 --logs"
+  }
+}

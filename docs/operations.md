@@ -1,8 +1,37 @@
 # Production operations
 
-This is the supported deployment shape: one password-protected gateway from a pinned source
-checkout, PostgreSQL, an HTTPS reverse proxy, and one or more outbound-only Linux runners. It is not
-a container or high-availability design.
+## Intermediate celld migration
+
+The current gateway calls a loopback Worker over HTTP; the Worker validates requests and calls typed
+RPC methods on one `Workspace` Durable Object, which extends `DurableObject` from
+`cloudflare:workers` without a compatibility flag. Configuration, browser sessions, enrollment
+records, the Session catalog, and provider OAuth now live in its native SQLite-backed storage. Full
+Pi sessions and runner connections remain runner-owned / gateway-live, respectively. Pi AI, Pi
+Durable, Pi Env, and Chord are pinned to 1.1.0; the native `pi-durable/storage/sqlite/cloudflare`
+adapter is available for a later harness migration, but the configuration object does not create a
+Pi harness.
+
+Orb setup installs celld 0.6.2 and esbuild 0.28.2. Run `amp orb services ensure` to start Workspace
+before the gateway. Outside an orb, run `deno task dev:workspace` before `deno task dev:gateway`.
+`packages/workspace/.dev.vars` receives `OPENORB_MASTER_KEY` from the gateway's local `.env` with
+mode 0600 and is ignored by Git. Gateway location defaults to `http://127.0.0.1:44200`, configurable
+with `OPENORB_WORKSPACE_URL`. Keep the Worker loopback-only: it deliberately has no authentication
+in this intermediate step. The browser-facing gateway retains authentication and CSRF protection.
+
+After changing Worker bindings, run `deno task --filter @openorb/workspace generate-types` and
+commit `packages/workspace/worker-configuration.d.ts`. Wrangler generates `Env`, including the typed
+`WORKSPACE` namespace and the required master-key name, without recording its value.
+`deno task check` checks that the generated types are current. Deno uses a test base class; bundles
+retain the native `cloudflare:workers` import.
+
+Back up the master key and `packages/workspace/.celld/dev` together. Do not pass celld `--clean`
+against wanted state. PostgreSQL is no longer opened by the gateway; its repositories remain for
+legacy regression fixtures and shared DTO contracts. Existing PostgreSQL data is not imported, so
+the DO initially presents setup with an empty Workspace. This is a local migration step, not a
+production deployment procedure or a full celld fleet rollout.
+
+The remaining production instructions below describe the prior PostgreSQL deployment and must not be
+applied to this migration without an updated celld deployment and data-transfer procedure.
 
 ## Release pins
 
@@ -14,14 +43,14 @@ revision. Protocol version **25** is source-owned and is not a separately upgrad
 
 The exact runtime and application pins in this release graph are:
 
-| Component                       | Pin                                              |
-| ------------------------------- | ------------------------------------------------ |
-| Deno / standalone runner denort | 2.9.5                                            |
-| Gondolin                        | 0.12.0                                           |
-| OpenOrb guest image             | `release-1` (Debian snapshot `20260803T000000Z`) |
-| Pi AI / Pi Durable / Chord      | 1.0.0                                            |
-| Remix                           | 3.0.0                                            |
-| Runner protocol                 | 25                                               |
+| Component                           | Pin                                              |
+| ----------------------------------- | ------------------------------------------------ |
+| Deno / standalone runner denort     | 2.9.5                                            |
+| Gondolin                            | 0.12.0                                           |
+| OpenOrb guest image                 | `release-1` (Debian snapshot `20260803T000000Z`) |
+| Pi AI / Pi Durable / Pi Env / Chord | 1.1.0                                            |
+| Remix                               | 3.0.0                                            |
+| Runner protocol                     | 25                                               |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
 build IDs, hashes, sizes, and immutable URLs are in

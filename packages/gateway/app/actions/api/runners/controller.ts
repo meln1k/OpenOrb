@@ -49,7 +49,7 @@ export default createController(routes.api.runners, {
         return Response.json({ error: "Invalid enrollment request." }, { status: 400 });
       }
 
-      const runner = await context.services.store.enrollRunner(input);
+      const runner = await context.services.workspace.call("enrollRunner", input);
       if (!runner) {
         return Response.json({ error: "Invalid or revoked enrollment PSK." }, { status: 401 });
       }

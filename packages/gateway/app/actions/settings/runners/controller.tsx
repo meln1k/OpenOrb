@@ -49,7 +49,8 @@ export default createController(routes.app.settings.runners, {
           if (!parsed.success) {
             return await renderRunners(context, "Invalid enrollment token request.", 400);
           }
-          await context.services.store.regenerateRunnerEnrollmentToken(
+          await context.services.workspace.call(
+            "regenerateRunnerEnrollmentToken",
             context.auth.identity.workspaceId,
           );
           return redirect(routes.app.settings.runners.index.href(), 303);
@@ -60,7 +61,8 @@ export default createController(routes.app.settings.runners, {
             return await renderRunners(context, "Invalid runner revocation request.", 400);
           }
           const workspaceId = context.auth.identity.workspaceId;
-          const result = await context.services.store.revokeRunner(
+          const result = await context.services.workspace.call(
+            "revokeRunner",
             workspaceId,
             parsed.value.runnerId,
           );
@@ -77,7 +79,8 @@ export default createController(routes.app.settings.runners, {
           if (!parsed.success) {
             return await renderRunners(context, "Invalid runner deletion request.", 400);
           }
-          const result = await context.services.store.deleteRunner(
+          const result = await context.services.workspace.call(
+            "deleteRunner",
             context.auth.identity.workspaceId,
             parsed.value.runnerId,
           );
@@ -103,8 +106,8 @@ async function renderRunners(
 ): Promise<Response> {
   const workspaceId = context.auth.identity.workspaceId;
   const [enrollmentToken, runners] = await Promise.all([
-    context.services.store.getRunnerEnrollmentToken(workspaceId),
-    context.services.store.listRunners(workspaceId),
+    context.services.workspace.call("getRunnerEnrollmentToken", workspaceId),
+    context.services.workspace.call("listRunners", workspaceId),
   ]);
   return context.render(
     <RunnersSettingsPage

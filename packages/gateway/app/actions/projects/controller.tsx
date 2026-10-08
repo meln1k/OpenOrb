@@ -49,8 +49,8 @@ export default createController(routes.app.projects, {
       const workspaceId = context.auth.identity.workspaceId;
       const [composer, projects, sidebarSessions] = await Promise.all([
         loadSessionComposerData(workspaceId, context.services),
-        context.services.store.listProjects(workspaceId),
-        context.services.store.listSessionNavigationEntries(workspaceId),
+        context.services.workspace.call("listProjects", workspaceId),
+        context.services.workspace.call("listSessionNavigationEntries", workspaceId),
       ]);
       return context.render(
         <ProjectsPage
@@ -63,14 +63,14 @@ export default createController(routes.app.projects, {
     },
 
     async action(context) {
-      const { store } = context.services;
+      const { workspace } = context.services;
       const workspaceId = context.auth.identity.workspaceId;
       const intent = context.formData.get("intent");
       const renderError = async (error: string, status: number) => {
         const [composer, projects, sidebarSessions] = await Promise.all([
           loadSessionComposerData(workspaceId, context.services),
-          store.listProjects(workspaceId),
-          store.listSessionNavigationEntries(workspaceId),
+          workspace.call("listProjects", workspaceId),
+          workspace.call("listSessionNavigationEntries", workspaceId),
         ]);
         return context.render(
           <ProjectsPage
@@ -91,7 +91,7 @@ export default createController(routes.app.projects, {
         if (!repositoryUrl) {
           return renderError("The GitHub repository is invalid.", 400);
         }
-        const result = await store.saveProject(workspaceId, {
+        const result = await workspace.call("saveProject", workspaceId, {
           id: projectId,
           name: values.name.trim(),
           repositoryUrl,
@@ -126,7 +126,8 @@ export default createController(routes.app.projects, {
         if (!parsed.success) {
           return renderError(parsed.issues[0]?.message ?? "Invalid project deletion.", 400);
         }
-        const [result, persistenceError] = await store.deleteProject(
+        const [result, persistenceError] = await workspace.call(
+          "deleteProject",
           workspaceId,
           parsed.value.projectId,
         );

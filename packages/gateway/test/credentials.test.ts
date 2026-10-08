@@ -16,7 +16,6 @@ import {
 import { array, number, object, parse, string } from "remix/data-schema";
 
 import { ModelProviderCredentialReadError } from "@/app/data/model-provider-repository.ts";
-import { createAppServices } from "@/app/middleware/services.ts";
 import {
   createOpenAICodexAuthorizationService,
   type OpenAICodexAuthorizationOptions,
@@ -30,7 +29,9 @@ import { importMasterKey } from "@/app/utils/master-key.ts";
 import { decryptSecret } from "@/app/utils/secret-cipher.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
 import {
+  createAppServices,
   createTestStore,
+  createTestWorkspaceClient,
   TEST_MASTER_KEY_BYTES,
   TEST_MASTER_KEY_HEX,
 } from "@/test/postgres-test.ts";
@@ -470,17 +471,18 @@ Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and d
 });
 
 Deno.test("ChatGPT runtime refreshes rotation once and sends only the access token", async () => {
+  const now = Date.now();
   const expired = {
     type: "oauth" as const,
     access: "expired-access-token",
     refresh: "rotating-refresh-token",
-    expires: 1_800_000_000_000,
+    expires: now - 1_000,
   };
   const rotated = {
     type: "oauth" as const,
     access: "fresh-access-token",
     refresh: "fresh-refresh-token",
-    expires: 1_800_003_600_000,
+    expires: now + 3_600_000,
   };
   let refreshCalls = 0;
   const oauth: OAuthAuth = {
@@ -503,9 +505,7 @@ Deno.test("ChatGPT runtime refreshes rotation once and sends only the access tok
     const [runtime, error] = await resolveSessionModelRuntime(
       client.workspaceId,
       "openai-codex/gpt-5.2-codex",
-      client.store,
-      client.authorization,
-      () => 1_800_000_000_000,
+      createTestWorkspaceClient(client.store, client.authorization),
     );
     assertEquals(error, undefined);
     assertEquals(runtime?.credential, { type: "access_token", value: rotated.access });
@@ -513,7 +513,7 @@ Deno.test("ChatGPT runtime refreshes rotation once and sends only the access tok
     assertEquals(
       await client.authorization.resolveAccessToken(
         client.workspaceId,
-        1_800_000_001_000,
+        now + 1_000,
       ),
       rotated.access,
     );
@@ -521,9 +521,7 @@ Deno.test("ChatGPT runtime refreshes rotation once and sends only the access tok
     const [reused, reuseError] = await resolveSessionModelRuntime(
       client.workspaceId,
       "openai-codex/gpt-5.2-codex",
-      client.store,
-      client.authorization,
-      () => 1_800_000_001_000,
+      createTestWorkspaceClient(client.store, client.authorization),
     );
     assertEquals(reuseError, undefined);
     assertEquals(reused?.credential, { type: "access_token", value: rotated.access });

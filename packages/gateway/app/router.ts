@@ -64,7 +64,7 @@ export function createAppRouter(
       rewriteTrailingSlash(),
       publicFiles(),
       formData(),
-      session(sessionCookie, services.store.sessionStorage),
+      session(sessionCookie, services.sessionStorage),
       redirectUnauthorizedPages(),
       provideAppServices(services),
       auth({
@@ -79,7 +79,10 @@ export function createAppRouter(
               if (!currentServices) {
                 throw new TypeError("App services middleware is missing.");
               }
-              const identity = await currentServices.store.getAdministrator(value.userId);
+              const identity = await currentServices.workspace.call(
+                "getAdministrator",
+                value.userId,
+              );
               return identity?.workspaceId === value.workspaceId ? identity : null;
             },
             invalidate(currentSession) {

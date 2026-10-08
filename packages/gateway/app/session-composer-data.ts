@@ -27,9 +27,9 @@ export async function loadSessionComposerData(
   services: AppServices,
 ): Promise<SessionComposerData> {
   const [projects, providers, runners] = await Promise.all([
-    services.store.listProjects(workspaceId),
-    services.store.listModelProviderCredentials(workspaceId),
-    services.store.listRunners(workspaceId),
+    services.workspace.call("listProjects", workspaceId),
+    services.workspace.call("listModelProviderCredentials", workspaceId),
+    services.workspace.call("listRunners", workspaceId),
   ]);
   return {
     projects: projects.map((project) => ({

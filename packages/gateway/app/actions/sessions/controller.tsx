@@ -112,9 +112,9 @@ export default createController(routes.app.sessions, {
         );
       }
 
-      const { store } = context.services;
+      const { workspace } = context.services;
       const workspaceId = context.auth.identity.workspaceId;
-      const project = await store.getProject(workspaceId, parsed.value.projectId);
+      const project = await workspace.call("getProject", workspaceId, parsed.value.projectId);
       if (!project) {
         return await renderCreateError(
           context,
@@ -136,7 +136,7 @@ export default createController(routes.app.sessions, {
         workspaceId,
         runnerId,
         parsed.value.orbSize,
-        store,
+        { listRunners: (id) => workspace.call("listRunners", id) },
         context.services.runnerConnections,
       );
       if (selected.status === "rejected") {
@@ -149,15 +149,14 @@ export default createController(routes.app.sessions, {
         [environmentSecrets, environmentSecretError],
         gitAuthor,
       ] = await Promise.all([
-        store.getGitHubToken(workspaceId),
+        workspace.call("getGitHubToken", workspaceId),
         resolveSessionModelRuntime(
           workspaceId,
           parsed.value.model,
-          store,
-          context.services.openAICodexAuthorization,
+          workspace,
         ),
-        store.getEnvironmentSecrets(workspaceId),
-        store.getGitAuthorConfiguration(context.auth.identity.userId),
+        workspace.call("getEnvironmentSecrets", workspaceId),
+        workspace.call("getGitAuthorConfiguration", context.auth.identity.userId),
       ]);
       if (gitCredentialError !== undefined) {
         return await renderCreateError(
@@ -255,7 +254,11 @@ export default createController(routes.app.sessions, {
           400,
         );
       }
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      const session = await context.services.workspace.call(
+        "getSessionCatalogEntry",
+        workspaceId,
+        sessionId,
+      );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const [snapshot, runnerId] = await Promise.all([
         Effect.runPromise(
@@ -286,11 +289,10 @@ export default createController(routes.app.sessions, {
         resolveSessionModelRuntime(
           workspaceId,
           snapshot.model,
-          context.services.store,
-          context.services.openAICodexAuthorization,
+          context.services.workspace,
         ),
-        context.services.store.getGitHubToken(workspaceId),
-        context.services.store.getEnvironmentSecrets(workspaceId),
+        context.services.workspace.call("getGitHubToken", workspaceId),
+        context.services.workspace.call("getEnvironmentSecrets", workspaceId),
       ]);
       if (modelCredentialError !== undefined) {
         return await sessionCommandError(
@@ -355,7 +357,11 @@ export default createController(routes.app.sessions, {
       if (!parsed.success) {
         return await sessionCommandError(context, "Choose a valid thinking level.", 400);
       }
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      const session = await context.services.workspace.call(
+        "getSessionCatalogEntry",
+        workspaceId,
+        sessionId,
+      );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const changed = await Effect.runPromise(
         context.services.runnerConnections.setSessionThinkingLevel({
@@ -382,7 +388,11 @@ export default createController(routes.app.sessions, {
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      const session = await context.services.workspace.call(
+        "getSessionCatalogEntry",
+        workspaceId,
+        sessionId,
+      );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const [snapshot, runnerId] = await Promise.all([
         Effect.runPromise(
@@ -417,7 +427,11 @@ export default createController(routes.app.sessions, {
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      const session = await context.services.workspace.call(
+        "getSessionCatalogEntry",
+        workspaceId,
+        sessionId,
+      );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const [snapshot, runnerId] = await Promise.all([
         Effect.runPromise(
@@ -456,10 +470,15 @@ export default createController(routes.app.sessions, {
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return await sessionCommandError(context, "Session not found.", 404);
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      const session = await context.services.workspace.call(
+        "getSessionCatalogEntry",
+        workspaceId,
+        sessionId,
+      );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
 
-      const [deleted, deletionError] = await context.services.store.deleteSessionCatalogEntry(
+      const [deleted, deletionError] = await context.services.workspace.call(
+        "deleteSessionCatalogEntry",
         workspaceId,
         sessionId,
         new Date().toISOString(),
@@ -481,7 +500,11 @@ export default createController(routes.app.sessions, {
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return new Response("Session not found.", { status: 404 });
-      const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+      const session = await context.services.workspace.call(
+        "getSessionCatalogEntry",
+        workspaceId,
+        sessionId,
+      );
       if (!session) return new Response("Session not found.", { status: 404 });
       const parsed = s.parseSafe(retrySessionSchema, context.formData);
       if (!parsed.success) {
@@ -525,14 +548,13 @@ export default createController(routes.app.sessions, {
         [modelRuntime, modelCredentialError],
         [environmentSecrets, environmentSecretError],
       ] = await Promise.all([
-        context.services.store.getGitHubToken(workspaceId),
+        context.services.workspace.call("getGitHubToken", workspaceId),
         resolveSessionModelRuntime(
           workspaceId,
           snapshot.model,
-          context.services.store,
-          context.services.openAICodexAuthorization,
+          context.services.workspace,
         ),
-        context.services.store.getEnvironmentSecrets(workspaceId),
+        context.services.workspace.call("getEnvironmentSecrets", workspaceId),
       ]);
       if (gitCredentialError !== undefined) {
         return await renderDetailPage(
@@ -607,7 +629,7 @@ async function renderCreateError(
   const workspaceId = context.auth.identity.workspaceId;
   const [composer, sidebarSessions] = await Promise.all([
     loadSessionComposerData(workspaceId, context.services),
-    context.services.store.listSessionNavigationEntries(workspaceId),
+    context.services.workspace.call("listSessionNavigationEntries", workspaceId),
   ]);
   return context.render(
     <AppPage
@@ -656,8 +678,8 @@ async function renderDetailPage(
   if (!sessionId) return new Response("Session not found.", { status: 404 });
   const [composer, session, sidebarSessions] = await Promise.all([
     loadSessionComposerData(workspaceId, context.services),
-    context.services.store.getSessionCatalogEntry(workspaceId, sessionId),
-    context.services.store.listSessionNavigationEntries(workspaceId),
+    context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
+    context.services.workspace.call("listSessionNavigationEntries", workspaceId),
   ]);
   if (!session) return new Response("Session not found.", { status: 404 });
   return context.render(
@@ -676,7 +698,11 @@ async function renderDetailFrame(context: SessionDetailContext) {
   const workspaceId = context.auth.identity.workspaceId;
   const sessionId = parseSessionId(context.params.sessionId);
   if (!sessionId) return renderMissingSessionFrame(context);
-  const session = await context.services.store.getSessionCatalogEntry(workspaceId, sessionId);
+  const session = await context.services.workspace.call(
+    "getSessionCatalogEntry",
+    workspaceId,
+    sessionId,
+  );
   if (!session) return renderMissingSessionFrame(context);
   const error = new URL(context.request.url).searchParams.get("error") || undefined;
   const [runnerId, snapshot] = await Promise.all([

@@ -5,12 +5,14 @@ import {
   ExecutionError,
   FileError,
   type FileInfo,
+  LineScanner,
   ok,
   type Result,
+  StreamDecoder,
 } from "@earendil-works/pi-durable/env";
 import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
 import { tryAsync } from "@openorb/result";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { posix } from "node:path";
 import { type AgentEnvironment, resolveAgentPath } from "../../environment/agent-environment.ts";
 
@@ -73,6 +75,62 @@ export function createGuestExecutionEnv(guest: AgentEnvironment, id: string): Ex
           ...(context.abortSignal === undefined ? {} : { signal: context.abortSignal }),
           maxBytes: MAX_SESSION_ARTIFACT_BYTES,
         })),
+    openBinaryReader: (path, options, context) => {
+      // Gondolin exposes bounded whole-file reads, not an open guest handle or no-follow open.
+      // Retain one bounded snapshot so a renamed/replaced path cannot redirect later reads.
+      if (options?.noFollow) return unsupported();
+      return perform(context, () =>
+        Effect.gen(function* () {
+          const absolute = resolveAgentPath(path);
+          const info = yield* fileInfo(absolute);
+          if (info.kind !== "file") {
+            return yield* Effect.fail(
+              new FileError("is_directory", "Expected a regular file", path),
+            );
+          }
+          let bytes: Uint8Array | undefined = yield* guest.readFile(absolute, {
+            ...(context.abortSignal === undefined ? {} : { signal: context.abortSignal }),
+            maxBytes: MAX_SESSION_ARTIFACT_BYTES,
+          }).pipe(Effect.map((content) => content.slice()));
+          const snapshotInfo = { ...info, size: bytes.length };
+          const readSnapshot = <T>(action: (content: Uint8Array) => T) =>
+            Effect.suspend(() => {
+              const content = bytes;
+              return content === undefined
+                ? Effect.fail(new FileError("invalid", "Guest binary reader is closed", path))
+                : Effect.sync(() => action(content));
+            });
+          return {
+            info: (context: Context) => perform(context, () => readSnapshot(() => snapshotInfo)),
+            read: (offset: number, length: number, context: Context) =>
+              perform(context, () =>
+                readSnapshot((content) => {
+                  if (
+                    !Number.isSafeInteger(offset) || offset < 0 ||
+                    !Number.isSafeInteger(length) || length < 0
+                  ) throw new FileError("invalid", "Invalid guest read range", path);
+                  return content.slice(offset, offset + length);
+                })),
+            scanLines: (options: { startLine: number; endLine?: number }, context: Context) =>
+              perform(context, () =>
+                readSnapshot((content) => {
+                  if (
+                    !Number.isSafeInteger(options.startLine) || options.startLine < 0 ||
+                    (options.endLine !== undefined &&
+                      (!Number.isSafeInteger(options.endLine) ||
+                        options.endLine <= options.startLine))
+                  ) throw new FileError("invalid", "Invalid guest line range", path);
+                  const scanner = new LineScanner(options.startLine, options.endLine);
+                  scanner.push(content);
+                  return scanner.finish();
+                })),
+            close: () => {
+              bytes = undefined;
+              return Promise.resolve();
+            },
+          };
+        }));
+    },
     writeFile: (path, content, context) =>
       perform(context, () => {
         const absolute = resolveAgentPath(path);
@@ -116,6 +174,9 @@ export function createGuestExecutionEnv(guest: AgentEnvironment, id: string): Ex
     createTempFile: unsupported,
     openTextLineReader: unsupported,
     readTextLines: unsupported,
+    // The backend has neither paged directory handles nor change notifications.
+    openDirReader: unsupported,
+    watch: unsupported,
     async exec(command, options, context) {
       const timeout = options?.timeout;
       if (timeout === undefined || !Number.isFinite(timeout) || timeout <= 0 || timeout > 86400) {
@@ -123,14 +184,27 @@ export function createGuestExecutionEnv(guest: AgentEnvironment, id: string): Ex
           new ExecutionError("unknown", "Bash requires a finite timeout of 0 < seconds <= 86400"),
         );
       }
-      const decoder = new TextDecoder();
+      if (
+        (options?.env !== undefined && Object.keys(options.env).length > 0) ||
+        options?.inheritEnv === false || options?.spill
+      ) {
+        return err(new ExecutionError("unknown", "Execution options not exposed by Gondolin"));
+      }
+      if (
+        !Schema.is(Schema.String)(command) && (command.length === 0 || !command[0]?.startsWith("/"))
+      ) {
+        return err(new ExecutionError("spawn_error", "Guest argv requires an absolute executable"));
+      }
+      const decoders = { stdout: new StreamDecoder(), stderr: new StreamDecoder() };
       const [result, error] = await tryAsync(
         (async () => {
           context.abortSignal?.throwIfAborted();
           using cleanup = new DisposableStack();
           cleanup.defer(() => {
-            const tail = decoder.decode();
-            if (tail) options?.onOutput?.(tail, context);
+            for (const stream of ["stdout", "stderr"] as const) {
+              const tail = decoders[stream].decode();
+              if (tail) options?.onOutput?.(tail, context, { stream });
+            }
           });
           // Gondolin starts command deadlines after readiness. Output is streamed, not spooled.
           const result = await Effect.runPromise(
@@ -138,9 +212,9 @@ export function createGuestExecutionEnv(guest: AgentEnvironment, id: string): Ex
               cwd: resolveAgentPath(options?.cwd ?? env.cwd),
               timeoutSeconds: timeout,
               ...(context.abortSignal === undefined ? {} : { signal: context.abortSignal }),
-              onOutput: (bytes) =>
+              onOutput: (bytes, stream) =>
                 Effect.sync(() =>
-                  options?.onOutput?.(decoder.decode(bytes, { stream: true }), context)
+                  options?.onOutput?.(decoders[stream].decode(bytes), context, { stream })
                 ),
             }),
             { signal: context.abortSignal },
