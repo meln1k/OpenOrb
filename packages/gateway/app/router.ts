@@ -1,6 +1,4 @@
 import { type Cookie, createCookie } from "remix/cookie";
-import { serveDir } from "@std/http/file-server";
-import { fromFileUrl } from "@std/path";
 import { auth, createSessionAuthScheme } from "remix/middleware/auth";
 import { formData } from "remix/middleware/form-data";
 import { render } from "remix/middleware/render";
@@ -22,8 +20,7 @@ import settingsRunnersController from "@/app/actions/settings/runners/controller
 import settingsSecretsController from "@/app/actions/settings/secrets/controller.tsx";
 import apiRunnersController from "@/app/actions/api/runners/controller.ts";
 import apiSessionsController from "@/app/actions/api/sessions/controller.ts";
-import { assetServer } from "@/app/assets.ts";
-import type { Administrator } from "@/app/data/administrator-repository.ts";
+import type { Administrator } from "@/app/cells/workspace/api.ts";
 import { type AppServices, AppServicesKey, provideAppServices } from "@/app/middleware/services.ts";
 import { rewriteTrailingSlash } from "@/app/middleware/trailing-slash.ts";
 import { redirectUnauthorizedPages } from "@/app/middleware/unauthorized-page.ts";
@@ -33,20 +30,13 @@ import {
   parseBrowserSessionAuth,
 } from "@/app/utils/session-policy.ts";
 
-const PUBLIC_DIRECTORY = fromFileUrl(new URL("../public/", import.meta.url));
-
-export function createSessionCookie(options: { secure?: boolean; secret?: string } = {}): Cookie {
-  const secret = options.secret ?? Deno.env.get("SESSION_SECRET");
-  if (!secret && Deno.env.get("NODE_ENV") !== "test") {
-    throw new SessionConfigurationError("SESSION_SECRET is required outside tests.");
-  }
-
-  const secure = options.secure ??
-    (Deno.env.get("NODE_ENV") === "production" ||
-      Deno.env.get("OPENORB_SESSION_COOKIE_SECURE") === "true");
+export function createSessionCookie(options: { secure?: boolean; secret: string }): Cookie {
+  if (!options.secret) throw new TypeError("SESSION_SECRET is required");
+  const secret = options.secret;
+  const secure = options.secure ?? false;
 
   return createCookie("openorb_session", {
-    secrets: [secret ?? "test-only-session-secret"],
+    secrets: [secret],
     httpOnly: true,
     secure,
     sameSite: "Lax",
@@ -57,12 +47,12 @@ export function createSessionCookie(options: { secure?: boolean; secret?: string
 
 export function createAppRouter(
   services: AppServices,
-  sessionCookie: Cookie = createSessionCookie(),
+  sessionCookie: Cookie,
 ) {
   const appRouter = createRouter({
     middleware: [
       rewriteTrailingSlash(),
-      publicFiles(),
+      publicFiles(services),
       formData(),
       session(sessionCookie, services.sessionStorage),
       redirectUnauthorizedPages(),
@@ -79,8 +69,7 @@ export function createAppRouter(
               if (!currentServices) {
                 throw new TypeError("App services middleware is missing.");
               }
-              const identity = await currentServices.workspace.call(
-                "getAdministrator",
+              const identity = await currentServices.workspace.getAdministrator(
                 value.userId,
               );
               return identity?.workspaceId === value.workspaceId ? identity : null;
@@ -91,7 +80,7 @@ export function createAppRouter(
           }),
         ],
       }),
-      render({ assets: assetServer }),
+      render({ assets: services.assets }),
     ],
   });
 
@@ -114,23 +103,11 @@ export function createAppRouter(
   return appRouter;
 }
 
-class SessionConfigurationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SessionConfigurationError";
-  }
-}
-
-function publicFiles(): Middleware {
+function publicFiles(services: AppServices): Middleware {
   return async (context, next) => {
     if (context.request.method !== "GET" && context.request.method !== "HEAD") return next();
 
-    const response = await serveDir(context.request, {
-      fsRoot: PUBLIC_DIRECTORY,
-      quiet: true,
-      showIndex: false,
-    });
-    return response.status === 404 ? next() : response;
+    return await services.assets.fetchPublic(context.request) ?? next();
   };
 }
 

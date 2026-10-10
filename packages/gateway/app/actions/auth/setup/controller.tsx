@@ -18,7 +18,7 @@ export default createController(routes.auth.setup, {
   actions: {
     async index(context) {
       const { workspace } = context.services;
-      if (await workspace.call("hasAdministrator")) {
+      if (await workspace.hasAdministrator()) {
         return redirect(routes.auth.login.index.href(), 303);
       }
 
@@ -26,7 +26,7 @@ export default createController(routes.auth.setup, {
     },
     async action(context) {
       const { workspace } = context.services;
-      if (await workspace.call("hasAdministrator")) {
+      if (await workspace.hasAdministrator()) {
         return new Response("Administrator setup is already complete.", { status: 409 });
       }
 
@@ -48,8 +48,7 @@ export default createController(routes.auth.setup, {
         );
       }
 
-      const [created, persistenceError] = await workspace.call(
-        "createAdministrator",
+      const [created, persistenceError] = await workspace.createAdministrator(
         parsed.value.password,
       );
       if (persistenceError !== undefined) {

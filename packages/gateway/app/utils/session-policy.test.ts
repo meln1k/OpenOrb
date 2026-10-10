@@ -1,8 +1,8 @@
 import { assert, assertEquals } from "@std/assert";
 import { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
+import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
 
-import type { Store } from "@/app/data/store.ts";
-import type { RunnerRegistryService } from "@/app/runner-registry.ts";
+import type { AppServices } from "@/app/middleware/services.ts";
 import type { SecretMetadata } from "@/app/utils/secret-cipher.ts";
 import { parseBrowserSessionAuth } from "@/app/utils/session-policy.ts";
 
@@ -38,25 +38,27 @@ Deno.test("browser identity validates UUIDv7 fields and returns distinct ID bran
 Deno.test("gateway ownership signatures reject swapped IDs and unvalidated strings", () => {
   const identity = parseBrowserSessionAuth({ userId: USER_ID, workspaceId: WORKSPACE_ID });
   assert(identity);
-  // These expressions are compile-time checks; no repository or runner operation executes.
-  identity.workspaceId satisfies Parameters<Store["listProjects"]>[0];
-  identity.userId satisfies Parameters<Store["getAdministrator"]>[0];
-  identity.userId satisfies Parameters<Store["getGitAuthorConfiguration"]>[0];
-  identity.workspaceId satisfies Parameters<RunnerRegistryService["getSessionRunner"]>[0];
+  // These expressions are compile-time checks; no Workspace or runner operation executes.
+  identity.workspaceId satisfies Parameters<WorkspaceApi["listProjects"]>[0];
+  identity.userId satisfies Parameters<WorkspaceApi["getAdministrator"]>[0];
+  identity.userId satisfies Parameters<WorkspaceApi["getGitAuthorConfiguration"]>[0];
+  identity.workspaceId satisfies Parameters<
+    AppServices["runnerConnections"]["getSessionRunner"]
+  >[0];
   identity.workspaceId satisfies SecretMetadata["workspaceId"];
 
   // @ts-expect-error A user cannot be passed as a project's tenant.
-  identity.userId satisfies Parameters<Store["listProjects"]>[0];
+  identity.userId satisfies Parameters<WorkspaceApi["listProjects"]>[0];
   // @ts-expect-error Authentication lookup requires a user, not a tenant.
-  identity.workspaceId satisfies Parameters<Store["getAdministrator"]>[0];
+  identity.workspaceId satisfies Parameters<WorkspaceApi["getAdministrator"]>[0];
   // @ts-expect-error Git author identity belongs to a user, not a tenant.
-  identity.workspaceId satisfies Parameters<Store["getGitAuthorConfiguration"]>[0];
+  identity.workspaceId satisfies Parameters<WorkspaceApi["getGitAuthorConfiguration"]>[0];
   // @ts-expect-error Runner routing must be Workspace-scoped.
-  identity.userId satisfies Parameters<RunnerRegistryService["getSessionRunner"]>[0];
+  identity.userId satisfies Parameters<AppServices["runnerConnections"]["getSessionRunner"]>[0];
   // @ts-expect-error Encryption metadata must be Workspace-scoped.
   identity.userId satisfies SecretMetadata["workspaceId"];
-  // @ts-expect-error Unvalidated strings cannot enter tenant repository operations.
-  WORKSPACE_ID satisfies Parameters<Store["listProjects"]>[0];
-  // @ts-expect-error Unvalidated strings cannot enter user repository operations.
-  USER_ID satisfies Parameters<Store["getAdministrator"]>[0];
+  // @ts-expect-error Unvalidated strings cannot enter tenant Workspace operations.
+  WORKSPACE_ID satisfies Parameters<WorkspaceApi["listProjects"]>[0];
+  // @ts-expect-error Unvalidated strings cannot enter user Workspace operations.
+  USER_ID satisfies Parameters<WorkspaceApi["getAdministrator"]>[0];
 });

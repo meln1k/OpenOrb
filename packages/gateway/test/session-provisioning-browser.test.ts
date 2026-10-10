@@ -12,40 +12,36 @@ import {
   SessionArtifactId,
 } from "@openorb/protocol/runner-bulk-api";
 import {
-  GitAuthor,
+  ClientRequestId,
   GitFileUpdateAccepted,
   GitMutationRevision,
   initialPromptPreview,
   RunnerSessionSnapshot,
-  SessionEnvironmentSecret,
   SessionGitSnapshot,
-  SessionModelRuntime,
   StopSessionAccepted,
+  SubmissionId,
   type UserId,
   WakeSessionAccepted,
   WatchSessionEvent,
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Schema, Stream } from "effect";
-import type {
-  AbortSessionInput,
-  DeleteSessionInput,
-  OperationResult,
-  PromptSessionInput,
-  ProvisionSessionInput,
-  ReadSessionArtifactChunkInput,
-  RunnerLiveState,
-  RunnerRegistryService,
-  SetSessionThinkingLevelInput,
-  StopSessionInput,
-  UpdateSessionGitFileInput,
-  WakeSessionInput,
-} from "@/app/runner-registry.ts";
-import { createAppServices } from "@/test/postgres-test.ts";
-import { createAppRouter } from "@/app/router.ts";
+import { createAppServices, type TestRunnerConnections } from "@/test/workspace-test.ts";
+import { createAppRouter } from "@/test/workspace-test.ts";
 import { routes } from "@/app/routes.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
-import { createTestStore, createTestWorkspace } from "@/test/postgres-test.ts";
+import { activate, createWorkspace } from "@/test/workspace-test.ts";
+
+type RunnerConnections = TestRunnerConnections;
+type ProvisionSessionInput = Parameters<RunnerConnections["provisionSession"]>[0];
+type WakeSessionInput = Parameters<RunnerConnections["wakeSession"]>[0];
+type PromptSessionInput = Parameters<RunnerConnections["promptSession"]>[0];
+type SetSessionThinkingLevelInput = Parameters<RunnerConnections["setSessionThinkingLevel"]>[0];
+type AbortSessionInput = Parameters<RunnerConnections["abortSession"]>[0];
+type StopSessionInput = Parameters<RunnerConnections["stopSession"]>[0];
+type DeleteSessionInput = Parameters<RunnerConnections["deleteSession"]>[0];
+type UpdateSessionGitFileInput = Parameters<RunnerConnections["updateSessionGitFile"]>[0];
+type ReadSessionArtifactChunkInput = Parameters<RunnerConnections["readSessionArtifactChunk"]>[0];
 
 const PASSWORD = "[REDACTED:password] horse battery staple";
 const GITHUB_TOKEN = "browser-provisioning-github-token";
@@ -54,6 +50,11 @@ const CONTINUATION_MODEL_PROVIDER_KEY = "browser-continuation-model-key";
 const RETRY_MODEL_PROVIDER_KEY = "browser-provisioning-retry-model-key";
 const ENVIRONMENT_SECRET_VALUE = "browser-provisioning-environment-secret";
 const ENVIRONMENT_SECRET_HOSTS = ["api.example.com", "*.service.example"] as const;
+const ENVIRONMENT_SECRET = {
+  name: "DEPLOY_TOKEN",
+  value: ENVIRONMENT_SECRET_VALUE,
+  allowedHosts: ENVIRONMENT_SECRET_HOSTS,
+};
 const PROVIDER_ID = "opencode-go";
 const MODEL = `${PROVIDER_ID}/deepseek-v4-flash`;
 const OPENAI_PROVIDER_ID = "openai";
@@ -69,7 +70,7 @@ const ARTIFACT_ID = Schema.decodeUnknownSync(SessionArtifactId)(
 );
 const ARTIFACT_BYTES = new TextEncoder().encode("0123456789");
 
-class BrowserTestRunnerConnections implements RunnerRegistryService {
+class BrowserTestRunnerConnections implements TestRunnerConnections {
   runnerId = "";
   workspaceId: WorkspaceId | null = null;
   sessionId: string | null = null;
@@ -87,54 +88,65 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   subscriptionUnsubscribes = 0;
   beforeAcceptance: ((input: ProvisionSessionInput) => Promise<void>) | undefined = undefined;
   reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
-  promptResult: OperationResult<unknown> = { status: "accepted", acknowledgement: {} };
-  abortResult: OperationResult<unknown> = { status: "accepted", acknowledgement: {} };
-  stopResult: OperationResult<StopSessionAccepted> = {
+  promptResult: Awaited<ReturnType<RunnerConnections["promptSession"]>> = {
+    status: "accepted",
+    acknowledgement: {
+      clientRequestId: ClientRequestId.make(crypto.randomUUID()),
+      submissionId: SubmissionId.make(1),
+    },
+  };
+  abortResult: Awaited<ReturnType<RunnerConnections["abortSession"]>> = {
+    status: "accepted",
+    acknowledgement: {},
+  };
+  stopResult: Awaited<ReturnType<RunnerConnections["stopSession"]>> = {
     status: "accepted",
     acknowledgement: new StopSessionAccepted({}),
   };
 
-  readSessionGitPatchChunk() {
-    return Effect.succeed({
+  readSessionGitPatchChunk(): ReturnType<RunnerConnections["readSessionGitPatchChunk"]> {
+    return Promise.resolve({
       status: "unavailable" as const,
       message: "Bulk patches are unavailable in this fixture.",
     });
   }
 
-  readSessionArtifactChunk(input: ReadSessionArtifactChunkInput) {
+  readSessionArtifactChunk(
+    input: ReadSessionArtifactChunkInput,
+  ): ReturnType<RunnerConnections["readSessionArtifactChunk"]> {
     if (
       input.workspaceId !== this.workspaceId || input.sessionId !== this.sessionId ||
       input.artifactId !== ARTIFACT_ID || input.offset > ARTIFACT_BYTES.byteLength
     ) {
-      return Effect.succeed({
+      return Promise.resolve({
         status: "unavailable" as const,
         message: "Published media is unavailable in this fixture.",
       });
     }
-    return Effect.sync(() => {
-      const bytes = ARTIFACT_BYTES.subarray(input.offset, input.offset + 4);
-      return {
-        status: "accepted" as const,
-        acknowledgement: new SessionArtifactChunk({
-          artifact: new SessionArtifact({
-            id: ARTIFACT_ID,
-            fileName: "preview.mp4",
-            mediaType: "video/mp4",
-            byteLength: ARTIFACT_BYTES.byteLength,
-          }),
-          offset: input.offset,
-          bytes,
+    const bytes = ARTIFACT_BYTES.subarray(input.offset, input.offset + 4);
+    return Promise.resolve({
+      status: "accepted" as const,
+      acknowledgement: new SessionArtifactChunk({
+        artifact: new SessionArtifact({
+          id: ARTIFACT_ID,
+          fileName: "preview.mp4",
+          mediaType: "video/mp4",
+          byteLength: ARTIFACT_BYTES.byteLength,
         }),
-      };
+        offset: input.offset,
+        bytes,
+      }),
     });
   }
 
   getRunnerLiveState(
     workspaceId: WorkspaceId,
     runnerId: string,
-  ): Effect.Effect<RunnerLiveState | null> {
-    if (workspaceId !== this.workspaceId || runnerId !== this.runnerId) return Effect.succeed(null);
-    return Effect.succeed({
+  ): ReturnType<RunnerConnections["getRunnerLiveState"]> {
+    if (workspaceId !== this.workspaceId || runnerId !== this.runnerId) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve({
       lastObservedAt: Date.now(),
       capacity: {
         activeSessions: 0,
@@ -145,8 +157,11 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     });
   }
 
-  getSessionRunner(workspaceId: WorkspaceId, sessionId: string): Effect.Effect<string | null> {
-    return Effect.succeed(
+  getSessionRunner(
+    workspaceId: WorkspaceId,
+    sessionId: string,
+  ): ReturnType<RunnerConnections["getSessionRunner"]> {
+    return Promise.resolve(
       workspaceId === this.workspaceId && sessionId === this.sessionId ? this.runnerId : null,
     );
   }
@@ -154,20 +169,23 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
   getSessionSnapshot(
     workspaceId: WorkspaceId,
     sessionId: string,
-  ): Effect.Effect<RunnerSessionSnapshot | null> {
-    return Effect.succeed(
+  ): ReturnType<RunnerConnections["getSessionSnapshot"]> {
+    return Promise.resolve(
       workspaceId === this.workspaceId && sessionId === this.sessionId ? this.snapshot : null,
     );
   }
 
-  getSessionGitSnapshot(workspaceId: WorkspaceId, sessionId: string) {
+  getSessionGitSnapshot(
+    workspaceId: WorkspaceId,
+    sessionId: string,
+  ): ReturnType<RunnerConnections["getSessionGitSnapshot"]> {
     if (workspaceId !== this.workspaceId || sessionId !== this.sessionId) {
-      return Effect.succeed({
+      return Promise.resolve({
         status: "unavailable" as const,
         message: "The pinned runner is offline.",
       });
     }
-    return Effect.succeed({
+    return Promise.resolve({
       status: "accepted" as const,
       acknowledgement: new SessionGitSnapshot({
         generatedAt: "2026-08-23T12:00:00Z",
@@ -184,112 +202,107 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
     });
   }
 
-  updateSessionGitFile(input: UpdateSessionGitFileInput) {
+  updateSessionGitFile(
+    input: UpdateSessionGitFileInput,
+  ): ReturnType<RunnerConnections["updateSessionGitFile"]> {
     if (input.workspaceId !== this.workspaceId || input.sessionId !== this.sessionId) {
-      return Effect.succeed({
+      return Promise.resolve({
         status: "unavailable" as const,
         message: "The pinned runner is offline.",
       });
     }
     this.gitFileUpdates.push(input);
     const mutationRevision = GitMutationRevision.make(this.gitFileUpdates.length);
-    return Effect.succeed({
+    return Promise.resolve({
       status: "accepted" as const,
       acknowledgement: new GitFileUpdateAccepted({ mutationRevision }),
     });
   }
 
-  provisionSession(input: ProvisionSessionInput): Effect.Effect<OperationResult<unknown>> {
-    return Effect.promise(async () => {
-      this.provisions.push(input);
-      await this.beforeAcceptance?.(input);
-      if (input.payload.mode === "retry") {
-        assert(this.snapshot);
-        this.snapshot = { ...this.snapshot, state: "created" };
-        return {
-          status: "accepted",
-          acknowledgement: {
-            session: this.snapshot,
-            ref: "main",
-            branchName: "openorb/browser-test",
-            checkoutState: "available",
-          },
-        };
-      }
-
-      const snapshot = Schema.decodeUnknownSync(RunnerSessionSnapshot)({
-        id: input.sessionId,
-        projectId: input.payload.projectId,
-        createdAt: "2026-08-17T12:00:00Z",
-        initialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
-        model: input.payload.modelRuntime.model,
-        initialThinkingLevel: input.payload.modelRuntime.thinkingLevel,
-        orbSize: input.payload.orbSize,
-        state: "created",
-        agentState: "idle",
-        environmentState: "starting",
-        issues: [],
-      });
-      await this.reconcileAcceptance?.(snapshot);
-      this.sessionId = input.sessionId;
-      this.snapshot = snapshot;
+  async provisionSession(
+    input: ProvisionSessionInput,
+  ): ReturnType<RunnerConnections["provisionSession"]> {
+    this.provisions.push(input);
+    await this.beforeAcceptance?.(input);
+    if (input.payload.mode === "retry") {
+      assert(this.snapshot);
+      this.snapshot = { ...this.snapshot, state: "created" };
       return {
         status: "accepted",
         acknowledgement: {
-          session: snapshot,
-          ref: input.payload.ref,
-          branchName: input.payload.branchName,
-          checkoutState: "pending",
+          session: this.snapshot,
+          ref: "main",
+          branchName: "openorb/browser-test",
+          checkoutState: "available",
         },
       };
+    }
+
+    const snapshot = Schema.decodeUnknownSync(RunnerSessionSnapshot)({
+      id: input.sessionId,
+      projectId: input.payload.projectId,
+      createdAt: "2026-08-17T12:00:00Z",
+      initialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
+      model: input.payload.modelRuntime.model,
+      initialThinkingLevel: input.payload.modelRuntime.thinkingLevel,
+      orbSize: input.payload.orbSize,
+      state: "created",
+      agentState: "idle",
+      environmentState: "starting",
+      issues: [],
+    });
+    await this.reconcileAcceptance?.(snapshot);
+    this.sessionId = input.sessionId;
+    this.snapshot = snapshot;
+    return {
+      status: "accepted",
+      acknowledgement: {
+        session: snapshot,
+        ref: input.payload.ref,
+        branchName: input.payload.branchName,
+        checkoutState: "pending",
+      },
+    };
+  }
+
+  wakeSession(input: WakeSessionInput): ReturnType<RunnerConnections["wakeSession"]> {
+    this.wakes.push(input);
+    return Promise.resolve({
+      status: "accepted" as const,
+      acknowledgement: new WakeSessionAccepted({}),
     });
   }
 
-  wakeSession(input: WakeSessionInput) {
-    return Effect.sync(() => {
-      this.wakes.push(input);
-      return {
-        status: "accepted" as const,
-        acknowledgement: new WakeSessionAccepted({}),
-      };
-    });
+  promptSession(input: PromptSessionInput): ReturnType<RunnerConnections["promptSession"]> {
+    this.prompts.push(input);
+    return Promise.resolve(this.promptResult);
   }
 
-  promptSession(input: PromptSessionInput): Effect.Effect<OperationResult<unknown>> {
-    return Effect.sync(() => {
-      this.prompts.push(input);
-      return this.promptResult;
-    });
-  }
-
-  setSessionThinkingLevel(input: SetSessionThinkingLevelInput) {
+  setSessionThinkingLevel(
+    input: SetSessionThinkingLevelInput,
+  ): ReturnType<RunnerConnections["setSessionThinkingLevel"]> {
     this.thinkingLevelChanges.push(input);
-    return Effect.succeed({
+    return Promise.resolve({
       status: "accepted" as const,
       acknowledgement: input.level,
     });
   }
 
-  abortSession(input: AbortSessionInput): Effect.Effect<OperationResult<unknown>> {
-    return Effect.sync(() => {
-      this.aborts.push(input);
-      return this.abortResult;
-    });
+  abortSession(input: AbortSessionInput): ReturnType<RunnerConnections["abortSession"]> {
+    this.aborts.push(input);
+    return Promise.resolve(this.abortResult);
   }
 
-  stopSession(input: StopSessionInput): Effect.Effect<OperationResult<StopSessionAccepted>> {
-    return Effect.sync(() => {
-      this.stops.push(input);
-      return this.stopResult;
-    });
+  stopSession(input: StopSessionInput): ReturnType<RunnerConnections["stopSession"]> {
+    this.stops.push(input);
+    return Promise.resolve(this.stopResult);
   }
 
-  deleteSession(input: DeleteSessionInput): Effect.Effect<void> {
-    return Effect.sync(() => {
-      if (input.workspaceId === this.workspaceId && input.sessionId === this.sessionId) {
-        this.deletions.push(input);
-      }
-    });
+  deleteSession(input: DeleteSessionInput): ReturnType<RunnerConnections["deleteSession"]> {
+    if (input.workspaceId === this.workspaceId && input.sessionId === this.sessionId) {
+      this.deletions.push(input);
+    }
+    return Promise.resolve();
   }
 
   watchSession(
@@ -309,13 +322,13 @@ class BrowserTestRunnerConnections implements RunnerRegistryService {
       );
   }
 
-  disconnectRunner(): Effect.Effect<boolean> {
-    return Effect.succeed(false);
+  disconnectRunner(): ReturnType<RunnerConnections["disconnectRunner"]> {
+    return Promise.resolve(false);
   }
 }
 
 Deno.test("session composer creates a new server-assigned session on each submission without client initialization", async () => {
-  const store = await createTestStore();
+  const { workspace: store } = activate();
   const connections = new BrowserTestRunnerConnections();
   const router = createAppRouter(createAppServices(store, connections));
   const server = await createTestServer((request) => router.fetch(request));
@@ -396,12 +409,11 @@ Deno.test("session composer creates a new server-assigned session on each submis
     );
   } finally {
     await server.close();
-    await store.close();
   }
 });
 
 Deno.test("browser form waits for runner acceptance before cataloging and keeps token memory-only", async () => {
-  const store = await createTestStore();
+  const { workspace: store, storage } = activate();
   const connections = new BrowserTestRunnerConnections();
   const router = createAppRouter(createAppServices(store, connections));
   const server = await createTestServer((request) => router.fetch(request));
@@ -426,11 +438,15 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const enrolled = await enrollRunner(store, client.workspaceId);
     connections.runnerId = enrolled.runnerId;
     connections.beforeAcceptance = async (input) => {
-      const count = await store.pool.query<{ count: number }>(
-        "select count(*)::integer as count from sessions where workspace_id = $1 and id = $2",
-        [client.workspaceId, input.sessionId],
+      assertEquals(await store.getSessionCatalogEntry(client.workspaceId, input.sessionId), null);
+      assertEquals(
+        storage.rows(
+          "SELECT id FROM sessions WHERE workspaceId = ? AND id = ?",
+          client.workspaceId,
+          input.sessionId,
+        ),
+        [],
       );
-      assertEquals(count.rows[0]?.count, 0);
     };
     connections.reconcileAcceptance = async (snapshot) => {
       const [reconciled] = await store.reconcileSessionManifestEntries(client.workspaceId, [
@@ -533,63 +549,45 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(location, routes.app.sessions.detail.href({ sessionId: provision.sessionId }));
     assertEquals(provision.runnerId, connections.runnerId);
     assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
-    assertEquals(provision.payload.environmentSecrets, [
-      new SessionEnvironmentSecret({
-        name: "DEPLOY_TOKEN",
-        value: ENVIRONMENT_SECRET_VALUE,
-        allowedHosts: ENVIRONMENT_SECRET_HOSTS,
-      }),
-    ]);
+    assertEquals(provision.payload.environmentSecrets, [ENVIRONMENT_SECRET]);
     assertEquals(
       provision.payload.gitAuthor,
-      new GitAuthor({
+      {
         name: GIT_AUTHOR.authorName,
         email: GIT_AUTHOR.authorEmail,
-      }),
+      },
     );
     assertEquals(provision.payload.initialPrompt, INITIAL_PROMPT);
     assertEquals(provision.payload.orbSize, "small");
     assertEquals(
       provision.payload.modelRuntime,
-      new SessionModelRuntime({
+      {
         model: MODEL,
         thinkingLevel: "max",
         credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
-      }),
+      },
     );
-    const catalog = await store.pool.query<{
-      workspace_id: string;
-      id: string;
-      project_id: string;
-      created_at: string;
-      initial_prompt_preview: string;
-    }>("select * from sessions where workspace_id = $1", [client.workspaceId]);
-    assertEquals(catalog.rows, [{
-      workspace_id: client.workspaceId,
+    const catalog = storage.rows(
+      `SELECT id, projectId, createdAt, initialPromptPreview
+      FROM sessions WHERE workspaceId = ?`,
+      client.workspaceId,
+    );
+    assertEquals(catalog, [{
       id: provision.sessionId,
-      project_id: projectResult.project.id,
-      created_at: "2026-08-17T12:00:00Z",
-      initial_prompt_preview: "Inspect this repository and explain the architecture.",
+      projectId: projectResult.project.id,
+      createdAt: "2026-08-17T12:00:00Z",
+      initialPromptPreview: "Inspect this repository and explain the architecture.",
     }]);
-    const storedSecrets = await store.pool.query<{ ciphertext: string }>(
-      "select ciphertext from encrypted_secrets",
+    assertEquals(storage.rows("SELECT id FROM git_credentials").length, 1);
+    assertEquals(storage.rows("SELECT id FROM model_provider_credentials").length, 1);
+    assertEquals(
+      storage.rows("SELECT key FROM encrypted_secrets WHERE purpose = 'generic-secret'").length,
+      1,
     );
-    assertEquals(storedSecrets.rows.length, 3);
-    assert(
-      storedSecrets.rows.every((row: { ciphertext: string }) =>
-        !row.ciphertext.includes(GITHUB_TOKEN)
-      ),
-    );
-    assert(
-      storedSecrets.rows.every((row: { ciphertext: string }) =>
-        !row.ciphertext.includes(MODEL_PROVIDER_KEY)
-      ),
-    );
-    assert(
-      storedSecrets.rows.every((row: { ciphertext: string }) =>
-        !row.ciphertext.includes(ENVIRONMENT_SECRET_VALUE)
-      ),
-    );
+    const persisted = storage.dump();
+    for (const plaintext of [GITHUB_TOKEN, MODEL_PROVIDER_KEY, ENVIRONMENT_SECRET_VALUE]) {
+      assert(!persisted.includes(plaintext));
+    }
 
     const pendingDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
@@ -836,19 +834,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       workspaceId: client.workspaceId,
       sessionId: provision.sessionId,
       payload: {
-        modelRuntime: new SessionModelRuntime({
+        modelRuntime: {
           model: MODEL,
           thinkingLevel: "high",
           credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
-        }),
+        },
         githubToken: GITHUB_TOKEN,
-        environmentSecrets: [
-          new SessionEnvironmentSecret({
-            name: "DEPLOY_TOKEN",
-            value: ENVIRONMENT_SECRET_VALUE,
-            allowedHosts: ENVIRONMENT_SECRET_HOSTS,
-          }),
-        ],
+        environmentSecrets: [ENVIRONMENT_SECRET],
       },
     }]);
 
@@ -955,19 +947,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       sessionId: provision.sessionId,
       payload: {
         prompt: "Commit the reviewed changes and push the session branch.",
-        modelRuntime: new SessionModelRuntime({
+        modelRuntime: {
           model: MODEL,
           thinkingLevel: "high",
           credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
-        }),
+        },
         githubToken: GITHUB_TOKEN,
-        environmentSecrets: [
-          new SessionEnvironmentSecret({
-            name: "DEPLOY_TOKEN",
-            value: ENVIRONMENT_SECRET_VALUE,
-            allowedHosts: ENVIRONMENT_SECRET_HOSTS,
-          }),
-        ],
+        environmentSecrets: [ENVIRONMENT_SECRET],
       },
     }]);
 
@@ -1037,19 +1023,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       workspaceId: client.workspaceId,
       sessionId: provision.sessionId,
       payload: {
-        modelRuntime: new SessionModelRuntime({
+        modelRuntime: {
           model: MODEL,
           thinkingLevel: "high",
           credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
-        }),
+        },
         githubToken: GITHUB_TOKEN,
-        environmentSecrets: [
-          new SessionEnvironmentSecret({
-            name: "DEPLOY_TOKEN",
-            value: ENVIRONMENT_SECRET_VALUE,
-            allowedHosts: ENVIRONMENT_SECRET_HOSTS,
-          }),
-        ],
+        environmentSecrets: [ENVIRONMENT_SECRET],
       },
     });
     const coldContinuation = await fetch(new URL(messageHref, server.baseUrl), {
@@ -1067,19 +1047,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       sessionId: provision.sessionId,
       payload: {
         prompt: "Resume this stopped session",
-        modelRuntime: new SessionModelRuntime({
+        modelRuntime: {
           model: MODEL,
           thinkingLevel: "high",
           credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
-        }),
+        },
         githubToken: GITHUB_TOKEN,
-        environmentSecrets: [
-          new SessionEnvironmentSecret({
-            name: "DEPLOY_TOKEN",
-            value: ENVIRONMENT_SECRET_VALUE,
-            allowedHosts: ENVIRONMENT_SECRET_HOSTS,
-          }),
-        ],
+        environmentSecrets: [ENVIRONMENT_SECRET],
       },
     });
 
@@ -1141,13 +1115,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(connections.prompts.length, 3);
     assertEquals(connections.prompts[2]?.payload.prompt, "Queue this follow-up");
     assertEquals(connections.prompts[2]?.payload.githubToken, GITHUB_TOKEN);
-    assertEquals(connections.prompts[2]?.payload.environmentSecrets, [
-      new SessionEnvironmentSecret({
-        name: "DEPLOY_TOKEN",
-        value: ENVIRONMENT_SECRET_VALUE,
-        allowedHosts: ENVIRONMENT_SECRET_HOSTS,
-      }),
-    ]);
+    assertEquals(connections.prompts[2]?.payload.environmentSecrets, [ENVIRONMENT_SECRET]);
 
     const abortHref = routes.app.sessions.abort.href({ sessionId: provision.sessionId });
     const missingAbortCsrf = await fetch(new URL(abortHref, server.baseUrl), {
@@ -1330,23 +1298,17 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(retryProvision?.payload.mode, "retry");
     assertEquals(
       retryProvision?.payload.mode === "retry" ? retryProvision.payload.modelRuntime : undefined,
-      new SessionModelRuntime({
+      {
         model: provision.payload.modelRuntime.model,
         thinkingLevel: "high",
         credential: { type: "api_key", value: RETRY_MODEL_PROVIDER_KEY },
-      }),
+      },
     );
     assertEquals(
       retryProvision?.payload.mode === "retry"
         ? retryProvision.payload.environmentSecrets
         : undefined,
-      [
-        new SessionEnvironmentSecret({
-          name: "DEPLOY_TOKEN",
-          value: ENVIRONMENT_SECRET_VALUE,
-          allowedHosts: ENVIRONMENT_SECRET_HOSTS,
-        }),
-      ],
+      [ENVIRONMENT_SECRET],
     );
 
     const abort = new AbortController();
@@ -1408,12 +1370,11 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(await offlineEvents.body?.getReader().read(), { value: undefined, done: true });
   } finally {
     await server.close();
-    await store.close();
   }
 });
 
 Deno.test("session routes enforce auth, CSRF, project ownership, and runner ownership", async () => {
-  const store = await createTestStore();
+  const { workspace: store } = activate();
   const connections = new BrowserTestRunnerConnections();
   const router = createAppRouter(createAppServices(store, connections));
   const server = await createTestServer((request) => router.fetch(request));
@@ -1432,8 +1393,8 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       OPENAI_PROVIDER_ID,
       OPENAI_PROVIDER_KEY,
     );
-    const otherWorkspaceId = await createTestWorkspace(store);
-    const foreignProject = await store.saveProject(otherWorkspaceId, {
+    const { workspace: otherWorkspace, workspaceId: otherWorkspaceId } = await createWorkspace();
+    const foreignProject = await otherWorkspace.saveProject(otherWorkspaceId, {
       name: "Foreign project",
       repositoryUrl: "https://github.com/openorb/foreign.git",
     });
@@ -1584,11 +1545,11 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     );
     assertEquals(
       alternateProvision.payload.modelRuntime,
-      new SessionModelRuntime({
+      {
         model: OPENAI_MODEL,
         thinkingLevel: "high",
         credential: { type: "api_key", value: OPENAI_PROVIDER_KEY },
-      }),
+      },
     );
     connections.provisions = [];
 
@@ -1609,12 +1570,11 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     assertEquals(connections.provisions.length, 0);
   } finally {
     await server.close();
-    await store.close();
   }
 });
 
 Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolates tenants", async () => {
-  const store = await createTestStore();
+  const { workspace: store, storage } = activate();
   const connections = new BrowserTestRunnerConnections();
   const router = createAppRouter(createAppServices(store, connections));
   const server = await createTestServer((request) => router.fetch(request));
@@ -1707,8 +1667,8 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     assertEquals(await store.getSessionCatalogEntry(client.workspaceId, offlineSession.id), null);
     assertEquals(connections.deletions.length, 1);
 
-    const otherWorkspaceId = await createTestWorkspace(store);
-    const otherProject = await store.saveProject(otherWorkspaceId, {
+    const { workspace: otherWorkspace, workspaceId: otherWorkspaceId } = await createWorkspace();
+    const otherProject = await otherWorkspace.saveProject(otherWorkspaceId, {
       name: "Other Workspace project",
       repositoryUrl: "https://github.com/meln1k/other-project.git",
     });
@@ -1718,9 +1678,12 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       otherProject.project.id,
       "Foreign session",
     );
-    const [foreignReconciled] = await store.reconcileSessionManifestEntries(otherWorkspaceId, [
-      foreignSession,
-    ]);
+    const [foreignReconciled] = await otherWorkspace.reconcileSessionManifestEntries(
+      otherWorkspaceId,
+      [
+        foreignSession,
+      ],
+    );
     assert(foreignReconciled);
     const deletionCount = connections.deletions.length;
     const foreignDelete = await submitDeletion(
@@ -1730,7 +1693,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       csrfToken,
     );
     assertEquals(foreignDelete.status, 404);
-    assert(await store.getSessionCatalogEntry(otherWorkspaceId, foreignSession.id));
+    assert(await otherWorkspace.getSessionCatalogEntry(otherWorkspaceId, foreignSession.id));
     assertEquals(connections.deletions.length, deletionCount);
 
     const sameIdForOtherWorkspace = deletionSnapshot(
@@ -1738,12 +1701,15 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       otherProject.project.id,
       "Same ID in another Workspace",
     );
-    const [sameIdReconciled] = await store.reconcileSessionManifestEntries(otherWorkspaceId, [
-      sameIdForOtherWorkspace,
-    ]);
+    const [sameIdReconciled] = await otherWorkspace.reconcileSessionManifestEntries(
+      otherWorkspaceId,
+      [
+        sameIdForOtherWorkspace,
+      ],
+    );
     assert(sameIdReconciled);
     assertEquals(sameIdReconciled.acceptedSessionIds, [onlineSession.id]);
-    assert(await store.getSessionCatalogEntry(otherWorkspaceId, onlineSession.id));
+    assert(await otherWorkspace.getSessionCatalogEntry(otherWorkspaceId, onlineSession.id));
     const [staleOwnerSnapshot] = await store.reconcileSessionManifestEntries(client.workspaceId, [
       onlineSession,
     ]);
@@ -1752,21 +1718,30 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     assertEquals(staleOwnerSnapshot.tombstonedSessionIds, [onlineSession.id]);
     assertEquals(await store.getSessionCatalogEntry(client.workspaceId, onlineSession.id), null);
 
-    const markerColumns = await store.pool.query<{ column_name: string }>(
-      `select column_name
-         from information_schema.columns
-        where table_schema = 'public'
-          and table_name = 'deleted_sessions'
-        order by ordinal_position`,
+    const marker = storage.rows<{ deletedAt: string }>(
+      "SELECT deletedAt FROM deleted_sessions WHERE workspaceId = ? AND sessionId = ?",
+      client.workspaceId,
+      onlineSession.id,
+    )[0];
+    assert(marker);
+    assertEquals(new Date(marker.deletedAt).toISOString(), marker.deletedAt);
+    assertEquals(
+      await activate(storage).workspace.getSessionCatalogEntry(
+        client.workspaceId,
+        onlineSession.id,
+      ),
+      null,
     );
-    assertEquals(markerColumns.rows.map((row: { column_name: string }) => row.column_name), [
-      "workspace_id",
-      "session_id",
-      "deleted_at",
-    ]);
+    assertEquals(
+      storage.rows(
+        "SELECT deletedAt FROM deleted_sessions WHERE workspaceId = ? AND sessionId = ?",
+        otherWorkspaceId,
+        onlineSession.id,
+      ),
+      [],
+    );
   } finally {
     await server.close();
-    await store.close();
   }
 });
 
@@ -1778,7 +1753,7 @@ interface BrowserClient {
 
 async function authenticate(
   baseUrl: URL,
-  store: Awaited<ReturnType<typeof createTestStore>>,
+  store: ReturnType<typeof activate>["workspace"],
 ): Promise<BrowserClient> {
   const setupUrl = new URL(routes.auth.setup.index.href(), baseUrl);
   const setupPage = await fetch(setupUrl);
@@ -1813,7 +1788,7 @@ async function authenticate(
 }
 
 async function enrollRunner(
-  store: Awaited<ReturnType<typeof createTestStore>>,
+  store: ReturnType<typeof activate>["workspace"],
   workspaceId: WorkspaceId,
 ) {
   const enrollment = await store.getRunnerEnrollmentToken(workspaceId);

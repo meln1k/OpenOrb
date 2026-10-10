@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import type { JsonObject } from "@earendil-works/pi-durable";
-import { assetServer } from "@/app/assets.ts";
+import { createBuildAssetServer } from "../build-assets.ts";
 import { routes } from "@/app/routes.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
 
@@ -12,6 +12,9 @@ Deno.test({
     "browser wakes on page entry, applies atomic Durable frames, and keeps command receipts independent",
   ignore: browserEndpoint === undefined,
   async fn() {
+    await using cleanup = new AsyncDisposableStack();
+    const assetServer = createBuildAssetServer();
+    cleanup.defer(() => assetServer.close());
     const { chromium } = await import("playwright");
     const browser = await chromium.connectOverCDP(browserEndpoint!);
     const context = await browser.newContext({

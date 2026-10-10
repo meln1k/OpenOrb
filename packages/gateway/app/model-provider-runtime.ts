@@ -2,7 +2,7 @@ import { parseModelReference } from "@openorb/protocol";
 import { err, ok, type Result, tryAsync } from "@openorb/result";
 import type { SessionModelRuntime, WorkspaceId } from "@openorb/protocol/runner-api";
 
-import type { WorkspaceClient } from "@openorb/workspace";
+import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
 import { OPENAI_CODEX_PROVIDER_ID, sessionModelRuntime } from "@/app/model-provider-catalog.ts";
 
 export class ModelProviderRuntimeError extends Error {
@@ -15,12 +15,11 @@ export class ModelProviderRuntimeError extends Error {
 export async function resolveSessionModelRuntime(
   workspaceId: WorkspaceId,
   model: string,
-  workspace: WorkspaceClient,
+  workspace: WorkspaceApi,
 ): Promise<Result<SessionModelRuntime | null, ModelProviderRuntimeError>> {
   const { providerId } = parseModelReference(model);
   if (providerId !== OPENAI_CODEX_PROVIDER_ID) {
-    const [apiKey, readError] = await workspace.call(
-      "getModelProviderApiKey",
+    const [apiKey, readError] = await workspace.getModelProviderApiKey(
       workspaceId,
       providerId,
     );
@@ -31,7 +30,7 @@ export async function resolveSessionModelRuntime(
   }
 
   const [accessToken, resolveError] = await tryAsync(
-    workspace.call("resolveProviderAccessToken", workspaceId),
+    workspace.resolveProviderAccessToken(workspaceId),
     (cause) => new ModelProviderRuntimeError(cause),
   );
   if (resolveError !== undefined) return err(resolveError);

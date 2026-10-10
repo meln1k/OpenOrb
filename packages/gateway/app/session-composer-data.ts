@@ -3,7 +3,6 @@ import type { WorkspaceId } from "@openorb/protocol/runner-api";
 
 import type { AppServices } from "@/app/middleware/services.ts";
 import { MODEL_OPTIONS } from "@/app/model-provider-catalog.ts";
-import { Effect } from "effect";
 
 export type SessionComposerData = {
   projects: {
@@ -27,9 +26,9 @@ export async function loadSessionComposerData(
   services: AppServices,
 ): Promise<SessionComposerData> {
   const [projects, providers, runners] = await Promise.all([
-    services.workspace.call("listProjects", workspaceId),
-    services.workspace.call("listModelProviderCredentials", workspaceId),
-    services.workspace.call("listRunners", workspaceId),
+    services.workspace.listProjects(workspaceId),
+    services.workspace.listModelProviderCredentials(workspaceId),
+    services.workspace.listRunners(workspaceId),
   ]);
   return {
     projects: projects.map((project) => ({
@@ -48,9 +47,7 @@ export async function loadSessionComposerData(
     })),
     hasConfiguredRunner: runners.some((runner) => runner.revokedAt === null),
     hasConnectedRunner: (await Promise.all(runners.map(async (runner) => {
-      const live = await Effect.runPromise(
-        services.runnerConnections.getRunnerLiveState(workspaceId, runner.id),
-      );
+      const live = await services.runnerConnections.getRunnerLiveState(workspaceId, runner.id);
       return live !== null && runner.revokedAt === null;
     }))).some(Boolean),
   };

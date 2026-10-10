@@ -1,133 +1,81 @@
 import { createAppServices } from "@/app/middleware/services.ts";
-import { WorkspaceClient } from "@openorb/workspace";
-import { createAppRouter } from "@/app/router.ts";
+import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
+import { createAppRouter, createSessionCookie } from "@/app/router.ts";
+import { createGatewayAssets } from "@/app/assets.ts";
 import { routes } from "@/app/routes.ts";
-import {
-  RunnerRegistry,
-  runnerRegistryLayer,
-  type RunnerRegistryService,
-} from "@/app/runner-registry.ts";
-import * as DenoHttpClient from "@effect/platform-deno/DenoHttpClient";
-import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
-import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
-import { Context, Effect, Layer } from "effect";
-import * as HttpEffect from "effect/http/HttpEffect";
-import * as HttpServer from "effect/http/HttpServer";
-import * as HttpServerRequest from "effect/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import * as OtlpSerialization from "effect/observability/OtlpSerialization";
-import * as OtlpTracer from "effect/observability/OtlpTracer";
+import { tryAsync } from "@openorb/result";
+import type { Env } from "./app/env.ts";
+import type { Request as WorkerRequest } from "@cloudflare/workers-types";
 
-const port = Number(Deno.env.get("PORT") ?? "44100");
+export { Workspace } from "@/app/cells/workspace/workspace.ts";
+export { Runners } from "@/app/cells/runners/runner-registry-do.ts";
 
-const telemetryLayer = OtlpTracer.layerFromConfig({
-  resource: {
-    serviceName: "openorb-gateway",
-    serviceVersion: "0.0.0",
-  },
-}).pipe(
-  Layer.provide(
-    Layer.merge(DenoHttpClient.layer, OtlpSerialization.layerProtobuf),
-  ),
-);
+const routers = new WeakMap<Env, {
+  services: ReturnType<typeof createAppServices>;
+  bySecureCookie: Map<boolean, ReturnType<typeof createAppRouter>>;
+}>();
 
-function makeRemixHandler(
-  router: InitializedGateway["router"],
-): (request: Request) => Promise<Response> {
-  return (request) => router.fetch(request);
-}
-
-interface InitializedGateway {
-  router: ReturnType<typeof createAppRouter>;
-  runnerRegistry: RunnerRegistryService;
-}
-
-const initializeGateway = Effect.fn("gateway.initialize")(function* () {
-  const workspaceUrl = Deno.env.get("OPENORB_WORKSPACE_URL") ?? "http://127.0.0.1:44200";
-  const workspace = new WorkspaceClient(workspaceUrl);
-  yield* Effect.tryPromise({
-    try: async () => {
-      const response = await fetch(new URL("/healthz", workspaceUrl), {
-        signal: AbortSignal.timeout(10_000),
-        redirect: "error",
-      });
-      await response.body?.cancel();
-      if (!response.ok) throw new GatewayInitializationError("Workspace unavailable", undefined);
-    },
-    catch: (cause) => new GatewayInitializationError("Workspace initialization failed.", cause),
-  });
-
-  const registryContext = yield* Layer.build(runnerRegistryLayer({
-    authenticateRunner: (token) => workspace.call("authenticateRunner", token),
-    reconcileSessionManifestEntries: (workspaceId, entries) =>
-      workspace.call("reconcileSessionManifestEntries", workspaceId, entries),
-  }));
-  const runnerRegistry = Context.get(registryContext, RunnerRegistry);
-
-  const router = yield* Effect.try({
-    try: () => createAppRouter(createAppServices(workspace, runnerRegistry)),
-    catch: (cause) =>
-      new GatewayInitializationError("Gateway services initialization failed.", cause),
-  });
-
-  return { router, runnerRegistry } satisfies InitializedGateway;
-});
-
-class GatewayInitializationError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
-    super(message, { cause });
-    this.name = "GatewayInitializationError";
-  }
-}
-
-const gatewayLive = Effect.scoped(Effect.gen(function* () {
-  const { router, runnerRegistry } = yield* initializeGateway();
-  const gatewayScope = yield* Effect.scope;
-
-  yield* Layer.launch(
-    Layer.effectDiscard(Effect.gen(function* () {
-      const server = yield* HttpServer.HttpServer;
-      const remix = HttpEffect.fromWebHandler(makeRemixHandler(router));
-      yield* server.serve(
-        Effect.gen(function* () {
-          const request = yield* HttpServerRequest.HttpServerRequest;
-          const requestPath = request.url.split("?", 1)[0];
-          const isControl = requestPath === routes.api.runners.connect.href();
-          const isBulk = requestPath === routes.api.runners.connectBulk.href();
-          if (!isControl && !isBulk) {
-            return yield* remix;
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const [response, error] = await tryAsync(
+      (async () => {
+        const url = new URL(request.url);
+        const runners = env.RUNNERS.getByName("runners");
+        if (
+          url.pathname === routes.api.runners.connect.href() ||
+          url.pathname === routes.api.runners.connectBulk.href()
+        ) {
+          // SAFETY: the runtime uses Workers Web APIs; only the checker retains Deno's API types.
+          // deno-lint-ignore openorb/no-chained-type-assertions
+          return await runners.fetch(request as unknown as WorkerRequest) as unknown as Response;
+        }
+        let cache = routers.get(env);
+        if (!cache) {
+          if (!env.SESSION_SECRET) {
+            return new Response("Gateway is not configured", { status: 500 });
           }
-          const socket = yield* request.upgrade;
-          yield* Effect.forkIn(
-            isBulk ? runnerRegistry.acceptBulk(socket) : runnerRegistry.accept(socket),
-            gatewayScope,
+          // SAFETY: native RPC implements WorkspaceApi; platform thenables differ only in checker types.
+          // deno-lint-ignore openorb/no-chained-type-assertions
+          const workspace = env.WORKSPACE.getByName("workspace") as unknown as WorkspaceApi;
+          const services = createAppServices(workspace, runners, undefined, {
+            assets: createGatewayAssets(env.ASSETS),
+            ...(env.PUBLIC_URL ? { publicUrl: env.PUBLIC_URL } : {}),
+            sessionEvents: async (workspaceId, sessionId, original) => {
+              const streamUrl = new URL("https://registry.internal/watch");
+              streamUrl.searchParams.set("workspaceId", workspaceId);
+              streamUrl.searchParams.set("sessionId", sessionId);
+              const request = new Request(streamUrl, { signal: original.signal });
+              // SAFETY: same Web API boundary as the upgrade above; no response reconstruction.
+              // deno-lint-ignore openorb/no-chained-type-assertions
+              return await runners.fetch(
+                // SAFETY: native Workers Request, typed by Deno only for local checking.
+                // deno-lint-ignore openorb/no-chained-type-assertions
+                request as unknown as WorkerRequest,
+              ) as unknown as Response;
+            },
+          });
+          cache = { services, bySecureCookie: new Map() };
+          routers.set(env, cache);
+        }
+        const secure = env.OPENORB_SESSION_COOKIE_SECURE === "true" ||
+          new URL(env.PUBLIC_URL || request.url).protocol === "https:";
+        let router = cache.bySecureCookie.get(secure);
+        if (!router) {
+          router = createAppRouter(
+            cache.services,
+            createSessionCookie({
+              secret: env.SESSION_SECRET,
+              secure,
+            }),
           );
-          return HttpServerResponse.empty();
-        }),
-      );
-    })).pipe(
-      Layer.provide(
-        DenoHttpServer.layer({
-          port,
-          automaticCompression: true,
-          onListen({ hostname, port: listeningPort }: { hostname: string; port: number }) {
-            const displayHost = hostname === "0.0.0.0" ? "localhost" : hostname;
-            console.log(
-              JSON.stringify({
-                component: "openorb-gateway",
-                status: "healthy",
-                url: `http://${displayHost}:${listeningPort}`,
-                healthUrl: `http://${displayHost}:${listeningPort}/healthz`,
-              }),
-            );
-          },
-        }),
-      ),
-    ),
-  );
-}));
-
-gatewayLive.pipe(
-  Effect.provide(telemetryLayer),
-  DenoRuntime.runMain,
-);
+          cache.bySecureCookie.set(secure, router);
+        }
+        return await router.fetch(request);
+      })(),
+      () => "failed",
+    );
+    // Provider credentials and transport errors must never enter browser error responses.
+    if (error !== undefined) return new Response("Gateway operation failed", { status: 500 });
+    return response;
+  },
+};

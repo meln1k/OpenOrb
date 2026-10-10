@@ -46,12 +46,15 @@ not leave an orphan Workspace or create another administrator.
   DNS-rebinding targets while preserving guest-local loopback.
 - The celld Workspace Durable Object owns SQLite-backed configuration, browser sessions, runner
   enrollment records, the minimal Session catalog, and deletion markers. Complete Session state
-  remains runner-owned. The gateway calls the Worker over HTTP and no longer opens PostgreSQL.
-- During this intermediate migration the Worker API deliberately has no authentication. It must
-  listen only on loopback and must not have a public portal or reverse-proxy route. Browser auth,
-  CSRF, runner token verification, and encrypted credentials remain enforced. OpenAI Codex device
-  authorization, alarm-driven polling, exchange, refresh, and revocation execute in the DO; Node
-  never handles its OAuth callbacks. PostgreSQL-to-DO data import is not implemented.
+  remains runner-owned. The gateway webapp is the public Worker and no longer opens PostgreSQL.
+- The public Worker enforces browser authentication, Workspace ownership, and CSRF before calling
+  Workspace/Runners native RPC. There is no public generic Workspace RPC endpoint. The Runners DO
+  owns live control/bulk sockets, authenticates runner tokens against Workspace persistence, and
+  isolates live state by Workspace ID. Replacement/revocation closes connection scopes and sockets;
+  viewer stream cancellation closes only that subscription. Its live projections are reconstructed
+  from runner manifests after restart, not treated as durable Session state. OpenAI Codex device
+  authorization, alarm-driven polling, exchange, refresh, and revocation remain in Workspace; the
+  Worker does not handle OAuth callbacks. PostgreSQL-to-DO data import is not implemented.
 - Published Media is copied from `/workspace/.openorb/artifacts` into private Session storage on the
   runner, limited to 64 MiB per artifact and 1 GiB total per Session, with no artifact-count cap.
   Browsers can read it only through the authenticated, Workspace-scoped gateway route. The route

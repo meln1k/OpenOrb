@@ -1,0 +1,24 @@
+{
+  "name": "openorb-gateway-test",
+  "main": "dist/worker.js",
+  "compatibility_date": "2026-10-07",
+  "vars": {
+    "OPENORB_MASTER_KEY": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "SESSION_SECRET": "disposable-gateway-fixture-secret",
+    "PUBLIC_URL": "",
+    "OPENORB_SESSION_COOKIE_SECURE": "false"
+  },
+  "assets": {
+    "directory": "dist/assets",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKSPACE", "class_name": "Workspace" },
+      { "name": "RUNNERS", "class_name": "Runners" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workspace", "Runners"] }]
+}

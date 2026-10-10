@@ -1,7 +1,6 @@
 import { csrf as csrfMiddleware } from "remix/middleware/csrf";
-
-const publicUrl = Deno.env.get("PUBLIC_URL");
-const publicOrigin = publicUrl ? getPublicOrigin(publicUrl) : undefined;
+import { AppServicesKey } from "./services.ts";
+import type { Middleware } from "remix/router";
 
 function getPublicOrigin(publicUrl: string) {
   const url = new URL(publicUrl);
@@ -20,5 +19,9 @@ class PublicUrlConfigurationError extends Error {
 }
 
 export function csrf() {
-  return csrfMiddleware(publicOrigin === undefined ? {} : { origin: publicOrigin });
+  const middleware: Middleware = (context, next) => {
+    const publicUrl = context.get(AppServicesKey)?.publicUrl;
+    return csrfMiddleware(publicUrl ? { origin: getPublicOrigin(publicUrl) } : {})(context, next);
+  };
+  return middleware;
 }

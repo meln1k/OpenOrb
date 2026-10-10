@@ -49,8 +49,6 @@
     "npm:effect@4.0.0": "4.0.0",
     "npm:lucide@1.31.0": "1.31.0",
     "npm:marked@18.0.5": "18.0.5",
-    "npm:pg@*": "8.16.3",
-    "npm:pg@8.16.3": "8.16.3",
     "npm:playwright@1.55.0": "1.55.0",
     "npm:remix@3.0.0": "3.0.0_pg@8.16.3_playwright@1.55.0",
     "npm:typescript@^6.0.3": "6.0.3",
@@ -3460,7 +3458,6 @@
           "npm:@remix-run/ui@0.12.1",
           "npm:lucide@1.31.0",
           "npm:marked@18.0.5",
-          "npm:pg@8.16.3",
           "npm:remix@3.0.0"
         ]
       },
@@ -3487,11 +3484,6 @@
           "npm:@effect/platform-node@4.0.0",
           "npm:@opentelemetry/api@1.9.0",
           "npm:@remix-run/data-schema@1.0.0"
-        ]
-      },
-      "packages/workspace": {
-        "dependencies": [
-          "jsr:@std/uuid@1.1.1"
         ]
       }
     }

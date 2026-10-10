@@ -21,14 +21,6 @@ as_root() {
   fi
 }
 
-as_postgres() {
-  if command -v sudo >/dev/null 2>&1; then
-    sudo -n -u postgres -- "$@"
-  else
-    runuser -u postgres -- "$@"
-  fi
-}
-
 install_system_packages() {
   local qemu_package
   case "$(dpkg --print-architecture)" in
@@ -50,7 +42,6 @@ install_system_packages() {
     lz4
     openssl
     podman
-    postgresql
     qemu-utils
     uidmap
     unzip
@@ -174,55 +165,6 @@ clone_remix_repository() {
     https://github.com/remix-run/remix.git "$target"
 }
 
-configure_postgres() {
-  local cluster
-  cluster="$(pg_lsclusters --no-header | awk 'NR == 1 { print $1, $2 }')"
-  if [[ -z "$cluster" ]]; then
-    echo 'PostgreSQL did not create a cluster.' >&2
-    return 1
-  fi
-
-  local version name hba marker
-  read -r version name <<<"$cluster"
-  hba="/etc/postgresql/$version/$name/pg_hba.conf"
-  marker='# OpenOrb orb loopback access'
-
-  if ! as_root grep -Fqx "$marker" "$hba"; then
-    local rules
-    rules="$(mktemp)"
-    cat >"$rules" <<EOF
-$marker
-host all all 127.0.0.1/32 trust
-host all all ::1/128 trust
-EOF
-    as_root sed -i "1r $rules" "$hba"
-    rm -f -- "$rules"
-  fi
-
-  if ! pg_isready -q -h 127.0.0.1; then
-    as_root pg_ctlcluster "$version" "$name" start
-  else
-    as_root pg_ctlcluster "$version" "$name" reload
-  fi
-
-  local dev_user
-  dev_user="$(id -un)"
-  if ! as_postgres psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname = '$dev_user'" postgres |
-    grep -Fqx 1; then
-    as_postgres createuser --login --superuser "$dev_user"
-  fi
-
-  local database
-  for database in openorb openorb-test; do
-    if ! as_postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname = '$database'" postgres |
-      grep -Fqx 1; then
-      as_postgres createdb --owner="$dev_user" "$database"
-    fi
-  done
-
-  pg_isready -q -h 127.0.0.1
-}
-
 create_local_environment() {
   local env_file=packages/gateway/.env
   if [[ -f "$env_file" ]]; then
@@ -293,7 +235,6 @@ step 'Install pinned celld and esbuild' bash "$repo_root/scripts/install-celld.s
 step 'Install Effect Solutions CLI' install_effect_solutions
 step 'Clone Effect v4 reference repository' clone_effect_repository
 step 'Clone Remix 3 RC 5 reference repository' clone_remix_repository
-step 'Configure PostgreSQL' configure_postgres
 step 'Create local gateway environment' create_local_environment
 step 'Install locked Deno dependencies' install_dependencies
 step 'Install GoTel local observability tool' install_gotel

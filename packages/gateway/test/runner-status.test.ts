@@ -1,14 +1,14 @@
 import { assertEquals } from "@std/assert";
 
 import { type RunnerCapacity, WorkspaceId } from "@openorb/protocol/runner-api";
-import { Effect } from "effect";
-import type { RunnerRecord } from "@/app/data/runner-repository.ts";
-import type { RunnerRegistryService } from "@/app/runner-registry.ts";
+import type { RunnerRecord } from "@/app/cells/workspace/api.ts";
+import type { AppServices } from "@/app/middleware/services.ts";
+import type { TestRunnerConnections } from "@/test/workspace-test.ts";
 import {
   MIN_RUNNER_DISK_FREE_MIB,
   type RunnerSelectionResult,
   selectRunnerForWorkspace,
-} from "@/app/runner-selection.ts";
+} from "@/app/cells/runners/runner-selection.ts";
 
 const WORKSPACE_ID = WorkspaceId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
 
@@ -42,7 +42,7 @@ Deno.test("manual selection allows busy runners and reports unavailable runners 
   const available = runnerRecord("available");
   const busy = runnerRecord("busy");
   const lowDisk = runnerRecord("low-disk");
-  const revoked = { ...runnerRecord("revoked"), revokedAt: Temporal.Now.instant() };
+  const revoked = { ...runnerRecord("revoked"), revokedAt: new Date().toISOString() };
   const runners = [available, busy, lowDisk, revoked];
   const repository = { listRunners: () => Promise.resolve(runners) };
   const connections = liveConnections(
@@ -105,19 +105,19 @@ function runnerRecord(id: string): RunnerRecord {
     id,
     name: id,
     architecture: "x64",
-    createdAt: Temporal.Instant.from("2026-01-01T00:00:00Z"),
+    createdAt: "2026-01-01T00:00:00Z",
     revokedAt: null,
   };
 }
 
 function liveConnections(
   capacities: Map<string, RunnerCapacity>,
-): Pick<RunnerRegistryService, "getRunnerLiveState"> {
-  return {
+): Pick<AppServices["runnerConnections"], "getRunnerLiveState"> {
+  const connections: Pick<TestRunnerConnections, "getRunnerLiveState"> = {
     getRunnerLiveState(workspaceId: WorkspaceId, runnerId: string) {
       assertEquals(workspaceId, WORKSPACE_ID);
       const capacity = capacities.get(runnerId);
-      return Effect.succeed(
+      return Promise.resolve(
         capacity
           ? {
             capacity,
@@ -127,4 +127,7 @@ function liveConnections(
       );
     },
   };
+  // SAFETY: selection awaits fixture results; it does not use native RPC pipelining or disposal.
+  // deno-lint-ignore openorb/no-chained-type-assertions
+  return connections as unknown as Pick<AppServices["runnerConnections"], "getRunnerLiveState">;
 }

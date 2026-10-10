@@ -27,7 +27,7 @@ const passwordProvider = createCredentialsAuthProvider({
     if (!services) {
       throw new TypeError("App services middleware is missing.");
     }
-    return services.workspace.call("verifyAdministratorPassword", password);
+    return services.workspace.verifyAdministratorPassword(password);
   },
 });
 
@@ -40,7 +40,7 @@ export default createController(routes.auth.login, {
       }
 
       const { workspace } = context.services;
-      if (!(await workspace.call("hasAdministrator"))) {
+      if (!(await workspace.hasAdministrator())) {
         return redirect(routes.auth.setup.index.href(), 303);
       }
 
@@ -48,7 +48,7 @@ export default createController(routes.auth.login, {
     },
     async action(context) {
       const services = context.services;
-      if (!(await services.workspace.call("hasAdministrator"))) {
+      if (!(await services.workspace.hasAdministrator())) {
         return redirect(routes.auth.setup.index.href(), 303);
       }
 

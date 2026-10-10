@@ -13,7 +13,7 @@ import {
 } from "@openorb/protocol/runner-api";
 
 import { SecretsSettingsPage } from "@/app/actions/settings/page.tsx";
-import type { Administrator } from "@/app/data/administrator-repository.ts";
+import type { Administrator } from "@/app/cells/workspace/api.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import type { AppContext } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
@@ -76,8 +76,7 @@ export default createController(routes.app.settings.secrets, {
               400,
             );
           }
-          const result = await context.services.workspace.call(
-            "saveSecret",
+          const result = await context.services.workspace.saveSecret(
             context.auth.identity.workspaceId,
             parsed.value.key.trim(),
             parsed.value.value.trim(),
@@ -108,8 +107,7 @@ export default createController(routes.app.settings.secrets, {
               400,
             );
           }
-          await context.services.workspace.call(
-            "deleteSecret",
+          await context.services.workspace.deleteSecret(
             context.auth.identity.workspaceId,
             parsed.value.key.trim(),
           );
@@ -127,8 +125,7 @@ async function renderSecrets(
   error?: string,
   status = 200,
 ): Promise<Response> {
-  const secrets = await context.services.workspace.call(
-    "listSecrets",
+  const secrets = await context.services.workspace.listSecrets(
     context.auth.identity.workspaceId,
   );
   return context.render(

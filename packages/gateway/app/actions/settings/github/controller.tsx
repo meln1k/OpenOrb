@@ -6,7 +6,7 @@ import { createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
 import { GitHubSettingsPage } from "@/app/actions/settings/page.tsx";
-import type { Administrator } from "@/app/data/administrator-repository.ts";
+import type { Administrator } from "@/app/cells/workspace/api.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import type { AppContext } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
@@ -48,8 +48,7 @@ export default createController(routes.app.settings.github, {
               400,
             );
           }
-          await context.services.workspace.call(
-            "saveGitHubCredential",
+          await context.services.workspace.saveGitHubCredential(
             context.auth.identity.workspaceId,
             parsed.value.token.trim(),
           );
@@ -60,8 +59,7 @@ export default createController(routes.app.settings.github, {
           if (!parsed.success) {
             return await renderGitHub(context, "Invalid GitHub credential deletion.", 400);
           }
-          const result = await context.services.workspace.call(
-            "deleteGitHubCredential",
+          const result = await context.services.workspace.deleteGitHubCredential(
             context.auth.identity.workspaceId,
           );
           if (result.status === "not-found") {
@@ -89,8 +87,7 @@ async function renderGitHub(
   error?: string,
   status = 200,
 ): Promise<Response> {
-  const credential = await context.services.workspace.call(
-    "getGitHubCredential",
+  const credential = await context.services.workspace.getGitHubCredential(
     context.auth.identity.workspaceId,
   );
   return context.render(

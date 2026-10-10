@@ -17,7 +17,6 @@ interface AcceptanceConfiguration {
   readonly githubRepository: string;
   readonly githubToken: string;
   readonly openCodeApiKey: string;
-  readonly postgresUrl: string;
   readonly chromiumExecutablePath: string | undefined;
 }
 
@@ -61,7 +60,8 @@ const configuration = readConfiguration();
 Deno.env.delete("OPENORB_GITHUB_TEST_TOKEN");
 Deno.env.delete("OPENCODE_API_KEY");
 const runId = crypto.randomUUID().replaceAll("-", "");
-const databaseName = `openorb_acceptance_${runId}`;
+const masterKey = randomHex(32);
+const sessionSecret = randomHex(32);
 const fixtureBranch = `openorb-e2e-fixture-${runId}`;
 const sessionBranch = `openorb/e2e-${runId}`;
 const sessionId = crypto.randomUUID();
@@ -71,8 +71,8 @@ const setupMarker = `setup-${runId}`;
 const resumeMarker = `resume-${runId}`;
 const initialMarker = `initial-${runId}`;
 const resumedMarker = `resumed-${runId}`;
-const databaseUrl = databaseUrlForName(configuration.postgresUrl, databaseName);
 const temporaryDirectory = await Deno.makeTempDir({ prefix: "openorb-release-acceptance-" });
+const gatewayDirectory = join(temporaryDirectory, "gateway");
 const runnerDirectory = join(temporaryDirectory, "runner");
 const runnerSessionDirectory = join(runnerDirectory, "sessions", sessionId);
 
@@ -80,12 +80,13 @@ let gateway: ManagedProcess | undefined;
 let runner: ManagedProcess | undefined;
 
 async function runAcceptance(): Promise<void> {
-  const github = new GitHubClient(configuration.githubRepository, configuration.githubToken);
-  const repositoryIdentity = parseGitHubRepository(configuration.githubRepository);
   await using cleanup = new AsyncDisposableStack();
   cleanup.defer(() => Deno.remove(temporaryDirectory, { recursive: true }));
+  const github = new GitHubClient(configuration.githubRepository, configuration.githubToken);
+  const repositoryIdentity = parseGitHubRepository(configuration.githubRepository);
 
   await preflight();
+  await prepareGateway();
   const repository = await github.getRepository();
   invariant(
     repository.private,
@@ -99,17 +100,13 @@ async function runAcceptance(): Promise<void> {
   });
   console.log(`[acceptance] created fixture branch ${fixtureBranch}`);
 
-  await createDatabase(configuration.postgresUrl, databaseName);
-  cleanup.defer(() => dropDatabase(configuration.postgresUrl, databaseName));
   await Deno.mkdir(runnerDirectory, { recursive: true, mode: 0o700 });
   await Deno.mkdir(join(runnerDirectory, "tmp"));
   await Deno.mkdir(join(runnerDirectory, "cache"));
 
-  gateway = spawnGateway(databaseUrl, [
+  gateway = spawnGateway([
     configuration.githubToken,
     configuration.openCodeApiKey,
-    configuration.postgresUrl,
-    databaseUrl,
   ]);
   cleanup.defer(async () => {
     await gateway?.stop();
@@ -189,8 +186,6 @@ function readConfiguration(): AcceptanceConfiguration {
     githubRepository: required("OPENORB_GITHUB_TEST_REPOSITORY"),
     githubToken: required("OPENORB_GITHUB_TEST_TOKEN"),
     openCodeApiKey: required("OPENCODE_API_KEY"),
-    postgresUrl: Deno.env.get("OPENORB_E2E_POSTGRES_URL")?.trim() ||
-      "postgres://localhost/postgres",
     chromiumExecutablePath: Deno.env.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")?.trim() ||
       undefined,
   };
@@ -205,35 +200,76 @@ async function preflight(): Promise<void> {
   invariant(Deno.build.arch === "x86_64", "Release acceptance requires Linux x64.");
   const kvm = await Deno.stat("/dev/kvm").catch(() => undefined);
   invariant(kvm?.isCharDevice === true, "Release acceptance requires hardware KVM at /dev/kvm.");
-  await command("psql", [configuration.postgresUrl, "-Atqc", "SELECT 1"]);
+  await command("celld", ["--version"]);
+  await command("esbuild", ["--version"]);
 }
 
-function spawnGateway(url: string, secrets: readonly string[]): ManagedProcess {
-  const masterKey = randomHex(32);
-  const sessionSecret = randomHex(32);
-  const user = Deno.env.get("USER");
+async function prepareGateway(): Promise<void> {
+  // Build the production entrypoint, not a test facade. Do not run gateway prepare: it writes
+  // the operator's .dev.vars. Only deployable bytes and the reviewed config enter this fixture.
+  await command(Deno.execPath(), ["task", "--filter", "@openorb/gateway", "build"]);
+  await Deno.mkdir(gatewayDirectory, { recursive: true, mode: 0o700 });
+  await Deno.mkdir(join(gatewayDirectory, "tmp"));
+  await Deno.mkdir(join(gatewayDirectory, "cache"));
+  const sourceDirectory = join(REPOSITORY_ROOT, "packages/gateway");
+  await Deno.copyFile(
+    join(sourceDirectory, "wrangler.jsonc"),
+    join(gatewayDirectory, "wrangler.jsonc"),
+  );
+  await Deno.mkdir(join(gatewayDirectory, "dist"));
+  await Deno.copyFile(
+    join(sourceDirectory, "dist/worker.js"),
+    join(gatewayDirectory, "dist/worker.js"),
+  );
+  await copyGatewayAssets(
+    join(sourceDirectory, "dist/assets"),
+    join(gatewayDirectory, "dist/assets"),
+  );
+  await Deno.writeTextFile(
+    join(gatewayDirectory, ".dev.vars"),
+    [
+      `OPENORB_MASTER_KEY=${masterKey}`,
+      `SESSION_SECRET=${sessionSecret}`,
+      `PUBLIC_URL=${GATEWAY_URL}`,
+      "OPENORB_SESSION_COOKIE_SECURE=false",
+    ].join("\n") + "\n",
+    { mode: 0o600 },
+  );
+}
+
+async function copyGatewayAssets(source: string, target: string): Promise<void> {
+  await Deno.mkdir(target, { recursive: true });
+  for await (const entry of Deno.readDir(source)) {
+    const from = join(source, entry.name);
+    const to = join(target, entry.name);
+    if (entry.isDirectory) await copyGatewayAssets(from, to);
+    else if (entry.isFile) await Deno.copyFile(from, to);
+    else throw new Error(`Gateway assets must be regular files: ${entry.name}`);
+  }
+}
+
+function spawnGateway(secrets: readonly string[]): ManagedProcess {
   return new ManagedProcess(
     "gateway",
-    new Deno.Command(Deno.execPath(), {
+    new Deno.Command("celld", {
       args: [
-        "run",
-        "--frozen",
-        "--allow-env",
-        "--allow-ffi",
-        "--allow-net",
-        "--allow-read",
-        "server.ts",
+        "dev",
+        "wrangler.jsonc",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        String(GATEWAY_PORT),
+        "--logs",
+        // The fixture never changes; do not watch its runtime cache/temp writes and rebuild.
+        "--no-watch",
       ],
-      cwd: join(REPOSITORY_ROOT, "packages/gateway"),
+      // celld dev keeps .celld/dev beside this copied config, never beside the real config.
+      cwd: gatewayDirectory,
       clearEnv: true,
       env: {
-        DATABASE_URL: url,
-        NODE_ENV: "acceptance",
-        OPENORB_MASTER_KEY: masterKey,
         PATH: Deno.env.get("PATH") ?? "",
-        PORT: String(GATEWAY_PORT),
-        SESSION_SECRET: sessionSecret,
-        ...(user === undefined ? {} : { USER: user }),
+        TMPDIR: join(gatewayDirectory, "tmp"),
+        XDG_CACHE_HOME: join(gatewayDirectory, "cache"),
       },
       stdin: "null",
       stdout: "piped",
@@ -803,29 +839,16 @@ function parseGitHubRepository(value: string): GitHubRepositoryIdentity {
   return { owner: parts[0]!, repository: parts[1]!.replace(/\.git$/u, "") };
 }
 
-function databaseUrlForName(url: string, databaseName: string): string {
-  const parsed = new URL(url);
-  parsed.pathname = `/${databaseName}`;
-  return parsed.toString();
-}
-
-async function createDatabase(adminUrl: string, name: string): Promise<void> {
-  await command("psql", [adminUrl, "-v", "ON_ERROR_STOP=1", "-c", `CREATE DATABASE "${name}"`]);
-}
-
-async function dropDatabase(adminUrl: string, name: string): Promise<void> {
-  await command("psql", [
-    adminUrl,
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-c",
-    `DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`,
-  ]);
-}
-
 async function command(executable: string, args: readonly string[]): Promise<void> {
   const output = await new Deno.Command(executable, {
     args: [...args],
+    cwd: REPOSITORY_ROOT,
+    clearEnv: true,
+    env: {
+      PATH: Deno.env.get("PATH") ?? "",
+      ...(Deno.env.has("HOME") ? { HOME: Deno.env.get("HOME")! } : {}),
+      ...(Deno.env.has("DENO_DIR") ? { DENO_DIR: Deno.env.get("DENO_DIR")! } : {}),
+    },
     stdout: "piped",
     stderr: "piped",
   }).output();
@@ -900,8 +923,8 @@ function sanitizedErrorDetails(cause: unknown): string {
   return [
     configuration.githubToken,
     configuration.openCodeApiKey,
-    configuration.postgresUrl,
-    databaseUrl,
+    masterKey,
+    sessionSecret,
     adminPassword,
   ].reduce((text, secret) => text.replaceAll(secret, "[REDACTED]"), details);
 }

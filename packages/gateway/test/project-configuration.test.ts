@@ -2,14 +2,16 @@ import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } fr
 import type { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
 
 import {
-  DEFAULT_PROJECT_BRANCH_PATTERN,
-  DEFAULT_PROJECT_REF,
-} from "@/app/data/project-repository.ts";
-import { createAppServices } from "@/test/postgres-test.ts";
-import { createAppRouter } from "@/app/router.ts";
+  activate,
+  createAppRouter,
+  createAppServices,
+  type MemoryStorage,
+} from "@/test/workspace-test.ts";
 import { routes } from "@/app/routes.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
-import { createTestStore } from "@/test/postgres-test.ts";
+
+const DEFAULT_PROJECT_REF = "main";
+const DEFAULT_PROJECT_BRANCH_PATTERN = "openorb/{session-name}-{short-session-id}";
 
 const PASSWORD = "correct horse battery staple";
 const FIRST_TOKEN = "github-test-token-f35b2611";
@@ -28,7 +30,8 @@ function csrfFrom(html: string): string {
 }
 
 interface AuthenticatedClient {
-  store: Awaited<ReturnType<typeof createTestStore>>;
+  store: ReturnType<typeof activate>["workspace"];
+  storage: MemoryStorage;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
   userId: UserId;
@@ -36,7 +39,7 @@ interface AuthenticatedClient {
 }
 
 async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
-  const store = await createTestStore();
+  const { workspace: store, storage } = activate();
   const router = createAppRouter(createAppServices(store));
   const server = await createTestServer((request) => router.fetch(request));
 
@@ -72,6 +75,7 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
     assertNotEquals<string>(user.userId, user.workspaceId);
     return {
       store,
+      storage,
       server,
       cookie: cookieFrom(loginResponse),
       userId: user.userId,
@@ -79,7 +83,6 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
     };
   } catch (error) {
     await server.close();
-    await store.close();
     throw error;
   }
 }
@@ -107,27 +110,26 @@ async function submitForm(
 }
 
 interface CredentialStorageRow {
-  credential_id: string;
-  secret_row_id: string;
-  secret_key: string;
-  secret_purpose: string;
-  ciphertext: string;
+  id: string;
+  key: string;
+  ciphertext: ArrayBuffer;
+  keyVersion: number;
 }
 
-async function readCredentialStorage(
+function readCredentialStorage(
   client: AuthenticatedClient,
-): Promise<CredentialStorageRow> {
-  const result = await client.store.pool.query<CredentialStorageRow>(
-    `select gc.id as credential_id,
-            gc.encrypted_secret_id as secret_row_id,
-            es.key as secret_key,
-            es.purpose as secret_purpose,
-            es.ciphertext
-       from git_credentials gc
-       join encrypted_secrets es on es.id = gc.encrypted_secret_id`,
-  );
-  assertEquals(result.rows.length, 1);
-  return result.rows[0]!;
+): CredentialStorageRow {
+  const record = client.storage.rows<CredentialStorageRow>(
+    `
+    SELECT g.id, s.key, s.ciphertext, s.keyVersion FROM git_credentials g
+    JOIN encrypted_secrets s ON s.workspaceId = g.workspaceId AND s.key = g.secretKey
+    WHERE g.workspaceId = ? AND g.host = 'github.com'
+  `,
+    client.workspaceId,
+  )[0];
+  assert(record);
+  assert(record.ciphertext instanceof ArrayBuffer);
+  return record;
 }
 
 Deno.test("configures GitHub, Git author, and project CRUD through protected browser forms", async () => {
@@ -166,9 +168,8 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals(author.authorName, "OpenOrb Developer");
     assertEquals(author.authorEmail, "developer@example.com");
     assertEquals(
-      (await client.store.pool.query("select user_id from git_author_configuration")).rows[0]
-        ?.user_id,
-      client.userId,
+      await activate(client.storage).workspace.getGitAuthorConfiguration(client.userId),
+      author,
     );
 
     const invalidAuthor = await submitForm(client, gitAuthorSettingsPath, {
@@ -186,9 +187,8 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals(saveToken.status, 303);
     assertEquals(saveToken.headers.get("location"), githubSettingsPath);
     const firstStorage = await readCredentialStorage(client);
-    assertMatch(firstStorage.secret_key, /^OPENORB_GITHUB_TOKEN_[0-9A-F]{32}$/);
-    assertEquals(firstStorage.secret_purpose, "git-credential");
-    assert(!firstStorage.ciphertext.includes(FIRST_TOKEN));
+    assertNotEquals(firstStorage.key, FIRST_TOKEN);
+    assert(!client.storage.dump().includes(FIRST_TOKEN));
     assertEquals(await client.store.listSecrets(client.workspaceId), []);
     assertEquals(await client.store.listModelProviderCredentials(client.workspaceId), []);
 
@@ -204,10 +204,14 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     });
     assertEquals(replaceToken.status, 303);
     const secondStorage = await readCredentialStorage(client);
-    assertEquals(secondStorage.credential_id, firstStorage.credential_id);
-    assertEquals(secondStorage.secret_row_id, firstStorage.secret_row_id);
-    assertNotEquals(secondStorage.ciphertext, firstStorage.ciphertext);
-    assert(!secondStorage.ciphertext.includes(SECOND_TOKEN));
+    assertEquals(secondStorage.id, firstStorage.id);
+    assertEquals(secondStorage.key, firstStorage.key);
+    assertNotEquals(
+      new Uint8Array(secondStorage.ciphertext),
+      new Uint8Array(firstStorage.ciphertext),
+    );
+    assert(!client.storage.dump().includes(SECOND_TOKEN));
+    assertEquals(await client.store.getGitHubToken(client.workspaceId), [SECOND_TOKEN, undefined]);
     assertNotMatch(await getPage(client, githubSettingsPath), new RegExp(SECOND_TOKEN));
     assertEquals(
       (await submitForm(client, githubSettingsPath, { intent: "delete-github-credential" })).status,
@@ -284,31 +288,38 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     );
     assertEquals(await client.store.getGitHubCredential(client.workspaceId), null);
     assertEquals(
-      (await client.store.pool.query("select count(*)::integer as count from encrypted_secrets"))
-        .rows[0]?.count,
-      0,
+      client.storage.rows(
+        "SELECT id FROM git_credentials WHERE workspaceId = ?",
+        client.workspaceId,
+      ),
+      [],
     );
 
-    await client.store.pool.query(
-      `create table project_delete_test_references (
-        project_id uuid primary key references projects(id) on delete restrict
-      )`,
-    );
-    try {
-      await client.store.pool.query(
-        "insert into project_delete_test_references (project_id) values ($1)",
-        [project.id],
-      );
-      const inUseDeletion = await submitForm(client, projectsPath, {
-        intent: "delete-project",
+    const sessionId = crypto.randomUUID();
+    assertEquals(
+      await client.store.reconcileSessionManifestEntries(client.workspaceId, [{
+        id: sessionId,
         projectId: project.id,
-      });
-      assertEquals(inUseDeletion.status, 409);
-      assertMatch(await inUseDeletion.text(), /used by a session and cannot be deleted/);
-      assert(await client.store.getProject(client.workspaceId, project.id));
-    } finally {
-      await client.store.pool.query("drop table project_delete_test_references");
-    }
+        createdAt: new Date().toISOString(),
+        initialPromptPreview: "Project deletion reference",
+      }]),
+      [{ acceptedSessionIds: [sessionId], tombstonedSessionIds: [], rejected: [] }, undefined],
+    );
+    const inUseDeletion = await submitForm(client, projectsPath, {
+      intent: "delete-project",
+      projectId: project.id,
+    });
+    assertEquals(inUseDeletion.status, 409);
+    assertMatch(await inUseDeletion.text(), /used by a session and cannot be deleted/);
+    assert(await client.store.getProject(client.workspaceId, project.id));
+    assertEquals(
+      await client.store.deleteSessionCatalogEntry(
+        client.workspaceId,
+        sessionId,
+        new Date().toISOString(),
+      ),
+      ["deleted", undefined],
+    );
 
     assertEquals(
       (await submitForm(client, projectsPath, {
@@ -321,49 +332,5 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertMatch(await getPage(client, projectsPath), /No projects configured/);
   } finally {
     await client.server.close();
-    await client.store.close();
-  }
-});
-
-Deno.test("the Git configuration down migration removes the encrypted GitHub token", async () => {
-  const store = await createTestStore();
-  const connection = await store.pool.connect();
-  try {
-    assertEquals(await store.createAdministrator(PASSWORD), [true, undefined]);
-    const user = await store.verifyAdministratorPassword(PASSWORD);
-    assert(user);
-    await store.saveGitHubCredential(user.workspaceId, FIRST_TOKEN);
-    const downSql = await Deno.readTextFile(
-      new URL(
-        "../db/migrations/20250809000000_create_git_configuration_and_projects/down.sql",
-        import.meta.url,
-      ),
-    );
-    const sessionCatalogDownSql = await Deno.readTextFile(
-      new URL(
-        "../db/migrations/20250814000000_create_session_catalog/down.sql",
-        import.meta.url,
-      ),
-    );
-
-    await connection.query("begin");
-    await connection.query(sessionCatalogDownSql);
-    await connection.query(downSql);
-    assertEquals(
-      (await connection.query(
-        "select count(*)::integer as count from encrypted_secrets where key like 'OPENORB_GITHUB_TOKEN_%'",
-      )).rows[0]?.count,
-      0,
-    );
-    assertEquals(
-      (await connection.query(
-        "select to_regclass('git_credentials') as git_credentials, to_regclass('projects') as projects",
-      )).rows[0],
-      { git_credentials: null, projects: null },
-    );
-  } finally {
-    await connection.query("rollback");
-    connection.release();
-    await store.close();
   }
 });

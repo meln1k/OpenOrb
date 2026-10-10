@@ -3,10 +3,10 @@ import { css, type Handle, type RemixNode } from "remix/component";
 import type {
   GitAuthorConfiguration,
   GitCredential,
-} from "@/app/data/git-configuration-repository.ts";
-import type { ModelProviderCredential } from "@/app/data/model-provider-repository.ts";
-import type { RunnerEnrollmentToken } from "@/app/data/runner-repository.ts";
-import type { SecretEntry } from "@/app/data/secret-repository.ts";
+  ModelProviderCredential,
+  RunnerEnrollmentToken,
+  SecretEntry,
+} from "@/app/cells/workspace/api.ts";
 import type { ModelProviderOption } from "@/app/model-provider-catalog.ts";
 import { routes } from "@/app/routes.ts";
 import { Icon } from "@/app/ui/public/components/icons.tsx";

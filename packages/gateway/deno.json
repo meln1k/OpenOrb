@@ -7,6 +7,7 @@
     "./server": "./server.ts"
   },
   "imports": {
+    "cloudflare:workers": "./test/workspace/runtime.ts",
     "@opentelemetry/api": "npm:@opentelemetry/api@1.9.0",
     "@/": "./",
     "@earendil-works/pi-ai": "npm:@earendil-works/pi-ai@1.1.0",
@@ -25,13 +26,19 @@
     "@std/uuid": "jsr:@std/uuid@1.1.1",
     "lucide": "npm:lucide@1.31.0",
     "marked": "npm:marked@18.0.5",
-    "pg": "npm:pg@8.16.3",
     "remix/": "npm:/remix@3.0.0/"
   },
   "publish": false,
   "tasks": {
     "probe": "deno eval --frozen",
-    "dev": "NODE_ENV=development OTEL_DENO=true OTEL_DENO_METRICS=false OTEL_TRACES_EXPORTER=otlp OTEL_TRACES_SAMPLER=always_on OTEL_SERVICE_NAME=openorb-gateway OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:27686/v1/traces OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:27686/v1/logs deno run --watch --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts",
-    "start": "NODE_ENV=production deno run --env-file=.env --allow-env --allow-ffi --allow-net --allow-read server.ts"
+    "build:assets": "deno run --frozen --allow-read --allow-write=dist --allow-env --allow-ffi --allow-sys=uid build-assets.ts",
+    "build:catalog": "deno run --frozen --allow-read --allow-write=dist --allow-env build-model-catalog.ts",
+    "build:test": "deno task build && deno run --frozen --allow-read --allow-write=dist,test/dist --allow-run=deno build-worker.ts --test",
+    "build:test:workspace": "deno bundle --frozen --platform=browser --external=cloudflare:workers test/workspace/celld-worker.ts -o test/workspace/dist/worker.js",
+    "build": "deno task build:catalog && deno task build:assets && deno run --frozen --allow-read --allow-write=dist --allow-run=deno build-worker.ts",
+    "generate-types": "deno task build && WRANGLER_SEND_METRICS=false deno run -A --frozen npm:wrangler@4.148.0 types --include-runtime=false --strict-vars=false",
+    "prepare": "deno run --env-file=.env --allow-env=OPENORB_MASTER_KEY,SESSION_SECRET,PUBLIC_URL,OPENORB_SESSION_COOKIE_SECURE --allow-write=.dev.vars prepare.ts",
+    "dev": "deno task prepare && deno task build && celld dev wrangler.jsonc --host 127.0.0.1 --port 44100 --logs",
+    "start": "celld dev wrangler.jsonc --host 127.0.0.1 --port 44100 --logs"
   }
 }

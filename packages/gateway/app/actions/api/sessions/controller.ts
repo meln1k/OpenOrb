@@ -12,8 +12,7 @@ import * as f from "remix/data-schema/form-data";
 import { encodeBase64 } from "@std/encoding/base64";
 import { validate as validateUuid } from "@std/uuid";
 
-import type { Administrator } from "@/app/data/administrator-repository.ts";
-import { createSessionEventStream } from "@/app/actions/api/sessions/session-event-stream.ts";
+import type { Administrator } from "@/app/cells/workspace/api.ts";
 import {
   sessionApiTelemetry,
   sessionCsrfStage,
@@ -24,7 +23,7 @@ import {
 import { csrf } from "@/app/middleware/csrf.ts";
 import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
 import { routes } from "@/app/routes.ts";
-import { Effect, Option, Schema } from "effect";
+import { Option, Schema } from "effect";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
 const gitPathSchema = s.string().refine(
@@ -69,13 +68,13 @@ export default createController(routes.api.sessions, {
       if (!sessionId) return apiError("Session not found.", 404);
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
+        () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
-      const snapshot = await sessionSpan("runner.snapshot", () =>
-        Effect.runPromise(
-          context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
-        ));
+      const snapshot = await sessionSpan(
+        "runner.snapshot",
+        () => context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
+      );
       if (!snapshot) return apiError("The pinned runner is offline.", 503);
 
       const [
@@ -89,8 +88,8 @@ export default createController(routes.api.sessions, {
             snapshot.model,
             context.services.workspace,
           ),
-          context.services.workspace.call("getGitHubToken", workspaceId),
-          context.services.workspace.call("getEnvironmentSecrets", workspaceId),
+          context.services.workspace.getGitHubToken(workspaceId),
+          context.services.workspace.getEnvironmentSecrets(workspaceId),
         ]));
       if (modelCredentialError !== undefined) {
         return apiError("The saved model provider credential could not be read.", 500);
@@ -105,8 +104,9 @@ export default createController(routes.api.sessions, {
         return apiError("Reconfigure this session's model provider before continuing.", 409);
       }
 
-      const woken = await sessionSpan("runner.wake", () =>
-        Effect.runPromise(
+      const woken = await sessionSpan(
+        "runner.wake",
+        () =>
           context.services.runnerConnections.wakeSession({
             workspaceId,
             sessionId,
@@ -117,8 +117,7 @@ export default createController(routes.api.sessions, {
               ...(parsed.value.recovery === undefined ? {} : { recovery: parsed.value.recovery }),
             },
           }),
-          { signal: context.request.signal },
-        ));
+      );
       if (woken.status !== "accepted") {
         return apiError(woken.message, woken.status === "rejected" ? 409 : 503);
       }
@@ -139,11 +138,12 @@ export default createController(routes.api.sessions, {
       }
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
+        () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
-      const updated = await sessionSpan("runner.git_file_update", () =>
-        Effect.runPromise(
+      const updated = await sessionSpan(
+        "runner.git_file_update",
+        () =>
           context.services.runnerConnections.updateSessionGitFile({
             workspaceId,
             sessionId,
@@ -153,8 +153,7 @@ export default createController(routes.api.sessions, {
               ? {}
               : { previousPath: parsed.value.previousPath }),
           }),
-          { signal: context.request.signal },
-        ));
+      );
       if (updated.status !== "accepted") {
         return apiError(updated.message, updated.status === "rejected" ? 409 : 503);
       }
@@ -171,14 +170,14 @@ export default createController(routes.api.sessions, {
       }
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
+        () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return new Response("Session not found.", { status: 404 });
 
-      const result = await sessionSpan("runner.git_snapshot", () =>
-        Effect.runPromise(
-          context.services.runnerConnections.getSessionGitSnapshot(workspaceId, sessionId),
-        ));
+      const result = await sessionSpan(
+        "runner.git_snapshot",
+        () => context.services.runnerConnections.getSessionGitSnapshot(workspaceId, sessionId),
+      );
       if (result.status !== "accepted") {
         return Response.json(
           { error: result.message },
@@ -199,19 +198,19 @@ export default createController(routes.api.sessions, {
       const { sessionId, snapshotId, section, offset } = params.value;
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
+        () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
       const result = await sessionSpan(
         "runner.git_patch_chunk",
         () =>
-          Effect.runPromise(context.services.runnerConnections.readSessionGitPatchChunk({
+          context.services.runnerConnections.readSessionGitPatchChunk({
             workspaceId,
             sessionId,
             snapshotId,
             section,
             offset,
-          })),
+          }),
       );
       if (result.status !== "accepted") {
         return apiError(result.message, result.status === "rejected" ? 409 : 503);
@@ -235,17 +234,17 @@ export default createController(routes.api.sessions, {
       }
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
+        () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return new Response("Published media not found.", { status: 404 });
 
       const readChunk = (offset: number) =>
-        Effect.runPromise(context.services.runnerConnections.readSessionArtifactChunk({
+        context.services.runnerConnections.readSessionArtifactChunk({
           workspaceId,
           sessionId,
           artifactId: artifactId.value,
           offset,
-        }));
+        });
       const first = await sessionSpan("runner.artifact_chunk", () => readChunk(0));
       if (first.status !== "accepted") {
         return new Response(first.message, {
@@ -301,25 +300,14 @@ export default createController(routes.api.sessions, {
       }
       const session = await sessionSpan(
         "catalog.lookup",
-        () => context.services.workspace.call("getSessionCatalogEntry", workspaceId, sessionId),
+        () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return new Response("Session not found.", { status: 404 });
 
-      const stream = await sessionSpan("events.subscribe", () =>
-        Effect.runPromise(
-          createSessionEventStream(
-            context.services.runnerConnections.watchSession(workspaceId, sessionId),
-          ),
-          { signal: context.request.signal },
-        ));
-
-      return new Response(stream, {
-        headers: {
-          "Cache-Control": "no-cache, no-transform",
-          "Content-Type": "text/event-stream; charset=utf-8",
-          "X-Accel-Buffering": "no",
-        },
-      });
+      return await sessionSpan(
+        "events.subscribe",
+        () => context.services.sessionEvents(workspaceId, sessionId, context.request),
+      );
     },
   },
 });

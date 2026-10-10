@@ -1,11 +1,12 @@
 import { createContextKey, type Middleware } from "remix/router";
 
-import type { WorkspaceClient } from "@openorb/workspace";
+import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
 import { WorkspaceSessionStorage } from "@/app/data/workspace-session-storage.ts";
 import type { SessionStorage } from "remix/session";
-import type { RunnerRegistryService } from "@/app/runner-registry.ts";
+import type { DurableObjectStub } from "@cloudflare/workers-types";
+import type { Runners } from "@/app/cells/runners/runner-registry-do.ts";
 import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
-import { Effect, Stream } from "effect";
+import { assetServer, type GatewayAssets } from "@/app/assets.ts";
 
 export interface LoginRateLimiter {
   allow(key: string): boolean;
@@ -13,11 +14,18 @@ export interface LoginRateLimiter {
 }
 
 export interface AppServices {
-  readonly workspace: WorkspaceClient;
+  readonly workspace: WorkspaceApi;
   readonly sessionStorage: SessionStorage;
-  readonly runnerConnections: RunnerRegistryService;
+  readonly runnerConnections: DurableObjectStub<Runners>;
   readonly loginRateLimiter: LoginRateLimiter;
   readonly runnerEnrollmentRateLimiter: LoginRateLimiter;
+  readonly assets: GatewayAssets;
+  readonly publicUrl?: string;
+  readonly sessionEvents: (
+    workspaceId: string,
+    sessionId: string,
+    request: Request,
+  ) => Promise<Response>;
 }
 
 export const AppServicesKey = createContextKey<AppServices>();
@@ -34,14 +42,17 @@ export function provideAppServices(services: AppServices): Middleware<{
 }
 
 export function createAppServices(
-  workspace: WorkspaceClient,
-  runnerConnections: RunnerRegistryService = disconnectedRunnerRegistry,
-  sessionStorage: SessionStorage = new WorkspaceSessionStorage(workspace),
+  workspace: WorkspaceApi,
+  runnerConnections: AppServices["runnerConnections"],
+  sessionStorage: SessionStorage | undefined,
+  options: Pick<AppServices, "sessionEvents"> & Pick<Partial<AppServices>, "assets" | "publicUrl">,
 ): AppServices {
   return {
     workspace,
-    sessionStorage,
+    sessionStorage: sessionStorage ?? new WorkspaceSessionStorage(workspace),
     runnerConnections,
+    assets: options.assets ?? assetServer,
+    ...options,
     loginRateLimiter: new TokenBucketRateLimiter({
       tokensPerSecond: 1 / (3 * 60),
       burst: 5,
@@ -54,35 +65,6 @@ export function createAppServices(
     }),
   };
 }
-
-const disconnectedRunnerRegistry: RunnerRegistryService = {
-  getRunnerLiveState: () => Effect.succeed(null),
-  getSessionRunner: () => Effect.succeed(null),
-  getSessionSnapshot: () => Effect.succeed(null),
-  getSessionGitSnapshot: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  updateSessionGitFile: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  readSessionGitPatchChunk: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  readSessionArtifactChunk: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  provisionSession: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  wakeSession: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  promptSession: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  setSessionThinkingLevel: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  abortSession: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  stopSession: () =>
-    Effect.succeed({ status: "unavailable", message: "Runner connections are unavailable." }),
-  deleteSession: () => Effect.void,
-  watchSession: () => Stream.fail(new Error("Runner connections are unavailable.")),
-  disconnectRunner: () => Effect.succeed(false),
-};
 
 export function requestRateLimitKey(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim();

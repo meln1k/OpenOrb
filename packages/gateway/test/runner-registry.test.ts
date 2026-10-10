@@ -57,8 +57,11 @@ import * as RpcServer from "effect/rpc/RpcServer";
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
 
-import { makeRunnerRegistry, PERMANENT_REJECTION_CLOSE_CODE } from "@/app/runner-registry.ts";
-import type { RejectedSessionManifestEntry } from "@/app/data/session-catalog-repository.ts";
+import {
+  makeRunnerRegistry,
+  PERMANENT_REJECTION_CLOSE_CODE,
+} from "@/app/cells/runners/runner-registry.ts";
+import type { RejectedSessionManifestEntry } from "@/app/cells/workspace/api.ts";
 
 const WORKSPACE_ID = WorkspaceId.make("018f47f2-39b1-7b30-8000-000000000000");
 const RUNNER_ID = "018f47f2-39b1-7b30-8000-000000000001";

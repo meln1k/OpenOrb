@@ -1,14 +1,18 @@
 import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
-import { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
+import { UserId } from "@openorb/protocol/runner-api";
 import { v7 } from "@std/uuid";
-import { Effect } from "effect";
 
 import { createMemorySessionStorage } from "remix/session-storage/memory";
 
-import { createAppRouter, createSessionCookie } from "@/app/router.ts";
+import { createAppRouter, createSessionCookie } from "@/test/workspace-test.ts";
 import { routes } from "@/app/routes.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
-import { createAppServices, createTestStore, createTestWorkspace } from "@/test/postgres-test.ts";
+import {
+  activate,
+  createAppServices,
+  createWorkspace,
+  disconnectedRunnerRegistry,
+} from "@/test/workspace-test.ts";
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -23,13 +27,12 @@ function csrfFrom(html: string): string {
 }
 
 Deno.test("sets up an administrator, rotates sessions on login, and logs out", async () => {
-  const store = await createTestStore();
+  const { workspace: store, storage } = activate();
   let connectedRunnerId: string | undefined;
-  const disconnectedServices = createAppServices(store);
   const router = createAppRouter(createAppServices(store, {
-    ...disconnectedServices.runnerConnections,
+    ...disconnectedRunnerRegistry,
     getRunnerLiveState: (_workspaceId, runnerId) =>
-      Effect.succeed(
+      Promise.resolve(
         runnerId === connectedRunnerId
           ? {
             capacity: {
@@ -86,14 +89,15 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     assertEquals(setupResponse.status, 303);
     assertEquals(setupResponse.headers.get("location"), "/auth/login");
     assertEquals(await store.hasAdministrator(), true);
-    const administrators = await store.pool.query<{ id: string; workspace_id: string }>(
-      "select id, workspace_id from users where is_administrator",
-    );
-    assertEquals(administrators.rows.length, 1);
-    assert(v7.validate(administrators.rows[0]!.id));
-    const workspaceId = WorkspaceId.make(administrators.rows[0]!.workspace_id);
+    const administrator = storage.rows<{ userId: UserId; workspaceId: string }>(
+      "SELECT id AS userId, workspaceId FROM users WHERE isAdministrator = 1",
+    )[0];
+    assert(administrator);
+    assertEquals(storage.rows("SELECT id FROM users WHERE isAdministrator = 1").length, 1);
+    assert(v7.validate(administrator.userId));
+    const workspaceId = (await store.getAdministrator(administrator.userId))!.workspaceId;
     assert(v7.validate(workspaceId));
-    assertNotEquals<string>(workspaceId, administrators.rows[0]!.id);
+    assertNotEquals<string>(workspaceId, administrator.userId);
 
     const setupAgain = await fetch(setupUrl, { redirect: "manual" });
     assertEquals(setupAgain.status, 303);
@@ -202,7 +206,7 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     assertMatch(projectConfiguredHtml, /data-setup-step="git-author" data-status="pending"/);
     assertMatch(projectConfiguredHtml, /data-setup-step="project" data-status="complete"/);
 
-    await store.saveGitAuthorConfiguration(administrators.rows[0]!.id, {
+    await store.saveGitAuthorConfiguration(administrator.userId, {
       authorName: "OpenOrb Developer",
       authorEmail: "developer@example.com",
     });
@@ -237,138 +241,122 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     assertEquals(afterLogout.headers.get("location"), "/");
   } finally {
     await server.close();
-    await store.close();
   }
 });
 
 Deno.test("rejects malformed persisted password material", async () => {
-  const store = await createTestStore();
+  const { workspace: store, storage } = activate();
 
-  try {
-    assertEquals(await store.createAdministrator("correct horse battery staple"), [
-      true,
-      undefined,
-    ]);
-    const administrator = await store.verifyAdministratorPassword(
-      "correct horse battery staple",
-    );
-    assert(administrator);
-    await store.pool.query(
-      "update password_credentials set salt = 'AA==' where user_id = $1",
-      [administrator.userId],
-    );
-    assertEquals(
-      await store.verifyAdministratorPassword("correct horse battery staple"),
-      null,
-    );
-  } finally {
-    await store.close();
-  }
+  assertEquals(await store.createAdministrator("correct horse battery staple"), [
+    true,
+    undefined,
+  ]);
+  const administrator = await store.verifyAdministratorPassword(
+    "correct horse battery staple",
+  );
+  assert(administrator);
+  const changed = storage.rows<{ userId: string }>(
+    "UPDATE password_credentials SET derivedKey = ? WHERE userId = ? RETURNING userId",
+    new Uint8Array(1).buffer,
+    administrator.userId,
+  );
+  assertEquals(changed, [{ userId: administrator.userId }]);
+  assertEquals(
+    await store.verifyAdministratorPassword("correct horse battery staple"),
+    null,
+  );
 });
 
 Deno.test("rejects invalid setup input", async () => {
-  const store = await createTestStore();
+  const { workspace: store } = activate();
 
-  try {
-    const router = createAppRouter(createAppServices(store));
-    const response = await router.fetch(
-      new Request("http://localhost/auth/setup", {
-        method: "POST",
-        body: new URLSearchParams({
-          password: "short",
-          confirmPassword: "different",
-        }),
+  const router = createAppRouter(createAppServices(store));
+  const response = await router.fetch(
+    new Request("http://localhost/auth/setup", {
+      method: "POST",
+      body: new URLSearchParams({
+        password: "short",
+        confirmPassword: "different",
       }),
-    );
+    }),
+  );
 
-    assertEquals(response.status, 403);
-  } finally {
-    await store.close();
-  }
+  assertEquals(response.status, 403);
 });
 
 Deno.test("auth middleware checks Workspace identity against persistence independently of storage", async () => {
-  const store = await createTestStore();
-  try {
-    const password = "workspace identity verification password";
-    const [created, error] = await store.createAdministrator(password);
-    assertEquals(error, undefined);
-    assertEquals(created, true);
-    const administrator = await store.verifyAdministratorPassword(password);
-    assert(administrator);
-    const foreignWorkspaceId = await createTestWorkspace(store);
-    // Memory storage deliberately does not enforce PostgreSQL's identity binding.
-    const sessionStorage = createMemorySessionStorage();
-    const cookie = createSessionCookie();
-    const maxAge = cookie.maxAge;
-    assert(maxAge !== undefined);
-    const router = createAppRouter(createAppServices({ ...store, sessionStorage }), cookie);
-    for (
-      const identity of [
-        administrator,
-        { userId: administrator.userId, workspaceId: foreignWorkspaceId },
-        { userId: administrator.userId },
-        { userId: v7.generate(), workspaceId: administrator.workspaceId },
-      ]
-    ) {
-      const session = await sessionStorage.read(null);
-      session.set("auth", identity);
-      const sessionId = await sessionStorage.save(session);
-      assert(sessionId);
-      const cookieValue = JSON.stringify({
-        value: sessionId,
-        expires: Date.now() + maxAge * 1000,
-      });
-      const response = await router.fetch(
-        new Request(new URL(routes.app.index.href(), "http://localhost"), {
-          headers: { Cookie: (await cookie.serialize(cookieValue)).split(";", 1)[0]! },
-        }),
-      );
-      assertEquals(response.status, identity === administrator ? 200 : 302);
-      if (identity !== administrator) {
-        assertEquals(response.headers.get("location"), "/");
-      }
-      if (identity !== administrator && "workspaceId" in identity) {
-        assert(response.headers.has("set-cookie"));
-      }
-      await response.body?.cancel();
+  const { workspace: store } = activate();
+  const password = "workspace identity verification password";
+  const [created, error] = await store.createAdministrator(password);
+  assertEquals(error, undefined);
+  assertEquals(created, true);
+  const administrator = await store.verifyAdministratorPassword(password);
+  assert(administrator);
+  const { workspaceId: foreignWorkspaceId } = await createWorkspace();
+  // This alternate session storage deliberately does not enforce Workspace's identity binding.
+  const sessionStorage = createMemorySessionStorage();
+  const cookie = createSessionCookie();
+  const maxAge = cookie.maxAge;
+  assert(maxAge !== undefined);
+  const router = createAppRouter(createAppServices(store, undefined, sessionStorage), cookie);
+  for (
+    const identity of [
+      administrator,
+      { userId: administrator.userId, workspaceId: foreignWorkspaceId },
+      { userId: administrator.userId },
+      { userId: v7.generate(), workspaceId: administrator.workspaceId },
+    ]
+  ) {
+    const session = await sessionStorage.read(null);
+    session.set("auth", identity);
+    const sessionId = await sessionStorage.save(session);
+    assert(sessionId);
+    const cookieValue = JSON.stringify({
+      value: sessionId,
+      expires: Date.now() + maxAge * 1000,
+    });
+    const response = await router.fetch(
+      new Request(new URL(routes.app.index.href(), "http://localhost"), {
+        headers: { Cookie: (await cookie.serialize(cookieValue)).split(";", 1)[0]! },
+      }),
+    );
+    assertEquals(response.status, identity === administrator ? 200 : 302);
+    if (identity !== administrator) {
+      assertEquals(response.headers.get("location"), "/");
     }
-  } finally {
-    await store.close();
+    if (identity !== administrator && "workspaceId" in identity) {
+      assert(response.headers.has("set-cookie"));
+    }
+    await response.body?.cancel();
   }
 });
 
 Deno.test("concurrent setup creates exactly one workspace and resolves persisted identity", async () => {
-  const store = await createTestStore();
-  try {
-    const password = "workspace setup race password";
-    const results = await Promise.all([
-      store.createAdministrator(password),
-      store.createAdministrator(password),
-    ]);
-    assertEquals(results.filter(([created]) => created === true).length, 1);
-    assertEquals(results.filter(([created]) => created === false).length, 1);
-    assertEquals(results.map(([, error]) => error), [undefined, undefined]);
+  const { workspace: store, storage } = activate();
+  const password = "workspace setup race password";
+  const results = await Promise.all([
+    store.createAdministrator(password),
+    store.createAdministrator(password),
+  ]);
+  assertEquals(results.filter(([created]) => created === true).length, 1);
+  assertEquals(results.filter(([created]) => created === false).length, 1);
+  assertEquals(results.map(([, error]) => error), [undefined, undefined]);
 
-    const administrator = await store.verifyAdministratorPassword(password);
-    assert(administrator);
-    assert(v7.validate(administrator.userId));
-    assert(v7.validate(administrator.workspaceId));
-    assertNotEquals<string>(administrator.userId, administrator.workspaceId);
-    assertEquals(await store.getAdministrator(administrator.userId), administrator);
-    // An unknown User with the Workspace's UUID bytes must not resolve to its administrator.
-    const unknownUserId = UserId.make(administrator.workspaceId);
-    assertEquals(await store.getAdministrator(unknownUserId), null);
-    assertEquals(await store.verifyAdministratorPassword("wrong password"), null);
-    assertEquals(
-      (await store.pool.query("select id from workspaces")).rows,
-      [{ id: administrator.workspaceId }],
-    );
-    assertEquals((await store.pool.query("select id from users")).rowCount, 1);
-    assertEquals((await store.pool.query("select user_id from password_credentials")).rows, [
-      { user_id: administrator.userId },
-    ]);
-  } finally {
-    await store.close();
-  }
+  const administrator = await store.verifyAdministratorPassword(password);
+  assert(administrator);
+  assert(v7.validate(administrator.userId));
+  assert(v7.validate(administrator.workspaceId));
+  assertNotEquals<string>(administrator.userId, administrator.workspaceId);
+  assertEquals(await store.getAdministrator(administrator.userId), administrator);
+  // An unknown User with the Workspace's UUID bytes must not resolve to its administrator.
+  const unknownUserId = UserId.make(administrator.workspaceId);
+  assertEquals(await store.getAdministrator(unknownUserId), null);
+  assertEquals(await store.verifyAdministratorPassword("wrong password"), null);
+  assertEquals(storage.rows("SELECT id FROM users WHERE isAdministrator = 1").length, 1);
+  assertEquals(storage.rows("SELECT id FROM workspaces").length, 1);
+  assertEquals(storage.rows("SELECT userId FROM password_credentials").length, 1);
+  assertEquals(
+    await activate(storage).workspace.getAdministrator(administrator.userId),
+    administrator,
+  );
 });

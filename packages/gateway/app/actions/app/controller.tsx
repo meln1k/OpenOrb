@@ -3,7 +3,7 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 
 import { AppPage } from "@/app/actions/app/page.tsx";
-import type { Administrator } from "@/app/data/administrator-repository.ts";
+import type { Administrator } from "@/app/cells/workspace/api.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
@@ -15,9 +15,9 @@ export default createController(routes.app, {
       const workspaceId = context.auth.identity.workspaceId;
       const [composer, sidebarSessions, githubCredential, gitAuthor] = await Promise.all([
         loadSessionComposerData(workspaceId, context.services),
-        context.services.workspace.call("listSessionNavigationEntries", workspaceId),
-        context.services.workspace.call("getGitHubCredential", workspaceId),
-        context.services.workspace.call("getGitAuthorConfiguration", context.auth.identity.userId),
+        context.services.workspace.listSessionNavigationEntries(workspaceId),
+        context.services.workspace.getGitHubCredential(workspaceId),
+        context.services.workspace.getGitAuthorConfiguration(context.auth.identity.userId),
       ]);
       return context.render(
         <AppPage

@@ -2,7 +2,7 @@ import { requireAuth } from "remix/middleware/auth";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import type { Administrator } from "@/app/data/administrator-repository.ts";
+import type { Administrator } from "@/app/cells/workspace/api.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import { routes } from "@/app/routes.ts";
 

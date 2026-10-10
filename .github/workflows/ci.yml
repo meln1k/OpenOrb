@@ -12,27 +12,14 @@ jobs:
   quality:
     name: Static checks, docs, tests, and security
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-        ports:
-          - 5432:5432
-    env:
-      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
-      OPENORB_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
         with:
           deno-version: 2.9.5
           cache: true
+      - name: Install pinned Worker runtime and bundler
+        run: bash scripts/install-celld.sh
       - run: deno task check
       - run: deno task check:docs
       - run: deno task test

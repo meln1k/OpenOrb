@@ -48,8 +48,8 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Socket from "effect/socket/Socket";
 
-import { makeRunnerRegistry } from "../../../gateway/app/runner-registry.ts";
-import type { RejectedSessionManifestEntry } from "../../../gateway/app/data/session-catalog-repository.ts";
+import { makeRunnerRegistry } from "../../../gateway/app/cells/runners/runner-registry.ts";
+import type { RejectedSessionManifestEntry } from "../../../gateway/app/cells/workspace/api.ts";
 import {
   makeOutboundSocketServer,
   PERMANENT_REJECTION_CLOSE_CODE,

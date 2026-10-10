@@ -1,19 +1,12 @@
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import {
-  DEFAULT_SESSION_THINKING_LEVEL,
-  modelReference,
-  type SessionThinkingLevel,
-} from "@openorb/protocol";
-import { SessionModelRuntime } from "@openorb/protocol/runner-api";
+import catalog from "../dist/model-catalog.json" with { type: "json" };
+import { DEFAULT_SESSION_THINKING_LEVEL, type SessionThinkingLevel } from "@openorb/protocol";
+import type { SessionModelRuntime } from "@openorb/protocol/runner-api";
 
 export const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
-
 export interface ModelProviderOption {
   id: string;
   name: string;
 }
-
 export interface ModelOption {
   contextWindow: number;
   id: string;
@@ -22,66 +15,33 @@ export interface ModelOption {
   providerName: string;
   thinkingLevels: readonly SessionThinkingLevel[];
 }
-
-const MODEL_PROVIDERS = builtinProviders()
-  .filter((provider) =>
-    provider.auth.apiKey !== undefined || provider.id === OPENAI_CODEX_PROVIDER_ID
-  )
-  .sort((left, right) => left.name.localeCompare(right.name));
-
-const API_KEY_MODEL_PROVIDERS = MODEL_PROVIDERS
-  .filter((provider) => provider.auth.apiKey !== undefined)
-  .sort((left, right) => left.name.localeCompare(right.name));
-
-export const MODEL_PROVIDER_OPTIONS: readonly ModelProviderOption[] = API_KEY_MODEL_PROVIDERS
-  .map((provider) => ({ id: provider.id, name: provider.name }))
-  .sort((left, right) => left.name.localeCompare(right.name));
-
-export const MODEL_OPTIONS: readonly ModelOption[] = MODEL_PROVIDERS.flatMap((provider) =>
-  provider.getModels()
-    .map((model) => ({
-      contextWindow: model.contextWindow,
-      id: modelReference(provider.id, model.id),
-      name: model.name,
-      providerId: provider.id,
-      providerName: provider.name,
-      thinkingLevels: getSupportedThinkingLevels(model),
-    }))
-    .sort((left, right) => left.name.localeCompare(right.name))
-);
-
-const MODEL_PROVIDER_IDS = new Set(MODEL_PROVIDER_OPTIONS.map((provider) => provider.id));
-const MODEL_IDS = new Set(MODEL_OPTIONS.map((model) => model.id));
-
-export function isModelProviderId(value: string): boolean {
+export const MODEL_PROVIDER_OPTIONS: readonly ModelProviderOption[] = catalog.providers;
+// SAFETY: build-model-catalog emits the pinned Pi catalog's declared thinking levels.
+export const MODEL_OPTIONS: readonly ModelOption[] = catalog.models as ModelOption[];
+const MODEL_PROVIDER_IDS = new Set(MODEL_PROVIDER_OPTIONS.map((p) => p.id));
+const MODEL_IDS = new Set(MODEL_OPTIONS.map((m) => m.id));
+export function isModelProviderId(value: string) {
   return MODEL_PROVIDER_IDS.has(value);
 }
-
-export function isModelReference(value: string): boolean {
+export function isModelReference(value: string) {
   return MODEL_IDS.has(value);
 }
-
-export function modelContextWindow(value: string): number | undefined {
-  return MODEL_OPTIONS.find((model) => model.id === value)?.contextWindow;
+export function modelContextWindow(value: string) {
+  return MODEL_OPTIONS.find((m) => m.id === value)?.contextWindow;
 }
-
-export function modelThinkingLevels(
-  value: string,
-): readonly SessionThinkingLevel[] | undefined {
-  return MODEL_OPTIONS.find((model) => model.id === value)?.thinkingLevels;
+export function modelThinkingLevels(value: string) {
+  return MODEL_OPTIONS.find((m) => m.id === value)?.thinkingLevels;
 }
-
-export function modelProviderName(providerId: string): string {
-  return MODEL_PROVIDERS.find((provider) => provider.id === providerId)?.name ?? providerId;
+export function modelProviderName(id: string) {
+  return catalog.names.find((p) => p.id === id)?.name ?? id;
 }
-
 export function sessionModelRuntime(
   model: string,
   credential: SessionModelRuntime["credential"],
 ): SessionModelRuntime {
-  return new SessionModelRuntime({
+  return {
     model,
     thinkingLevel: DEFAULT_SESSION_THINKING_LEVEL,
     credential,
-  });
+  };
 }

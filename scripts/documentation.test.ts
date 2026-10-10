@@ -58,12 +58,18 @@ Deno.test("operations documentation records the recovery contract and release pi
   const normalizedOperations = operations.replaceAll(/\s+/gu, " ");
   for (
     const required of [
-      "PostgreSQL",
+      "stateless Worker",
+      "SQLite-backed configuration",
+      "named RPC methods",
+      "alarm-driven provider OAuth",
       "OPENORB_MASTER_KEY",
       "SESSION_SECRET",
       "PUBLIC_URL=https://openorb.example.com",
-      "no persistent local application volume",
-      "no durable gateway files",
+      "packages/gateway/.celld/dev",
+      "Keep all SQLite/WAL sidecars together",
+      "original secrets",
+      "Existing PostgreSQL data is not imported",
+      "Runners DO live projections are not a Session backup",
       "persistent root disk",
       "mutates the persistent root disk in place",
       "Contents: Read and write",
@@ -78,6 +84,24 @@ Deno.test("operations documentation records the recovery contract and release pi
   ) {
     assertStringIncludes(normalizedOperations, required);
   }
+  assert(!normalizedOperations.includes("no persistent local application volume"));
+  assert(!normalizedOperations.includes("no durable gateway files"));
+
+  const workerConfiguration = await Deno.readTextFile("packages/gateway/wrangler.jsonc");
+  for (const className of ["Workspace", "Runners"]) {
+    assert(
+      new RegExp(`"class_name"\\s*:\\s*"${className}"`, "u").test(workerConfiguration),
+      `${className} must be a native DO binding`,
+    );
+    assert(
+      new RegExp(`"new_sqlite_classes"\\s*:\\s*\\[[^\\]]*"${className}"`, "u").test(
+        workerConfiguration,
+      ),
+      `${className} must use SQLite-backed persistence`,
+    );
+  }
+  assertStringIncludes(workerConfiguration, '"main": "dist/worker.js"');
+  assertStringIncludes(workerConfiguration, '"binding": "ASSETS"');
 
   const release = await Deno.readTextFile(
     "packages/runner/src/environment/gondolin/guest-image/release.ts",
@@ -95,6 +119,11 @@ Deno.test("operations documentation records the recovery contract and release pi
         (pin === "2.9.5" || rootConfiguration.includes(pin) || runnerConfiguration.includes(pin)),
       `operations documentation does not match pin ${pin}`,
     );
+  }
+  const installer = await Deno.readTextFile("scripts/install-celld.sh");
+  for (const [tool, pin] of [["celld", "0.6.2"], ["esbuild", "0.28.2"]] as const) {
+    assertStringIncludes(installer, `${tool}_version=${pin}`);
+    assertStringIncludes(operations, pin);
   }
 });
 
@@ -136,9 +165,13 @@ Deno.test("release guide and workflows preserve acceptance traceability and secr
   }
 
   const ci = await Deno.readTextFile(".github/workflows/ci.yml");
+  assertStringIncludes(ci, "bash scripts/install-celld.sh");
+  assertStringIncludes(ci, "deno task check");
+  assertStringIncludes(ci, "deno task check:docs");
+  assertStringIncludes(ci, "deno task test");
   assertStringIncludes(ci, "deno task test:security");
   assertStringIncludes(ci, "deno task test:gondolin");
-  assertStringIncludes(ci, "OPENORB_TEST_DATABASE_URL:");
+  assert(!/postgres|DATABASE_URL/iu.test(ci));
   assert(!ci.includes("${{ secrets."));
 
   const acceptance = await Deno.readTextFile(".github/workflows/release-acceptance.yml");

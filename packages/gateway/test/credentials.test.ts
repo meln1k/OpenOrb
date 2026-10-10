@@ -1,40 +1,31 @@
 import {
   assert,
   assertEquals,
-  assertInstanceOf,
   assertMatch,
   assertNotEquals,
   assertNotMatch,
+  assertRejects,
 } from "@std/assert";
-import type { OAuthAuth, OAuthCredential } from "@earendil-works/pi-ai";
 import {
   MAX_SESSION_ENVIRONMENT_SECRETS,
   MAX_SESSION_SECRET_HOST_CHARACTERS,
   type UserId,
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { array, number, object, parse, string } from "remix/data-schema";
-
-import { ModelProviderCredentialReadError } from "@/app/data/model-provider-repository.ts";
-import {
-  createOpenAICodexAuthorizationService,
-  type OpenAICodexAuthorizationOptions,
-  type OpenAICodexAuthorizationService,
-} from "@/app/openai-codex-authorization.ts";
 import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
 import { OPENAI_CODEX_PROVIDER_ID } from "@/app/model-provider-catalog.ts";
-import { createAppRouter } from "@/app/router.ts";
+import { createAppRouter } from "@/test/workspace-test.ts";
 import { routes } from "@/app/routes.ts";
 import { importMasterKey } from "@/app/utils/master-key.ts";
 import { decryptSecret } from "@/app/utils/secret-cipher.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
 import {
+  activate,
   createAppServices,
-  createTestStore,
-  createTestWorkspaceClient,
+  type MemoryStorage,
   TEST_MASTER_KEY_BYTES,
   TEST_MASTER_KEY_HEX,
-} from "@/test/postgres-test.ts";
+} from "@/test/workspace-test.ts";
 
 const OPENCODE_PROVIDER = "opencode-go";
 const OPENCODE_VALUE = "oc-go-secret-7f3d9a";
@@ -46,17 +37,26 @@ const PROVIDERS_SETTINGS_PATH = routes.app.settings.providers.index.href();
 const RUNNERS_SETTINGS_PATH = routes.app.settings.runners.index.href();
 const SECRETS_SETTINGS_PATH = routes.app.settings.secrets.index.href();
 
-const storedProviderRowSchema = object({
-  id: string(),
-  provider_id: string(),
-  encrypted_secret_id: string(),
-  key: string(),
-  purpose: string(),
-  key_version: number(),
-  ciphertext: string(),
-  created_at: string(),
-  updated_at: string(),
-});
+interface StoredProvider {
+  id: string;
+  providerId: string;
+  credentialType: "api_key" | "oauth";
+  key: string;
+  keyVersion: number;
+  ciphertext: ArrayBuffer;
+}
+
+function storedProviders(storage: MemoryStorage, workspaceId: WorkspaceId): StoredProvider[] {
+  return storage.rows<StoredProvider>(
+    `
+    SELECT p.id, p.providerId, p.credentialType, s.key, s.keyVersion, s.ciphertext
+    FROM model_provider_credentials p
+    JOIN encrypted_secrets s ON s.workspaceId = p.workspaceId AND s.key = p.secretKey
+    WHERE p.workspaceId = ? ORDER BY p.providerId
+  `,
+    workspaceId,
+  );
+}
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -71,25 +71,17 @@ function csrfFrom(html: string): string {
 }
 
 interface AuthenticatedClient {
-  authorization: OpenAICodexAuthorizationService;
-  store: Awaited<ReturnType<typeof createTestStore>>;
+  store: ReturnType<typeof activate>["workspace"];
+  storage: MemoryStorage;
   server: Awaited<ReturnType<typeof createTestServer>>;
   cookie: string;
   userId: UserId;
   workspaceId: WorkspaceId;
 }
 
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-}
-
-async function createAuthenticatedClient(
-  authorizationOptions?: OpenAICodexAuthorizationOptions,
-): Promise<AuthenticatedClient> {
-  const store = await createTestStore();
-  const authorization = createOpenAICodexAuthorizationService(store, authorizationOptions);
-  const router = createAppRouter(createAppServices(store, undefined, authorization));
+async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
+  const { workspace: store, storage } = activate();
+  const router = createAppRouter(createAppServices(store));
   const server = await createTestServer((request) => router.fetch(request));
 
   try {
@@ -127,8 +119,8 @@ async function createAuthenticatedClient(
     assert(user);
     assertNotEquals<string>(user.userId, user.workspaceId);
     return {
-      authorization,
       store,
+      storage,
       server,
       cookie: cookieFrom(loginResponse),
       userId: user.userId,
@@ -136,7 +128,6 @@ async function createAuthenticatedClient(
     };
   } catch (error) {
     await server.close();
-    await store.close();
     throw error;
   }
 }
@@ -164,22 +155,6 @@ async function submitCredentialsForm(
     headers: { Cookie: client.cookie },
     body: new URLSearchParams({ _csrf: csrfFrom(page), ...form }),
   });
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
-    resolve = complete;
-  });
-  return { promise, resolve };
-}
-
-async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if (await condition()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("Timed out waiting for the expected state.");
 }
 
 Deno.test("configures Pi providers without exposing or keying records by API key", async () => {
@@ -243,38 +218,27 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     assertNotMatch(saved, new RegExp(OPENCODE_VALUE));
     assertNotMatch(saved, new RegExp(OPENAI_VALUE));
 
-    const rows = parse(
-      array(storedProviderRowSchema),
-      (await client.store.pool.query(
-        `select mpc.id, mpc.provider_id, mpc.encrypted_secret_id,
-              es.key, es.purpose, es.key_version, es.ciphertext,
-              mpc.created_at, mpc.updated_at
-         from model_provider_credentials mpc
-         join encrypted_secrets es on es.id = mpc.encrypted_secret_id
-        order by mpc.provider_id`,
-      )).rows,
-    );
+    const rows = storedProviders(client.storage, client.workspaceId);
     assertEquals(rows.length, 2);
-    const byProvider = new Map(rows.map((row) => [row.provider_id, row]));
+    const byProvider = new Map(rows.map((row) => [row.providerId, row]));
     const opencode = byProvider.get(OPENCODE_PROVIDER)!;
     const openai = byProvider.get(OPENAI_PROVIDER)!;
-    assertEquals(opencode.purpose, "provider-api-key");
-    assertEquals(openai.purpose, "provider-api-key");
-    assertNotEquals(opencode.encrypted_secret_id, openai.encrypted_secret_id);
+    assertEquals(opencode.credentialType, "api_key");
+    assertEquals(openai.credentialType, "api_key");
+    assertNotEquals(opencode.id, openai.id);
+    assertNotEquals(opencode.key, openai.key);
     assertNotEquals(opencode.key, OPENCODE_PROVIDER);
     assertNotEquals(openai.key, OPENAI_PROVIDER);
-    assert(!opencode.ciphertext.includes(OPENCODE_VALUE));
-    assert(!openai.ciphertext.includes(OPENAI_VALUE));
+    assert(!client.storage.dump().includes(OPENCODE_VALUE));
+    assert(!client.storage.dump().includes(OPENAI_VALUE));
 
     const masterKey = await importMasterKey(TEST_MASTER_KEY_BYTES);
     for (const [row, apiKey] of [[opencode, OPENCODE_VALUE], [openai, OPENAI_VALUE]] as const) {
+      assert(row.ciphertext instanceof ArrayBuffer);
       assertEquals(
         await decryptSecret(
           masterKey,
-          {
-            ciphertext: Uint8Array.fromBase64(row.ciphertext),
-            keyVersion: row.key_version,
-          },
+          { keyVersion: row.keyVersion, ciphertext: new Uint8Array(row.ciphertext) },
           { workspaceId: client.workspaceId, key: row.key },
         ),
         [apiKey, undefined],
@@ -292,21 +256,13 @@ Deno.test("configures Pi providers without exposing or keying records by API key
       },
     );
     assertEquals(replaceResponse.status, 303);
-    const replaced = parse(
-      storedProviderRowSchema,
-      (await client.store.pool.query(
-        `select mpc.id, mpc.provider_id, mpc.encrypted_secret_id,
-              es.key, es.purpose, es.key_version, es.ciphertext,
-              mpc.created_at, mpc.updated_at
-         from model_provider_credentials mpc
-         join encrypted_secrets es on es.id = mpc.encrypted_secret_id
-        where mpc.provider_id = $1`,
-        [OPENCODE_PROVIDER],
-      )).rows[0],
+    const replaced = storedProviders(client.storage, client.workspaceId).find(
+      (row) => row.providerId === OPENCODE_PROVIDER,
     );
+    assert(replaced);
     assertEquals(replaced.id, opencode.id);
-    assertEquals(replaced.encrypted_secret_id, opencode.encrypted_secret_id);
-    assertNotEquals(replaced.ciphertext, opencode.ciphertext);
+    assertEquals(replaced.key, opencode.key);
+    assertNotEquals(new Uint8Array(replaced.ciphertext), new Uint8Array(opencode.ciphertext));
     assertEquals(await client.store.getModelProviderApiKey(client.workspaceId, OPENCODE_PROVIDER), [
       replacement,
       undefined,
@@ -326,56 +282,42 @@ Deno.test("configures Pi providers without exposing or keying records by API key
       null,
     );
     assertEquals(
-      (await client.store.pool.query("select count(*)::integer as count from encrypted_secrets"))
-        .rows[0]?.count,
+      client.storage.rows("SELECT id FROM model_provider_credentials").length,
       1,
     );
   } finally {
     await client.server.close();
-    await client.store.close();
   }
 });
 
 Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and disconnects locally", async () => {
-  const credential = {
-    type: "oauth" as const,
-    access: "chatgpt-access-token-91e4b0",
-    refresh: "chatgpt-refresh-token-5c7e12",
-    expires: Date.now() + 3_600_000,
-  };
-  const loginCompletions = [deferred<OAuthCredential>(), deferred<OAuthCredential>()];
-  const loginSignals: AbortSignal[] = [];
+  const client = await createAuthenticatedClient();
+  const credential = { access: accessToken("original"), refresh: "chatgpt-refresh-token-5c7e12" };
   let loginCalls = 0;
   let revokeCalls = 0;
-  const oauth: OAuthAuth = {
-    name: "Test OpenAI Codex OAuth",
-    async login(interaction) {
-      const selected = await interaction.prompt({
-        type: "select",
-        message: "Choose login",
-        options: [{ id: "device_code", label: "Device code" }],
+  const restoreFetch = providerFetch(async (request) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/api/accounts/deviceauth/usercode") {
+      return Response.json({
+        device_auth_id: `device-${loginCalls}`,
+        user_code: loginCalls++ === 0 ? "ABCD-EFGH" : "WXYZ-1234",
+        interval: 0,
       });
-      assertEquals(selected, "device_code");
-      const call = loginCalls++;
-      loginSignals.push(interaction.signal);
-      interaction.notify({
-        type: "device_code",
-        userCode: call === 0 ? "ABCD-EFGH" : "WXYZ-1234",
-        verificationUri: "https://auth.openai.com/codex/device",
-        intervalSeconds: 1,
-      });
-      return await loginCompletions[call]!.promise;
-    },
-    refresh: (current) => Promise.resolve(current),
-    toAuth: (current) => Promise.resolve({ apiKey: current.access }),
-  };
-  const client = await createAuthenticatedClient({
-    oauth,
-    revoke: (current) => {
+    }
+    if (path === "/api/accounts/deviceauth/token") {
+      return Response.json({ authorization_code: "code", code_verifier: "verifier" });
+    }
+    if (path === "/oauth/revoke") {
       revokeCalls++;
-      assertEquals(current.access, credential.access);
-      return Promise.reject(new Error("revocation unavailable"));
-    },
+      assertEquals((await request.json()).token, credential.refresh);
+      return new Response("revocation unavailable", { status: 503 });
+    }
+    assertEquals(path, "/oauth/token");
+    return Response.json({
+      access_token: credential.access,
+      refresh_token: credential.refresh,
+      expires_in: 3600,
+    });
   });
   try {
     const initial = await credentialsPage(client);
@@ -397,11 +339,7 @@ Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and d
       intent: "poll-chatgpt",
     });
     assertEquals(pending.status, 200);
-    loginCompletions[0]!.resolve(credential);
-    await waitFor(async () =>
-      (await client.store.getModelProviderCredential(client.workspaceId, OPENAI_CODEX_PROVIDER_ID))
-        ?.credentialType === "oauth"
-    );
+    await activate(client.storage).workspace.alarm();
     const complete = await fetch(new URL(PROVIDERS_SETTINGS_PATH, client.server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -413,7 +351,7 @@ Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and d
     });
     assertEquals(complete.status, 303);
     assertEquals(
-      await client.authorization.resolveAccessToken(client.workspaceId),
+      await client.store.resolveProviderAccessToken(client.workspaceId),
       credential.access,
     );
 
@@ -421,36 +359,37 @@ Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and d
     assertMatch(connectedPage, /Connected · updated/);
     assertNotMatch(connectedPage, new RegExp(credential.access));
     assertNotMatch(connectedPage, new RegExp(credential.refresh));
-    const stored = (await client.store.pool.query<{
-      purpose: string;
-      credential_type: string;
-      ciphertext: string;
-    }>(
-      `select es.purpose, mpc.credential_type, es.ciphertext
-         from model_provider_credentials mpc
-         join encrypted_secrets es on es.id = mpc.encrypted_secret_id
-        where mpc.workspace_id = $1 and mpc.provider_id = $2`,
-      [client.workspaceId, OPENAI_CODEX_PROVIDER_ID],
-    )).rows[0];
+    const stored = storedProviders(client.storage, client.workspaceId).find(
+      (row) => row.providerId === OPENAI_CODEX_PROVIDER_ID,
+    );
     assert(stored);
-    assertEquals(stored.purpose, "provider-oauth");
-    assertEquals(stored.credential_type, "oauth");
-    assertNotMatch(stored.ciphertext, new RegExp(credential.access));
-    assertNotMatch(stored.ciphertext, new RegExp(credential.refresh));
+    assertEquals(stored.credentialType, "oauth");
+    assert(stored.ciphertext instanceof ArrayBuffer);
+    assert(!client.storage.dump().includes(credential.access));
+    assert(!client.storage.dump().includes(credential.refresh));
 
     const reconnect = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
       intent: "start-chatgpt",
     });
     assertEquals(reconnect.status, 303);
     assertEquals(
-      await client.authorization.resolveAccessToken(client.workspaceId),
+      await client.store.resolveProviderAccessToken(client.workspaceId),
       credential.access,
     );
     const cancel = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
       intent: "cancel-chatgpt",
     });
     assertEquals(cancel.status, 303);
-    assert(loginSignals[1]?.aborted);
+    assertEquals(client.storage.alarm, null);
+    assertEquals(
+      client.storage.rows(
+        "SELECT id FROM provider_authorizations WHERE workspaceId = ?",
+        client.workspaceId,
+      ),
+      [],
+    );
+    await activate(client.storage).workspace.alarm();
+    assertEquals(loginCalls, 2);
 
     const disconnect = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
       intent: "disconnect-chatgpt",
@@ -466,71 +405,93 @@ Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and d
     );
   } finally {
     await client.server.close();
-    await client.store.close();
+    restoreFetch();
   }
 });
 
 Deno.test("ChatGPT runtime refreshes rotation once and sends only the access token", async () => {
-  const now = Date.now();
-  const expired = {
-    type: "oauth" as const,
-    access: "expired-access-token",
-    refresh: "rotating-refresh-token",
-    expires: now - 1_000,
-  };
-  const rotated = {
-    type: "oauth" as const,
-    access: "fresh-access-token",
-    refresh: "fresh-refresh-token",
-    expires: now + 3_600_000,
-  };
+  const client = await createAuthenticatedClient();
+  const expired = { access: accessToken("expired"), refresh: "rotating-refresh-token" };
+  const rotated = { access: accessToken("fresh"), refresh: "fresh-refresh-token" };
   let refreshCalls = 0;
-  const oauth: OAuthAuth = {
-    name: "Test OpenAI Codex OAuth",
-    login: () => Promise.reject(new Error("not used")),
-    refresh: (current) => {
+  const restoreFetch = providerFetch(async (request) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/api/accounts/deviceauth/usercode") {
+      return Response.json({ device_auth_id: "device", user_code: "ABCD-EFGH", interval: 0 });
+    }
+    if (path === "/api/accounts/deviceauth/token") {
+      return Response.json({ authorization_code: "code", code_verifier: "verifier" });
+    }
+    assertEquals(path, "/oauth/token");
+    const form = new URLSearchParams(await request.text());
+    if (form.get("grant_type") === "refresh_token") {
       refreshCalls++;
-      assertEquals(current, expired);
-      return Promise.resolve(rotated);
-    },
-    toAuth: (current) => Promise.resolve({ apiKey: current.access }),
-  };
-  const client = await createAuthenticatedClient({ oauth, revoke: () => Promise.resolve() });
+      assertEquals(form.get("refresh_token"), expired.refresh);
+      return Response.json({
+        access_token: rotated.access,
+        refresh_token: rotated.refresh,
+        expires_in: 3600,
+      });
+    }
+    return Response.json({
+      access_token: expired.access,
+      refresh_token: expired.refresh,
+      expires_in: 1,
+    });
+  });
   try {
-    await client.store.saveModelProviderOAuthCredential(
-      client.workspaceId,
-      OPENAI_CODEX_PROVIDER_ID,
-      expired,
-    );
+    await client.store.startProviderLogin(client.workspaceId);
+    await client.store.alarm();
     const [runtime, error] = await resolveSessionModelRuntime(
       client.workspaceId,
       "openai-codex/gpt-5.2-codex",
-      createTestWorkspaceClient(client.store, client.authorization),
+      client.store,
     );
     assertEquals(error, undefined);
     assertEquals(runtime?.credential, { type: "access_token", value: rotated.access });
     assertNotMatch(JSON.stringify(runtime), new RegExp(rotated.refresh));
     assertEquals(
-      await client.authorization.resolveAccessToken(
-        client.workspaceId,
-        now + 1_000,
-      ),
+      await activate(client.storage).workspace.resolveProviderAccessToken(client.workspaceId),
       rotated.access,
     );
 
     const [reused, reuseError] = await resolveSessionModelRuntime(
       client.workspaceId,
       "openai-codex/gpt-5.2-codex",
-      createTestWorkspaceClient(client.store, client.authorization),
+      client.store,
     );
     assertEquals(reuseError, undefined);
     assertEquals(reused?.credential, { type: "access_token", value: rotated.access });
     assertEquals(refreshCalls, 1);
   } finally {
     await client.server.close();
-    await client.store.close();
+    restoreFetch();
   }
 });
+
+function accessToken(marker: string): string {
+  const payload = new TextEncoder().encode(JSON.stringify({
+    "https://api.openai.com/auth": { chatgpt_account_id: "gateway-test-account" },
+    marker,
+  })).toBase64({ alphabet: "base64url", omitPadding: true });
+  return `e30.${payload}.unverified-signature`;
+}
+
+/** Mock the external HTTP boundary only; authorization and alarm persistence are real Workspace. */
+function providerFetch(handler: (request: Request) => Promise<Response>): () => void {
+  const original = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const request = new Request(input, init);
+    if (new URL(request.url).origin !== "https://auth.openai.com") return original(input, init);
+    assertEquals(request.method, "POST");
+    assertEquals(init?.redirect, "error");
+    assert(init?.signal instanceof AbortSignal);
+    return handler(request);
+  };
+  return () => {
+    globalThis.fetch = original;
+  };
+}
 
 Deno.test("generic secrets remain independent from model provider credentials", async () => {
   const client = await createAuthenticatedClient();
@@ -578,18 +539,15 @@ Deno.test("generic secrets remain independent from model provider credentials", 
       ),
       [OPENCODE_PROVIDER],
     );
-    const rows = await client.store.pool.query<{ key: string; purpose: string }>(
-      "select key, purpose from encrypted_secrets order by purpose",
-    );
-    assertEquals(rows.rows.map((row: { key: string; purpose: string }) => row.purpose), [
-      "generic-secret",
-      "provider-api-key",
-    ]);
     assertEquals(
-      rows.rows.find((row: { key: string; purpose: string }) => row.purpose === "generic-secret")
-        ?.key,
-      GENERIC_SECRET_KEY,
+      client.storage.rows("SELECT key FROM encrypted_secrets WHERE purpose = 'generic-secret'")
+        .length,
+      1,
     );
+    assertEquals(client.storage.rows("SELECT id FROM model_provider_credentials").length, 1);
+    const persisted = client.storage.dump();
+    assert(!persisted.includes(GENERIC_SECRET_VALUE));
+    assert(!persisted.includes(OPENCODE_VALUE));
 
     const page = await credentialsPage(client, SECRETS_SETTINGS_PATH);
     assertMatch(page, new RegExp(GENERIC_SECRET_KEY));
@@ -617,7 +575,6 @@ Deno.test("generic secrets remain independent from model provider credentials", 
     assertEquals(await client.store.listSecrets(client.workspaceId), []);
   } finally {
     await client.server.close();
-    await client.store.close();
   }
 });
 
@@ -672,7 +629,6 @@ Deno.test("generic secrets enforce protocol host boundaries", async () => {
     assertEquals(await client.store.getSecret(client.workspaceId, "OTHER_TOKEN"), null);
   } finally {
     await client.server.close();
-    await client.store.close();
   }
 });
 
@@ -716,7 +672,6 @@ Deno.test("generic secrets enforce the protocol count while allowing updates", a
     assertEquals((await client.store.listSecrets(client.workspaceId)).length, 64);
   } finally {
     await client.server.close();
-    await client.store.close();
   }
 });
 
@@ -745,79 +700,55 @@ Deno.test("generic secrets reject aggregate RPC frame overflow", async () => {
     assertEquals((await client.store.listSecrets(client.workspaceId)).length, 31);
   } finally {
     await client.server.close();
-    await client.store.close();
   }
 });
 
 Deno.test("provider credentials remain decryptable across a gateway restart", async () => {
-  const first = await createTestStore();
-  assert(await first.createAdministrator("restart test password"));
+  const { workspace: first, storage } = activate();
+  assertEquals(await first.createAdministrator("restart test password"), [true, undefined]);
   const user = await first.verifyAdministratorPassword("restart test password");
   assert(user);
   await first.saveModelProviderCredential(user.workspaceId, OPENCODE_PROVIDER, OPENCODE_VALUE);
   await first.saveModelProviderCredential(user.workspaceId, OPENAI_PROVIDER, OPENAI_VALUE);
-  await first.close();
 
-  const restarted = await createTestStore(undefined, false);
-  try {
-    assertEquals(
-      (await restarted.listModelProviderCredentials(user.workspaceId)).map((credential) =>
-        credential.providerId
-      ),
-      [OPENAI_PROVIDER, OPENCODE_PROVIDER],
-    );
-    assertEquals(await restarted.getModelProviderApiKey(user.workspaceId, OPENCODE_PROVIDER), [
-      OPENCODE_VALUE,
-      undefined,
-    ]);
-    assertEquals(await restarted.getModelProviderApiKey(user.workspaceId, OPENAI_PROVIDER), [
-      OPENAI_VALUE,
-      undefined,
-    ]);
-  } finally {
-    await restarted.close();
-  }
+  const restarted = activate(storage).workspace;
+  assertEquals(
+    (await restarted.listModelProviderCredentials(user.workspaceId)).map((credential) =>
+      credential.providerId
+    ),
+    [OPENAI_PROVIDER, OPENCODE_PROVIDER],
+  );
+  assertEquals(await restarted.getModelProviderApiKey(user.workspaceId, OPENCODE_PROVIDER), [
+    OPENCODE_VALUE,
+    undefined,
+  ]);
+  assertEquals(await restarted.getModelProviderApiKey(user.workspaceId, OPENAI_PROVIDER), [
+    OPENAI_VALUE,
+    undefined,
+  ]);
 });
 
 Deno.test("a wrong master key fails provider resolution without destroying stored data", async () => {
-  const first = await createTestStore();
-  assert(await first.createAdministrator("wrong key test password"));
+  const { workspace: first, storage } = activate();
+  assertEquals(await first.createAdministrator("wrong key test password"), [true, undefined]);
   const user = await first.verifyAdministratorPassword("wrong key test password");
   assert(user);
   await first.saveModelProviderCredential(user.workspaceId, OPENCODE_PROVIDER, OPENCODE_VALUE);
-  await first.close();
 
-  const wrongKeyStore = await createTestStore(
-    await importMasterKey(new Uint8Array(32).fill(9)),
-    false,
+  const wrongKeyWorkspace = activate(storage, "09".repeat(32)).workspace;
+  const before = storage.dump();
+  const error = await assertRejects(
+    () => wrongKeyWorkspace.getModelProviderApiKey(user.workspaceId, OPENCODE_PROVIDER),
+    Error,
   );
-  try {
-    const [value, error] = await wrongKeyStore.getModelProviderApiKey(
-      user.workspaceId,
-      OPENCODE_PROVIDER,
-    );
-    assertEquals(value, undefined);
-    assertInstanceOf(error, ModelProviderCredentialReadError);
-    assert(!error.message.includes(OPENCODE_VALUE));
-    assertEquals(
-      (await wrongKeyStore.pool.query(
-        "select count(*)::integer as count from model_provider_credentials",
-      )).rows[0]?.count,
-      1,
-    );
-  } finally {
-    await wrongKeyStore.close();
-  }
+  assert(!error.message.includes(OPENCODE_VALUE));
+  assertEquals(storage.dump(), before);
 
-  const restored = await createTestStore(undefined, false);
-  try {
-    assertEquals(await restored.getModelProviderApiKey(user.workspaceId, OPENCODE_PROVIDER), [
-      OPENCODE_VALUE,
-      undefined,
-    ]);
-  } finally {
-    await restored.close();
-  }
+  const restored = activate(storage).workspace;
+  assertEquals(await restored.getModelProviderApiKey(user.workspaceId, OPENCODE_PROVIDER), [
+    OPENCODE_VALUE,
+    undefined,
+  ]);
 });
 
 Deno.test("provider plaintext and master key never enter gateway rows", async () => {
@@ -828,25 +759,11 @@ Deno.test("provider plaintext and master key never enter gateway rows", async ()
       OPENCODE_PROVIDER,
       OPENCODE_VALUE,
     );
-    for (
-      const table of [
-        "users",
-        "password_credentials",
-        "browser_sessions",
-        "encrypted_secrets",
-        "model_provider_credentials",
-      ]
-    ) {
-      const rows = await client.store.pool.query(`select * from ${table}`);
-      for (const row of rows.rows) {
-        const serialized = JSON.stringify(row);
-        assert(!serialized.includes(TEST_MASTER_KEY_HEX), `master key material found in ${table}`);
-        assert(!serialized.includes(OPENCODE_VALUE), `provider plaintext found in ${table}`);
-      }
-    }
+    const persisted = client.storage.dump();
+    assert(!persisted.includes(TEST_MASTER_KEY_HEX), "master key material found in persisted rows");
+    assert(!persisted.includes(OPENCODE_VALUE), "provider plaintext found in persisted rows");
   } finally {
     await client.server.close();
-    await client.store.close();
   }
 });
 
@@ -885,6 +802,5 @@ Deno.test("rejects unknown providers, unauthenticated access, and missing CSRF",
     assertEquals(await client.store.listModelProviderCredentials(client.workspaceId), []);
   } finally {
     await client.server.close();
-    await client.store.close();
   }
 });

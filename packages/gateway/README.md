@@ -1,23 +1,46 @@
 # OpenOrb gateway
 
-The Remix 3 gateway requires Deno 2.9.5 or newer and runs through Effect's `DenoHttpServer`. PostgreSQL remains available through Deno's compatibility support for the pinned `pg` npm package. `deno install --frozen` creates a Deno-managed local `node_modules` tree because Remix's browser-asset compiler uses Node-style package resolution. The trusted gateway process reads that workspace tree and loads pinned OXC native bindings through FFI; npm lifecycle scripts remain disabled and no Node.js or npm executable is used.
+The Remix 3 gateway is a native celld Worker exporting `Workspace` and `Runners` Durable Objects.
+Deno 2.9.5 builds the Worker, browser assets, and model metadata; requests use the `ASSETS` binding
+and native DO RPC, not a Deno HTTP server or a request-time compiler. Workspace SQLite owns
+configuration, authentication, enrollment, and the minimal Session catalog. Runners owns live
+connections and routing; complete Session state remains runner-owned. PostgreSQL is not required.
 
-From the repository root, configure PostgreSQL, a deployment-injected session-cookie secret, and the application master key. Either export them, or copy `packages/gateway/.env.example` to `packages/gateway/.env` (gitignored) — the `dev` and `start` tasks load `.env` automatically, and shell-exported variables take precedence:
+From the repository root, install the pinned tools and dependencies, then configure independent
+session-cookie and encryption secrets in the ignored `packages/gateway/.env`. Do not overwrite an
+existing file or generate a replacement master key for existing state:
 
 ```sh
-# Option A: copy the example and edit
-cp packages/gateway/.env.example packages/gateway/.env
+bash scripts/install-celld.sh
+deno install --frozen
+test -f packages/gateway/.env || cp packages/gateway/.env.example packages/gateway/.env
+chmod 600 packages/gateway/.env
+# Edit .env; generate each secret independently with openssl rand -hex 32.
+```
 
-# Option B: export explicitly
-export DATABASE_URL=postgres://localhost/openorb
-export SESSION_SECRET="replace-with-a-long-random-secret"
-export OPENORB_MASTER_KEY="$(openssl rand -hex 32)"
+In an orb, use `amp orb services ensure` and its gateway portal. Outside an orb:
 
+```sh
 deno task dev:gateway
 ```
 
-Open <http://localhost:44100>. On a fresh database, the root route redirects to first-run setup. The Deno-native migration loader applies committed `remix/data-table` migrations before the server starts.
+The local listener is on loopback port 44100. The dev task prepares mode-0600
+`packages/gateway/.dev.vars` from `.env` (shell-exported bindings take precedence), builds, and
+runs `celld dev` against `packages/gateway/wrangler.jsonc`. The build places `dist/worker.js` and
+`dist/assets` beside that config. The package `start` task skips preparation/build and uses those
+existing files. `PUBLIC_URL` and `OPENORB_SESSION_COOKIE_SECURE` control browser origin/cookie policy.
 
-Password rows use PBKDF2-HMAC-SHA-256 with 600,000 iterations, a random 16-byte salt, and a 256-bit derived key, and user IDs use UUIDv7. Before first use of this schema, intentionally reset the unreleased `openorb` and `openorb-test` databases as documented in the root README. This discards existing users, sessions, encrypted credentials, Git configuration, and projects; no Argon2 or integer-user-ID compatibility path exists.
+Dev state lives in `packages/gateway/.celld/dev` and persists across restarts. The former
+`packages/workspace/.celld/dev` is not migrated or deleted; the relocated config starts fresh.
+An empty Workspace redirects to first-run administrator setup. Workspace uses relational SQLite with
+Remix Data definitions in `app/cells/workspace/schema.ts`, plain SQL files in
+`app/cells/workspace/migrations/`, and native SQL execution. This is a
+clean break: PostgreSQL and legacy Workspace KV records are not read or imported. Recreate
+configuration through setup/settings; do not reset or delete old data as part of this change.
 
-Tests use PostgreSQL directly and default to `postgres://localhost/openorb-test`, regardless of the application `DATABASE_URL`; create that test database first. CI may set `OPENORB_TEST_DATABASE_URL` to an isolated test database. Test tables are truncated between tests.
+`deno install --frozen` supplies the Deno-managed `node_modules` needed by the build-time Remix
+compiler and pinned native bindings; npm lifecycle scripts remain disabled. Test commands are
+defined at the repository root. Native celld tests must use disposable config/state directories,
+never the operator's `.dev.vars` or `.celld` directory. See
+[operations](../../docs/operations.md) and [release acceptance](../../docs/release-acceptance.md)
+for persistence, recovery boundaries, and the secret-gated lifecycle.

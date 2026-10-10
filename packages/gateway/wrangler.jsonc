@@ -1,0 +1,27 @@
+{
+  "name": "openorb-workspace",
+  "main": "dist/worker.js",
+  "compatibility_date": "2026-10-07",
+  "vars": {
+    "OPENORB_MASTER_KEY": "",
+    "SESSION_SECRET": "",
+    "PUBLIC_URL": "",
+    "OPENORB_SESSION_COOKIE_SECURE": "false"
+  },
+  "assets": {
+    "directory": "dist/assets",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKSPACE", "class_name": "Workspace" },
+      { "name": "RUNNERS", "class_name": "Runners" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Workspace"] },
+    { "tag": "v2", "new_sqlite_classes": ["Runners"] }
+  ]
+}

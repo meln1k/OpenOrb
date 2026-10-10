@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 
-import { assetServer } from "@/app/assets.ts";
+import { createBuildAssetServer } from "../build-assets.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
 
 const browserEndpoint = Deno.env.get("OPENORB_BROWSER_TEST_CDP");
@@ -9,6 +9,9 @@ Deno.test({
   name: "combobox filters, skips disabled options, and submits the committed value",
   ignore: browserEndpoint === undefined,
   async fn() {
+    await using cleanup = new AsyncDisposableStack();
+    const assetServer = createBuildAssetServer();
+    cleanup.defer(() => assetServer.close());
     const { chromium } = await import("playwright");
     const browser = await chromium.connectOverCDP(browserEndpoint!);
     const context = await browser.newContext();

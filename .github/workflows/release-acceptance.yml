@@ -15,20 +15,7 @@ jobs:
     name: Secret-gated browser, Pi, Gondolin, and GitHub acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-        ports:
-          - 5432:5432
     env:
-      OPENORB_E2E_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
       OPENORB_GITHUB_TEST_REPOSITORY: ${{ secrets.OPENORB_GITHUB_TEST_REPOSITORY }}
       OPENORB_GITHUB_TEST_TOKEN: ${{ secrets.OPENORB_GITHUB_TEST_TOKEN }}
       OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
@@ -49,6 +36,8 @@ jobs:
             printf '::error::Missing required release acceptance secrets: %s\n' "${missing[*]}"
             exit 1
           fi
+      - name: Install pinned Worker runtime and bundler
+        run: bash scripts/install-celld.sh
       - name: Install virtualization, image, and browser dependencies
         run: |
           sudo apt-get update

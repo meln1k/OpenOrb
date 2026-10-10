@@ -5,7 +5,7 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import type { Administrator } from "@/app/data/administrator-repository.ts";
+import type { Administrator } from "@/app/cells/workspace/api.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
@@ -49,8 +49,8 @@ export default createController(routes.app.projects, {
       const workspaceId = context.auth.identity.workspaceId;
       const [composer, projects, sidebarSessions] = await Promise.all([
         loadSessionComposerData(workspaceId, context.services),
-        context.services.workspace.call("listProjects", workspaceId),
-        context.services.workspace.call("listSessionNavigationEntries", workspaceId),
+        context.services.workspace.listProjects(workspaceId),
+        context.services.workspace.listSessionNavigationEntries(workspaceId),
       ]);
       return context.render(
         <ProjectsPage
@@ -69,8 +69,8 @@ export default createController(routes.app.projects, {
       const renderError = async (error: string, status: number) => {
         const [composer, projects, sidebarSessions] = await Promise.all([
           loadSessionComposerData(workspaceId, context.services),
-          workspace.call("listProjects", workspaceId),
-          workspace.call("listSessionNavigationEntries", workspaceId),
+          workspace.listProjects(workspaceId),
+          workspace.listSessionNavigationEntries(workspaceId),
         ]);
         return context.render(
           <ProjectsPage
@@ -91,8 +91,8 @@ export default createController(routes.app.projects, {
         if (!repositoryUrl) {
           return renderError("The GitHub repository is invalid.", 400);
         }
-        const result = await workspace.call("saveProject", workspaceId, {
-          id: projectId,
+        const result = await workspace.saveProject(workspaceId, {
+          ...(projectId === undefined ? {} : { id: projectId }),
           name: values.name.trim(),
           repositoryUrl,
         });
@@ -126,8 +126,7 @@ export default createController(routes.app.projects, {
         if (!parsed.success) {
           return renderError(parsed.issues[0]?.message ?? "Invalid project deletion.", 400);
         }
-        const [result, persistenceError] = await workspace.call(
-          "deleteProject",
+        const [result, persistenceError] = await workspace.deleteProject(
           workspaceId,
           parsed.value.projectId,
         );

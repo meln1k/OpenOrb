@@ -6,10 +6,9 @@ import { createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
 import { ProvidersSettingsPage } from "@/app/actions/settings/page.tsx";
-import type { Administrator } from "@/app/data/administrator-repository.ts";
+import type { Administrator, OpenAICodexAuthorizationStatus } from "@/app/cells/workspace/api.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import { MODEL_PROVIDER_OPTIONS, OPENAI_CODEX_PROVIDER_ID } from "@/app/model-provider-catalog.ts";
-import type { OpenAICodexAuthorizationStatus } from "@/app/openai-codex-authorization.ts";
 import type { AppContext } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
 import { tryAsync } from "@openorb/result";
@@ -55,8 +54,7 @@ export default createController(routes.app.settings.providers, {
       switch (context.formData.get("intent")) {
         case "start-chatgpt": {
           const [authorization, startError] = await tryAsync(
-            context.services.workspace.call(
-              "startProviderLogin",
+            context.services.workspace.startProviderLogin(
               context.auth.identity.workspaceId,
             ),
             () => true,
@@ -79,8 +77,7 @@ export default createController(routes.app.settings.providers, {
             context.session.unset(CHATGPT_AUTHORIZATION_ATTEMPT_SESSION_KEY);
             return pollError(context, "The ChatGPT sign-in is no longer active.", 409);
           }
-          const result = await context.services.workspace.call(
-            "getProviderLoginStatus",
+          const result = await context.services.workspace.getProviderLoginStatus(
             context.auth.identity.workspaceId,
             attemptId,
           );
@@ -97,8 +94,7 @@ export default createController(routes.app.settings.providers, {
             context.session.get(CHATGPT_AUTHORIZATION_ATTEMPT_SESSION_KEY),
           );
           if (attemptId) {
-            await context.services.workspace.call(
-              "cancelProviderLogin",
+            await context.services.workspace.cancelProviderLogin(
               context.auth.identity.workspaceId,
               attemptId,
             );
@@ -107,8 +103,7 @@ export default createController(routes.app.settings.providers, {
           return redirect(routes.app.settings.providers.index.href(), 303);
         }
         case "disconnect-chatgpt": {
-          const deleted = await context.services.workspace.call(
-            "disconnectProvider",
+          const deleted = await context.services.workspace.disconnectProvider(
             context.auth.identity.workspaceId,
           );
           context.session.unset(CHATGPT_AUTHORIZATION_ATTEMPT_SESSION_KEY);
@@ -126,8 +121,7 @@ export default createController(routes.app.settings.providers, {
               400,
             );
           }
-          await context.services.workspace.call(
-            "saveModelProviderCredential",
+          await context.services.workspace.saveModelProviderCredential(
             context.auth.identity.workspaceId,
             parsed.value.providerId,
             parsed.value.apiKey.trim(),
@@ -143,8 +137,7 @@ export default createController(routes.app.settings.providers, {
               400,
             );
           }
-          await context.services.workspace.call(
-            "deleteModelProviderCredential",
+          await context.services.workspace.deleteModelProviderCredential(
             context.auth.identity.workspaceId,
             parsed.value.providerId,
           );
@@ -166,8 +159,7 @@ async function renderProviders(
     context.session.get(CHATGPT_AUTHORIZATION_ATTEMPT_SESSION_KEY),
   );
   const authorizationStatus: OpenAICodexAuthorizationStatus = attemptId
-    ? await context.services.workspace.call(
-      "getProviderLoginStatus",
+    ? await context.services.workspace.getProviderLoginStatus(
       context.auth.identity.workspaceId,
       attemptId,
     )
@@ -175,8 +167,7 @@ async function renderProviders(
   if (attemptId && authorizationStatus.status !== "pending") {
     context.session.unset(CHATGPT_AUTHORIZATION_ATTEMPT_SESSION_KEY);
   }
-  const providers = await context.services.workspace.call(
-    "listModelProviderCredentials",
+  const providers = await context.services.workspace.listModelProviderCredentials(
     context.auth.identity.workspaceId,
   );
   const chatGPTCredential = providers.find((provider) =>

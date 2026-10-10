@@ -6,7 +6,7 @@ import { createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
 import { GitAuthorSettingsPage } from "@/app/actions/settings/page.tsx";
-import type { Administrator } from "@/app/data/administrator-repository.ts";
+import type { Administrator } from "@/app/cells/workspace/api.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import type { AppContext } from "@/app/router.ts";
 import { routes } from "@/app/routes.ts";
@@ -51,8 +51,7 @@ export default createController(routes.app.settings.gitAuthor, {
           400,
         );
       }
-      await context.services.workspace.call(
-        "saveGitAuthorConfiguration",
+      await context.services.workspace.saveGitAuthorConfiguration(
         context.auth.identity.userId,
         {
           authorName: parsed.value.authorName.trim(),
@@ -69,8 +68,7 @@ async function renderGitAuthor(
   error?: string,
   status = 200,
 ): Promise<Response> {
-  const gitAuthor = await context.services.workspace.call(
-    "getGitAuthorConfiguration",
+  const gitAuthor = await context.services.workspace.getGitAuthorConfiguration(
     context.auth.identity.userId,
   );
   return context.render(

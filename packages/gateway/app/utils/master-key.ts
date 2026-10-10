@@ -24,13 +24,13 @@ export class MasterKeyError extends Error {
 }
 
 /**
- * Loads and imports the master key from `OPENORB_MASTER_KEY`.
+ * Loads and imports the master key supplied by the caller's `OPENORB_MASTER_KEY` binding.
  *
  * Accepts the 256-bit key as 64 hexadecimal characters or base64 encoding 32
  * bytes. Error messages never include the submitted key material.
  */
 export async function loadMasterKey(
-  source: string | undefined = Deno.env.get(MASTER_KEY_ENV_VAR),
+  source: string | undefined,
 ): Promise<MasterKey> {
   const candidate = source?.trim();
   if (!candidate) {

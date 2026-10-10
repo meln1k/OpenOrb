@@ -1,6 +1,6 @@
 import { css, type Handle } from "remix/component";
 
-import type { SessionNavigationEntry } from "@/app/data/session-catalog-repository.ts";
+import type { SessionNavigationEntry } from "@/app/cells/workspace/api.ts";
 import { routes } from "@/app/routes.ts";
 import {
   Empty,

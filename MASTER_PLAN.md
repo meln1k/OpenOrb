@@ -39,8 +39,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 8. **Useful remotely.** Chat, tools, diffs, files, terminals, and app previews must work without SSHing into a runner.
 9. **Mobile-capable.** The main workflows must be usable from a phone, not merely render on a narrow screen.
 10. **Web-standard interfaces.** Use HTTP, SSE, WebSockets, Fetch APIs, and versioned runtime-validated protocol types.
-11. **Single gateway persistence.** PostgreSQL is the gateway's only durable persistence, including for future control-plane growth. Never introduce Redis, another database/KV service, or application-owned durable local files. For the MVP, do not require an SDN, Kubernetes, or a multi-node control plane.
-12. **Workspace tenancy from the start.** Each user belongs directly to exactly one Workspace. Projects, secrets, provider/Git credentials, runners, enrollment credentials, session catalog rows, and deletion markers are owned by immutable `workspace_id`; composite foreign keys prevent cross-Workspace references. Passwords and Git author identity remain user-owned.
+11. **Single gateway persistence.** The native celld Workspace Durable Object owns SQLite-backed gateway configuration and the minimal Session catalog. Do not add Redis or a second configuration database/KV service. Runners owns rebuildable live connection/routing state; complete Session state remains runner-owned. For the MVP, do not require an SDN, Kubernetes, or a multi-node control plane.
+12. **Workspace tenancy from the start.** Each user belongs directly to exactly one Workspace. Projects, secrets, provider/Git credentials, runners, enrollment credentials, session catalog rows, and deletion markers are owned by immutable `workspaceId`; composite foreign keys prevent cross-Workspace references. Passwords and Git author identity remain user-owned.
 
 ## 3. Scope
 
@@ -92,7 +92,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Project Checkout rollback when editing a message
 - Local checkout synchronization similar to `amp sync`
 - Patch-download workflow
-- Model-provider OAuth/subscription logins
+- Additional model-provider OAuth/subscription logins beyond OpenAI Codex
 - Automatic pull-request creation
 - Automatic host-side Pi loading of project context files, settings, packages, extensions, skills, prompts, themes, or system-prompt fragments (passive guest repository skill metadata is supported)
 - Arbitrary untrusted project Pi extensions
@@ -155,8 +155,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Preview lifecycle | Managed previews wake/restart; live-only previews expire on sleep |
 | Runner OS | Native Linux first |
 | Gateway UI | Remix 3, end-to-end TypeScript |
-| Gateway persistence | PostgreSQL only, for Workspace-owned gateway configuration, a five-column live-session catalog (`workspace_id` plus four catalog fields), and three-column deletion markers (`workspace_id`, session ID, deletion time); no Redis, secondary database/KV store, or durable local gateway files |
-| Tenant ownership | Direct `users.workspace_id`; tenant repository methods receive authenticated `workspaceId`, tenant uniqueness is composite with `workspace_id`, and foreign keys prevent cross-Workspace references. Passwords and Git author identity use `userId`. No memberships, new roles, tenant abstractions, or Workspace-selection UI |
+| Gateway persistence | Native celld Workspace DO SQLite, for configuration, a five-column Session catalog (`workspaceId` plus four catalog fields), and three-column deletion markers (`workspaceId`, `sessionId`, `deletedAt`); no Redis or secondary configuration store |
+| Tenant ownership | Direct `users.workspaceId`; Workspace RPC methods receive authenticated `workspaceId`, tenant uniqueness is composite with `workspaceId`, and foreign keys prevent cross-Workspace references. Passwords and Git author identity use `userId`. No memberships, new roles, tenant abstractions, or Workspace-selection UI |
 | Runner persistence | Private per-Session Durable SQLite for Harness State; separate files for Session Journal, logs, root disk, Git Snapshots, and media |
 | Browser streaming | HTTP commands + SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | Outbound Effect RPC control WebSocket plus authenticated bulk WebSocket for media/Git patches; generic terminal/preview tunneling remains planned |
@@ -174,12 +174,12 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
  Browser ───── HTTPS/SSE/WS ─────┐
                                  │
  Preview client ─ HTTPS/WS ──────┼──► Gateway
-                                 │    ├── Remix 3 web application
+                                 │    ├── Native celld Worker: Remix 3 web application
                                  │    ├── Browser HTTP API + SSE
                                  │    ├── Authentication
-                                 │    ├── PostgreSQL + encrypted secret store
-                                 │    ├── Scheduler and runner registry
-                                 │    ├── Effect RPC runner registry
+                                 │    ├── Workspace DO: SQLite configuration/encrypted secrets
+                                 │    ├── Runners DO: live registry, scheduler, and routing
+                                 │    ├── Named native DO RPC; runner Effect RPC WebSockets
                                  │    ├── Bulk media/Git patch gateway
                                  │    └── Wildcard preview gateway
                                  │
@@ -217,7 +217,9 @@ Current package boundaries:
 
 ```text
 packages/
-  gateway/                 Remix 3 gateway
+  gateway/                 native celld Worker serving Remix 3
+  gateway/app/cells/workspace/  SQLite configuration, auth, catalog, OAuth, and SQL migrations
+  gateway/app/cells/runners/    live runner connections, scheduling, and routing
   runner/                  published Linux runner CLI/service
   protocol/                shared runtime schemas and wire types
   result/                  small shared result helpers
@@ -235,7 +237,8 @@ MASTER_PLAN.md
 ```
 
 Use a Deno-native workspace with strict TypeScript and require stable Deno 2.9.5 or newer for development,
-gateway deployment, and source runners. Pin CI, lockfile generation, and release runner compilation to Deno 2.9.5 for reproducibility. `deno.json`/`deno.lock` are
+gateway builds, and source runners. Native celld executes gateway requests; Deno does not serve them.
+Pin CI, lockfile generation, and release runner compilation to Deno 2.9.5 for reproducibility. `deno.json`/`deno.lock` are
 authoritative together with the private root `package.json`, which pins Pi Durable and Chord and
 contains Effect setup scripts, Effect-aware diagnostics, and local TypeScript tooling. Deno installs and runs
 that tooling. Do not add npm/Bun application scripts or pnpm files. Deno generates and owns the local
@@ -249,47 +252,54 @@ Browser/gateway contracts should prefer Web APIs (`Request`, `Response`, `Readab
 ### 8.1 Technology
 
 - Remix 3 from the `remix` package
-- Pin an exact release (currently RC.5); never track `next` implicitly in lockfiles
+- Pin an exact release (currently 3.0.0); never track `next` implicitly in lockfiles
 - Use Remix 3 conventions rather than Remix v2 conventions
 - `app/routes.ts` is the typed URL contract
 - Controllers under `app/actions`
-- Middleware for auth, sessions, CSRF, database, and request context
+- Middleware for auth, sessions, CSRF, native DO services, and request context
 - `remix/ui`, not React
 - Browser `/assets` serves an explicit allowlist of application modules and audited browser dependency
   files, including Chord's structural-delta code. Never broadly expose server dependencies or the
   Deno-owned `node_modules` tree; audit each browser dependency closure before expanding access.
-- Effect `DenoHttpServer` owns the Deno HTTP/WebSocket lifecycle
-- The runner upgrade is an Effect HTTP handler; other requests delegate to Remix's Fetch-oriented router through `HttpEffect.fromWebHandler`
+- `server.ts` exports the public native celld Worker fetch handler plus `Workspace` and `Runners`, both extending native `DurableObject` from `cloudflare:workers`
+- The Worker forwards runner WebSocket upgrades and authenticated viewer SSE to Runners DO `fetch`; other requests delegate to Remix's Fetch-oriented router
+- Worker handlers use named native Workspace/Runners RPC methods for configuration and commands; no public generic Workspace RPC endpoint exists
+- Deno builds Worker/browser assets and model metadata into gateway `dist/`; requests use the `ASSETS` binding, not a runtime compiler or host filesystem
 - `remix/data-schema` for runtime validation
-- PostgreSQL with explicit committed migrations
-- PostgreSQL is the only durable gateway persistence; do not add Redis, another database/KV service, or application-owned durable local files
-- Keep only rebuildable routing/live state in gateway-process memory
-- Keep the PostgreSQL driver/framework integration behind a small local persistence interface; confirm the exact adapter before implementation
+- Workspace relational SQLite uses native `ctx.storage.sql`; `remix/data-table` declarations describe row shapes, while committed plain SQL migrations enforce the schema
+- Remix's migration journal/checksums run inside one native storage transaction, with `blockConcurrencyWhile` gating Workspace startup
+- Workspace owns configuration, browser identities/sessions, enrollment, the minimal Session catalog, deletion markers, and alarm-driven provider OAuth
+- Runners owns ephemeral sockets, presence, routing, projections, and reservations; reconnect/manifests rebuild that state after restart or eviction
+- No PostgreSQL pool, secondary configuration store, or PostgreSQL/legacy KV import is used; the former integer-ledger bootstrap is unsupported
 
-Because Remix 3 is under active development, wrap framework-specific persistence and server adapters behind small local interfaces. An exact dependency upgrade must be an intentional implementation task with tests.
+Use the existing native DO boundaries and migration adapter. An exact dependency upgrade must be an intentional implementation task with tests.
 
 ### 8.2 Server request split
 
 ```text
-Effect DenoHttpServer
-├── /api/runners/connect upgrade  → Effect HTTP handler → RunnerRegistry
-├── preview wildcard host         → PreviewGateway
-├── normal HTTP                   → HttpEffect.fromWebHandler → Remix router
-├── session event SSE             → Remix action → Effect stream → Response
-└── future browser WebSockets
-    ├── /api/sessions/:id/terminal→ TerminalGateway
-    └── preview wildcard host      → PreviewGateway
+Native celld Worker (server.ts)
+├── runner control/bulk upgrades → Runners DO fetch → Effect RPC/bulk sockets
+├── normal HTTP                 → Remix router → named Workspace/Runners RPC
+├── session event SSE           → authenticated Remix action → Runners DO fetch
+└── planned terminal/preview gateways
+    ├── /api/sessions/:id/terminal → TerminalGateway
+    └── preview wildcard host     → PreviewGateway (separate origin)
 ```
 
 Guest preview content must never be served from the gateway’s origin.
 
+The local runtime uses `packages/gateway/wrangler.jsonc` with colocated bundles and persistent
+`packages/gateway/.celld/dev` state. Production fleet provisioning, secret injection, and
+storage/backup interfaces require a reviewed procedure; the local dev command is not a production
+deployment contract. See [gateway operations](docs/operations.md).
+
 ### 8.3 Single-administrator authentication
 
 - First-run setup atomically creates one Workspace, the single admin user, and their password credential; concurrent attempts cannot create another administrator or an orphan Workspace.
-- User IDs are application-generated UUIDv7 values stored in PostgreSQL `uuid` columns.
-- The login and account-management UI remains single-administrator for MVP, but `workspaces` and `users` support multiple rows. Every user has a required direct `workspace_id` foreign key. Browser auth is `{userId, workspaceId}`, resolved from persisted user/session records and rejected on mismatch, never selected by request input.
+- User IDs are application-generated UUIDv7 values stored in Workspace SQLite `TEXT` columns.
+- The current Workspace database enforces one Workspace and one administrator. Every user has a required direct `workspaceId` foreign key. Browser auth is `{userId, workspaceId}`, resolved from persisted user/session records and rejected on mismatch, never selected by request input. Additional users/Workspace selection remain deferred.
 - Passwords use Web Crypto PBKDF2-HMAC-SHA-256 with exactly 600,000 iterations, a random 16-byte salt, and a 256-bit derived key. The fixed profile is runtime validated; there is no Argon2 compatibility path.
-- Passkeys use WebAuthn and require HTTPS except for local development.
+- Planned passkeys use WebAuthn and require HTTPS except for local development; the current Workspace schema has no passkey table.
 - Password remains a recovery method unless the user explicitly disables it in a later release.
 - Login rotates the browser session ID.
 - Cookies are `HttpOnly`, `Secure`, host-only, and `SameSite=Lax` by default.
@@ -310,11 +320,11 @@ Preview capability tokens are session data: the runner generates them, returns t
 Use envelope-style application encryption:
 
 - A gateway master key is supplied through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection.
-- The gateway never generates or persists the master key to local disk or PostgreSQL and fails startup if it is missing or invalid.
+- Workspace rejects a missing or invalid master key and never generates a replacement or stores it in its tables. Local development prepares private `.dev.vars` from operator-supplied `.env`/environment bindings; those secret files are not committed.
 - Import the 256-bit master key with Web Crypto and encrypt with `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()`. Persist the returned nonce/ciphertext/tag bytes unchanged as one opaque value, store key version separately, and authenticate immutable `workspaceId`, credential key, and key version as AAD.
-- Store each secret as an `encrypted_secrets` row with a UUID primary key, immutable `workspace_id`, a credential key unique within that Workspace, an explicit required purpose, and the opaque ciphertext. Provider keys use purpose `provider-api-key` and are referenced by provider ID through separate provider-credential records; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Repositories select rows by both Workspace and purpose rather than key-prefix conventions. Provider identity never derives from an environment-variable-style secret name.
+- Store each secret as an `encrypted_secrets` row with composite primary key `(workspaceId, key)`, an explicit required purpose, and opaque ciphertext BLOBs. Provider API keys use `provider-api-key`; OpenAI Codex OAuth credentials use `provider-oauth`. Both are referenced by provider ID through `model_provider_credentials`; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Workspace selects rows by both owner and purpose rather than key-prefix conventions. Provider identity never derives from an environment-variable-style secret name.
 - Never derive the server encryption key from the login password; the service must restart unattended.
-- Backups are incomplete without the PostgreSQL database and master key.
+- Local backups are incomplete without the celld Workspace state and original master/session secrets. Stop celld and keep SQLite/WAL sidecars together; production fleet backup/restore remains undecided. See [gateway operations](docs/operations.md).
 - Secret values are never returned to the browser after creation; only metadata is returned.
 
 ## 9. Runner bootstrap and identity
@@ -350,7 +360,7 @@ The runner package must include a `doctor` command that checks:
 ### 9.2 Enrollment
 
 1. Runner calls the enrollment endpoint with the PSK and metadata.
-2. Gateway derives the immutable Workspace owner from the persisted enrollment token, stores `workspace_id` with enrollment and runner identity, and returns a stable runner ID plus bearer token. Subsequent authentication resolves ownership from the trusted token/runner record. Runner payloads cannot choose or change tenant ownership. At most one active reusable enrollment PSK exists per Workspace.
+2. Workspace derives the immutable owner from the persisted enrollment token, stores `workspaceId` with enrollment and runner identity, and returns a stable runner ID plus bearer token. Subsequent authentication resolves ownership from the trusted token/runner record. Runner payloads cannot choose or change tenant ownership. At most one active reusable enrollment PSK exists per Workspace.
 3. The runner stores the bearer token in its data directory with mode `0600`.
 4. On each outbound RPC connection, the gateway invokes `IdentifyRunner`; the runner returns the bearer token, claimed runner ID, runner version, and application protocol version.
 5. The gateway admits the connection only after the token, claimed identity, revocation state, and protocol version pass authentication.
@@ -358,9 +368,9 @@ The runner package must include a `doctor` command that checks:
 7. The gateway can revoke one runner without regenerating the enrollment PSK.
 
 The current reusable enrollment token is always available per Workspace. Regeneration atomically revokes
-the previous token and creates its replacement, while PostgreSQL enforces at most one active token
-per Workspace. Support reusable enrollment tokens for homelab convenience and one-time tokens for safer
-automation.
+the previous token and creates its replacement, while Workspace SQLite enforces one token row per
+Workspace. Reusable enrollment tokens support homelab convenience; one-time tokens remain planned
+for safer automation.
 
 ### 9.3 Outbound connections
 
@@ -736,7 +746,7 @@ Delete:
 
 - Require explicit confirmation.
 - If the owning runner is online and any agent, provisioning, setup/resume, maintenance, terminal, or preview work is active, reject deletion until that work settles; do not interrupt it implicitly.
-- In one PostgreSQL transaction, write a durable deleted-session marker containing only Workspace ID, session ID, and deletion time, remove the five-column catalog row, and remove any persisted gateway configuration that is scoped only to that session. Remove the ephemeral Workspace-scoped route immediately afterward.
+- In one native Workspace SQLite transaction, write a durable deleted-session marker containing only Workspace ID, session ID, and deletion time and remove the five-column catalog row. Runners removes the ephemeral Workspace-scoped route immediately afterward.
 - If the runner is online and idle, request idempotent cleanup of preview capabilities, metadata, the persistent root disk and its checkout, Harness State, media, logs, and Git Snapshots.
 - If the runner is offline or permanently lost, deletion still succeeds at the control plane. The marker prevents a stale runner disk or backup from recreating the catalog entry.
 - If a runner later reports a tombstoned session, do not route or reinsert it. Repeatedly request runner cleanup; if the runner reports active work, wait for it to settle rather than interrupting it.
@@ -893,8 +903,11 @@ Support:
 - Custom OpenAI-compatible endpoints
 - Custom Anthropic-compatible endpoints
 - Central custom model definitions and overrides
+- OpenAI Codex device login, with encrypted credentials and alarm-driven polling in Workspace DO
 
-Defer OAuth/subscription credentials because refresh-token concurrency and provider-specific login flows materially increase complexity.
+Workspace owns OpenAI Codex exchange, refresh, revocation, and persisted device-login checkpoints.
+The public Worker has no OAuth callback endpoint. Additional provider-specific OAuth/subscription
+flows remain deferred.
 
 ### 16.2 Distribution
 
@@ -1405,7 +1418,7 @@ absence alone never deletes a catalog row.
 
 The gateway uses a stream inactivity timeout for domain liveness while Effect RPC ping/pong checks
 socket responsiveness. On reconnect, the complete stream restarts and rebuilds only live routing
-state; PostgreSQL is never used to reconstruct runner-owned session data.
+state in Runners DO; Workspace SQLite is never used to reconstruct runner-owned session data.
 
 ### 22.5 `WatchSession` and SSE
 
@@ -1496,24 +1509,27 @@ data-plane details to be tested independently.
 
 ## 25. Persistence ownership
 
-Gateway PostgreSQL is the gateway's only durable persistence. It stores configuration plus the minimal session catalog:
+The native celld Workspace DO is the gateway's durable configuration authority. Its SQLite tables
+are declared in `packages/gateway/app/cells/workspace/schema.ts` and created by committed SQL under
+`packages/gateway/app/cells/workspace/migrations/`:
 
 - `workspaces`
-- `users`, with required direct `workspace_id` ownership
+- `users`, with required direct `workspaceId` ownership
 - `password_credentials`
-- `webauthn_credentials`
 - `browser_sessions`, with persisted `{userId, workspaceId}` auth consistent with the user's Workspace; anonymous sessions have no authenticated owner
 - `encrypted_secrets`, with explicit purpose classification for each encrypted value
-- `model_providers`
+- `model_provider_credentials`
+- `provider_authorizations`, with private device-login checkpoints and native alarm scheduling
 - `git_credentials`
-- Per-user Git author configuration
+- `git_author_configuration`, owned by `userId`
 - `projects`
-- `project_secrets`
 - `runners`
 - `runner_enrollment_tokens`
-- `sessions`, restricted to `workspace_id`, `id`, `project_id`, `created_at`, and `initial_prompt_preview`
-- `deleted_sessions`, restricted to `workspace_id`, `session_id`, and `deleted_at`
-- Control-plane audit events that contain no session content beyond the catalog identity
+- `sessions`, restricted to `workspaceId`, `id`, `projectId`, `createdAt`, and `initialPromptPreview`
+- `deleted_sessions`, restricted to `workspaceId`, `sessionId`, and `deletedAt`
+
+Passkey, project-specific secret assignment, and audit-event tables remain planned, not current schema.
+Any future control-plane audit events must contain no Session content beyond the catalog identity.
 
 It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, root-disk state, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
 
@@ -1526,18 +1542,20 @@ Runner-owned persistence has separate authorities:
 - Root disks, Git Snapshots, Published Media, and logs retain their own private storage.
 - Planned preview definitions/capability hashes remain runner-local, never gateway conversation data.
 
-The gateway keeps a Workspace-scoped in-memory session routing index populated by complete, reconciled `WatchRunner` snapshots. After a restart the route index starts empty and is rebuilt as runners reconnect; a snapshot entry also upserts any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the Workspace-owned control-plane marker without waiting for the runner.
+Runners DO keeps a Workspace-scoped in-memory session routing index populated by complete, reconciled `WatchRunner` snapshots. After restart/eviction its sockets and projections are lost and the route index starts empty; runners reconnect and rebuild live state. Reconciliation calls Workspace RPC to upsert any missing five-column catalog row for a valid, non-tombstoned runner-local session under the authenticated runner's owner. Minimal catalog cards remain visible for offline sessions, but their runner assignment, status, transcript, files, diffs, previews, and runner-backed actions are unavailable until the owning runner reconnects. Explicit deletion remains available and writes the Workspace-owned control-plane marker without waiting for the runner.
 
-Gateway PostgreSQL guidelines:
+Workspace SQLite guidelines:
 
-- Do not add Redis, another database/KV service, or application-owned durable local files
-- UUIDv7 or another time-sortable random identifier for configuration entities
+- Native celld storage owns the database and connection; do not add a PostgreSQL pool, Redis, or a second configuration database/KV service
+- Store domain identifiers as `TEXT`; use application-generated UUIDs, with UUIDv7 for Workspace/user/runner/enrollment identity
 - Foreign keys enabled
-- Tenant-owned projects, secrets, provider/Git credentials, runners, enrollment credentials, catalog rows, and deletion markers use immutable `workspace_id`; uniqueness is tenant-relative and composite foreign keys prevent cross-Workspace references
-- Tenant persistence repositories require authenticated `workspaceId` for list/read/write/delete operations and treat foreign-Workspace identifiers as not found; passwords and Git author configuration remain user-owned and require `userId`
-- Explicit migrations committed to source
+- Tenant-owned projects, secrets, provider/Git credentials, runners, enrollment credentials, catalog rows, and deletion markers use immutable `workspaceId`; uniqueness is tenant-relative and composite foreign keys prevent cross-Workspace references
+- Workspace RPC methods require authenticated `workspaceId` for tenant list/read/write/delete operations and treat foreign-Workspace identifiers as not found; passwords and Git author configuration remain user-owned and require `userId`
+- Explicit SQL migrations committed to source; Remix owns the journal/checksums inside one native transaction, and `blockConcurrencyWhile` gates initialization
+- Use native storage transactions for atomic configuration changes; persist provider OAuth checkpoints and alarm changes together
 - Secret ciphertext separate from searchable metadata
 - Store timestamps in UTC
+- Local celld state and original secret bindings must survive restarts; PostgreSQL, legacy Workspace KV records, and the former integer-ledger bootstrap are not imported/upgraded
 
 ## 26. UI and information architecture
 
@@ -1696,7 +1714,7 @@ Gateway:
 - Tunnel channels/bytes/resets
 - Preview wake latency
 - Scheduler reservation rejection rate
-- PostgreSQL query/write latency
+- Workspace RPC/SQLite transaction latency
 
 Runner:
 
@@ -1738,7 +1756,7 @@ Session-scoped audit records remain on the owning runner:
 ### Gateway restart
 
 - Runner reconnects automatically with exponential backoff and jitter, answers `IdentifyRunner`, and starts a fresh `WatchRunner` stream.
-- Gateway retains minimal Workspace-owned catalog rows and deleted-session markers, upserts a missing five-column row under the authenticated runner's owner from a valid non-tombstoned snapshot entry, rejects tombstoned entries, and atomically rebuilds all Workspace-scoped in-memory routes/live session state after the completion boundary; it recovers no full sessions or RPC operations from PostgreSQL.
+- Workspace DO retains configuration, minimal catalog rows, deletion markers, and provider OAuth checkpoints/alarms. Runners DO loses ephemeral sockets/projections and rebuilds Workspace-scoped routes after a complete reconciled `WatchRunner` snapshot. Workspace RPC upserts valid missing catalog rows and rejects tombstoned entries; neither DO reconstructs full sessions or RPC operations from gateway storage.
 - Browser SSE reconnect replaces its baseline with a fresh Conversation View after the runner is available; it does not Wake the Session.
 - Stable domain IDs and runner-owned state support reconciliation; ambiguous prompt/Abort handoffs remain explicit.
 
@@ -1897,7 +1915,7 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Pin Remix 3 and core dependency versions.
 - Establish formatting, linting, tests, and CI.
 - Define domain IDs, Effect Schema/RPC contracts, and the application protocol-version policy.
-- Add architecture decision records for trust model, outbound tunnels, PostgreSQL, Pi-on-host, runner file storage, and the no-workspace-resource-discovery boundary.
+- Add architecture decision records for trust model, outbound tunnels, native celld Worker/DO ownership, Pi-on-host, runner file storage, and the no-workspace-resource-discovery boundary.
 - Implement and unit-test the explicit trusted Durable registry, guest execution adapter, and in-memory credentials.
 - Enforce the audited harness boundary, with no host resource discovery, ambient auth, or host tool fallback.
 - Create fake runner/model test harness.
@@ -2108,13 +2126,13 @@ exactly-once execution, and keep observation separate from Wake.
 
 **Mitigation:** Show an explicit unavailable state, reject runner-backed session operations while offline, permit marker-backed offline deletion, add runner-side backups/exports later, and defer migration rather than implementing unsafe partial movement.
 
-### PostgreSQL load and runner persistence growth
+### Workspace contention and runner persistence growth
 
-**Risk:** Gateway configuration/catalog traffic can exhaust PostgreSQL connections. Durable databases
-and runner journals grow; a journal append may be incomplete after a crash.
+**Risk:** The single Workspace DO serializes configuration/catalog operations, so slow work can delay
+other calls. Durable databases and runner journals grow; a journal append may be incomplete after a crash.
 
-**Mitigation:** Keep full Session data out of gateway PostgreSQL and use a bounded pool with short
-transactions. Let Durable own database recovery/compaction; keep infrastructure journal appends
+**Mitigation:** Keep full Session data and live runner connections out of Workspace; Runners owns live
+routing, and native SQLite transactions stay short. Let Durable own database recovery/compaction; keep infrastructure journal appends
 crash-checked and separate from conversation data. Do not claim the active view archives compacted
 entries. Broader retention and journal compaction remain explicit future policies.
 
@@ -2127,7 +2145,7 @@ entries. Broader retention and journal compaction remain explicit future policie
 ## 34. Deferred roadmap
 
 - Centrally managed Pi Agent Profiles with trusted extensions
-- Provider OAuth/subscription credentials
+- Additional provider OAuth/subscription credentials beyond OpenAI Codex
 - GitHub App integration and pull-request creation
 - Session migration/export between runners
 - Optional direct/SDN runner transport
@@ -2139,7 +2157,7 @@ entries. Broader retention and journal compaction remain explicit future policie
 - Managed service manifest committed to repositories
 - Portals for multiple coordinated services
 - Object-store backup of Session root disks
-- PostgreSQL-only multi-instance control-plane coordination
+- Production celld fleet provisioning, storage/replication, and backup/restore interfaces
 - macOS runners
 - GPU resources
 - Webhooks/event-triggered sessions

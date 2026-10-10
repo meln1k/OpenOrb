@@ -3,21 +3,23 @@
     "./packages/gateway",
     "./packages/protocol",
     "./packages/result",
-    "./packages/runner",
-    "./packages/workspace"
+    "./packages/runner"
   ],
   "exclude": [
     ".openorb-runner-dev",
-    "packages/workspace/dist",
-    "packages/workspace/.celld",
-    "packages/workspace/test/dist",
-    "packages/workspace/test/.celld"
+    "packages/gateway/dist",
+    "packages/gateway/.celld",
+    "packages/gateway/test/dist",
+    "packages/gateway/test/.celld",
+    "packages/gateway/test/workspace/dist",
+    "packages/gateway/test/workspace/.celld",
+    "packages/workspace"
   ],
   "unstable": ["no-legacy-abort"],
   "nodeModulesDir": "auto",
   "imports": {
     "@/": "./",
-    "./packages/workspace/dist/worker": "./packages/workspace/src/worker.ts",
+    "./packages/gateway/dist/worker": "./packages/gateway/server.ts",
     "@cloudflare/workers-types": "./node_modules/@cloudflare/workers-types/index.ts",
     "@earendil-works/gondolin": "npm:@earendil-works/gondolin@0.12.0",
     "@effect/platform-deno": "npm:@effect/platform-deno@4.0.0",
@@ -31,7 +33,7 @@
   "compilerOptions": {
     "strict": true,
     "lib": ["ES2024", "DOM", "DOM.Iterable", "Deno.ns"],
-    "types": ["./packages/workspace/worker-configuration.d.ts"],
+    "types": ["./packages/gateway/worker-configuration.d.ts"],
     "jsx": "react-jsx",
     "jsxImportSource": "remix/component",
     "verbatimModuleSyntax": true,
@@ -47,7 +49,7 @@
       ".agents/skills",
       "packages/gateway/.agents",
       "packages/gateway/public",
-      "packages/workspace/worker-configuration.d.ts",
+      "packages/gateway/worker-configuration.d.ts",
       "packages/gateway/AGENTS.md",
       "packages/gateway/README.md",
       "AGENTS.md",
@@ -62,7 +64,7 @@
       "scripts/anti-slop",
       "scripts/lint-rules",
       "scripts/lint-plugin.ts",
-      "packages/workspace/worker-configuration.d.ts"
+      "packages/gateway/worker-configuration.d.ts"
     ],
     "plugins": ["./scripts/lint-plugin.ts"]
   },
@@ -72,8 +74,7 @@
     },
     "dev:gateway": "deno task --filter @openorb/gateway dev",
     "dev:runner": "deno task --filter @openorb/runner dev",
-    "dev:workspace": "deno task --filter @openorb/workspace dev",
-    "check": "deno task --filter @openorb/workspace generate-types --check && deno fmt --check && deno lint && deno check && deno task typecheck:effect",
+    "check": "deno task --filter @openorb/gateway generate-types --check && deno fmt --check && deno lint && deno check && deno task typecheck:effect",
     "check:docs": "deno task test scripts/documentation.test.ts",
     "test": "NODE_ENV=test deno test --allow-env --allow-ffi --allow-net=127.0.0.1,localhost --allow-read --allow-write --allow-sys=homedir,osRelease",
     "test:browser": "deno task test packages/gateway/test/combobox-browser.test.ts packages/gateway/test/session-transcript-browser.test.ts packages/gateway/test/session-composer-browser.test.ts packages/gateway/test/session-changes-browser.test.ts packages/gateway/test/sidebar-browser.test.ts",

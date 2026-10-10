@@ -5,9 +5,9 @@ import type { Middleware } from "remix/router";
 const tracer = trace.getTracer("openorb-gateway", "0.0.0");
 
 /** Only pass fixed operation names, never request data or exception messages. */
-export function sessionSpan<T>(operation: string, run: () => Promise<T>): Promise<T> {
+export function sessionSpan<T>(operation: string, run: () => T): Promise<Awaited<T>> {
   sessionStage(operation);
-  return tracer.startActiveSpan(`sessions.api.${operation}`, async (span) => {
+  return tracer.startActiveSpan(`sessions.api.${operation}`, async (span): Promise<Awaited<T>> => {
     using cleanup = new DisposableStack();
     cleanup.defer(() => span.end());
     const [value, failure] = await tryAsync(Promise.resolve().then(run), (cause) => ({ cause }));
@@ -17,7 +17,7 @@ export function sessionSpan<T>(operation: string, run: () => Promise<T>): Promis
       span.addEvent("exception", { "exception.type": "SessionApiOperationError" });
       throw failure.cause;
     }
-    return value;
+    return await value;
   });
 }
 

@@ -8,10 +8,14 @@ agent activity.
 **Workspace**: The tenant that owns projects, secrets, provider and Git credentials, runners,
 enrollment credentials, and the session catalog. _Avoid_: User tenant, Project Workspace
 
-**Workspace Durable Object**: The single celld configuration owner for the current Workspace. It
-persists browser identities/sessions, configuration, enrollment records, catalog entries, deletion
-markers, and provider authorization in SQLite-backed DO storage. Gateway controllers call its Worker
-over HTTP. Runner connections and full Session state are not moved in this migration step.
+**Workspace Durable Object**: The configuration authority for the current Workspace. It owns browser
+identities/sessions, configuration, enrollment records, catalog entries, deletion markers, and
+provider authorization. _Avoid_: Session host, Runner Registry
+
+**Runner Registry**: The live connection and command-routing authority for enrolled runners. It owns
+control and bulk connections, runner presence, live Session projections, and viewer subscriptions.
+Runners remain authoritative for complete Session state; Workspace remains authoritative for runner
+credentials and the minimal Session catalog. _Avoid_: Runner host, Session store
 
 **User**: A person who belongs directly to exactly one Workspace, with their own password and Git
 author identity. _Avoid_: Tenant, member

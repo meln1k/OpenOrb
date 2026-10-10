@@ -1,51 +1,81 @@
-# Production operations
+# Gateway and runner operations
 
-## Intermediate celld migration
+## Native celld Worker migration
 
-The current gateway calls a loopback Worker over HTTP; the Worker validates requests and calls typed
-RPC methods on one `Workspace` Durable Object, which extends `DurableObject` from
-`cloudflare:workers` without a compatibility flag. Configuration, browser sessions, enrollment
-records, the Session catalog, and provider OAuth now live in its native SQLite-backed storage. Full
-Pi sessions and runner connections remain runner-owned / gateway-live, respectively. Pi AI, Pi
-Durable, Pi Env, and Chord are pinned to 1.1.0; the native `pi-durable/storage/sqlite/cloudflare`
-adapter is available for a later harness migration, but the configuration object does not create a
-Pi harness.
+The gateway webapp runs in the stateless Worker and calls named RPC methods on `Workspace` and
+`Runners` Durable Objects. Both extend native `DurableObject` from `cloudflare:workers` without a
+compatibility flag. Workspace owns SQLite-backed configuration, browser sessions, enrollment
+records, the Session catalog, and alarm-driven provider OAuth. Runners owns live control/bulk
+WebSockets, runner presence, command routing, and viewer subscriptions. Only WebSocket upgrades and
+SSE use DO `fetch`; no public generic Workspace RPC endpoint exists.
 
-Orb setup installs celld 0.6.2 and esbuild 0.28.2. Run `amp orb services ensure` to start Workspace
-before the gateway. Outside an orb, run `deno task dev:workspace` before `deno task dev:gateway`.
-`packages/workspace/.dev.vars` receives `OPENORB_MASTER_KEY` from the gateway's local `.env` with
-mode 0600 and is ignored by Git. Gateway location defaults to `http://127.0.0.1:44200`, configurable
-with `OPENORB_WORKSPACE_URL`. Keep the Worker loopback-only: it deliberately has no authentication
-in this intermediate step. The browser-facing gateway retains authentication and CSRF protection.
+Workspace uses relational tables through native `ctx.storage.sql`, not KV entity records. Remix Data
+table declarations and inferred row types live in `packages/gateway/app/cells/workspace/schema.ts`.
+Plain SQL migrations live in `packages/gateway/app/cells/workspace/migrations/<id>_<name>/up.sql`;
+the initial migration enforces indexes, unique constraints, and Workspace-scoped foreign keys.
+Register each migration in `packages/gateway/app/cells/workspace/migrations.ts`, which imports SQL
+as text bundled into the Worker and applies it through Remix's migration journal and checksum checks
+inside one native storage transaction. `blockConcurrencyWhile` gates startup. Add numbered
+migrations and update row declarations for schema changes; never edit applied SQL, including
+whitespace, because Remix checksums the exact bytes. The former integer-ledger bootstrap is
+unsupported; use fresh state instead of upgrading it. Ciphertext and password hashes are BLOBs. Only
+browser session dictionaries, allowed-host lists, and private OAuth checkpoints use JSON fields. SQL
+and OAuth alarm changes commit together in awaited storage transactions.
 
-After changing Worker bindings, run `deno task --filter @openorb/workspace generate-types` and
-commit `packages/workspace/worker-configuration.d.ts`. Wrangler generates `Env`, including the typed
-`WORKSPACE` namespace and the required master-key name, without recording its value.
+Runner Registry state is ephemeral: normal accepted sockets keep the object live, not hibernating.
+Restart/eviction disconnects runners and viewers; runner reconnect/manifests and browser reconnect
+rebuild live state. Full Pi sessions remain runner-owned. Pi AI, Pi Durable, Pi Env, and Chord are
+pinned to 1.1.0; the configuration object does not create a Pi harness.
+
+Orb setup installs celld 0.6.2 and esbuild 0.28.2. Run `amp orb services ensure`, or outside an orb
+`deno task dev:gateway`, to build and start the single public gateway Worker. Dev state lives in
+`packages/gateway/.celld/dev` and persists across restarts. The former
+`packages/workspace/.celld/dev` is not migrated or deleted; the relocated config starts fresh. The
+gateway's local `.env` supplies `OPENORB_MASTER_KEY` and `SESSION_SECRET`; `PUBLIC_URL` and
+`OPENORB_SESSION_COOKIE_SECURE` configure browser origins/cookies. Preparation copies these bindings
+into the ignored `packages/gateway/.dev.vars` with mode 0600. `OPENORB_WORKSPACE_URL` is obsolete.
+Authentication, CSRF, and runner-token validation remain enforced in the public Worker/DO paths.
+
+Browser assets and model metadata are compiled at build time; Worker requests use the `ASSETS`
+binding and need no filesystem/compiler. The build writes `dist/worker.js` and `dist/assets` beside
+`packages/gateway/wrangler.jsonc`, because celld requires deployable files inside the config
+directory. Gateway/registry logs use the runtime console. The former Deno OTLP exporter is no longer
+initialized; GoTel remains available for runner telemetry.
+
+After changing Worker bindings, run `deno task --filter @openorb/gateway generate-types` and commit
+`packages/gateway/worker-configuration.d.ts`. Wrangler generates `Env`, including the typed
+`WORKSPACE` and `RUNNERS` namespaces and environment binding names, without recording secret values.
 `deno task check` checks that the generated types are current. Deno uses a test base class; bundles
 retain the native `cloudflare:workers` import.
 
-Back up the master key and `packages/workspace/.celld/dev` together. Do not pass celld `--clean`
-against wanted state. PostgreSQL is no longer opened by the gateway; its repositories remain for
-legacy regression fixtures and shared DTO contracts. Existing PostgreSQL data is not imported, so
-the DO initially presents setup with an empty Workspace. This is a local migration step, not a
-production deployment procedure or a full celld fleet rollout.
+Back up the original secrets and `packages/gateway/.celld/dev` together after stopping celld. Never
+delete that state or use a clean/reset operation against wanted data. PostgreSQL is no longer opened
+by the gateway. Existing PostgreSQL data is not imported. This is a clean break: former Workspace KV
+records are not read or imported either. The new tables initially present setup; projects,
+credentials, runner enrollment, and catalog configuration must be recreated. Old KV records are left
+untouched, not silently deleted. Removing PostgreSQL from CI/orb prerequisites does not stop,
+uninstall, or delete an existing database.
 
-The remaining production instructions below describe the prior PostgreSQL deployment and must not be
-applied to this migration without an updated celld deployment and data-transfer procedure.
+The supported commands here describe the local native Worker runtime, not a production celld fleet
+rollout. The former Deno HTTP service, PostgreSQL migrations, and `pg_dump`/`pg_restore` deployment
+recipe no longer apply. Production fleet provisioning, secret injection, storage/replication,
+backup/restore, and PostgreSQL-to-DO transfer need an explicit reviewed procedure before promotion;
+this guide does not choose those interfaces.
 
 ## Release pins
 
 Treat the gateway, runner, and protocol as one release unit. Check out the same reviewed full commit
 SHA on the gateway and every source-installed runner; do not mix independently updated checkouts.
-Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as
-`OPENORB_REVISION` below. A standalone runner must come from the release for that same source
-revision. Protocol version **25** is source-owned and is not a separately upgradeable public API.
+Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as the
+release revision. A standalone runner must come from the release for that same source revision.
+Protocol version **25** is source-owned and is not a separately upgradeable public API.
 
 The exact runtime and application pins in this release graph are:
 
 | Component                           | Pin                                              |
 | ----------------------------------- | ------------------------------------------------ |
 | Deno / standalone runner denort     | 2.9.5                                            |
+| celld / esbuild                     | 0.6.2 / 0.28.2                                   |
 | Gondolin                            | 0.12.0                                           |
 | OpenOrb guest image                 | `release-1` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi Durable / Pi Env / Chord | 1.1.0                                            |
@@ -76,90 +106,38 @@ group or admission mode. Duplicate request IDs return the existing submission wi
 paused agent work. Abort targets the Session's conversation and leaves its environment running.
 Runner snapshots and session events no longer carry synthetic run IDs.
 
-## Deploy the gateway behind Caddy
+## Build and run the native gateway locally
 
-Install Deno 2.9.5 or newer, Git, PostgreSQL client tools, Caddy, and systemd on the gateway host.
-Create a database and role using the normal policy of the PostgreSQL installation. PostgreSQL may be
-local or managed, but it is the **only** durable gateway data store. The gateway needs no persistent
-local application volume and must not be given Redis, a filesystem data volume, or another secondary
-persistence service. The checkout and Deno cache are replaceable program files, not application
-state.
+Install Deno 2.9.5, then run `bash scripts/install-celld.sh` for the reviewed celld/esbuild pins and
+`deno install --frozen` for the build graph. Orb setup handles these prerequisites automatically and
+preserves existing `packages/gateway/.env`. For a fresh local checkout, copy
+`packages/gateway/.env.example` only if `.env` is absent, restrict it to mode 0600, and edit the two
+secrets. Generate them independently with `openssl rand -hex 32`; never regenerate either for wanted
+state. `.env` is preparation input, while `.dev.vars` contains the actual celld dev bindings.
 
-Install a reviewed revision and its frozen graph:
-
-```sh
-OPENORB_REVISION=<reviewed-full-commit-sha>
-sudo useradd --system --user-group --home-dir /nonexistent \
-  --shell /usr/sbin/nologin openorb-gateway
-sudo git clone https://github.com/meln1k/openorb.git /opt/openorb
-sudo git -C /opt/openorb checkout --detach "$OPENORB_REVISION"
-test "$(git -C /opt/openorb rev-parse HEAD)" = "$OPENORB_REVISION"
-sudo install -d -o openorb-gateway -g openorb-gateway -m 0750 /var/cache/openorb-gateway/deno
-sudo install -d -o root -g root -m 0755 /etc/openorb
-sudo env DENO_DIR=/var/cache/openorb-gateway/deno /usr/local/bin/deno install --frozen \
-  --config=/opt/openorb/deno.json --lock=/opt/openorb/deno.lock \
-  --entrypoint /opt/openorb/packages/gateway/server.ts
-sudo chown -R openorb-gateway:openorb-gateway /var/cache/openorb-gateway/deno
-sudo chmod -R a+rX /opt/openorb
-```
-
-Keep secrets outside the checkout. For example, create root-readable `/etc/openorb/gateway.env` with
-mode `0600` (values shown here are placeholders; generate the two secrets independently):
-
-```dotenv
-DATABASE_URL=postgres://openorb:REDACTED@db.example.internal/openorb
-OPENORB_MASTER_KEY=<64-hex-character-key-generated-with-openssl-rand-hex-32>
-SESSION_SECRET=<independently-generated-long-random-value>
-PUBLIC_URL=https://openorb.example.com
-PORT=44100
-```
-
-After writing the file, enforce its ownership and mode with
-`sudo chown root:root /etc/openorb/gateway.env && sudo chmod 0600 /etc/openorb/gateway.env`.
-
-Install `/etc/systemd/system/openorb-gateway.service`:
-
-```ini
-[Unit]
-Description=OpenOrb gateway
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=openorb-gateway
-Group=openorb-gateway
-WorkingDirectory=/opt/openorb/packages/gateway
-Environment=DENO_DIR=/var/cache/openorb-gateway/deno
-Environment=NODE_ENV=production
-EnvironmentFile=/etc/openorb/gateway.env
-ExecStart=/usr/local/bin/deno run --frozen --allow-env --allow-ffi --allow-net --allow-read server.ts
-Restart=on-failure
-PrivateTmp=true
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-The gateway currently listens on all interfaces. Restrict TCP 44100 to loopback with the host
-firewall; expose only Caddy's ports 80/443. Configure `/etc/caddy/Caddyfile` (Caddy obtains and
-renews the certificate):
-
-```caddyfile
-openorb.example.com {
-  encode zstd gzip
-  reverse_proxy 127.0.0.1:44100
-}
-```
-
-Then start both services and verify HTTPS, including the WebSocket path used by runners:
+Outside an orb, `deno task dev:gateway` prepares bindings, builds, and runs celld on loopback port
+44100. In an orb, use `amp orb services ensure` for supervised GoTel/gateway services and the
+gateway portal URL. The gateway package's `start` task uses already-built bytes and prepared
+bindings; `deno run packages/gateway/server.ts` is not a server startup command. A build alone does
+not start celld or rewrite `.dev.vars`:
 
 ```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now openorb-gateway caddy
-curl --fail --show-error https://openorb.example.com/healthz
+deno task --filter @openorb/gateway build
 ```
+
+`packages/gateway/wrangler.jsonc` declares `WORKSPACE`, `RUNNERS`, `ASSETS`, and the native SQLite
+class migrations. Do not change the named objects or run two celld processes against its state
+directory. Worker/assets build output is replaceable; keep wanted `.celld/dev` state with its keys.
+
+For a separately approved HTTPS deployment, the public origin must be configured consistently (for
+example `PUBLIC_URL=https://openorb.example.com` and `OPENORB_SESSION_COOKIE_SECURE=true`). The
+HTTPS front end must support runner WebSocket upgrades and browser SSE without buffering. Do not
+expose celld's internal peer/operator listener to the public; the runtime describes it as
+unauthenticated. These are security constraints, not a fleet installation recipe. Verify `/healthz`,
+first-run/authenticated browser routes, and runner enrollment after starting the native runtime; a
+healthy HTTP response alone does not prove durable configuration or runner routing.
+
+## First-run configuration and runner enrollment
 
 Open the HTTPS origin and complete first-run setup, which atomically creates one Workspace and the
 single administrator. Retain a strong administrator password. Credentials, projects, runners, and
@@ -180,33 +158,27 @@ Create an enrollment PSK in **Settings → Runners**, then follow the complete
 public `https://openorb.example.com` origin. It makes one outbound HTTPS/WebSocket connection and
 requires no inbound port.
 
-## Gateway backup and restore
+## Local gateway state backup and recovery
 
-A recoverable gateway backup consists of all three items from the same deployment:
+For the local `celld dev` runtime, stop the gateway process before copying or snapshotting the
+entire `packages/gateway/.celld/dev` directory. Keep all SQLite/WAL sidecars together; a copy of a
+live database or only one SQLite file is not a coordinated backup. Record the matching source
+revision and keep the original `OPENORB_MASTER_KEY` and `SESSION_SECRET` in protected secret
+storage. The private `.env`/`.dev.vars` files must not enter commits, ordinary logs, or public asset
+output.
 
-1. a consistent PostgreSQL dump;
-2. the externally managed `OPENORB_MASTER_KEY`;
-3. the externally managed `SESSION_SECRET`.
+Restore only into a stopped, isolated matching checkout/config directory with its original secrets,
+rebuild deployable bytes, and start celld there. Verify browser login, stored configuration, and
+enrollment before any real runner can connect. Local directory backup is not a celld fleet backup
+contract, Session portability, or HA. Production replication/restore remains separately undecided.
 
-Store the two secrets in a secrets manager and back them up separately from the database. Do not
-commit them or include them in ordinary logs. For example:
-
-```sh
-pg_dump --format=custom --file=openorb.dump "$DATABASE_URL"
-# Restore into an empty database:
-pg_restore --clean --if-exists --no-owner --dbname="$RESTORE_DATABASE_URL" openorb.dump
-```
-
-Restore the database, inject the **original** two secrets, check out the recorded source revision,
-and only then start the gateway. Startup applies committed migrations. Test restoration in an
-isolated environment without allowing its runners to connect to production.
-
-Losing or changing `OPENORB_MASTER_KEY` permanently makes the encrypted OpenCode and GitHub
-credentials in PostgreSQL unreadable; replacing the credentials manually is then required. Losing or
-changing `SESSION_SECRET` invalidates existing browser cookies and signs new cookies with a
-different key, so every user must log in again. It does not decrypt stored credentials. Database
-loss removes Workspaces, users, projects, encrypted credentials, runner enrollment records, and the
-gateway's session catalog. There are no durable gateway files or secondary service to restore.
+Losing or changing `OPENORB_MASTER_KEY` makes encrypted credentials in Workspace SQLite unreadable;
+manual credential replacement is then required. Changing `SESSION_SECRET` invalidates browser
+cookies and requires login again; it does not decrypt credentials. Workspace state loss removes
+users, browser sessions, projects, encrypted credentials, enrollment, and the minimal Session
+catalog. Runner files cannot reconstruct that configuration. Runners DO live projections are not a
+Session backup: restart drops connections and reconnect/manifests rebuild them from the
+authoritative runner. No master-key rotation or PostgreSQL import procedure is implemented.
 
 ## Runner session-file backups
 
@@ -234,16 +206,19 @@ Pi Durable is a clean break from the former Pi JSONL format. Old development ses
 converted; create new sessions after upgrading. Stop Session pauses checkpointed agent work and
 durably stops compute; Wake resumes it. Abort cancels work without stopping compute. Agent-issued
 environment restart can force a hung VM to close and reports possible loss of unsynced writes.
-Opening a transcript is read-only and never wakes the Session.
+Conversation stream subscriptions/reconnects are read-only and never wake the Session. Opening a
+Session page separately sends an authenticated, CSRF-protected Wake request.
 
 ## Troubleshooting
 
-- **Gateway will not start:** inspect `journalctl -u openorb-gateway`; verify Deno is 2.9.5 or
-  newer, all three environment values are present, PostgreSQL is reachable, and migrations can run.
-  An invalid master key fails startup; do not generate a replacement over an existing database.
-- **HTTPS or runner connection fails:** check `curl https://…/healthz`, Caddy's certificate and
-  logs, DNS, that `PUBLIC_URL` is the public HTTPS origin, and that the proxy supports WebSocket
-  upgrades. The runner must use that public origin, while port 44100 remains private.
+- **Gateway will not start:** inspect the supervised gateway's logs (`amp orb service logs gateway`
+  in an orb) or celld's console. Verify the celld/esbuild pins, built `dist/worker.js` and assets,
+  private `.dev.vars`, and both secrets. Build errors belong to the Deno build, not Worker requests.
+  Do not generate a replacement master key or remove `.celld` to fix a startup error.
+- **HTTPS or runner connection fails:** check `curl https://…/healthz`, the HTTPS front end's
+  certificate and logs, DNS, that `PUBLIC_URL` is the public HTTPS origin, and that the proxy
+  supports WebSocket upgrades. The runner must use that public origin, while port 44100 remains
+  private.
 - **Runner is offline:** run the installation guide's `doctor`, then inspect
   `journalctl -u openorb-runner`. Check outbound DNS/HTTPS, system time, QEMU, free disk, and that
   its identity has not been revoked. A KVM startup warning means the runner is online but sessions
@@ -260,17 +235,20 @@ Opening a transcript is read-only and never wakes the Session.
 
 ## Intentional upgrades
 
-Never upgrade a production host by following a moving branch. Back up PostgreSQL and runner state,
-review the candidate commit and lockfile diff, and review every Deno, Gondolin, guest image, Pi,
-Remix, protocol, migration, and systemd change. Follow the Gondolin TLS compatibility gate in the
+Never upgrade a production host by following a moving branch. Back up gateway state/keys and runner
+state under the applicable reviewed recovery contract. Review the candidate commit and lockfile
+diff, and every Deno, celld, esbuild, Gondolin, guest image, Pi, Remix, protocol, Worker binding,
+SQLite migration, and runner systemd change. Follow the Gondolin TLS compatibility gate in the
 [runner release process](runner-release.md) and the separate guest-image publication process. Run
 `deno install --frozen`, `deno task check`, `deno task test`, `deno task test:gondolin`, and native
 x86-64/ARM64 release smoke checks as applicable. Exercise backup restoration and the complete
 private-repository stop/resume/delete path in the [release acceptance guide](release-acceptance.md)
 before promotion.
 
-Stop gateway and runners, deploy the same approved source revision/release artifacts, prepare the
-frozen graph, then restart and run gateway health and runner `doctor` checks. Do not change either
-external secret as part of a software upgrade. Rollback is only safe when the database migrations,
-protocol, runner state, persistent root disks, and guest assets are compatible with the reviewed
-older release; there is no general downgrade guarantee.
+For the local runtime, stop gateway and runners, install the same approved source revision/release
+artifacts, rebuild the frozen graph, then restart and run gateway health and runner `doctor` checks.
+Preserve the config path, named objects, state, and both secrets. Production promotion additionally
+requires the reviewed celld fleet/data-transfer procedure, not the obsolete PostgreSQL/Deno service
+recipe. Rollback is only safe when SQLite migrations, protocol, runner state, persistent root disks,
+and guest assets are compatible with the reviewed older release; there is no general downgrade
+guarantee.

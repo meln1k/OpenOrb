@@ -1,12 +1,12 @@
 import { assert, assertEquals, assertMatch } from "@std/assert";
 
-import { createAppRouter } from "@/app/router.ts";
+import { createAppRouter } from "@/test/workspace-test.ts";
 import { routes } from "@/app/routes.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
-import { createAppServices, createTestStore } from "@/test/postgres-test.ts";
+import { activate, createAppServices } from "@/test/workspace-test.ts";
 
 Deno.test("serves process health and the gateway shell over HTTP", async () => {
-  const store = await createTestStore();
+  const { workspace: store, storage } = activate();
   const router = createAppRouter(createAppServices(store));
   const server = await createTestServer((request) => router.fetch(request));
 
@@ -18,10 +18,7 @@ Deno.test("serves process health and the gateway shell over HTTP", async () => {
       status: "ok",
     });
     assertEquals(healthResponse.headers.get("set-cookie"), null);
-    const sessionCount = await store.pool.query<{ count: number }>(
-      "select count(*)::integer as count from browser_sessions",
-    );
-    assertEquals(sessionCount.rows[0]?.count, 0);
+    assertEquals(storage.rows("SELECT id FROM browser_sessions"), []);
 
     const faviconResponse = await fetch(new URL("/favicon.svg", server.baseUrl));
     assertEquals(faviconResponse.status, 200);
@@ -49,6 +46,5 @@ Deno.test("serves process health and the gateway shell over HTTP", async () => {
     assert(moduleScriptIndex > preloadIndex);
   } finally {
     await server.close();
-    await store.close();
   }
 });

@@ -1,72 +1,87 @@
-import { createAssetServer } from "remix/assets";
+import manifest from "../dist/asset-manifest.json" with { type: "json" };
+import type { ScriptEntry } from "remix/assets";
 
-const rootDir = Deno.realPathSync(new URL("../../../", import.meta.url));
-const nodeEnv = Deno.env.get("NODE_ENV") ?? "development";
-const isDevelopment = nodeEnv === "development";
+/** celld's assets.binding (ASSETS): no filesystem or compiler is needed in the Worker. */
+export interface AssetsBinding {
+  fetch(request: Request): Promise<Response>;
+}
 
-export const assetServer = createAssetServer({
-  basePath: "/assets",
-  rootDir,
-  mounts: {
-    app: "packages/gateway/app",
-    npm: "node_modules",
-    protocol: "packages/protocol/src",
-    result: "packages/result/src",
-  },
-  allowPackages: [
-    "@pierre/diffs",
-    "@remix-run/data-schema",
-    "lucide",
-    "marked",
-  ],
-  allowFiles: [
-    "packages/gateway/app/**/public/**",
-    "packages/gateway/app/routes.ts",
-    "packages/protocol/src/browser-session-git-snapshot.ts",
-    "packages/protocol/src/browser-session-events.ts",
-    "packages/protocol/src/conversation-frame.ts",
-    "packages/protocol/src/model-provider.ts",
-    "packages/protocol/src/orb-size.ts",
-    "packages/protocol/src/runner-api-limits.ts",
-    "packages/protocol/src/thinking-level.ts",
-    "packages/result/src/index.ts",
-    "node_modules/.deno/@remix-run+data-schema@1.0.0/node_modules/@remix-run/data-schema/dist/**/*.js",
-    "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/data-schema.js",
-    "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/fetch-router/routes.js",
-    "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/multiple-import-maps-polyfill.js",
-    "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/{component.js,component/*.js}",
-    "node_modules/.deno/@remix-run+fetch-router@1.0.0/node_modules/@remix-run/fetch-router/dist/**/*.js",
-    "node_modules/.deno/@remix-run+multiple-import-maps-polyfill@1.0.0/node_modules/@remix-run/multiple-import-maps-polyfill/dist/**/*.js",
-    "node_modules/.deno/@remix-run+route-pattern@1.0.0/node_modules/@remix-run/route-pattern/dist/**/*.js",
-    "node_modules/.deno/@remix-run+component@1.0.0/node_modules/@remix-run/component/dist/**/*.js",
-    "node_modules/.deno/@remix-run+ui@0.12.1/node_modules/@remix-run/ui/dist/**/*.js",
-    "node_modules/.deno/es-module-lexer@2.3.2/node_modules/es-module-lexer/dist/lexer.js",
-    "node_modules/.deno/@earendil-works+chord@1.1.0/node_modules/@earendil-works/chord/dist/delta/*.js",
-    "node_modules/.deno/@earendil-works+chord@1.1.0/node_modules/@earendil-works/chord/dist/json.js",
-  ],
-  denyFiles: [
-    "packages/gateway/app/**/*.test.*",
-    "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/component/{server,test}.js",
-    "node_modules/.deno/@remix-run+component@1.0.0/node_modules/@remix-run/component/dist/{server/**,test.js}",
-  ],
-  scripts: {
-    loaders: [
-      (url, context, nextLoad) => {
-        const loaded = nextLoad(url, context);
-        if (!new URL(url).pathname.endsWith("/node_modules/lru_map/dist/lru.js")) return loaded;
-        // Pierre's worker manager imports this UMD-only dependency as an ESM default.
-        return {
-          ...loaded,
-          source: `${loaded.source}\nexport default globalThis.lru_map;`,
-        };
-      },
-    ],
-  },
-  ...(isDevelopment ? { sourceMaps: "external" as const } : {}),
-  minify: !isDevelopment,
-  watch: false,
-});
+interface AssetManifest {
+  entries: Record<string, ScriptEntry>;
+  hrefs: Record<string, string>;
+  assetUrls: string[];
+  publicFiles: string[];
+}
 
-export const clientScriptEntry = await assetServer.getScriptEntry(
-  "packages/gateway/app/public/client.ts",
-);
+const metadata: AssetManifest = manifest;
+const assetUrls = new Set(metadata.assetUrls);
+const publicFiles = new Set(metadata.publicFiles);
+
+function sourceId(input: string): string {
+  const path = input.startsWith("file:")
+    ? decodeURIComponent(new URL(input).pathname)
+    : input.split(/[?#]/, 1)[0]!;
+  // Preserve source-based clientEntry IDs across checkout relocation. The server bundler must
+  // retain each public module's import.meta.url as a distinct file: source ID, not the bundle URL.
+  const index = path.indexOf("/packages/gateway/app/");
+  return index === -1 ? path.replace(/^\.\//, "") : path.slice(index + 1);
+}
+
+function getEntry(input: string): ScriptEntry {
+  const id = sourceId(input);
+  const entry = (Object.hasOwn(metadata.entries, id) ? metadata.entries[id] : undefined) ??
+    Object.values(metadata.entries).find((entry) => entry.href === input.split(/[?#]/, 1)[0]);
+  if (!entry) throw new TypeError(`Browser entry was not built: ${input}`);
+  return structuredClone(entry);
+}
+
+/**
+ * Inject createGatewayAssets(env.ASSETS) into render({ assets }) and the assets controller.
+ * Use fetchPublic(request) before app routing instead of filesystem-backed publicFiles middleware.
+ * Configure celld assets.directory = "./dist/assets", binding = "ASSETS", html_handling = "none";
+ * do not enable SPA/404-page fallbacks. Build assets before bundling the Worker.
+ */
+export function createGatewayAssets(binding?: AssetsBinding) {
+  async function fetchBuilt(request: Request, allowed: Set<string>) {
+    if (request.method !== "GET" && request.method !== "HEAD") return null;
+    if (!allowed.has(new URL(request.url).pathname)) return null;
+    if (!binding) {
+      throw new TypeError("The gateway requires the ASSETS binding to serve built assets");
+    }
+    // Pass the original request through: celld owns HEAD, ETag revalidation and byte ranges.
+    const response = await binding.fetch(request);
+    return response.status === 404 ? null : response;
+  }
+
+  return {
+    getScriptEntry(input: string): Promise<ScriptEntry> {
+      return Promise.resolve().then(() => getEntry(input));
+    },
+    getHref(input: string): Promise<string> {
+      return Promise.resolve().then(() => {
+        const id = sourceId(input);
+        const href = Object.hasOwn(metadata.hrefs, id) ? metadata.hrefs[id] : undefined;
+        if (!href) throw new TypeError(`Browser asset was not built: ${input}`);
+        return href;
+      });
+    },
+    getPreloads(input: string | readonly string[]): Promise<string[]> {
+      return Promise.resolve().then(() => {
+        const inputs = [input].flat();
+        return [...new Set(inputs.flatMap((id) => getEntry(id).preloads))];
+      });
+    },
+    fetch(request: Request): Promise<Response | null> {
+      return fetchBuilt(request, assetUrls);
+    },
+    fetchPublic(request: Request): Promise<Response | null> {
+      return fetchBuilt(request, publicFiles);
+    },
+  };
+}
+
+// Metadata resolution remains usable without a binding (e.g. Document and SSR).
+// HTTP serving requires the explicitly injected instance above; never store env in a global.
+export const assetServer = createGatewayAssets();
+export const clientScriptEntry = getEntry("packages/gateway/app/public/client.ts");
+export type GatewayAssets = ReturnType<typeof createGatewayAssets>;
