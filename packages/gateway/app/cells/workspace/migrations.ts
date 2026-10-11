@@ -8,13 +8,20 @@ export const workspaceMigrations: MigrationDescriptor[] = [
   { id: "0001", name: "create_workspace_tables", up: createWorkspaceTables },
 ];
 
+export class WorkspaceMigrationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceMigrationError";
+  }
+}
+
 /** Remix owns the journal; native DO storage owns the transaction and connection. */
 export async function migrateWorkspaceDatabase(
   storage: WorkspaceStorage,
   migrations: MigrationDescriptor[],
 ) {
   const unsupported = (): never => {
-    throw new Error(
+    throw new WorkspaceMigrationError(
       "Workspace migration driver only supports raw SQL inside storage.transaction()",
     );
   };

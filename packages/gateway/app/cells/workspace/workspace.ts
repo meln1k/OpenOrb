@@ -95,6 +95,22 @@ type Login =
   | { status: "pending"; login: DeviceLogin }
   | { status: "complete" | "error"; id: string };
 
+/** A record the operation addresses does not exist in this Workspace. */
+export class WorkspaceNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceNotFoundError";
+  }
+}
+
+/** An operation's input was rejected after argument decoding. */
+export class WorkspaceInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceInputError";
+  }
+}
+
 /** One configuration owner. Runner connections and agent sessions remain outside this object. */
 export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   readonly #storage: WorkspaceStorage;
@@ -144,7 +160,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
 
   #requireWorkspace(workspaceId: WorkspaceId): void {
     if (!this.#rows("SELECT id FROM workspaces WHERE id = ?", workspaceId).length) {
-      throw new Error("Workspace not found");
+      throw new WorkspaceNotFoundError("Workspace not found");
     }
   }
 
@@ -308,7 +324,9 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     providerId: string,
     credential: string | OAuthCredential,
   ) {
-    if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(providerId)) throw new Error("Invalid provider");
+    if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(providerId)) {
+      throw new WorkspaceInputError("Invalid provider");
+    }
     const existing = this.#provider(workspaceId, providerId);
     const secret = await this.#encrypt(
       workspaceId,
@@ -357,7 +375,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       const current = this.#login();
       if (current?.status !== "pending" || current.login.id !== state.login.id) return;
       const administrator = this.#administrator();
-      if (!administrator) throw new Error("Workspace not found");
+      if (!administrator) throw new WorkspaceNotFoundError("Workspace not found");
       await this.#storage.transaction(async (storage) => {
         if (result.status === "pending") {
           this.#writeLogin(administrator.workspaceId, result);
@@ -739,7 +757,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     return this.#serialize(() => {
       decodeWorkspaceArguments("saveGitAuthorConfiguration", [userId, input]);
       if (!this.#rows("SELECT id FROM users WHERE id = ? AND isAdministrator = 1", userId).length) {
-        throw new Error("User not found");
+        throw new WorkspaceNotFoundError("User not found");
       }
       const value: GitAuthorConfiguration = { ...input, updatedAt: new Date().toISOString() };
       this.#rows(
@@ -900,7 +918,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     return this.#serialize(async () => {
       decodeWorkspaceArguments("enrollRunner", [input]);
       if (input.architecture !== "x64" && input.architecture !== "arm64") {
-        throw new Error("Invalid architecture");
+        throw new WorkspaceInputError("Invalid architecture");
       }
       Schema.decodeUnknownSync(Schema.NonEmptyString.check(Schema.isMaxLength(100)))(
         input.name.trim(),
@@ -1233,13 +1251,13 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   #saveBrowserSession(input: SaveBrowserSession): boolean {
     const values = input.data[0];
     const identity = "auth" in values ? parseBrowserSessionAuth(values.auth) : undefined;
-    if ("auth" in values && !identity) throw new Error("Invalid session identity");
+    if ("auth" in values && !identity) throw new WorkspaceInputError("Invalid session identity");
     if (identity) {
       const administrator = this.#administrator();
       if (
         identity.userId !== administrator?.userId ||
         identity.workspaceId !== administrator.workspaceId
-      ) throw new Error("Unknown session identity");
+      ) throw new WorkspaceInputError("Unknown session identity");
     }
     const record: BrowserSessionRecord = {
       data: input.data,
