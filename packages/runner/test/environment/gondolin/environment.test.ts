@@ -613,7 +613,9 @@ Deno.test({
       const imageProbe = await execute("bash", {
         command: [
           "set -eu",
-          'test "$(cat /etc/openorb-image-release)" = release-1',
+          'test "$(cat /etc/openorb-image-release)" = release-2',
+          'test "$(/usr/local/libexec/openorb/pi-env --version)" = "pi-env 1.1.0"',
+          "test -s /usr/share/doc/pi-env/copyright",
           ". /etc/os-release",
           'test "$ID" = debian && test "$VERSION_ID" = 13',
           "test -x /usr/sbin/modprobe",

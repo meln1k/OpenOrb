@@ -8,11 +8,14 @@ The guest userspace is Debian 13 and provides an Amp-orb-like development comman
 GitHub CLI; GCC/G++, Make, Autoconf, Automake, and pkg-config; Python/pip; Node.js/npm, Corepack,
 pnpm, Yarn, and Bun; Perl; FFmpeg and ImageMagick; Vim, tmux, and fzf; archive, network, SSH-client,
 kernel-module utilities from `kmod`; ext4 resizing utilities from `e2fsprogs`; and text-processing
-utilities; plus agent-browser 0.35.0. Versions supplied by Debian come from one immutable snapshot.
-Standalone tools and npm packages are versioned and verified by SHA-256. The image intentionally
-excludes Amp/E2B internals, Deno, Go, Rust, Java, database CLIs, container and VM tooling, GUI
-desktop components, systemd, the SSH daemon, and other services. `/etc/openorb-image-release`
-contains the OpenOrb release ID.
+utilities; plus agent-browser 0.35.0. From `release-2` it also contains the static pi-env 1.1.0
+Environment Daemon at `/usr/local/libexec/openorb/pi-env`, which serves the Agent Harness's file and
+shell operations over the Environment Link (ADR 0005). Its version must match the vendored client in
+`packages/pi-env`. Versions supplied by Debian come from one immutable snapshot. Standalone tools
+and npm packages are versioned and verified by SHA-256. The image intentionally excludes Amp/E2B
+internals, Deno, Go, Rust, Java, database CLIs, container and VM tooling, GUI desktop components,
+systemd, the SSH daemon, and other services. `/etc/openorb-image-release` contains the OpenOrb
+release ID.
 
 The image contains the native agent-browser CLI and browser runtime libraries, but no Chromium or
 Chrome executable. OpenOrb's `/usr/local/bin/agent-browser` wrapper downloads a browser before the
@@ -40,7 +43,7 @@ loading.
 ## Build
 
 The Debian rootfs source is `images/guest/debian-rootfs.Containerfile`. Its architecture-specific
-official Debian base, agent-browser, Bun, websocat, and npm package inputs are pinned in
+official Debian base, agent-browser, Bun, websocat, pi-env, and npm package inputs are pinned in
 `scripts/build-guest-image.ts`, and its APT sources use the Debian snapshot from `20260803T000000Z`.
 The ARM64 fallback Chromium version is pinned to that same snapshot. The Gondolin configurations are
 `images/guest/x86_64.json` and `images/guest/aarch64.json`; each allocates a 2.5 GiB writable rootfs
@@ -68,7 +71,7 @@ architectures, including root-filesystem resizing and persistent-disk reopen che
 was built through registered QEMU userspace emulation; native ARM64 KVM smoke coverage was
 explicitly waived because no native ARM64 release host was available.
 
-Each invocation writes unpacked assets under `dist/guest-image/release-1/<gondolin-arch>/`, a
+Each invocation writes unpacked assets under `dist/guest-image/<release-id>/<gondolin-arch>/`, a
 deterministically ordered archive under `dist/guest-image/`, and a neighboring `.json` metadata
 file. The final stdout line is the same metadata in compact JSON. It contains the OpenOrb release
 ID, architecture-specific Gondolin build ID, normalized manifest SHA-256, archive filename, exact

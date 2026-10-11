@@ -18,7 +18,7 @@ import {
 } from "@/packages/runner/src/environment/gondolin/guest-image/manifest.ts";
 import { pruneInitramfsRoot, repackInitramfs } from "@/scripts/prune-initramfs.ts";
 
-export const GUEST_IMAGE_RELEASE_ID = "release-1";
+export const GUEST_IMAGE_RELEASE_ID = "release-2";
 export const GUEST_IMAGE_FILES = [
   "manifest.json",
   "vmlinuz-virt",
