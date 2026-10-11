@@ -44,7 +44,7 @@ const MEMORY_MIB = 4096;
 const textDecoder = new TextDecoder();
 
 Deno.test({
-  name: "published mvp-7 sessions remain pinned when release-1 becomes the default",
+  name: "published mvp-7 sessions remain pinned when release-2 becomes the default",
   ignore: Deno.env.get("OPENORB_RUN_PUBLISHED_IMAGE_TESTS") !== "1" ||
     Deno.build.os !== "linux" || Deno.build.arch !== "x86_64",
   sanitizeOps: false,
@@ -55,7 +55,7 @@ Deno.test({
       const oldImage = await install(workingDirectory, MVP_7);
       const newImage = await install(workingDirectory, GUEST_IMAGE_RELEASE);
       assertEquals(oldImage.releaseId, "mvp-7");
-      assertEquals(newImage.releaseId, "release-1");
+      assertEquals(newImage.releaseId, "release-2");
 
       const oldDisk = join(workingDirectory, "sessions", "old", "root-disk.qcow2");
       await Deno.mkdir(join(workingDirectory, "sessions", "old"), { recursive: true });
@@ -85,14 +85,14 @@ Deno.test({
       await Deno.mkdir(join(workingDirectory, "sessions", "new"), { recursive: true });
       await Effect.runPromise(upgradedProvider.initializeRootDisk(newDisk));
       await useEnvironment(upgradedProvider, newDisk, async (environment) => {
-        await assertGuestIdentity(environment, "release-1");
+        await assertGuestIdentity(environment, "release-2");
         await writeMarkers(environment, "new-image-marker");
       });
       const restartedProvider = makeGondolinAgentEnvironmentProvider(newImage, true, {
         releases: RELEASES,
       });
       await useEnvironment(restartedProvider, newDisk, async (environment) => {
-        await assertGuestIdentity(environment, "release-1");
+        await assertGuestIdentity(environment, "release-2");
         await assertMarkers(environment, "new-image-marker");
       });
 

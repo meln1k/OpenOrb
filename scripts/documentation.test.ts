@@ -111,7 +111,8 @@ Deno.test("operations documentation records the recovery contract and release pi
   const runnerConfiguration = await Deno.readTextFile("packages/runner/deno.json");
   assert(release.includes('id: "mvp-7"'));
   assert(release.includes('id: "release-1"'));
-  assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_1"));
+  assert(release.includes('id: "release-2"'));
+  assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_2"));
   assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 26"));
   for (const pin of ["2.9.5", "0.12.0", "1.1.0", "3.0.0"]) {
     assert(

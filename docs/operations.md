@@ -77,7 +77,7 @@ The exact runtime and application pins in this release graph are:
 | Deno / standalone runner denort     | 2.9.5                                            |
 | celld / esbuild                     | 0.6.2 / 0.28.2                                   |
 | Gondolin                            | 0.12.0                                           |
-| OpenOrb guest image                 | `release-1` (Debian snapshot `20260803T000000Z`) |
+| OpenOrb guest image                 | `release-2` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi Durable / Pi Env / Chord | 1.1.0                                            |
 | Remix                               | 3.0.0                                            |
 | Runner protocol                     | 26                                               |

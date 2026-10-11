@@ -62,7 +62,31 @@ export const RELEASE_1: GuestImageRelease = {
   },
 };
 
+export const RELEASE_2: GuestImageRelease = {
+  id: "release-2",
+  assets: {
+    arm64: {
+      gondolinArchitecture: "aarch64",
+      gondolinBuildId: "76d0056e-a2d0-584b-8e3a-70f7b9f08cdc",
+      manifestSha256: "ad41fed90eee1715f16cb49dbd134a8d5c75511bd0251b0396b7d4c007e388f5",
+      url:
+        "https://github.com/meln1k/openorb/releases/download/guest-image-release-2/gondolin-image-openorb-guest-release-2-aarch64.tar.gz",
+      sizeBytes: 777_685_974,
+      sha256: "b01200ece37340a1dff964a18d448b7971cc8e8725e4a37d55aec1ae7c41a62a",
+    },
+    x64: {
+      gondolinArchitecture: "x86_64",
+      gondolinBuildId: "698ff874-dc85-5d79-94cf-0403eb974946",
+      manifestSha256: "f358bb309353bbe616433322bdf164beae665bcadb344d991db300159467ea2d",
+      url:
+        "https://github.com/meln1k/openorb/releases/download/guest-image-release-2/gondolin-image-openorb-guest-release-2-x86_64.tar.gz",
+      sizeBytes: 797_123_515,
+      sha256: "7cfe13b1c4178b4fb2cba61684cb7a9e8b7a893098096247623a863abaa6ad16",
+    },
+  },
+};
+
 // Retain immutable entries when changing the default: existing session disks depend on them.
 // Every entry must remain compatible with this runner's Gondolin integration.
-export const GUEST_IMAGE_RELEASES: readonly GuestImageRelease[] = [MVP_7, RELEASE_1];
-export const GUEST_IMAGE_RELEASE = RELEASE_1;
+export const GUEST_IMAGE_RELEASES: readonly GuestImageRelease[] = [MVP_7, RELEASE_1, RELEASE_2];
+export const GUEST_IMAGE_RELEASE = RELEASE_2;

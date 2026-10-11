@@ -1,7 +1,7 @@
 # Guest image release process
 
 Each OpenOrb guest-image release contains immutable Gondolin assets for every supported runner
-architecture. The runner uses the published Debian-based `release-1` release. An OpenOrb release ID
+architecture. The runner uses the published Debian-based `release-2` release. An OpenOrb release ID
 is not derived from the Gondolin package version or either architecture-specific Gondolin build ID.
 
 The guest userspace is Debian 13 and provides an Amp-orb-like development command line: Git and
@@ -63,6 +63,16 @@ deno task build:image aarch64
 Gondolin to export it into the VM rootfs and create the boot assets. It is a trusted release task:
 the OCI and Gondolin builders require broad read, write, environment, network, and subprocess
 access. Do not run an unreviewed Containerfile or build configuration with these permissions.
+
+The `release-2` x86-64 asset passed the Gondolin suite on an x86-64 host without KVM, under QEMU
+software emulation, including the release marker, `pi-env 1.1.0`, and in-guest `ExecutionEnv`
+conformance through a relayed Environment Link. Two timing-sensitive cases failed there: the shell
+timeout descriptor test and the local `http.server` probe inside the public GitHub test. Both
+reproduced identically against the published `release-1` archive on the same host. The `release-2`
+ARM64 asset was built through registered QEMU userspace emulation. Its rootfs was inspected offline
+for the release marker and a daemon byte-identical to the pinned npm package, which also ran under
+userspace emulation. Native KVM boots on both architectures were waived because no KVM host was
+available.
 
 The `release-1` x86-64 asset passed a 2 GiB KVM microVM boot through DHCP, rootfs mount, virtio
 control port startup, and nested-KVM initialization on a native AMD host. The earlier `mvp-7` assets
