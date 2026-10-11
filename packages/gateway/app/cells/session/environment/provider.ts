@@ -75,8 +75,36 @@ export interface SessionEnvironment {
   readonly close: () => void;
 }
 
+/** The implemented Agent Environment Providers. */
+export type EnvironmentProviderKind = "runner";
+
+export const DEFAULT_ENVIRONMENT_PROVIDER: EnvironmentProviderKind = "runner";
+
+/** The most specific choice wins: Session over Project over the Workspace default (ADR 0006). */
+export function resolveEnvironmentProvider(
+  levels: {
+    readonly session?: EnvironmentProviderKind;
+    readonly project?: EnvironmentProviderKind;
+    readonly workspace?: EnvironmentProviderKind;
+  },
+): EnvironmentProviderKind {
+  return levels.session ?? levels.project ?? levels.workspace ?? DEFAULT_ENVIRONMENT_PROVIDER;
+}
+
+/**
+ * Credentials a provider may receive: all of them where egress mediation keeps them out of the
+ * guest, otherwise none without the Project's Guest Credential Opt-in.
+ */
+export function permittedCredentials(
+  capabilities: AgentEnvironmentCapabilities,
+  guestCredentialOptIn: boolean,
+  credentials: EnvironmentCredentials,
+): EnvironmentCredentials {
+  return capabilities.egressSecretMediation || guestCredentialOptIn ? credentials : {};
+}
+
 export interface AgentEnvironmentProvider {
-  readonly kind: string;
+  readonly kind: EnvironmentProviderKind;
   readonly capabilities: AgentEnvironmentCapabilities;
   /** Binds a Session to its environment. Creates no compute. */
   readonly bind: (binding: EnvironmentBinding) => SessionEnvironment;

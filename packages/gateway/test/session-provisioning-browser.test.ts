@@ -5,56 +5,41 @@ import {
   assertNotMatch,
   assertStringIncludes,
 } from "@std/assert";
+import { decodeBase64 } from "@std/encoding/base64";
 
+import { SessionArtifactId } from "@openorb/protocol/runner-bulk-api";
 import {
-  SessionArtifact,
-  SessionArtifactChunk,
-  SessionArtifactId,
-} from "@openorb/protocol/runner-bulk-api";
-import {
-  ClientRequestId,
-  GitFileUpdateAccepted,
-  GitMutationRevision,
   initialPromptPreview,
   RunnerSessionSnapshot,
   SessionGitSnapshot,
-  StopSessionAccepted,
-  SubmissionId,
   type UserId,
-  WakeSessionAccepted,
-  WatchSessionEvent,
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { Effect, Schema, Stream } from "effect";
-import { createAppServices, type TestRunnerConnections } from "@/test/workspace-test.ts";
+import { Schema } from "effect";
+import type { SessionCatalogEntry } from "@/app/cells/workspace/api.ts";
+import type {
+  CreateSessionInput,
+  MediaReader,
+  SessionApi,
+  SessionDirectory,
+  SessionMedia,
+  SessionView,
+} from "@/app/cells/session/api.ts";
+import {
+  createAppServices,
+  disconnectedRunnerRegistry,
+  type TestRunnerConnections,
+} from "@/test/workspace-test.ts";
 import { createAppRouter } from "@/test/workspace-test.ts";
 import { routes } from "@/app/routes.ts";
 import { createTestServer } from "@/test/http-test-server.ts";
 import { activate, createWorkspace } from "@/test/workspace-test.ts";
 
-type RunnerConnections = TestRunnerConnections;
-type ProvisionSessionInput = Parameters<RunnerConnections["provisionSession"]>[0];
-type WakeSessionInput = Parameters<RunnerConnections["wakeSession"]>[0];
-type PromptSessionInput = Parameters<RunnerConnections["promptSession"]>[0];
-type SetSessionThinkingLevelInput = Parameters<RunnerConnections["setSessionThinkingLevel"]>[0];
-type AbortSessionInput = Parameters<RunnerConnections["abortSession"]>[0];
-type StopSessionInput = Parameters<RunnerConnections["stopSession"]>[0];
-type DeleteSessionInput = Parameters<RunnerConnections["deleteSession"]>[0];
-type UpdateSessionGitFileInput = Parameters<RunnerConnections["updateSessionGitFile"]>[0];
-type ReadSessionArtifactChunkInput = Parameters<RunnerConnections["readSessionArtifactChunk"]>[0];
-
 const PASSWORD = "[REDACTED:password] horse battery staple";
 const GITHUB_TOKEN = "browser-provisioning-github-token";
 const MODEL_PROVIDER_KEY = "browser-provisioning-model-key";
-const CONTINUATION_MODEL_PROVIDER_KEY = "browser-continuation-model-key";
-const RETRY_MODEL_PROVIDER_KEY = "browser-provisioning-retry-model-key";
 const ENVIRONMENT_SECRET_VALUE = "browser-provisioning-environment-secret";
 const ENVIRONMENT_SECRET_HOSTS = ["api.example.com", "*.service.example"] as const;
-const ENVIRONMENT_SECRET = {
-  name: "DEPLOY_TOKEN",
-  value: ENVIRONMENT_SECRET_VALUE,
-  allowedHosts: ENVIRONMENT_SECRET_HOSTS,
-};
 const PROVIDER_ID = "opencode-go";
 const MODEL = `${PROVIDER_ID}/deepseek-v4-flash`;
 const OPENAI_PROVIDER_ID = "openai";
@@ -68,274 +53,282 @@ const INITIAL_PROMPT = "  Inspect\nthis repository and explain the architecture.
 const ARTIFACT_ID = Schema.decodeUnknownSync(SessionArtifactId)(
   "01989d78-65ee-7f6a-a97e-0f16ad134c20",
 );
+const INLINE_IMAGE_ID = Schema.decodeUnknownSync(SessionArtifactId)(
+  "01989d78-65ee-7f6a-a97e-0f16ad134c21",
+);
 const ARTIFACT_BYTES = new TextEncoder().encode("0123456789");
+const INLINE_IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const GIT_SNAPSHOT_ID = "a".repeat(64);
+const GIT_PATCH_BYTES = new TextEncoder().encode("diff --git a/README.md b/README.md\n");
+const SESSION_UNREACHABLE = "The Session Durable Object is unreachable.";
+const CONVERSATION_SNAPSHOT_EVENT = `event: session\ndata: ${
+  JSON.stringify({
+    type: "conversation.snapshot",
+    view: {
+      conversation: { id: 0 },
+      entries: [{
+        id: 1,
+        conversationId: 0,
+        kind: "pi.user",
+        model: [{ role: "user", content: INITIAL_PROMPT }],
+      }],
+      docs: {},
+    },
+  })
+}\n\n`;
 
-class BrowserTestRunnerConnections implements TestRunnerConnections {
-  runnerId = "";
+type SessionMethod = keyof SessionApi;
+
+interface SessionCall {
+  readonly sessionId: string;
+  readonly method: SessionMethod;
+  readonly input: unknown;
+}
+
+/**
+ * Stands in for the per-Session Durable Objects, the published media bucket, and the one runner
+ * capability browser routes still need from the Runners cell: live state for runner selection.
+ */
+class BrowserTestSessions {
   workspaceId: WorkspaceId | null = null;
-  sessionId: string | null = null;
-  snapshot: RunnerSessionSnapshot | null = null;
-  provisions: ProvisionSessionInput[] = [];
-  wakes: WakeSessionInput[] = [];
-  prompts: PromptSessionInput[] = [];
-  thinkingLevelChanges: SetSessionThinkingLevelInput[] = [];
-  aborts: AbortSessionInput[] = [];
-  stops: StopSessionInput[] = [];
-  deletions: DeleteSessionInput[] = [];
-  gitFileUpdates: UpdateSessionGitFileInput[] = [];
-  events: (typeof WatchSessionEvent.Type)[] = [];
-  subscriptions = 0;
-  subscriptionUnsubscribes = 0;
-  beforeAcceptance: ((input: ProvisionSessionInput) => Promise<void>) | undefined = undefined;
-  reconcileAcceptance?: (snapshot: RunnerSessionSnapshot) => Promise<void>;
-  promptResult: Awaited<ReturnType<RunnerConnections["promptSession"]>> = {
-    status: "accepted",
-    acknowledgement: {
-      clientRequestId: ClientRequestId.make(crypto.randomUUID()),
-      submissionId: SubmissionId.make(1),
+  runnerId = "";
+  /** Every Session addressed through the directory, whether or not a method followed. */
+  readonly addressed: string[] = [];
+  /** Every SessionApi invocation, including those rejected while unreachable. */
+  readonly calls: SessionCall[] = [];
+  readonly views = new Map<string, SessionView>();
+  readonly mediaItems = new Map<string, SessionMedia>();
+  readonly objects = new Map<string, Uint8Array>();
+  readonly mediaReads: { key: string; range: { offset: number; length: number } }[] = [];
+  /** Simulates a Session Durable Object whose RPC calls fail. */
+  unreachable = false;
+  createError: string | undefined = undefined;
+  beforeCreate: ((input: CreateSessionInput) => Promise<void>) | undefined = undefined;
+  beforeDelete: ((sessionId: string) => Promise<void>) | undefined = undefined;
+
+  readonly runnerConnections: TestRunnerConnections = {
+    ...disconnectedRunnerRegistry,
+    getRunnerLiveState: (workspaceId, runnerId) => {
+      if (workspaceId !== this.workspaceId || runnerId !== this.runnerId) {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve({
+        lastObservedAt: Date.now(),
+        capacity: {
+          activeSessions: 0,
+          vmCpuCount: 4,
+          vmMemoryMiB: 8192,
+          diskFreeMiB: 20_480,
+        },
+      });
     },
   };
-  abortResult: Awaited<ReturnType<RunnerConnections["abortSession"]>> = {
-    status: "accepted",
-    acknowledgement: {},
-  };
-  stopResult: Awaited<ReturnType<RunnerConnections["stopSession"]>> = {
-    status: "accepted",
-    acknowledgement: new StopSessionAccepted({}),
+
+  readonly directory: SessionDirectory = (sessionId) => {
+    this.addressed.push(sessionId);
+    return this.#api(sessionId);
   };
 
-  readSessionGitPatchChunk(): ReturnType<RunnerConnections["readSessionGitPatchChunk"]> {
-    return Promise.resolve({
-      status: "unavailable" as const,
-      message: "Bulk patches are unavailable in this fixture.",
-    });
+  readonly media: MediaReader = {
+    get: (key, options) => {
+      this.mediaReads.push({ key, range: { ...options.range } });
+      const bytes = this.objects.get(key);
+      if (bytes === undefined) return Promise.resolve(null);
+      const slice = bytes.slice(options.range.offset, options.range.offset + options.range.length);
+      return Promise.resolve({ body: ReadableStream.from([slice]) });
+    },
+  };
+
+  inputsOf(method: SessionMethod, sessionId?: string): unknown[] {
+    return this.calls
+      .filter((call) =>
+        call.method === method && (sessionId === undefined || call.sessionId === sessionId)
+      )
+      .map((call) => call.input);
   }
 
-  readSessionArtifactChunk(
-    input: ReadSessionArtifactChunkInput,
-  ): ReturnType<RunnerConnections["readSessionArtifactChunk"]> {
-    if (
-      input.workspaceId !== this.workspaceId || input.sessionId !== this.sessionId ||
-      input.artifactId !== ARTIFACT_ID || input.offset > ARTIFACT_BYTES.byteLength
-    ) {
-      return Promise.resolve({
-        status: "unavailable" as const,
-        message: "Published media is unavailable in this fixture.",
-      });
-    }
-    const bytes = ARTIFACT_BYTES.subarray(input.offset, input.offset + 4);
-    return Promise.resolve({
-      status: "accepted" as const,
-      acknowledgement: new SessionArtifactChunk({
-        artifact: new SessionArtifact({
-          id: ARTIFACT_ID,
-          fileName: "preview.mp4",
-          mediaType: "video/mp4",
-          byteLength: ARTIFACT_BYTES.byteLength,
-        }),
-        offset: input.offset,
-        bytes,
-      }),
-    });
+  methodsSince(mark: number): SessionMethod[] {
+    return this.calls.slice(mark).map((call) => call.method);
   }
 
-  getRunnerLiveState(
-    workspaceId: WorkspaceId,
-    runnerId: string,
-  ): ReturnType<RunnerConnections["getRunnerLiveState"]> {
-    if (workspaceId !== this.workspaceId || runnerId !== this.runnerId) {
-      return Promise.resolve(null);
-    }
-    return Promise.resolve({
-      lastObservedAt: Date.now(),
-      capacity: {
-        activeSessions: 0,
-        vmCpuCount: 4,
-        vmMemoryMiB: 8192,
-        diskFreeMiB: 20_480,
-      },
-    });
+  snapshot(sessionId: string): RunnerSessionSnapshot {
+    const view = this.views.get(sessionId);
+    assert(view, `expected a Session view for ${sessionId}`);
+    return view.snapshot;
   }
 
-  getSessionRunner(
-    workspaceId: WorkspaceId,
+  update(
     sessionId: string,
-  ): ReturnType<RunnerConnections["getSessionRunner"]> {
-    return Promise.resolve(
-      workspaceId === this.workspaceId && sessionId === this.sessionId ? this.runnerId : null,
-    );
+    patch: Partial<
+      Pick<RunnerSessionSnapshot, "state" | "agentState" | "environmentState" | "issues">
+    >,
+  ): void {
+    const view = this.views.get(sessionId);
+    assert(view, `expected a Session view for ${sessionId}`);
+    this.views.set(sessionId, { ...view, snapshot: { ...view.snapshot, ...patch } });
   }
 
-  getSessionSnapshot(
-    workspaceId: WorkspaceId,
+  publish(sessionId: string, artifactId: string, bytes: Uint8Array): void {
+    const key = `media/${this.workspaceId}/${sessionId}/${artifactId}`;
+    this.objects.set(key, bytes);
+    this.mediaItems.set(`${sessionId}/${artifactId}`, {
+      kind: "published",
+      key,
+      mediaType: "video/mp4",
+      byteLength: bytes.byteLength,
+      fileName: "preview.mp4",
+    });
+  }
+
+  #invoke<T>(
     sessionId: string,
-  ): ReturnType<RunnerConnections["getSessionSnapshot"]> {
-    return Promise.resolve(
-      workspaceId === this.workspaceId && sessionId === this.sessionId ? this.snapshot : null,
-    );
+    method: SessionMethod,
+    input: unknown,
+    run: () => T | Promise<T>,
+  ): Promise<T> {
+    this.calls.push({ sessionId, method, input });
+    if (this.unreachable) return Promise.reject(new Error(SESSION_UNREACHABLE));
+    return Promise.resolve().then(run);
   }
 
-  getSessionGitSnapshot(
-    workspaceId: WorkspaceId,
-    sessionId: string,
-  ): ReturnType<RunnerConnections["getSessionGitSnapshot"]> {
-    if (workspaceId !== this.workspaceId || sessionId !== this.sessionId) {
-      return Promise.resolve({
-        status: "unavailable" as const,
-        message: "The pinned runner is offline.",
-      });
-    }
-    return Promise.resolve({
-      status: "accepted" as const,
-      acknowledgement: new SessionGitSnapshot({
-        generatedAt: "2026-08-23T12:00:00Z",
-        branch: "openorb/browser-test",
-        head: "0123456789abcdef0123456789abcdef01234567",
-        completeness: "complete",
-        stale: false,
-        truncated: false,
-        sections: {
-          staged: { files: [], patch: "", truncated: false },
-          unstaged: { files: [], patch: "", truncated: false },
-        },
-      }),
-    });
+  #existing(sessionId: string): SessionView {
+    const view = this.views.get(sessionId);
+    if (view === undefined) throw new Error("Session not found.");
+    return view;
   }
 
-  updateSessionGitFile(
-    input: UpdateSessionGitFileInput,
-  ): ReturnType<RunnerConnections["updateSessionGitFile"]> {
-    if (input.workspaceId !== this.workspaceId || input.sessionId !== this.sessionId) {
-      return Promise.resolve({
-        status: "unavailable" as const,
-        message: "The pinned runner is offline.",
-      });
-    }
-    this.gitFileUpdates.push(input);
-    const mutationRevision = GitMutationRevision.make(this.gitFileUpdates.length);
-    return Promise.resolve({
-      status: "accepted" as const,
-      acknowledgement: new GitFileUpdateAccepted({ mutationRevision }),
-    });
-  }
-
-  async provisionSession(
-    input: ProvisionSessionInput,
-  ): ReturnType<RunnerConnections["provisionSession"]> {
-    this.provisions.push(input);
-    await this.beforeAcceptance?.(input);
-    if (input.payload.mode === "retry") {
-      assert(this.snapshot);
-      this.snapshot = { ...this.snapshot, state: "created" };
-      return {
-        status: "accepted",
-        acknowledgement: {
-          session: this.snapshot,
-          ref: "main",
-          branchName: "openorb/browser-test",
-          checkoutState: "available",
-        },
-      };
-    }
-
-    const snapshot = Schema.decodeUnknownSync(RunnerSessionSnapshot)({
-      id: input.sessionId,
-      projectId: input.payload.projectId,
-      createdAt: "2026-08-17T12:00:00Z",
-      initialPromptPreview: initialPromptPreview(input.payload.initialPrompt),
-      model: input.payload.modelRuntime.model,
-      initialThinkingLevel: input.payload.modelRuntime.thinkingLevel,
-      orbSize: input.payload.orbSize,
-      state: "created",
-      agentState: "idle",
-      environmentState: "starting",
-      issues: [],
-    });
-    await this.reconcileAcceptance?.(snapshot);
-    this.sessionId = input.sessionId;
-    this.snapshot = snapshot;
+  #api(sessionId: string): SessionApi {
     return {
-      status: "accepted",
-      acknowledgement: {
-        session: snapshot,
-        ref: input.payload.ref,
-        branchName: input.payload.branchName,
-        checkoutState: "pending",
-      },
+      create: (input) =>
+        this.#invoke(sessionId, "create", input, async () => {
+          await this.beforeCreate?.(input);
+          if (this.createError !== undefined) throw new Error(this.createError);
+          this.views.set(sessionId, {
+            runnerId: input.runnerId,
+            snapshot: Schema.decodeUnknownSync(RunnerSessionSnapshot)({
+              id: input.sessionId,
+              projectId: input.projectId,
+              createdAt: input.createdAt,
+              initialPromptPreview: initialPromptPreview(input.initialPrompt),
+              model: input.model,
+              initialThinkingLevel: input.thinkingLevel,
+              orbSize: input.orbSize,
+              state: "created",
+              agentState: "idle",
+              environmentState: "starting",
+              issues: [],
+            }),
+          });
+          return { created: true };
+        }),
+      view: () =>
+        this.#invoke(sessionId, "view", undefined, () => this.views.get(sessionId) ?? null),
+      submit: (input) =>
+        this.#invoke(sessionId, "submit", input, () => {
+          this.#existing(sessionId);
+          return { submissionId: this.inputsOf("submit", sessionId).length };
+        }),
+      setThinkingLevel: (level) =>
+        this.#invoke(sessionId, "setThinkingLevel", level, () => {
+          this.#existing(sessionId);
+          return level;
+        }),
+      abort: () =>
+        this.#invoke(sessionId, "abort", undefined, () => {
+          this.#existing(sessionId);
+        }),
+      stop: () =>
+        this.#invoke(sessionId, "stop", undefined, () => {
+          this.#existing(sessionId);
+          return { state: "stopping" as const, forced: false };
+        }),
+      wake: (recovery) =>
+        this.#invoke(sessionId, "wake", recovery, () => {
+          this.#existing(sessionId);
+        }),
+      retry: (recovery) =>
+        this.#invoke(sessionId, "retry", recovery, () => {
+          this.#existing(sessionId);
+          this.update(sessionId, { state: "created", issues: [] });
+        }),
+      delete: () =>
+        this.#invoke(sessionId, "delete", undefined, async () => {
+          await this.beforeDelete?.(sessionId);
+          this.views.delete(sessionId);
+        }),
+      media: (id) =>
+        this.#invoke(
+          sessionId,
+          "media",
+          id,
+          () => this.mediaItems.get(`${sessionId}/${id}`) ?? null,
+        ),
+      gitSnapshot: () =>
+        this.#invoke(sessionId, "gitSnapshot", undefined, () => {
+          this.#existing(sessionId);
+          return new SessionGitSnapshot({
+            generatedAt: "2026-08-23T12:00:00Z",
+            branch: "openorb/browser-test",
+            head: "0123456789abcdef0123456789abcdef01234567",
+            completeness: "complete",
+            stale: false,
+            truncated: false,
+            sections: {
+              staged: { files: [], patch: "", truncated: false },
+              unstaged: { files: [], patch: "", truncated: false },
+            },
+          });
+        }),
+      gitPatchChunk: (input) =>
+        this.#invoke(sessionId, "gitPatchChunk", input, () => {
+          this.#existing(sessionId);
+          const bytes = GIT_PATCH_BYTES.subarray(input.offset, input.offset + 16);
+          const nextOffset = input.offset + bytes.byteLength;
+          return { bytes, nextOffset, done: nextOffset >= GIT_PATCH_BYTES.byteLength };
+        }),
+      updateGitFile: (input) =>
+        this.#invoke(sessionId, "updateGitFile", input, () => {
+          this.#existing(sessionId);
+          return { mutationRevision: this.inputsOf("updateGitFile", sessionId).length };
+        }),
+      events: (request) =>
+        this.#invoke(
+          sessionId,
+          "events",
+          { lastEventId: request.headers.get("Last-Event-ID") },
+          () => {
+            this.#existing(sessionId);
+            return new Response(CONVERSATION_SNAPSHOT_EVENT, {
+              headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
+            });
+          },
+        ),
     };
   }
+}
 
-  wakeSession(input: WakeSessionInput): ReturnType<RunnerConnections["wakeSession"]> {
-    this.wakes.push(input);
-    return Promise.resolve({
-      status: "accepted" as const,
-      acknowledgement: new WakeSessionAccepted({}),
-    });
-  }
-
-  promptSession(input: PromptSessionInput): ReturnType<RunnerConnections["promptSession"]> {
-    this.prompts.push(input);
-    return Promise.resolve(this.promptResult);
-  }
-
-  setSessionThinkingLevel(
-    input: SetSessionThinkingLevelInput,
-  ): ReturnType<RunnerConnections["setSessionThinkingLevel"]> {
-    this.thinkingLevelChanges.push(input);
-    return Promise.resolve({
-      status: "accepted" as const,
-      acknowledgement: input.level,
-    });
-  }
-
-  abortSession(input: AbortSessionInput): ReturnType<RunnerConnections["abortSession"]> {
-    this.aborts.push(input);
-    return Promise.resolve(this.abortResult);
-  }
-
-  stopSession(input: StopSessionInput): ReturnType<RunnerConnections["stopSession"]> {
-    this.stops.push(input);
-    return Promise.resolve(this.stopResult);
-  }
-
-  deleteSession(input: DeleteSessionInput): ReturnType<RunnerConnections["deleteSession"]> {
-    if (input.workspaceId === this.workspaceId && input.sessionId === this.sessionId) {
-      this.deletions.push(input);
-    }
-    return Promise.resolve();
-  }
-
-  watchSession(
-    workspaceId: WorkspaceId,
-    sessionId: string,
-  ): Stream.Stream<typeof WatchSessionEvent.Type, unknown> {
-    this.subscriptions++;
-    if (workspaceId !== this.workspaceId || sessionId !== this.sessionId) {
-      return Stream.fail(new Error("The pinned runner is offline."));
-    }
-    return Stream.fromIterable(this.events)
-      .pipe(
-        Stream.concat(Stream.never),
-        Stream.ensuring(Effect.sync(() => {
-          this.subscriptionUnsubscribes += 1;
-        })),
-      );
-  }
-
-  disconnectRunner(): ReturnType<RunnerConnections["disconnectRunner"]> {
-    return Promise.resolve(false);
-  }
+function createSessionServer(store: ReturnType<typeof activate>["workspace"]) {
+  const sessions = new BrowserTestSessions();
+  const router = createAppRouter(
+    createAppServices(
+      store,
+      sessions.runnerConnections,
+      undefined,
+      sessions.directory,
+      sessions.media,
+    ),
+  );
+  return { sessions, router };
 }
 
 Deno.test("session composer creates a new server-assigned session on each submission without client initialization", async () => {
   const { workspace: store } = activate();
-  const connections = new BrowserTestRunnerConnections();
-  const router = createAppRouter(createAppServices(store, connections));
+  const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
 
   try {
     const client = await authenticate(server.baseUrl, store);
-    connections.workspaceId = client.workspaceId;
+    sessions.workspaceId = client.workspaceId;
     const project = await store.saveProject(client.workspaceId, {
       name: "OpenOrb",
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
@@ -344,7 +337,7 @@ Deno.test("session composer creates a new server-assigned session on each submis
     await store.saveGitHubCredential(client.workspaceId, GITHUB_TOKEN);
     await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
     await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
-    connections.runnerId = (await enrollRunner(store, client.workspaceId)).runnerId;
+    sessions.runnerId = (await enrollRunner(store, client.workspaceId)).runnerId;
 
     const page = await fetch(new URL(routes.app.index.href(), server.baseUrl), {
       headers: { Cookie: client.cookie },
@@ -383,8 +376,10 @@ Deno.test("session composer creates a new server-assigned session on each submis
     });
     await response.text();
     assertEquals(response.status, 303);
-    assertEquals(connections.provisions.length, 1);
-    const firstSessionId = connections.provisions[0]!.sessionId;
+    const [firstCreate] = createInputs(sessions);
+    assert(firstCreate);
+    const firstSessionId = firstCreate.sessionId;
+    assertEquals(sessions.addressed, [firstSessionId]);
     assertEquals(
       response.headers.get("location"),
       routes.app.sessions.detail.href({ sessionId: firstSessionId }),
@@ -400,27 +395,31 @@ Deno.test("session composer creates a new server-assigned session on each submis
     });
     await secondResponse.text();
     assertEquals(secondResponse.status, 303);
-    assertEquals(connections.provisions.length, 2);
-    const sessionId = connections.provisions[1]!.sessionId;
+    const creates = createInputs(sessions);
+    assertEquals(creates.length, 2);
+    const sessionId = creates[1]!.sessionId;
     assert(sessionId !== firstSessionId);
+    assertEquals(sessions.addressed, [firstSessionId, sessionId]);
+    assertEquals(sessions.inputsOf("create", firstSessionId).length, 1);
     assertEquals(
       secondResponse.headers.get("location"),
       routes.app.sessions.detail.href({ sessionId }),
     );
+    assert(await store.getSessionCatalogEntry(client.workspaceId, firstSessionId));
+    assert(await store.getSessionCatalogEntry(client.workspaceId, sessionId));
   } finally {
     await server.close();
   }
 });
 
-Deno.test("browser form waits for runner acceptance before cataloging and keeps token memory-only", async () => {
+Deno.test("browser form waits for Session creation, catalogs first, rolls back failures, and keeps secrets in the gateway", async () => {
   const { workspace: store, storage } = activate();
-  const connections = new BrowserTestRunnerConnections();
-  const router = createAppRouter(createAppServices(store, connections));
+  const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
 
   try {
     const client = await authenticate(server.baseUrl, store);
-    connections.workspaceId = client.workspaceId;
+    sessions.workspaceId = client.workspaceId;
     const projectResult = await store.saveProject(client.workspaceId, {
       name: "OpenOrb",
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
@@ -436,25 +435,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       ENVIRONMENT_SECRET_HOSTS,
     );
     const enrolled = await enrollRunner(store, client.workspaceId);
-    connections.runnerId = enrolled.runnerId;
-    connections.beforeAcceptance = async (input) => {
-      assertEquals(await store.getSessionCatalogEntry(client.workspaceId, input.sessionId), null);
-      assertEquals(
-        storage.rows(
-          "SELECT id FROM sessions WHERE workspaceId = ? AND id = ?",
-          client.workspaceId,
-          input.sessionId,
-        ),
-        [],
-      );
-    };
-    connections.reconcileAcceptance = async (snapshot) => {
-      const [reconciled] = await store.reconcileSessionManifestEntries(client.workspaceId, [
-        snapshot,
-      ]);
-      assert(reconciled);
-      assertEquals(reconciled.acceptedSessionIds, [snapshot.id]);
-    };
+    sessions.runnerId = enrolled.runnerId;
 
     const createPage = await fetch(new URL(routes.app.index.href(), server.baseUrl), {
       redirect: "manual",
@@ -522,8 +503,16 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assert(!createHtml.includes(MODEL_PROVIDER_KEY));
     assert(!createHtml.includes(ENVIRONMENT_SECRET_VALUE));
 
+    // The catalog entry exists before the Session is created, and the browser waits for creation.
+    const releaseCreate = Promise.withResolvers<void>();
+    const catalogAtCreate: unknown[] = [];
+    sessions.beforeCreate = async (input) => {
+      catalogAtCreate.push(await store.getSessionCatalogEntry(client.workspaceId, input.sessionId));
+      await releaseCreate.promise;
+    };
     const composerSessionId = crypto.randomUUID();
-    const response = await fetch(new URL(routes.app.sessions.create.href(), server.baseUrl), {
+    let settled = false;
+    const pendingResponse = fetch(new URL(routes.app.sessions.create.href(), server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: client.cookie },
@@ -539,55 +528,92 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         branchName: "openorb/browser-test",
         initialPrompt: INITIAL_PROMPT,
       }),
+    }).finally(() => {
+      settled = true;
     });
+    await waitFor(() => catalogAtCreate.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assertEquals(settled, false, "the browser must wait for Session creation");
+    releaseCreate.resolve();
+    const response = await pendingResponse;
+    sessions.beforeCreate = undefined;
     assertEquals(response.status, 303);
     const location = response.headers.get("location");
     assert(location);
-    const provision = connections.provisions[0];
-    assert(provision?.payload.mode === "create");
-    assert(provision.sessionId !== composerSessionId);
-    assertEquals(location, routes.app.sessions.detail.href({ sessionId: provision.sessionId }));
-    assertEquals(provision.runnerId, connections.runnerId);
-    assertEquals(provision.payload.githubToken, GITHUB_TOKEN);
-    assertEquals(provision.payload.environmentSecrets, [ENVIRONMENT_SECRET]);
-    assertEquals(
-      provision.payload.gitAuthor,
-      {
-        name: GIT_AUTHOR.authorName,
-        email: GIT_AUTHOR.authorEmail,
-      },
-    );
-    assertEquals(provision.payload.initialPrompt, INITIAL_PROMPT);
-    assertEquals(provision.payload.orbSize, "small");
-    assertEquals(
-      provision.payload.modelRuntime,
-      {
-        model: MODEL,
-        thinkingLevel: "max",
-        credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
-      },
-    );
+    const [create] = createInputs(sessions);
+    assert(create);
+    const sessionId = create.sessionId;
+    assert(sessionId !== composerSessionId);
+    assertEquals(location, routes.app.sessions.detail.href({ sessionId }));
+    assertEquals(catalogAtCreate, [{
+      id: sessionId,
+      projectId: projectResult.project.id,
+      createdAt: create.createdAt,
+      initialPromptPreview: "Inspect this repository and explain the architecture.",
+    }]);
+    assertEquals(create, {
+      workspaceId: client.workspaceId,
+      sessionId,
+      projectId: projectResult.project.id,
+      createdAt: create.createdAt,
+      runnerId: sessions.runnerId,
+      orbSize: "small",
+      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
+      ref: "main",
+      branchName: "openorb/browser-test",
+      gitAuthor: { name: GIT_AUTHOR.authorName, email: GIT_AUTHOR.authorEmail },
+      model: MODEL,
+      thinkingLevel: "max",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(new Date(create.createdAt).toISOString(), create.createdAt);
     const catalog = storage.rows(
       `SELECT id, projectId, createdAt, initialPromptPreview
       FROM sessions WHERE workspaceId = ?`,
       client.workspaceId,
     );
     assertEquals(catalog, [{
-      id: provision.sessionId,
+      id: sessionId,
       projectId: projectResult.project.id,
-      createdAt: "2026-08-17T12:00:00Z",
+      createdAt: create.createdAt,
       initialPromptPreview: "Inspect this repository and explain the architecture.",
     }]);
+
+    // A Session that cannot be created leaves no catalog entry and reopens the composer.
+    sessions.createError = "The runner could not accept the Session.";
+    const failedCreate = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(createHtml),
+      projectId: projectResult.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: "",
+      branchName: "openorb/browser-test",
+      initialPrompt: "This session fails to start",
+    });
+    assertEquals(failedCreate.status, 503);
+    const failedCreateHtml = await failedCreate.text();
+    assertMatch(failedCreateHtml, /<dialog[^>]*id="openorb-new-session"[^>]* open/);
+    assertStringIncludes(failedCreateHtml, "The runner could not accept the Session.");
+    assertStringIncludes(failedCreateHtml, "This session fails to start");
+    sessions.createError = undefined;
+    const failedSessionId = createInputs(sessions)[1]?.sessionId;
+    assert(failedSessionId);
+    assertEquals(await store.getSessionCatalogEntry(client.workspaceId, failedSessionId), null);
+    assertEquals(sessions.views.has(failedSessionId), false);
+    assertEquals(
+      (await store.listSessionNavigationEntries(client.workspaceId)).map((entry) => entry.id),
+      [sessionId],
+    );
+
+    // Credentials stay encrypted in the Workspace; none are forwarded to the Session.
     assertEquals(storage.rows("SELECT id FROM git_credentials").length, 1);
     assertEquals(storage.rows("SELECT id FROM model_provider_credentials").length, 1);
     assertEquals(
       storage.rows("SELECT key FROM encrypted_secrets WHERE purpose = 'generic-secret'").length,
       1,
     );
-    const persisted = storage.dump();
-    for (const plaintext of [GITHUB_TOKEN, MODEL_PROVIDER_KEY, ENVIRONMENT_SECRET_VALUE]) {
-      assert(!persisted.includes(plaintext));
-    }
+    assertNoSecrets(storage.dump());
+    assertNoSecrets(JSON.stringify(sessions.calls));
 
     const pendingDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
@@ -598,64 +624,31 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     const olderSessionId = crypto.randomUUID();
     const newerSessionId = crypto.randomUUID();
     const [additionalCatalog] = await store.reconcileSessionManifestEntries(client.workspaceId, [
-      Schema.decodeUnknownSync(RunnerSessionSnapshot)({
-        id: olderSessionId,
-        projectId: projectResult.project.id,
-        createdAt: "2026-08-17T11:00:00Z",
-        initialPromptPreview: "Older sidebar session",
-        model: MODEL,
-        initialThinkingLevel: "high",
-        orbSize: "medium",
-        state: "ready",
-        agentState: "idle",
-        environmentState: "running",
-        issues: [],
-      }),
-      Schema.decodeUnknownSync(RunnerSessionSnapshot)({
-        id: newerSessionId,
-        projectId: projectResult.project.id,
-        createdAt: "2026-08-17T13:00:00Z",
-        initialPromptPreview: "Newer sidebar session",
-        model: MODEL,
-        initialThinkingLevel: "high",
-        orbSize: "medium",
-        state: "ready",
-        agentState: "idle",
-        environmentState: "running",
-        issues: [],
-      }),
+      catalogEntry(
+        olderSessionId,
+        projectResult.project.id,
+        "2020-08-17T11:00:00Z",
+        "Older sidebar session",
+      ),
+      catalogEntry(
+        newerSessionId,
+        projectResult.project.id,
+        "2099-08-17T13:00:00Z",
+        "Newer sidebar session",
+      ),
     ]);
     assert(additionalCatalog);
     assertEquals(additionalCatalog.acceptedSessionIds, [olderSessionId, newerSessionId]);
     assertEquals(
       (await store.listSessionNavigationEntries(client.workspaceId)).map((session) => session.id),
-      [newerSessionId, provision.sessionId, olderSessionId],
+      [newerSessionId, sessionId, olderSessionId],
     );
 
-    connections.events = [{
-      event: Schema.decodeUnknownSync(WatchSessionEvent)({
-        event: {
-          type: "conversation.snapshot",
-          view: {
-            conversation: { id: 0 },
-            entries: [{
-              id: 1,
-              conversationId: 0,
-              kind: "pi.user",
-              model: [{ role: "user", content: INITIAL_PROMPT }],
-            }],
-            docs: {},
-          },
-        },
-      }).event,
-    }];
-    assert(connections.snapshot);
-    connections.snapshot = {
-      ...connections.snapshot,
+    sessions.update(sessionId, {
       state: "ready",
       agentState: "idle",
       environmentState: "running",
-    };
+    });
     const detail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
@@ -675,7 +668,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertStringIncludes(detailHtml, 'data-rmx-target="session-workspace"');
     assertStringIncludes(
       detailHtml,
-      `data-rmx-src="${routes.app.sessions.frame.href({ sessionId: provision.sessionId })}"`,
+      `data-rmx-src="${routes.app.sessions.frame.href({ sessionId: sessionId })}"`,
     );
     assertMatch(
       detailHtml,
@@ -695,13 +688,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(detailHtml, />Changes<\/strong>/);
     assertMatch(
       detailHtml,
-      new RegExp(`action="/app/sessions/${provision.sessionId}/messages"`),
+      new RegExp(`action="/app/sessions/${sessionId}/messages"`),
     );
     assertMatch(detailHtml, /<textarea[^>]*name="prompt"[^>]*aria-label="Continue session"/);
     assertMatch(detailHtml, /aria-label="Send prompt"/);
     assertMatch(
       detailHtml,
-      new RegExp(`action="/app/sessions/${provision.sessionId}/stop"`),
+      new RegExp(`action="/app/sessions/${sessionId}/stop"`),
     );
     assertMatch(detailHtml, /aria-label="Agent: idle · Environment: running"/);
     assertMatch(detailHtml, /aria-label="Stop Session"/);
@@ -714,7 +707,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
     const frame = await fetch(
       new URL(
-        routes.app.sessions.frame.href({ sessionId: provision.sessionId }),
+        routes.app.sessions.frame.href({ sessionId: sessionId }),
         server.baseUrl,
       ),
       { headers: { Cookie: client.cookie } },
@@ -727,7 +720,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
     const anonymousFrame = await fetch(
       new URL(
-        routes.app.sessions.frame.href({ sessionId: provision.sessionId }),
+        routes.app.sessions.frame.href({ sessionId: sessionId }),
         server.baseUrl,
       ),
       { redirect: "manual" },
@@ -755,7 +748,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       routes.app.sessions.detail.href({ sessionId: newerSessionId }),
     );
     const currentSidebarLink = detailHtml.indexOf(
-      routes.app.sessions.detail.href({ sessionId: provision.sessionId }),
+      routes.app.sessions.detail.href({ sessionId: sessionId }),
     );
     const olderSidebarLink = detailHtml.indexOf(
       routes.app.sessions.detail.href({ sessionId: olderSessionId }),
@@ -767,9 +760,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     );
     assert(projectsLink > olderSidebarLink);
 
-    const gitSnapshotHref = routes.api.sessions.gitSnapshot.href({
-      sessionId: provision.sessionId,
-    });
+    const gitSnapshotHref = routes.api.sessions.gitSnapshot.href({ sessionId });
     const gitSnapshotResponse = await fetch(new URL(gitSnapshotHref, server.baseUrl), {
       headers: { Accept: "application/json", Cookie: client.cookie },
     });
@@ -782,8 +773,44 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(gitSnapshot.sections.unstaged.files, []);
     assertEquals("summary" in gitSnapshot, false);
 
+    const gitPatchHref = routes.api.sessions.gitPatchChunk.href({
+      sessionId,
+      snapshotId: GIT_SNAPSHOT_ID,
+      section: "staged",
+      offset: "16",
+    });
+    const gitPatchResponse = await fetch(new URL(gitPatchHref, server.baseUrl), {
+      headers: { Accept: "application/json", Cookie: client.cookie },
+    });
+    assertEquals(gitPatchResponse.status, 200);
+    assertEquals(gitPatchResponse.headers.get("cache-control"), "no-store");
+    const gitPatch = await gitPatchResponse.json();
+    assertEquals(new TextDecoder().decode(decodeBase64(gitPatch.bytes)), "DME.md b/README.");
+    assertEquals(
+      { ...gitPatch, bytes: undefined },
+      {
+        snapshotId: GIT_SNAPSHOT_ID,
+        section: "staged",
+        offset: 16,
+        bytes: undefined,
+        nextOffset: 32,
+        done: false,
+      },
+    );
+    assertEquals(sessions.inputsOf("gitPatchChunk"), [
+      { snapshotId: GIT_SNAPSHOT_ID, section: "staged", offset: 16 },
+    ]);
+
+    // Published media streams from the media bucket; inline images come from the Session itself.
+    sessions.publish(sessionId, ARTIFACT_ID, ARTIFACT_BYTES);
+    sessions.mediaItems.set(`${sessionId}/${INLINE_IMAGE_ID}`, {
+      kind: "inline",
+      mediaType: "image/png",
+      bytes: INLINE_IMAGE_BYTES,
+    });
+    const mediaKey = `media/${client.workspaceId}/${sessionId}/${ARTIFACT_ID}`;
     const artifactHref = routes.api.sessions.artifact.href({
-      sessionId: provision.sessionId,
+      sessionId,
       artifactId: ARTIFACT_ID,
     });
     const artifactResponse = await fetch(new URL(artifactHref, server.baseUrl), {
@@ -793,6 +820,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(artifactResponse.headers.get("content-type"), "video/mp4");
     assertEquals(artifactResponse.headers.get("accept-ranges"), "bytes");
     assertEquals(artifactResponse.headers.get("x-content-type-options"), "nosniff");
+    assertStringIncludes(
+      artifactResponse.headers.get("content-disposition") ?? "",
+      'filename="preview.mp4"',
+    );
     assertEquals(new Uint8Array(await artifactResponse.arrayBuffer()), ARTIFACT_BYTES);
 
     const rangeResponse = await fetch(new URL(artifactHref, server.baseUrl), {
@@ -802,27 +833,63 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(rangeResponse.headers.get("content-range"), "bytes 3-7/10");
     assertEquals(rangeResponse.headers.get("content-length"), "5");
     assertEquals(new TextDecoder().decode(await rangeResponse.arrayBuffer()), "34567");
+    assertEquals(sessions.mediaReads, [
+      { key: mediaKey, range: { offset: 0, length: 10 } },
+      { key: mediaKey, range: { offset: 3, length: 5 } },
+    ]);
 
     const invalidRange = await fetch(new URL(artifactHref, server.baseUrl), {
       headers: { Cookie: client.cookie, Range: "bytes=20-30" },
     });
     assertEquals(invalidRange.status, 416);
     assertEquals(invalidRange.headers.get("content-range"), "bytes */10");
+    await invalidRange.body?.cancel();
+    assertEquals(sessions.mediaReads.length, 2);
     const anonymousArtifact = await fetch(new URL(artifactHref, server.baseUrl));
     assertEquals(anonymousArtifact.status, 401);
+    await anonymousArtifact.body?.cancel();
 
-    const wakeHref = routes.api.sessions.wake.href({ sessionId: provision.sessionId });
+    const inlineImage = await fetch(
+      new URL(
+        routes.api.sessions.artifact.href({ sessionId, artifactId: INLINE_IMAGE_ID }),
+        server.baseUrl,
+      ),
+      { headers: { Cookie: client.cookie } },
+    );
+    assertEquals(inlineImage.status, 200);
+    assertEquals(inlineImage.headers.get("content-type"), "image/png");
+    assertStringIncludes(
+      inlineImage.headers.get("content-disposition") ?? "",
+      'filename="image.png"',
+    );
+    assertEquals(new Uint8Array(await inlineImage.arrayBuffer()), INLINE_IMAGE_BYTES);
+    assertEquals(sessions.mediaReads.length, 2);
+
+    const missingArtifact = await fetch(
+      new URL(
+        routes.api.sessions.artifact.href({ sessionId, artifactId: crypto.randomUUID() }),
+        server.baseUrl,
+      ),
+      { headers: { Cookie: client.cookie } },
+    );
+    assertEquals(missingArtifact.status, 404);
+    await missingArtifact.body?.cancel();
+
+    const wakeHref = routes.api.sessions.wake.href({ sessionId });
     const anonymousWake = await fetch(new URL(wakeHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
     });
     assertEquals(anonymousWake.status, 401);
+    await anonymousWake.body?.cancel();
     const missingWakeCsrf = await fetch(new URL(wakeHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Accept: "application/json", Cookie: client.cookie },
     });
     assertEquals(missingWakeCsrf.status, 403);
+    await missingWakeCsrf.body?.cancel();
+    assertEquals(sessions.inputsOf("wake"), []);
     const woken = await fetch(new URL(wakeHref, server.baseUrl), {
       method: "POST",
       headers: { Accept: "application/json", Cookie: client.cookie },
@@ -830,27 +897,27 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(woken.status, 202);
     assertEquals(await woken.json(), { status: "accepted" });
-    assertEquals(connections.wakes, [{
-      workspaceId: client.workspaceId,
-      sessionId: provision.sessionId,
-      payload: {
-        modelRuntime: {
-          model: MODEL,
-          thinkingLevel: "high",
-          credential: { type: "api_key", value: MODEL_PROVIDER_KEY },
-        },
-        githubToken: GITHUB_TOKEN,
-        environmentSecrets: [ENVIRONMENT_SECRET],
-      },
-    }]);
+    assertEquals(sessions.inputsOf("wake", sessionId), [undefined]);
+    const restarted = await fetch(new URL(wakeHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(detailHtml),
+        recovery: "restart-environment",
+      }),
+    });
+    assertEquals(restarted.status, 202);
+    assertEquals(await restarted.json(), { status: "accepted" });
+    assertEquals(sessions.inputsOf("wake", sessionId), [undefined, "restart-environment"]);
 
-    const changesHref = routes.api.sessions.changes.href({ sessionId: provision.sessionId });
+    const changesHref = routes.api.sessions.changes.href({ sessionId });
     const anonymousChange = await fetch(new URL(changesHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
       body: new URLSearchParams({ action: "stage", path: "README.md" }),
     });
     assertEquals(anonymousChange.status, 401);
+    await anonymousChange.body?.cancel();
     const missingChangeCsrf = await fetch(new URL(changesHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -858,8 +925,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       body: new URLSearchParams({ action: "stage", path: "README.md" }),
     });
     assertEquals(missingChangeCsrf.status, 403);
+    await missingChangeCsrf.body?.cancel();
+    const uncatalogedSessionId = crypto.randomUUID();
     const missingSessionChange = await fetch(
-      new URL(routes.api.sessions.changes.href({ sessionId: crypto.randomUUID() }), server.baseUrl),
+      new URL(
+        routes.api.sessions.changes.href({ sessionId: uncatalogedSessionId }),
+        server.baseUrl,
+      ),
       {
         method: "POST",
         redirect: "manual",
@@ -872,7 +944,9 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       },
     );
     assertEquals(missingSessionChange.status, 404);
-    assertEquals(connections.gitFileUpdates, []);
+    await missingSessionChange.body?.cancel();
+    assertEquals(sessions.addressed.includes(uncatalogedSessionId), false);
+    assertEquals(sessions.inputsOf("updateGitFile"), []);
 
     const exactPath = "README*\n.md";
     const exactPreviousPath = "README?\nold.md";
@@ -900,23 +974,12 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(unstagedChange.status, 200);
     assertEquals(await unstagedChange.json(), { mutationRevision: 2 });
-    assertEquals(connections.gitFileUpdates, [
-      {
-        workspaceId: client.workspaceId,
-        sessionId: provision.sessionId,
-        action: "stage",
-        path: exactPath,
-        previousPath: exactPreviousPath,
-      },
-      {
-        workspaceId: client.workspaceId,
-        sessionId: provision.sessionId,
-        action: "unstage",
-        path: exactPath,
-      },
+    assertEquals(sessions.inputsOf("updateGitFile", sessionId), [
+      { action: "stage", path: exactPath, previousPath: exactPreviousPath },
+      { action: "unstage", path: exactPath },
     ]);
 
-    const messageHref = routes.app.sessions.message.href({ sessionId: provision.sessionId });
+    const messageHref = routes.app.sessions.message.href({ sessionId });
     const missingMessageCsrf = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -924,13 +987,9 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       body: new URLSearchParams({ prompt: "Continue without CSRF" }),
     });
     assertEquals(missingMessageCsrf.status, 403);
-    assertEquals(connections.prompts, []);
+    await missingMessageCsrf.body?.cancel();
+    assertEquals(sessions.inputsOf("submit"), []);
 
-    await store.saveModelProviderCredential(
-      client.workspaceId,
-      PROVIDER_ID,
-      CONTINUATION_MODEL_PROVIDER_KEY,
-    );
     const continued = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -942,24 +1001,61 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(continued.status, 303);
     assertEquals(continued.headers.get("location"), location);
-    assertEquals(connections.prompts, [{
-      workspaceId: client.workspaceId,
-      sessionId: provision.sessionId,
-      payload: {
-        prompt: "Commit the reviewed changes and push the session branch.",
-        modelRuntime: {
-          model: MODEL,
-          thinkingLevel: "high",
-          credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
-        },
-        githubToken: GITHUB_TOKEN,
-        environmentSecrets: [ENVIRONMENT_SECRET],
-      },
-    }]);
-
-    const thinkingLevelHref = routes.app.sessions.thinkingLevel.href({
-      sessionId: provision.sessionId,
+    const [firstSubmission] = submitInputs(sessions, sessionId);
+    assert(firstSubmission);
+    assertMatch(firstSubmission.requestId, /^[0-9a-f-]{36}$/);
+    assertEquals(firstSubmission, {
+      prompt: "Commit the reviewed changes and push the session branch.",
+      requestId: firstSubmission.requestId,
     });
+
+    const thinkingContinuation = await fetch(new URL(messageHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(detailHtml),
+        prompt: "Think less about this one.",
+        thinkingLevel: "low",
+      }),
+    });
+    assertEquals(thinkingContinuation.status, 202);
+    assertEquals(await thinkingContinuation.json(), { status: "accepted" });
+    const secondSubmission = submitInputs(sessions, sessionId)[1];
+    assert(secondSubmission);
+    assert(secondSubmission.requestId !== firstSubmission.requestId);
+    assertEquals(secondSubmission, {
+      prompt: "Think less about this one.",
+      requestId: secondSubmission.requestId,
+      thinkingLevel: "low",
+    });
+
+    // The model provider credential is checked, not forwarded, before every continuation.
+    assertEquals(await store.deleteModelProviderCredential(client.workspaceId, PROVIDER_ID), {
+      status: "deleted",
+    });
+    const unconfiguredMark = sessions.calls.length;
+    const unconfiguredContinuation = await fetch(new URL(messageHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(detailHtml), prompt: "No provider" }),
+    });
+    assertEquals(unconfiguredContinuation.status, 409);
+    assertEquals(await unconfiguredContinuation.json(), {
+      error: "Reconfigure this session's model provider before continuing.",
+    });
+    const unconfiguredWake = await fetch(new URL(wakeHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(detailHtml) }),
+    });
+    assertEquals(unconfiguredWake.status, 409);
+    assertEquals(await unconfiguredWake.json(), {
+      error: "Reconfigure this session's model provider before continuing.",
+    });
+    assertEquals(sessions.methodsSince(unconfiguredMark), ["view", "view"]);
+    await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+
+    const thinkingLevelHref = routes.app.sessions.thinkingLevel.href({ sessionId });
     const changedThinkingLevel = await fetch(new URL(thinkingLevelHref, server.baseUrl), {
       method: "POST",
       headers: { Accept: "application/json", Cookie: client.cookie },
@@ -970,20 +1066,17 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(changedThinkingLevel.status, 202);
     assertEquals(await changedThinkingLevel.json(), { status: "accepted", level: "xhigh" });
-    assertEquals(connections.thinkingLevelChanges, [{
-      workspaceId: client.workspaceId,
-      sessionId: provision.sessionId,
-      level: "xhigh",
-    }]);
+    assertEquals(sessions.inputsOf("setThinkingLevel", sessionId), ["xhigh"]);
 
-    const stopHref = routes.app.sessions.stop.href({ sessionId: provision.sessionId });
+    const stopHref = routes.app.sessions.stop.href({ sessionId });
     const missingStopCsrf = await fetch(new URL(stopHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: client.cookie },
     });
     assertEquals(missingStopCsrf.status, 403);
-    assertEquals(connections.stops, []);
+    await missingStopCsrf.body?.cancel();
+    assertEquals(sessions.inputsOf("stop"), []);
     const stopped = await fetch(new URL(stopHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -992,17 +1085,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(stopped.status, 202);
     assertEquals(await stopped.json(), { status: "accepted" });
-    assertEquals(connections.stops, [{
-      workspaceId: client.workspaceId,
-      sessionId: provision.sessionId,
-    }]);
+    assertEquals(sessions.inputsOf("stop", sessionId).length, 1);
 
-    connections.snapshot = {
-      ...connections.snapshot,
+    sessions.update(sessionId, {
       state: "stopped",
       agentState: "paused",
       environmentState: "stopped",
-    };
+    });
     const stoppedDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
@@ -1012,6 +1101,16 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(stoppedHtml, /aria-label="Agent: paused · Environment: stopped"/);
     assertMatch(stoppedHtml, /aria-label="Wake"/);
     assertNotMatch(stoppedHtml, /aria-label="Stop Session"/);
+    const alreadyStopped = await fetch(new URL(stopHref, server.baseUrl), {
+      method: "POST",
+      headers: { Accept: "application/json", Cookie: client.cookie },
+      body: new URLSearchParams({ _csrf: csrfFrom(stoppedHtml) }),
+    });
+    assertEquals(alreadyStopped.status, 409);
+    assertEquals(await alreadyStopped.json(), {
+      error: "The session cannot be stopped right now.",
+    });
+    assertEquals(sessions.inputsOf("stop", sessionId).length, 1);
     const coldWake = await fetch(new URL(wakeHref, server.baseUrl), {
       method: "POST",
       headers: { Accept: "application/json", Cookie: client.cookie },
@@ -1019,19 +1118,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(coldWake.status, 202);
     assertEquals(await coldWake.json(), { status: "accepted" });
-    assertEquals(connections.wakes[1], {
-      workspaceId: client.workspaceId,
-      sessionId: provision.sessionId,
-      payload: {
-        modelRuntime: {
-          model: MODEL,
-          thinkingLevel: "high",
-          credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
-        },
-        githubToken: GITHUB_TOKEN,
-        environmentSecrets: [ENVIRONMENT_SECRET],
-      },
-    });
+    assertEquals(sessions.inputsOf("wake", sessionId).length, 3);
     const coldContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -1042,38 +1129,24 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       }),
     });
     assertEquals(coldContinuation.status, 303);
-    assertEquals(connections.prompts[1], {
-      workspaceId: client.workspaceId,
-      sessionId: provision.sessionId,
-      payload: {
-        prompt: "Resume this stopped session",
-        modelRuntime: {
-          model: MODEL,
-          thinkingLevel: "high",
-          credential: { type: "api_key", value: CONTINUATION_MODEL_PROVIDER_KEY },
-        },
-        githubToken: GITHUB_TOKEN,
-        environmentSecrets: [ENVIRONMENT_SECRET],
-      },
-    });
+    assertEquals(submitInputs(sessions, sessionId)[2]?.prompt, "Resume this stopped session");
 
-    connections.snapshot = {
-      ...connections.snapshot,
+    sessions.update(sessionId, {
       state: "running",
       agentState: "running",
       environmentState: "running",
-    };
+    });
     const runningDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
     const runningHtml = await runningDetail.text();
     assertMatch(
       runningHtml,
-      new RegExp(`action="/app/sessions/${provision.sessionId}/abort"`),
+      new RegExp(`action="/app/sessions/${sessionId}/abort"`),
     );
     assertMatch(
       runningHtml,
-      new RegExp(`form="session-${provision.sessionId}-abort"`),
+      new RegExp(`form="session-${sessionId}-abort"`),
     );
     assertMatch(runningHtml, /aria-label="Stop active turn"/);
     assertMatch(runningHtml, /title="Stop active turn"/);
@@ -1099,7 +1172,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       body: new URLSearchParams({ _csrf: csrfFrom(runningHtml) }),
     });
     assertEquals(busyStop.status, 303);
-    assertEquals(connections.stops.length, 2);
+    assertEquals(sessions.inputsOf("stop", sessionId).length, 2);
     const busyContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -1112,19 +1185,18 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertEquals(busyContinuation.status, 202);
     assertMatch(busyContinuation.headers.get("content-type") ?? "", /^application\/json\b/);
     assertEquals(await busyContinuation.json(), { status: "accepted" });
-    assertEquals(connections.prompts.length, 3);
-    assertEquals(connections.prompts[2]?.payload.prompt, "Queue this follow-up");
-    assertEquals(connections.prompts[2]?.payload.githubToken, GITHUB_TOKEN);
-    assertEquals(connections.prompts[2]?.payload.environmentSecrets, [ENVIRONMENT_SECRET]);
+    assertEquals(submitInputs(sessions, sessionId).length, 4);
+    assertEquals(submitInputs(sessions, sessionId)[3]?.prompt, "Queue this follow-up");
 
-    const abortHref = routes.app.sessions.abort.href({ sessionId: provision.sessionId });
+    const abortHref = routes.app.sessions.abort.href({ sessionId });
     const missingAbortCsrf = await fetch(new URL(abortHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: client.cookie },
     });
     assertEquals(missingAbortCsrf.status, 403);
-    assertEquals(connections.aborts, []);
+    await missingAbortCsrf.body?.cancel();
+    assertEquals(sessions.inputsOf("abort"), []);
 
     const aborted = await fetch(new URL(abortHref, server.baseUrl), {
       method: "POST",
@@ -1134,17 +1206,13 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(aborted.status, 202);
     assertEquals(await aborted.json(), { status: "accepted" });
-    assertEquals(connections.aborts, [{
-      workspaceId: client.workspaceId,
-      sessionId: provision.sessionId,
-    }]);
+    assertEquals(sessions.inputsOf("abort", sessionId).length, 1);
 
-    connections.snapshot = {
-      ...connections.snapshot,
+    sessions.update(sessionId, {
       state: "ready",
       agentState: "idle",
       environmentState: "running",
-    };
+    });
     const staleAbort = await fetch(new URL(abortHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -1153,9 +1221,10 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     });
     assertEquals(staleAbort.status, 409);
     assertMatch(await staleAbort.text(), /no active Pi run to abort/);
-    assertEquals(connections.aborts.length, 1);
+    assertEquals(sessions.inputsOf("abort", sessionId).length, 1);
 
-    connections.sessionId = null;
+    // An unreachable Session fails closed: only its view is read and no command is issued.
+    sessions.unreachable = true;
     const offlineDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
@@ -1178,6 +1247,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertNotMatch(offlineHtml, /openorb\/browser-test/);
     assertNotMatch(offlineHtml, /0123456789abcdef0123456789abcdef01234567/);
 
+    const offlineMark = sessions.calls.length;
     const offlineContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -1188,39 +1258,38 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
       }),
     });
     assertEquals(offlineContinuation.status, 503);
-    assertEquals(await offlineContinuation.json(), { error: "The pinned runner is offline." });
-    assertEquals(connections.prompts.length, 3);
+    assertEquals(await offlineContinuation.json(), { error: "The session is unavailable." });
     const offlineAbort = await fetch(new URL(abortHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Cookie: client.cookie },
       body: new URLSearchParams({ _csrf: csrfFrom(runningHtml) }),
     });
-    assertEquals(offlineAbort.status, 503);
-    assertMatch(await offlineAbort.text(), /pinned runner is offline/);
-    assertEquals(connections.aborts.length, 1);
+    assertEquals(offlineAbort.status, 409);
+    assertMatch(await offlineAbort.text(), /no active Pi run to abort/);
     const offlineStop = await fetch(new URL(stopHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
       headers: { Accept: "application/json", Cookie: client.cookie },
       body: new URLSearchParams({ _csrf: csrfFrom(offlineHtml) }),
     });
-    assertEquals(offlineStop.status, 503);
-    assertEquals(await offlineStop.json(), { error: "The pinned runner is offline." });
-    assertEquals(connections.stops.length, 2);
+    assertEquals(offlineStop.status, 409);
+    assertEquals(await offlineStop.json(), { error: "The session cannot be stopped right now." });
     const offlineWake = await fetch(new URL(wakeHref, server.baseUrl), {
       method: "POST",
       headers: { Accept: "application/json", Cookie: client.cookie },
       body: new URLSearchParams({ _csrf: csrfFrom(offlineHtml) }),
     });
     assertEquals(offlineWake.status, 503);
-    assertEquals(await offlineWake.json(), { error: "The pinned runner is offline." });
-    assertEquals(connections.wakes.length, 2);
+    assertEquals(await offlineWake.json(), { error: "The session is unavailable." });
+    // The HTML abort rejection also renders the detail frame, which reads the view again.
+    assertEquals(new Set(sessions.methodsSince(offlineMark)), new Set(["view"]));
     const offlineGitSnapshot = await fetch(new URL(gitSnapshotHref, server.baseUrl), {
       headers: { Accept: "application/json", Cookie: client.cookie },
     });
     assertEquals(offlineGitSnapshot.status, 503);
     assertEquals(offlineGitSnapshot.headers.get("cache-control"), "no-store");
+    assertEquals(await offlineGitSnapshot.json(), { error: SESSION_UNREACHABLE });
     const offlineGitFileUpdate = await fetch(new URL(changesHref, server.baseUrl), {
       method: "POST",
       headers: { Accept: "application/json", Cookie: client.cookie },
@@ -1230,17 +1299,15 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         path: "README.md",
       }),
     });
-    assertEquals(offlineGitFileUpdate.status, 503);
-    assertEquals(await offlineGitFileUpdate.json(), {
-      error: "The pinned runner is offline.",
-    });
-    assertEquals(connections.gitFileUpdates.length, 2);
-    connections.sessionId = provision.sessionId;
+    assertEquals(offlineGitFileUpdate.status, 409);
+    assertEquals(await offlineGitFileUpdate.json(), { error: SESSION_UNREACHABLE });
+    assertEquals(submitInputs(sessions, sessionId).length, 4);
+    assertEquals(sessions.inputsOf("abort", sessionId).length, 1);
+    assertEquals(sessions.inputsOf("stop", sessionId).length, 2);
+    assertEquals(sessions.inputsOf("wake", sessionId).length, 3);
+    sessions.unreachable = false;
 
-    connections.beforeAcceptance = undefined;
-    assert(connections.snapshot);
-    connections.snapshot = {
-      ...connections.snapshot,
+    sessions.update(sessionId, {
       state: "error",
       agentState: "error",
       environmentState: "error",
@@ -1251,7 +1318,7 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
         diagnostics: "qemu exited safely",
         recovery: "retry-provisioning",
       }],
-    };
+    });
     const failedDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
     });
@@ -1260,114 +1327,62 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
     assertMatch(failedHtml, /data-session-issue-diagnostics/);
     assertStringIncludes(failedHtml, "qemu exited safely");
     assertMatch(failedHtml, /name="recovery" value="retry-provisioning"/);
-    await store.saveModelProviderCredential(
-      client.workspaceId,
-      PROVIDER_ID,
-      RETRY_MODEL_PROVIDER_KEY,
-    );
-    const staleRetryResponse = await fetch(
-      new URL(routes.app.sessions.retry.href({ sessionId: provision.sessionId }), server.baseUrl),
-      {
-        method: "POST",
-        redirect: "manual",
-        headers: { Cookie: client.cookie },
-        body: new URLSearchParams({
-          _csrf: csrfFrom(failedHtml),
-          recovery: "restart-environment",
-        }),
-      },
-    );
+    const retryHref = routes.app.sessions.retry.href({ sessionId });
+    const staleRetryResponse = await fetch(new URL(retryHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(failedHtml),
+        recovery: "restart-environment",
+      }),
+    });
     assertEquals(staleRetryResponse.status, 409);
     assertMatch(await staleRetryResponse.text(), /offered recovery action changed/i);
-    assertEquals(connections.provisions.length, 1);
-    const retryResponse = await fetch(
-      new URL(routes.app.sessions.retry.href({ sessionId: provision.sessionId }), server.baseUrl),
-      {
-        method: "POST",
-        redirect: "manual",
-        headers: { Cookie: client.cookie },
-        body: new URLSearchParams({
-          _csrf: csrfFrom(failedHtml),
-          recovery: "retry-provisioning",
-        }),
-      },
-    );
+    assertEquals(sessions.inputsOf("retry"), []);
+    const retryResponse = await fetch(new URL(retryHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(failedHtml),
+        recovery: "retry-provisioning",
+      }),
+    });
     assertEquals(retryResponse.status, 303);
-    const retryProvision = connections.provisions[1];
-    assertEquals(retryProvision?.sessionId, provision.sessionId);
-    assertEquals(retryProvision?.payload.mode, "retry");
-    assertEquals(
-      retryProvision?.payload.mode === "retry" ? retryProvision.payload.modelRuntime : undefined,
-      {
-        model: provision.payload.modelRuntime.model,
-        thinkingLevel: "high",
-        credential: { type: "api_key", value: RETRY_MODEL_PROVIDER_KEY },
-      },
-    );
-    assertEquals(
-      retryProvision?.payload.mode === "retry"
-        ? retryProvision.payload.environmentSecrets
-        : undefined,
-      [ENVIRONMENT_SECRET],
-    );
+    assertEquals(retryResponse.headers.get("location"), location);
+    assertEquals(sessions.inputsOf("retry", sessionId), ["retry-provisioning"]);
+    const settledRetry = await fetch(new URL(retryHref, server.baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+      body: new URLSearchParams({
+        _csrf: csrfFrom(failedHtml),
+        recovery: "retry-provisioning",
+      }),
+    });
+    assertEquals(settledRetry.status, 409);
+    assertMatch(await settledRetry.text(), /Only a failed session/);
+    assertEquals(sessions.inputsOf("retry", sessionId).length, 1);
 
-    const abort = new AbortController();
-    const eventResponse = await fetch(
-      new URL(routes.api.sessions.events.href({ sessionId: provision.sessionId }), server.baseUrl),
-      { headers: { Cookie: client.cookie }, signal: abort.signal },
-    );
+    // The Session owns its event stream; the route forwards the request and the response.
+    const eventsHref = routes.api.sessions.events.href({ sessionId });
+    const anonymousEvents = await fetch(new URL(eventsHref, server.baseUrl));
+    assertEquals(anonymousEvents.status, 401);
+    await anonymousEvents.body?.cancel();
+    assertEquals(sessions.inputsOf("events"), []);
+    const eventResponse = await fetch(new URL(eventsHref, server.baseUrl), {
+      headers: { Cookie: client.cookie, "Last-Event-ID": "7" },
+    });
     assertEquals(eventResponse.status, 200);
-    const reader = eventResponse.body?.getReader();
-    assert(reader);
-    let replayText = "";
-    while (!replayText.includes("conversation.snapshot")) {
-      const replayChunk = await reader.read();
-      assertEquals(replayChunk.done, false);
-      replayText += new TextDecoder().decode(replayChunk.value);
-    }
-    abort.abort();
+    assertEquals(eventResponse.headers.get("content-type"), "text/event-stream");
     assertString(
-      replayText,
+      await eventResponse.text(),
       'event: session\ndata: {"type":"conversation.snapshot"',
     );
-    assertEquals(replayText.includes("id:"), false);
-    assertEquals(connections.subscriptions, 1);
-    await waitFor(() => connections.subscriptionUnsubscribes === 1);
+    assertEquals(sessions.inputsOf("events", sessionId), [{ lastEventId: "7" }]);
 
-    const keepaliveAbort = new AbortController();
-    const keepaliveUrl = new URL(
-      routes.api.sessions.events.href({ sessionId: provision.sessionId }),
-      server.baseUrl,
-    );
-    const keepaliveResponse = await fetch(keepaliveUrl, {
-      headers: { Cookie: client.cookie, "Last-Event-ID": "1" },
-      signal: keepaliveAbort.signal,
-    });
-    const keepaliveReader = keepaliveResponse.body?.getReader();
-    assert(keepaliveReader);
-    try {
-      const replacement = await keepaliveReader.read();
-      assertString(new TextDecoder().decode(replacement.value), "conversation.snapshot");
-      const keepalive = await Promise.race([
-        keepaliveReader.read(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Session SSE keepalive timed out.")), 17_000)
-        ),
-      ]);
-      assertEquals(new TextDecoder().decode(keepalive.value), ": keepalive\n\n");
-    } finally {
-      keepaliveAbort.abort();
-    }
-    assertEquals(connections.subscriptions, 2);
-    await waitFor(() => connections.subscriptionUnsubscribes === 2);
-
-    connections.sessionId = null;
-    const offlineEvents = await fetch(
-      new URL(routes.api.sessions.events.href({ sessionId: provision.sessionId }), server.baseUrl),
-      { headers: { Cookie: client.cookie } },
-    );
-    assertEquals(offlineEvents.status, 200);
-    assertEquals(await offlineEvents.body?.getReader().read(), { value: undefined, done: true });
+    assertNoSecrets(JSON.stringify(sessions.calls));
   } finally {
     await server.close();
   }
@@ -1375,13 +1390,12 @@ Deno.test("browser form waits for runner acceptance before cataloging and keeps 
 
 Deno.test("session routes enforce auth, CSRF, project ownership, and runner ownership", async () => {
   const { workspace: store } = activate();
-  const connections = new BrowserTestRunnerConnections();
-  const router = createAppRouter(createAppServices(store, connections));
+  const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
 
   try {
     const client = await authenticate(server.baseUrl, store);
-    connections.workspaceId = client.workspaceId;
+    sessions.workspaceId = client.workspaceId;
     const project = await store.saveProject(client.workspaceId, {
       name: "Owner project",
       repositoryUrl: "https://github.com/openorb/owner.git",
@@ -1399,7 +1413,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       repositoryUrl: "https://github.com/openorb/foreign.git",
     });
     assert(foreignProject.status === "saved");
-    connections.runnerId = (await enrollRunner(store, client.workspaceId)).runnerId;
+    sessions.runnerId = (await enrollRunner(store, client.workspaceId)).runnerId;
 
     const anonymous = await fetch(new URL(routes.app.index.href(), server.baseUrl), {
       redirect: "manual",
@@ -1423,11 +1437,12 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       projectId: project.project.id,
       model: MODEL,
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(unCsrf.status, 403);
+    await unCsrf.body?.cancel();
 
     const foreign = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
@@ -1435,7 +1450,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       projectId: foreignProject.project.id,
       model: MODEL,
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
@@ -1444,20 +1459,20 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     assertMatch(foreignHtml, /<dialog[^>]*id="openorb-new-session"[^>]* open/);
     assertMatch(foreignHtml, /Project is unavailable or does not exist/);
     assertNotMatch(foreignHtml, /name="sessionId"/);
-    assertEquals(connections.provisions.length, 0);
+    assertEquals(createInputs(sessions).length, 0);
 
     const unsupportedProvider = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
       projectId: project.project.id,
       model: "openai/not-a-pi-model",
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(unsupportedProvider.status, 400);
     assertMatch(await unsupportedProvider.text(), /selected Pi model is unavailable/);
-    assertEquals(connections.provisions.length, 0);
+    assertEquals(createInputs(sessions).length, 0);
 
     const unavailableRunner = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
@@ -1469,60 +1484,74 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(unavailableRunner.status, 409);
-    assertEquals(connections.provisions.length, 0);
+    assertEquals(createInputs(sessions).length, 0);
+
+    const foreignRunner = await enrollRunner(otherWorkspace, otherWorkspaceId);
+    const foreignRunnerSubmission = await submitSession(server.baseUrl, client.cookie, {
+      _csrf: csrfFrom(html),
+      projectId: project.project.id,
+      model: MODEL,
+      ref: "main",
+      runnerId: foreignRunner.runnerId,
+      branchName: "openorb/browser-test",
+      initialPrompt: INITIAL_PROMPT,
+    });
+    assertEquals(foreignRunnerSubmission.status, 409);
+    await foreignRunnerSubmission.body?.cancel();
+    assertEquals(createInputs(sessions).length, 0);
 
     const unsupportedOrbSize = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
       projectId: project.project.id,
       model: MODEL,
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       orbSize: "large",
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(unsupportedOrbSize.status, 409);
     assertMatch(await unsupportedOrbSize.text(), /cannot provision the large orb size/);
-    assertEquals(connections.provisions.length, 0);
+    assertEquals(createInputs(sessions).length, 0);
 
     const invalidOrbSize = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
       projectId: project.project.id,
       model: MODEL,
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       orbSize: "enormous",
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(invalidOrbSize.status, 400);
-    assertEquals(connections.provisions.length, 0);
+    assertEquals(createInputs(sessions).length, 0);
 
     const invalidThinkingLevel = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
       projectId: project.project.id,
       model: MODEL,
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       thinkingLevel: "unbounded",
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(invalidThinkingLevel.status, 400);
-    assertEquals(connections.provisions.length, 0);
+    assertEquals(createInputs(sessions).length, 0);
 
     const missingAuthor = await submitSession(server.baseUrl, client.cookie, {
       _csrf: csrfFrom(html),
       projectId: project.project.id,
       model: MODEL,
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(missingAuthor.status, 409);
     assertMatch(await missingAuthor.text(), /Configure your Git author name and email/);
-    assertEquals(connections.provisions.length, 0);
+    assertEquals(createInputs(sessions).length, 0);
     await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
 
     const alternateProvider = await submitSession(server.baseUrl, client.cookie, {
@@ -1531,27 +1560,24 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       projectId: project.project.id,
       model: OPENAI_MODEL,
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(alternateProvider.status, 303);
-    const alternateProvision = connections.provisions[0];
-    assert(alternateProvision?.payload.mode === "create");
-    assert(alternateProvision.sessionId !== composerSessionId);
+    const [alternateCreate] = createInputs(sessions);
+    assert(alternateCreate);
+    assert(alternateCreate.sessionId !== composerSessionId);
     assertEquals(
       alternateProvider.headers.get("location"),
-      routes.app.sessions.detail.href({ sessionId: alternateProvision.sessionId }),
+      routes.app.sessions.detail.href({ sessionId: alternateCreate.sessionId }),
     );
-    assertEquals(
-      alternateProvision.payload.modelRuntime,
-      {
-        model: OPENAI_MODEL,
-        thinkingLevel: "high",
-        credential: { type: "api_key", value: OPENAI_PROVIDER_KEY },
-      },
-    );
-    connections.provisions = [];
+    assertEquals(alternateCreate.model, OPENAI_MODEL);
+    assertEquals(alternateCreate.thinkingLevel, "high");
+    assertEquals(alternateCreate.runnerId, sessions.runnerId);
+    assertEquals(alternateCreate.workspaceId, client.workspaceId);
+    assertEquals(alternateCreate.projectId, project.project.id);
+    assertEquals(JSON.stringify(alternateCreate).includes(OPENAI_PROVIDER_KEY), false);
 
     assertEquals(await store.deleteModelProviderCredential(client.workspaceId, PROVIDER_ID), {
       status: "deleted",
@@ -1561,13 +1587,14 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
       projectId: project.project.id,
       model: MODEL,
       ref: "main",
-      runnerId: connections.runnerId,
+      runnerId: sessions.runnerId,
       branchName: "openorb/browser-test",
       initialPrompt: INITIAL_PROMPT,
     });
     assertEquals(unconfiguredProvider.status, 409);
     assertMatch(await unconfiguredProvider.text(), /Configure the selected model provider/);
-    assertEquals(connections.provisions.length, 0);
+    assertEquals(createInputs(sessions).length, 1);
+    assertEquals(sessions.addressed, [alternateCreate.sessionId]);
   } finally {
     await server.close();
   }
@@ -1575,13 +1602,12 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
 
 Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolates tenants", async () => {
   const { workspace: store, storage } = activate();
-  const connections = new BrowserTestRunnerConnections();
-  const router = createAppRouter(createAppServices(store, connections));
+  const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
 
   try {
     const client = await authenticate(server.baseUrl, store);
-    connections.workspaceId = client.workspaceId;
+    sessions.workspaceId = client.workspaceId;
     const projectResult = await store.saveProject(client.workspaceId, {
       name: "OpenOrb",
       repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
@@ -1590,7 +1616,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
     await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
     const enrolled = await enrollRunner(store, client.workspaceId);
-    connections.runnerId = enrolled.runnerId;
+    sessions.runnerId = enrolled.runnerId;
 
     const onlineSession = deletionSnapshot(
       crypto.randomUUID(),
@@ -1602,8 +1628,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     ]);
     assert(onlineReconciled);
     assertEquals(onlineReconciled.acceptedSessionIds, [onlineSession.id]);
-    connections.sessionId = onlineSession.id;
-    connections.snapshot = onlineSession;
+    sessions.views.set(onlineSession.id, { runnerId: enrolled.runnerId, snapshot: onlineSession });
 
     const detailUrl = new URL(
       routes.app.sessions.detail.href({ sessionId: onlineSession.id }),
@@ -1630,7 +1655,14 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     });
     assertEquals(missingCsrf.status, 403);
     assert(await store.getSessionCatalogEntry(client.workspaceId, onlineSession.id));
-    assertEquals(connections.deletions, []);
+    await missingCsrf.body?.cancel();
+    assertEquals(sessions.inputsOf("delete"), []);
+
+    // The catalog entry is tombstoned before the Session is told to clean up.
+    const catalogAtDelete: unknown[] = [];
+    sessions.beforeDelete = async (sessionId) => {
+      catalogAtDelete.push(await store.getSessionCatalogEntry(client.workspaceId, sessionId));
+    };
 
     const deleted = await submitDeletion(
       server.baseUrl,
@@ -1641,9 +1673,11 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     assertEquals(deleted.status, 303);
     assertEquals(deleted.headers.get("location"), routes.app.index.href());
     assertEquals(await store.getSessionCatalogEntry(client.workspaceId, onlineSession.id), null);
-    assertEquals(connections.deletions, [
-      { workspaceId: client.workspaceId, sessionId: onlineSession.id },
+    assertEquals(sessions.calls.filter((call) => call.method === "delete"), [
+      { sessionId: onlineSession.id, method: "delete", input: undefined },
     ]);
+    assertEquals(catalogAtDelete, [null]);
+    assertEquals(sessions.views.has(onlineSession.id), false);
 
     const offlineSession = deletionSnapshot(
       crypto.randomUUID(),
@@ -1655,8 +1689,8 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     ]);
     assert(offlineReconciled);
     assertEquals(await store.revokeRunner(client.workspaceId, enrolled.runnerId), "revoked");
-    connections.sessionId = null;
-    connections.snapshot = null;
+    // Deletion does not depend on a reachable Session or a connected runner.
+    sessions.unreachable = true;
     const offlineDeleted = await submitDeletion(
       server.baseUrl,
       client.cookie,
@@ -1665,7 +1699,8 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     );
     assertEquals(offlineDeleted.status, 303);
     assertEquals(await store.getSessionCatalogEntry(client.workspaceId, offlineSession.id), null);
-    assertEquals(connections.deletions.length, 1);
+    assertEquals(sessions.inputsOf("delete", offlineSession.id), [undefined]);
+    sessions.unreachable = false;
 
     const { workspace: otherWorkspace, workspaceId: otherWorkspaceId } = await createWorkspace();
     const otherProject = await otherWorkspace.saveProject(otherWorkspaceId, {
@@ -1685,7 +1720,11 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
       ],
     );
     assert(foreignReconciled);
-    const deletionCount = connections.deletions.length;
+    // A Session of another Workspace is never addressed, even when it exists and is healthy.
+    sessions.views.set(foreignSession.id, {
+      runnerId: enrolled.runnerId,
+      snapshot: foreignSession,
+    });
     const foreignDelete = await submitDeletion(
       server.baseUrl,
       client.cookie,
@@ -1694,7 +1733,10 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     );
     assertEquals(foreignDelete.status, 404);
     assert(await otherWorkspace.getSessionCatalogEntry(otherWorkspaceId, foreignSession.id));
-    assertEquals(connections.deletions.length, deletionCount);
+    await foreignDelete.body?.cancel();
+    await assertForeignSessionHidden(server.baseUrl, client.cookie, csrfToken, foreignSession.id);
+    assertEquals(sessions.addressed.includes(foreignSession.id), false);
+    assertEquals(sessions.views.has(foreignSession.id), true);
 
     const sameIdForOtherWorkspace = deletionSnapshot(
       onlineSession.id,
@@ -1870,4 +1912,97 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
     if (Date.now() >= deadline) throw new Error("Timed out waiting for the expected test state.");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+/** Every Session route answers 404 for another Workspace's Session before addressing it. */
+async function assertForeignSessionHidden(
+  baseUrl: URL,
+  cookie: string,
+  csrfToken: string,
+  sessionId: string,
+): Promise<void> {
+  const post = (href: string, fields: Record<string, string> = {}) =>
+    fetch(new URL(href, baseUrl), {
+      method: "POST",
+      redirect: "manual",
+      headers: { Accept: "application/json", Cookie: cookie },
+      body: new URLSearchParams({ _csrf: csrfToken, ...fields }),
+    });
+  const get = (href: string) =>
+    fetch(new URL(href, baseUrl), { redirect: "manual", headers: { Cookie: cookie } });
+  const requests: [string, Promise<Response>][] = [
+    ["detail", get(routes.app.sessions.detail.href({ sessionId }))],
+    ["frame", get(routes.app.sessions.frame.href({ sessionId }))],
+    [
+      "message",
+      post(routes.app.sessions.message.href({ sessionId }), { prompt: "Cross-tenant prompt" }),
+    ],
+    [
+      "thinkingLevel",
+      post(routes.app.sessions.thinkingLevel.href({ sessionId }), { thinkingLevel: "low" }),
+    ],
+    ["abort", post(routes.app.sessions.abort.href({ sessionId }))],
+    ["stop", post(routes.app.sessions.stop.href({ sessionId }))],
+    [
+      "retry",
+      post(routes.app.sessions.retry.href({ sessionId }), { recovery: "retry-provisioning" }),
+    ],
+    ["wake", post(routes.api.sessions.wake.href({ sessionId }))],
+    [
+      "changes",
+      post(routes.api.sessions.changes.href({ sessionId }), { action: "stage", path: "README.md" }),
+    ],
+    ["gitSnapshot", get(routes.api.sessions.gitSnapshot.href({ sessionId }))],
+    [
+      "gitPatchChunk",
+      get(routes.api.sessions.gitPatchChunk.href({
+        sessionId,
+        snapshotId: GIT_SNAPSHOT_ID,
+        section: "staged",
+        offset: "0",
+      })),
+    ],
+    ["artifact", get(routes.api.sessions.artifact.href({ sessionId, artifactId: ARTIFACT_ID }))],
+    ["events", get(routes.api.sessions.events.href({ sessionId }))],
+  ];
+  for (const [name, request] of requests) {
+    const response = await request;
+    await response.body?.cancel();
+    assertEquals(response.status, 404, `${name} must not reveal another Workspace's Session`);
+  }
+}
+
+function createInputs(sessions: BrowserTestSessions): CreateSessionInput[] {
+  // SAFETY: the fake records each create call's CreateSessionInput argument.
+  return sessions.inputsOf("create") as CreateSessionInput[];
+}
+
+function submitInputs(
+  sessions: BrowserTestSessions,
+  sessionId: string,
+): Parameters<SessionApi["submit"]>[0][] {
+  // SAFETY: the fake records each submit call's input argument.
+  return sessions.inputsOf("submit", sessionId) as Parameters<SessionApi["submit"]>[0][];
+}
+
+function assertNoSecrets(source: string): void {
+  for (
+    const plaintext of [
+      GITHUB_TOKEN,
+      MODEL_PROVIDER_KEY,
+      OPENAI_PROVIDER_KEY,
+      ENVIRONMENT_SECRET_VALUE,
+    ]
+  ) {
+    assertEquals(source.includes(plaintext), false, `${plaintext} must stay in the gateway`);
+  }
+}
+
+function catalogEntry(
+  id: string,
+  projectId: string,
+  createdAt: string,
+  initialPromptPreview: string,
+): SessionCatalogEntry {
+  return { id, projectId, createdAt, initialPromptPreview };
 }

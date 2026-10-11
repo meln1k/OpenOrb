@@ -36,7 +36,12 @@ export class Runners extends DurableObject<Env> {
     // Runner-side environment changes go to the Session Durable Object that owns the agent.
     const observer: EnvironmentObserver = {
       notify: async (workspaceId, sessionId, notice) => {
-        await env.SESSIONS.getByName(sessionId).environmentNotice(workspaceId, sessionId, notice);
+        // Native RPC rejects Schema.Class values such as the environment snapshot.
+        await env.SESSIONS.getByName(sessionId).environmentNotice(
+          workspaceId,
+          sessionId,
+          structuredClone(notice),
+        );
       },
     };
     this.#runtime = ManagedRuntime.make(runnerRegistryLayer(workspace, observer));

@@ -4,10 +4,11 @@ import {
   orbSizeSchema,
 } from "@openorb/protocol";
 import {
+  initialPromptPreview,
   isSafeGitReference,
   MAX_RPC_INITIAL_PROMPT_BYTES,
-  ProjectId,
 } from "@openorb/protocol/runner-api";
+import { tryAsync } from "@openorb/result";
 import { validate as validateUuid } from "@std/uuid";
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
@@ -16,7 +17,6 @@ import { requireAuth } from "remix/middleware/auth";
 import { getCsrfToken } from "remix/middleware/csrf";
 import { type ContextWithParams, createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
-import { Schema } from "effect";
 
 import { AppPage } from "@/app/actions/app/page.tsx";
 import { SessionDetailFrame, SessionDetailPage } from "@/app/actions/sessions/page.tsx";
@@ -141,41 +141,14 @@ export default createController(routes.app.sessions, {
         return await renderCreateError(context, selected.message, 409, submitted);
       }
 
-      const [
-        [githubToken, gitCredentialError],
-        [modelRuntime, modelCredentialError],
-        [environmentSecrets, environmentSecretError],
-        gitAuthor,
-      ] = await Promise.all([
-        workspace.getGitHubToken(workspaceId),
-        resolveSessionModelRuntime(
-          workspaceId,
-          parsed.value.model,
-          workspace,
-        ),
-        workspace.getEnvironmentSecrets(workspaceId),
+      const [[modelRuntime, modelCredentialError], gitAuthor] = await Promise.all([
+        resolveSessionModelRuntime(workspaceId, parsed.value.model, workspace),
         workspace.getGitAuthorConfiguration(context.auth.identity.userId),
       ]);
-      if (gitCredentialError !== undefined) {
-        return await renderCreateError(
-          context,
-          "The saved GitHub credential could not be read.",
-          500,
-          submitted,
-        );
-      }
       if (modelCredentialError !== undefined) {
         return await renderCreateError(
           context,
           "The saved model provider credential could not be read.",
-          500,
-          submitted,
-        );
-      }
-      if (environmentSecretError !== undefined) {
-        return await renderCreateError(
-          context,
-          "The saved environment secrets could not be read.",
           500,
           submitted,
         );
@@ -198,32 +171,52 @@ export default createController(routes.app.sessions, {
       }
 
       const sessionId = crypto.randomUUID();
-      const provisioned = await context.services.runnerConnections.provisionSession({
-        workspaceId,
-        runnerId: selected.runner.id,
-        sessionId,
-        payload: {
-          mode: "create",
-          projectId: Schema.decodeUnknownSync(ProjectId)(project.id),
+      const createdAt = new Date().toISOString();
+      // The catalog entry first, so a Session that fails to start is still visible and deletable.
+      const [catalog, catalogError] = await workspace.reconcileSessionManifestEntries(workspaceId, [
+        {
+          id: sessionId,
+          projectId: project.id,
+          createdAt,
+          initialPromptPreview: initialPromptPreview(parsed.value.initialPrompt),
+        },
+      ]);
+      if (catalogError !== undefined) {
+        return await renderCreateError(
+          context,
+          "The session could not be recorded.",
+          500,
+          submitted,
+        );
+      }
+      if (!catalog.acceptedSessionIds.includes(sessionId)) {
+        return await renderCreateError(
+          context,
+          "The session could not be recorded.",
+          500,
+          submitted,
+        );
+      }
+      const [, createError] = await sessionCall(
+        context.services.sessions(sessionId).create({
+          workspaceId,
+          sessionId,
+          projectId: project.id,
+          createdAt,
+          runnerId: selected.runner.id,
+          orbSize: parsed.value.orbSize,
           repositoryUrl: project.repositoryUrl,
           ref: parsed.value.ref,
           branchName: parsed.value.branchName,
-          gitAuthor: {
-            name: gitAuthor.authorName,
-            email: gitAuthor.authorEmail,
-          },
-          orbSize: parsed.value.orbSize,
+          gitAuthor: { name: gitAuthor.authorName, email: gitAuthor.authorEmail },
+          model: parsed.value.model,
+          thinkingLevel: parsed.value.thinkingLevel ?? DEFAULT_SESSION_THINKING_LEVEL,
           initialPrompt: parsed.value.initialPrompt,
-          modelRuntime: {
-            ...modelRuntime,
-            thinkingLevel: parsed.value.thinkingLevel ?? DEFAULT_SESSION_THINKING_LEVEL,
-          },
-          ...(githubToken ? { githubToken } : {}),
-          ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
-        },
-      });
-      if (provisioned.status !== "accepted") {
-        return await renderCreateError(context, provisioned.message, 503, submitted);
+        }),
+      );
+      if (createError !== undefined) {
+        await workspace.deleteSessionCatalogEntry(workspaceId, sessionId, new Date().toISOString());
+        return await renderCreateError(context, createError, 503, submitted);
       }
 
       return redirect(routes.app.sessions.detail.href({ sessionId }), 303);
@@ -254,54 +247,28 @@ export default createController(routes.app.sessions, {
         sessionId,
       );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
-      const [snapshot, runnerId] = await Promise.all([
-        context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
-        context.services.runnerConnections.getSessionRunner(workspaceId, sessionId),
-      ]);
-      if (!snapshot || !runnerId) {
-        return await sessionCommandError(context, "The pinned runner is offline.", 503);
+      const sessionApi = context.services.sessions(sessionId);
+      const [view, viewError] = await sessionCall(sessionApi.view());
+      if (viewError !== undefined) {
+        return await sessionCommandError(context, "The session is unavailable.", 503);
       }
-      if (
-        snapshot.agentState === "error"
-      ) {
+      if (view === null) return await sessionCommandError(context, "Session not found.", 404);
+      if (view.snapshot.agentState === "error") {
         return await sessionCommandError(
           context,
           "The session cannot accept a prompt right now.",
           409,
         );
       }
-
-      const [
-        [modelRuntime, modelCredentialError],
-        [githubToken, gitCredentialError],
-        [environmentSecrets, environmentSecretError],
-      ] = await Promise.all([
-        resolveSessionModelRuntime(
-          workspaceId,
-          snapshot.model,
-          context.services.workspace,
-        ),
-        context.services.workspace.getGitHubToken(workspaceId),
-        context.services.workspace.getEnvironmentSecrets(workspaceId),
-      ]);
+      const [modelRuntime, modelCredentialError] = await resolveSessionModelRuntime(
+        workspaceId,
+        view.snapshot.model,
+        context.services.workspace,
+      );
       if (modelCredentialError !== undefined) {
         return await sessionCommandError(
           context,
           "The saved model provider credential could not be read.",
-          500,
-        );
-      }
-      if (gitCredentialError !== undefined) {
-        return await sessionCommandError(
-          context,
-          "The saved GitHub credential could not be read.",
-          500,
-        );
-      }
-      if (environmentSecretError !== undefined) {
-        return await sessionCommandError(
-          context,
-          "The saved environment secrets could not be read.",
           500,
         );
       }
@@ -312,26 +279,15 @@ export default createController(routes.app.sessions, {
           409,
         );
       }
-
-      const prompted = await context.services.runnerConnections.promptSession({
-        workspaceId,
-        sessionId,
-        payload: {
-          prompt: parsed.value.prompt,
-          modelRuntime,
-          ...(parsed.value.thinkingLevel === undefined
-            ? {}
-            : { thinkingLevel: parsed.value.thinkingLevel }),
-          ...(githubToken === null ? {} : { githubToken }),
-          ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
-        },
-      });
-      if (prompted.status !== "accepted") {
-        return await sessionCommandError(
-          context,
-          prompted.message,
-          prompted.status === "rejected" ? 409 : 503,
-        );
+      const [, promptError] = await sessionCall(sessionApi.submit({
+        prompt: parsed.value.prompt,
+        requestId: crypto.randomUUID(),
+        ...(parsed.value.thinkingLevel === undefined
+          ? {}
+          : { thinkingLevel: parsed.value.thinkingLevel }),
+      }));
+      if (promptError !== undefined) {
+        return await sessionCommandError(context, promptError, 503);
       }
       return sessionCommandAccepted(context, sessionId);
     },
@@ -349,22 +305,11 @@ export default createController(routes.app.sessions, {
         sessionId,
       );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
-      const changed = await context.services.runnerConnections.setSessionThinkingLevel({
-        workspaceId,
-        sessionId,
-        level: parsed.value.thinkingLevel,
-      });
-      if (changed.status !== "accepted") {
-        return await sessionCommandError(
-          context,
-          changed.message,
-          changed.status === "rejected" ? 409 : 503,
-        );
-      }
-      return Response.json(
-        { status: "accepted", level: changed.acknowledgement },
-        { status: 202 },
+      const [level, levelError] = await sessionCall(
+        context.services.sessions(sessionId).setThinkingLevel(parsed.value.thinkingLevel),
       );
+      if (levelError !== undefined) return await sessionCommandError(context, levelError, 409);
+      return Response.json({ status: "accepted", level }, { status: 202 });
     },
 
     async abort(context) {
@@ -376,28 +321,13 @@ export default createController(routes.app.sessions, {
         sessionId,
       );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
-      const [snapshot, runnerId] = await Promise.all([
-        context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
-        context.services.runnerConnections.getSessionRunner(workspaceId, sessionId),
-      ]);
-      if (!snapshot || !runnerId) {
-        return await sessionCommandError(context, "The pinned runner is offline.", 503);
-      }
-      if (snapshot.agentState !== "running") {
+      const sessionApi = context.services.sessions(sessionId);
+      const [view] = await sessionCall(sessionApi.view());
+      if (view?.snapshot.agentState !== "running") {
         return await sessionCommandError(context, "There is no active Pi run to abort.", 409);
       }
-
-      const aborted = await context.services.runnerConnections.abortSession({
-        workspaceId,
-        sessionId,
-      });
-      if (aborted.status !== "accepted") {
-        return await sessionCommandError(
-          context,
-          aborted.message,
-          aborted.status === "rejected" ? 409 : 503,
-        );
-      }
+      const [, abortError] = await sessionCall(sessionApi.abort());
+      if (abortError !== undefined) return await sessionCommandError(context, abortError, 503);
       return sessionCommandAccepted(context, sessionId);
     },
 
@@ -410,32 +340,20 @@ export default createController(routes.app.sessions, {
         sessionId,
       );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
-      const [snapshot, runnerId] = await Promise.all([
-        context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
-        context.services.runnerConnections.getSessionRunner(workspaceId, sessionId),
-      ]);
-      if (!snapshot || !runnerId) {
-        return await sessionCommandError(context, "The pinned runner is offline.", 503);
-      }
-      if (snapshot.agentState === "paused" && snapshot.environmentState === "stopped") {
+      const sessionApi = context.services.sessions(sessionId);
+      const [view] = await sessionCall(sessionApi.view());
+      if (
+        view === undefined || view === null ||
+        view.snapshot.agentState === "paused" && view.snapshot.environmentState === "stopped"
+      ) {
         return await sessionCommandError(
           context,
           "The session cannot be stopped right now.",
           409,
         );
       }
-
-      const stopped = await context.services.runnerConnections.stopSession({
-        workspaceId,
-        sessionId,
-      });
-      if (stopped.status !== "accepted") {
-        return await sessionCommandError(
-          context,
-          stopped.message,
-          stopped.status === "rejected" ? 409 : 503,
-        );
-      }
+      const [, stopError] = await sessionCall(sessionApi.stop());
+      if (stopError !== undefined) return await sessionCommandError(context, stopError, 503);
       return sessionCommandAccepted(context, sessionId);
     },
 
@@ -461,7 +379,8 @@ export default createController(routes.app.sessions, {
         return new Response("Session not found.", { status: 404 });
       }
 
-      await context.services.runnerConnections.deleteSession({ workspaceId, sessionId });
+      // Compute and Session storage are removed in the background; the alarm retries offline runners.
+      await sessionCall(context.services.sessions(sessionId).delete());
       return redirect(routes.app.index.href(), 303);
     },
 
@@ -479,25 +398,18 @@ export default createController(routes.app.sessions, {
         return await renderDetailPage(context, "Choose an offered recovery action.", 400);
       }
 
-      const runnerId = await context.services.runnerConnections.getSessionRunner(
-        workspaceId,
-        sessionId,
-      );
-      if (!runnerId) {
-        return await renderDetailPage(context, "The pinned runner is offline.", 409);
-      }
-      const snapshot = await context.services.runnerConnections.getSessionSnapshot(
-        workspaceId,
-        sessionId,
-      );
-      if (!snapshot || snapshot.agentState !== "error" && snapshot.environmentState !== "error") {
+      const sessionApi = context.services.sessions(sessionId);
+      const [view] = await sessionCall(sessionApi.view());
+      const snapshot = view?.snapshot;
+      if (!snapshot || snapshot.state !== "error") {
         return await renderDetailPage(
           context,
           "Only a failed session with an offered recovery action can be retried.",
           409,
         );
       }
-      const recovery = currentSessionRecovery(snapshot.issues);
+      const recovery = currentSessionRecovery(snapshot.issues) ??
+        (snapshot.environmentState === "error" ? "restart-environment" : undefined);
       if (recovery === undefined) {
         return await renderDetailPage(
           context,
@@ -512,73 +424,8 @@ export default createController(routes.app.sessions, {
           409,
         );
       }
-
-      const [
-        [githubToken, gitCredentialError],
-        [modelRuntime, modelCredentialError],
-        [environmentSecrets, environmentSecretError],
-      ] = await Promise.all([
-        context.services.workspace.getGitHubToken(workspaceId),
-        resolveSessionModelRuntime(
-          workspaceId,
-          snapshot.model,
-          context.services.workspace,
-        ),
-        context.services.workspace.getEnvironmentSecrets(workspaceId),
-      ]);
-      if (gitCredentialError !== undefined) {
-        return await renderDetailPage(
-          context,
-          "The saved GitHub credential could not be read.",
-          500,
-        );
-      }
-      if (modelCredentialError !== undefined) {
-        return await renderDetailPage(
-          context,
-          "The saved model provider credential could not be read.",
-          500,
-        );
-      }
-      if (environmentSecretError !== undefined) {
-        return await renderDetailPage(
-          context,
-          "The saved environment secrets could not be read.",
-          500,
-        );
-      }
-      if (modelRuntime === null) {
-        return await renderDetailPage(
-          context,
-          "Reconfigure this session's model provider before retrying.",
-          409,
-        );
-      }
-      const recovered = recovery === "retry-provisioning"
-        ? await context.services.runnerConnections.provisionSession({
-          workspaceId,
-          runnerId,
-          sessionId,
-          payload: {
-            mode: "retry",
-            modelRuntime,
-            ...(githubToken ? { githubToken } : {}),
-            ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
-          },
-        })
-        : await context.services.runnerConnections.wakeSession({
-          workspaceId,
-          sessionId,
-          payload: {
-            modelRuntime,
-            recovery,
-            ...(githubToken ? { githubToken } : {}),
-            ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
-          },
-        });
-      if (recovered.status !== "accepted") {
-        return await renderDetailPage(context, recovered.message, 503);
-      }
+      const [, retryError] = await sessionCall(sessionApi.retry(recovery));
+      if (retryError !== undefined) return await renderDetailPage(context, retryError, 503);
       return redirect(routes.app.sessions.detail.href({ sessionId }), 303);
     },
   },
@@ -668,10 +515,9 @@ async function renderDetailFrame(context: SessionDetailContext) {
   );
   if (!session) return renderMissingSessionFrame(context);
   const error = new URL(context.request.url).searchParams.get("error") || undefined;
-  const [runnerId, snapshot] = await Promise.all([
-    context.services.runnerConnections.getSessionRunner(workspaceId, sessionId),
-    context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
-  ]);
+  const [view] = await sessionCall(context.services.sessions(sessionId).view());
+  const runnerId = view?.runnerId ?? null;
+  const snapshot = view?.snapshot ?? null;
   return context.render(
     <SessionDetailFrame
       csrfToken={getCsrfToken(context)}
@@ -717,4 +563,12 @@ function submittedValues(formData: FormData): SessionComposerValues {
 function stringField(formData: FormData, name: string): string {
   const parsed = s.parseSafe(s.string(), formData.get(name));
   return parsed.success ? parsed.value : "";
+}
+
+/** Session Durable Object calls; their errors carry user-facing messages across native RPC. */
+async function sessionCall<T>(call: Promise<T>) {
+  return await tryAsync(
+    call,
+    (cause) => cause instanceof Error ? cause.message : "The session is unavailable.",
+  );
 }

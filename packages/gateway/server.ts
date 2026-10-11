@@ -10,6 +10,12 @@ import type { Request as WorkerRequest } from "@cloudflare/workers-types";
 export { Workspace } from "@/app/cells/workspace/workspace.ts";
 export { Runners } from "@/app/cells/runners/runner-registry-do.ts";
 export { Session } from "@/app/cells/session/session.ts";
+import {
+  decodeSessionRpc,
+  type MediaReader,
+  type SessionApi,
+  type SessionRpc,
+} from "@/app/cells/session/api.ts";
 
 const ENVIRONMENT_LINK_PATH =
   /^\/api\/runners\/environments\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/link$/;
@@ -52,19 +58,10 @@ export default {
           const services = createAppServices(workspace, runners, undefined, {
             assets: createGatewayAssets(env.ASSETS),
             ...(env.PUBLIC_URL ? { publicUrl: env.PUBLIC_URL } : {}),
-            sessionEvents: async (workspaceId, sessionId, original) => {
-              const streamUrl = new URL("https://registry.internal/watch");
-              streamUrl.searchParams.set("workspaceId", workspaceId);
-              streamUrl.searchParams.set("sessionId", sessionId);
-              const request = new Request(streamUrl, { signal: original.signal });
-              // SAFETY: same Web API boundary as the upgrade above; no response reconstruction.
-              // deno-lint-ignore openorb/no-chained-type-assertions
-              return await runners.fetch(
-                // SAFETY: native Workers Request, typed by Deno only for local checking.
-                // deno-lint-ignore openorb/no-chained-type-assertions
-                request as unknown as WorkerRequest,
-              ) as unknown as Response;
-            },
+            sessions: (sessionId) => sessionApi(env.SESSIONS.getByName(sessionId)),
+            // SAFETY: the R2 binding implements this read subset; only checker types differ.
+            // deno-lint-ignore openorb/no-chained-type-assertions
+            media: env.MEDIA as unknown as MediaReader,
           });
           cache = { services, bySecureCookie: new Map() };
           routers.set(env, cache);
@@ -91,3 +88,17 @@ export default {
     return response;
   },
 };
+
+/** Native RPC to one Session Durable Object; its event stream uses HTTP, as celld requires. */
+function sessionApi(stub: ReturnType<Env["SESSIONS"]["getByName"]>): SessionApi {
+  // SAFETY: the Session class implements this native RPC surface; platform thenables differ only
+  // in checker types.
+  // deno-lint-ignore openorb/no-chained-type-assertions
+  const rpc = stub as unknown as SessionRpc;
+  return decodeSessionRpc(rpc, async (original) => {
+    const request = new Request("https://session.internal/events", { signal: original.signal });
+    // SAFETY: native Workers Request and Response, typed by Deno only for local checking.
+    // deno-lint-ignore openorb/no-chained-type-assertions
+    return await stub.fetch(request as unknown as WorkerRequest) as unknown as Response;
+  });
+}

@@ -1,4 +1,4 @@
-import { assert, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { applyImmutable, type Op } from "@earendil-works/chord/delta";
 import { RUNNER_PROTOCOL_VERSION, RunnerCapacity, RunnerId } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Schema, Scope } from "effect";
@@ -9,12 +9,20 @@ import {
   installLocalGuestImage,
 } from "../../runner/test/environment/gondolin/local-guest-image.ts";
 import { createRpcClient } from "./workspace/rpc-client.ts";
+import { SCRIPTED_PNG_BASE64 } from "./session-fixture.ts";
 
-// Phase 1 of ADR 0005/0006 end to end: a Session Durable Object in celld runs Pi Durable, whose
-// bash tool reaches a real Gondolin guest through the runner's Environment Link. Only point this at
-// a disposable test/celld.jsonc fixture.
+// ADRs 0005 and 0006 end to end: a Session Durable Object in celld provisions the project, runs Pi
+// Durable, whose tools reach a real Gondolin guest through the runner's Environment Link, publishes
+// media to R2, and keeps a Git Snapshot. Only point this at a disposable test/celld.jsonc fixture.
 const gatewayUrl = Deno.env.get("OPENORB_TEST_GATEWAY_URL");
 const enabled = gatewayUrl !== undefined && Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") === "1";
+
+const REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
+
+interface GitSnapshot {
+  readonly branch?: string;
+  readonly sections: { readonly unstaged: { readonly files: readonly { path: string }[] } };
+}
 
 interface ConversationView {
   readonly entries: readonly { readonly model?: readonly Message[] }[];
@@ -136,15 +144,24 @@ Deno.test({
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
 
+      const project = await workspace.saveProject(workspaceId, {
+        name: `Session E2E ${crypto.randomUUID()}`,
+        repositoryUrl: REPOSITORY_URL,
+      });
+      assert(project.status === "saved");
       const sessionId = crypto.randomUUID();
-      // Creation boots the VM (minutes under software emulation) and submits the first prompt.
+      // The prompt is admitted at once; provisioning boots the VM (minutes under software
+      // emulation) and clones the repository while the agent's guest tools wait for it.
       const created = await json("/__session/create", {
         workspaceId,
         sessionId,
+        projectId: project.project.id,
+        createdAt: new Date().toISOString(),
         runnerId: runner.runnerId,
         // The orb's 2 CPUs and 4 GiB host fit the smallest size under software emulation.
         orbSize: "tiny",
-        repositoryUrl: "https://github.com/example/session-e2e.git",
+        repositoryUrl: REPOSITORY_URL,
+        ref: "main",
         branchName: "openorb/session-e2e",
         gitAuthor: { name: "OpenOrb E2E", email: "e2e@example.com" },
         model: "faux/demo",
@@ -161,14 +178,56 @@ Deno.test({
           ),
         10 * 60_000,
       );
-      const toolResult = messages.find((message) => message.role === "toolResult");
-      assert(toolResult, "the bash tool result is missing");
-      const output = JSON.stringify(toolResult.content);
-      // Output only the guest can produce: its kernel, user, OpenOrb marker, and checkout write.
+      const [bashResult, publishResult] = messages.filter((message) =>
+        message.role === "toolResult"
+      );
+      assert(bashResult && publishResult, "a tool result is missing");
+      const output = JSON.stringify(bashResult.content);
+      // Only the provisioned guest can produce this: the cloned session branch, its kernel, and
+      // OpenOrb's guest marker; the readiness gate held the command until setup finished.
+      assertStringIncludes(output, "openorb/session-e2e");
       assertStringIncludes(output, "Linux");
       assertStringIncludes(output, "guest=1");
-      assertStringIncludes(output, "e2e");
+      assertStringIncludes(output, "e2e-done");
       console.log(`[e2e] guest tool output: ${output}`);
+
+      // publish_media copied the guest file into R2 and returned a transcript reference.
+      const reference = /openorb-artifact:image:([0-9a-f-]{36})/.exec(
+        JSON.stringify(publishResult.content),
+      );
+      assert(reference, `no media reference in ${JSON.stringify(publishResult.content)}`);
+      const media = await fetch(
+        new URL(`/__session/media?sessionId=${sessionId}&id=${reference[1]}`, gatewayUrl),
+      );
+      assert(media.ok, `media fetch failed: ${media.status}`);
+      assertEquals(media.headers.get("content-type"), "image/png");
+      assertEquals(
+        new Uint8Array(await media.arrayBuffer()),
+        Uint8Array.fromBase64(SCRIPTED_PNG_BASE64),
+      );
+      console.log(`[e2e] published media ${reference[1]} round-tripped through R2`);
+
+      // The Session refreshed its Git Snapshot after the tool boundary.
+      let snapshot: GitSnapshot | undefined;
+      for (let attempt = 0; attempt < 120; attempt++) {
+        snapshot = await (await fetch(
+          new URL(`/__session/git?sessionId=${sessionId}`, gatewayUrl),
+        )).json();
+        if (snapshot?.sections.unstaged.files.some((file) => file.path === "e2e.txt")) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      assertEquals(snapshot?.branch, "openorb/session-e2e");
+      assert(
+        snapshot?.sections.unstaged.files.some((file) => file.path === "e2e.txt"),
+        `e2e.txt missing from ${JSON.stringify(snapshot)}`,
+      );
+      console.log(`[e2e] git snapshot: ${JSON.stringify(snapshot?.sections.unstaged.files)}`);
+
+      const view = await (await fetch(
+        new URL(`/__session/view?sessionId=${sessionId}`, gatewayUrl),
+      )).json();
+      assertEquals(view.snapshot.issues, []);
+      assertEquals(view.runnerId, runner.runnerId);
     } finally {
       await Effect.runPromise(Scope.close(scope, Exit.void));
       await workspace.revokeRunner(workspaceId, runner.runnerId).catch(() => {});

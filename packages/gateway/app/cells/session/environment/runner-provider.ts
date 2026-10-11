@@ -88,7 +88,7 @@ export interface RunnerProviderOptions {
 /** The OpenOrb runner as an Agent Environment Provider (ADR 0006). */
 export function runnerProvider(options: RunnerProviderOptions): AgentEnvironmentProvider {
   return {
-    kind: "openorb-runner",
+    kind: "runner",
     capabilities: { persistence: "root-disk", egressSecretMediation: true, hibernatableLink: true },
     bind: (binding) => bindRunnerEnvironment(binding, options),
   };

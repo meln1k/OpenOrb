@@ -5,6 +5,7 @@ import { WorkspaceSessionStorage } from "@/app/data/workspace-session-storage.ts
 import type { SessionStorage } from "remix/session";
 import type { DurableObjectStub } from "@cloudflare/workers-types";
 import type { Runners } from "@/app/cells/runners/runner-registry-do.ts";
+import type { MediaReader, SessionDirectory } from "@/app/cells/session/api.ts";
 import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
 import { assetServer, type GatewayAssets } from "@/app/assets.ts";
 
@@ -21,11 +22,10 @@ export interface AppServices {
   readonly runnerEnrollmentRateLimiter: LoginRateLimiter;
   readonly assets: GatewayAssets;
   readonly publicUrl?: string;
-  readonly sessionEvents: (
-    workspaceId: string,
-    sessionId: string,
-    request: Request,
-  ) => Promise<Response>;
+  /** Session Durable Objects; callers check catalog ownership before addressing one. */
+  readonly sessions: SessionDirectory;
+  /** Published media in R2, read only after a Session confirmed the object is its own. */
+  readonly media: MediaReader;
 }
 
 export const AppServicesKey = createContextKey<AppServices>();
@@ -45,7 +45,9 @@ export function createAppServices(
   workspace: WorkspaceApi,
   runnerConnections: AppServices["runnerConnections"],
   sessionStorage: SessionStorage | undefined,
-  options: Pick<AppServices, "sessionEvents"> & Pick<Partial<AppServices>, "assets" | "publicUrl">,
+  options:
+    & Pick<AppServices, "sessions" | "media">
+    & Pick<Partial<AppServices>, "assets" | "publicUrl">,
 ): AppServices {
   return {
     workspace,

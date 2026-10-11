@@ -20,7 +20,9 @@ import {
 } from "@earendil-works/pi-durable/tools";
 import { parseModelReference } from "@openorb/protocol";
 import type { EnvironmentAction, ThinkingLevel } from "@openorb/protocol/runner-api";
-import type { EnvironmentControlResult, SessionEnvironment } from "./environment/provider.ts";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { EnvironmentControlResult } from "./environment/provider.ts";
+import { ARTIFACTS_DIRECTORY, detectMediaType } from "./media.ts";
 
 export class SessionError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -36,9 +38,12 @@ export interface AgentOptions {
   readonly repositoryUrl: string;
   readonly branchName: string;
   readonly models: Models;
-  readonly environment: SessionEnvironment;
+  /** The guest as the agent sees it: the provider's ExecutionEnv behind the readiness gate. */
+  readonly env: ExecutionEnv;
   /** Host-side Environment Control; works while the guest is unavailable. */
   readonly controlEnvironment: (action: EnvironmentAction) => Promise<EnvironmentControlResult>;
+  /** Copies a guest artifact into Session media storage and returns its transcript Markdown. */
+  readonly publishMedia: (path: string, description: string) => Promise<string>;
 }
 
 export interface Agent {
@@ -75,7 +80,12 @@ export function effectiveThinkingLevel(
   return clampThinkingLevel(resolved, requested);
 }
 
-export function agentTools(options: Pick<AgentOptions, "controlEnvironment">) {
+/** Inline images become model context; larger guest files belong in publish_media. */
+const MAX_READ_IMAGE_BYTES = 8 * 1024 * 1024;
+
+export function agentTools(
+  options: Pick<AgentOptions, "controlEnvironment" | "publishMedia" | "env">,
+) {
   return [
     createReadTool(),
     createWriteTool(),
@@ -93,6 +103,42 @@ export function agentTools(options: Pick<AgentOptions, "controlEnvironment">) {
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
       },
     }),
+    defineTool({
+      name: "readImage",
+      description:
+        "Read a guest PNG, JPEG, GIF, or WebP image into the conversation. Use read for text files.",
+      parameters: Type.Object({ path: Type.String() }),
+      async execute({ path }, _api, context) {
+        const info = await options.env.fileInfo(path, context);
+        if (!info.ok) throw new SessionError(info.error.message);
+        if (info.value.size > MAX_READ_IMAGE_BYTES) {
+          throw new SessionError(`readImage reads images up to ${MAX_READ_IMAGE_BYTES} bytes.`);
+        }
+        const bytes = await options.env.readBinaryFile(path, context);
+        if (!bytes.ok) throw new SessionError(bytes.error.message);
+        const mimeType = detectMediaType(bytes.value);
+        if (!mimeType?.startsWith("image/")) {
+          throw new SessionError("readImage requires a PNG, JPEG, GIF, or WebP image");
+        }
+        return {
+          content: [
+            { type: "text", text: `Read image file [${mimeType}]` },
+            { type: "image", mimeType, data: bytes.value.toBase64() },
+          ],
+        };
+      },
+    }),
+    defineTool({
+      name: "publish_media",
+      description:
+        `Publish an image or video under ${ARTIFACTS_DIRECTORY}. Include the returned Markdown in your response.`,
+      parameters: Type.Object({ path: Type.String(), description: Type.String() }),
+      async execute({ path, description }) {
+        return {
+          content: [{ type: "text", text: await options.publishMedia(path, description) }],
+        };
+      },
+    }),
   ] satisfies readonly ToolRegistration[];
 }
 
@@ -102,6 +148,8 @@ export function systemPrompt(options: Pick<AgentOptions, "branchName" | "reposit
     "All shell and file operations run in an isolated guest environment, never on a trusted host. Relative paths resolve from /workspace.",
     "Guest tools fail immediately while the environment is stopped or its runner is offline. The environment tool controls the guest independently of this conversation; stopping preserves disk, not RAM or processes. Do not shut down the guest using bash.",
     "Use bash for ls, rg, and find. Be concise and show file paths clearly.",
+    "Use read for text files and readImage to inspect images.",
+    "To show media, use publish_media and include its exact returned Markdown.",
     "Create commits or push only when the user explicitly requests it. Preserve existing commits: never amend, squash, reset, rewrite history, or force-push.",
     `Keep all work on session branch ${
       JSON.stringify(options.branchName)
@@ -128,7 +176,7 @@ export async function openAgent(
   const harness = await Harness.open(storage, {
     models,
     registry,
-    env: () => options.environment.env,
+    env: () => options.env,
     settings: {
       stream: {
         headers: options.model.startsWith("opencode-go/")

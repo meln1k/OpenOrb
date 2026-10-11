@@ -92,6 +92,25 @@ export default {
       const session = env.SESSIONS.getByName(String(input.sessionId));
       return Response.json(await session.create(input));
     }
+    if (url.pathname === "/__session/view") {
+      const session = env.SESSIONS.getByName(url.searchParams.get("sessionId")!);
+      return Response.json(await session.view());
+    }
+    if (url.pathname === "/__session/git") {
+      const session = env.SESSIONS.getByName(url.searchParams.get("sessionId")!);
+      return Response.json(await session.gitSnapshot());
+    }
+    if (url.pathname === "/__session/media") {
+      const session = env.SESSIONS.getByName(url.searchParams.get("sessionId")!);
+      const media = await session.media(url.searchParams.get("id")!);
+      if (media === null) return new Response("Media not found.", { status: 404 });
+      if (media.kind === "inline") return new Response(new Uint8Array(media.bytes));
+      const object = await env.MEDIA.get(media.key);
+      if (object === null) return new Response("Media object missing.", { status: 404 });
+      return new Response(new Uint8Array(await object.arrayBuffer()), {
+        headers: { "content-type": media.mediaType },
+      });
+    }
     if (url.pathname === "/__session/events") {
       const session = env.SESSIONS.getByName(url.searchParams.get("sessionId")!);
       // SAFETY: same native Request/Response boundary as the registry watch above.

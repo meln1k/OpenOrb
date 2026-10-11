@@ -1,6 +1,5 @@
 import { MAX_SESSION_GIT_PATH_CHARACTERS, SessionId } from "@openorb/protocol/runner-api";
 import {
-  type SessionArtifactChunk,
   SessionArtifactId,
   SessionGitPatchSection,
   SessionGitSnapshotId,
@@ -24,6 +23,7 @@ import { csrf } from "@/app/middleware/csrf.ts";
 import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
 import { routes } from "@/app/routes.ts";
 import { Option, Schema } from "effect";
+import { tryAsync } from "@openorb/result";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
 const gitPathSchema = s.string().refine(
@@ -71,56 +71,32 @@ export default createController(routes.api.sessions, {
         () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
-      const snapshot = await sessionSpan(
-        "runner.snapshot",
-        () => context.services.runnerConnections.getSessionSnapshot(workspaceId, sessionId),
+      const sessionApi = context.services.sessions(sessionId);
+      const [view] = await sessionSpan(
+        "session.view",
+        () => tryAsync(sessionApi.view(), () => "unavailable"),
       );
-      if (!snapshot) return apiError("The pinned runner is offline.", 503);
-
-      const [
-        [modelRuntime, modelCredentialError],
-        [githubToken, gitCredentialError],
-        [environmentSecrets, environmentSecretError],
-      ] = await sessionSpan("credentials.read", () =>
-        Promise.all([
-          resolveSessionModelRuntime(
-            workspaceId,
-            snapshot.model,
-            context.services.workspace,
-          ),
-          context.services.workspace.getGitHubToken(workspaceId),
-          context.services.workspace.getEnvironmentSecrets(workspaceId),
-        ]));
+      if (!view) return apiError("The session is unavailable.", 503);
+      const [modelRuntime, modelCredentialError] = await sessionSpan(
+        "credentials.read",
+        () =>
+          resolveSessionModelRuntime(workspaceId, view.snapshot.model, context.services.workspace),
+      );
       if (modelCredentialError !== undefined) {
         return apiError("The saved model provider credential could not be read.", 500);
-      }
-      if (gitCredentialError !== undefined) {
-        return apiError("The saved GitHub credential could not be read.", 500);
-      }
-      if (environmentSecretError !== undefined) {
-        return apiError("The saved environment secrets could not be read.", 500);
       }
       if (modelRuntime === null) {
         return apiError("Reconfigure this session's model provider before continuing.", 409);
       }
-
-      const woken = await sessionSpan(
-        "runner.wake",
+      const [, wakeError] = await sessionSpan(
+        "session.wake",
         () =>
-          context.services.runnerConnections.wakeSession({
-            workspaceId,
-            sessionId,
-            payload: {
-              modelRuntime,
-              ...(githubToken === null ? {} : { githubToken }),
-              ...(environmentSecrets.length === 0 ? {} : { environmentSecrets }),
-              ...(parsed.value.recovery === undefined ? {} : { recovery: parsed.value.recovery }),
-            },
-          }),
+          tryAsync(
+            sessionApi.wake(parsed.value.recovery),
+            (cause) => cause instanceof Error ? cause.message : "The session is unavailable.",
+          ),
       );
-      if (woken.status !== "accepted") {
-        return apiError(woken.message, woken.status === "rejected" ? 409 : 503);
-      }
+      if (wakeError !== undefined) return apiError(wakeError, 503);
       return Response.json(
         { status: "accepted" },
         { status: 202, headers: { "Cache-Control": "no-store" } },
@@ -141,25 +117,21 @@ export default createController(routes.api.sessions, {
         () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
-      const updated = await sessionSpan(
-        "runner.git_file_update",
+      const [updated, updateError] = await sessionSpan(
+        "session.git_file_update",
         () =>
-          context.services.runnerConnections.updateSessionGitFile({
-            workspaceId,
-            sessionId,
-            action: parsed.value.action,
-            path: parsed.value.path,
-            ...(parsed.value.previousPath === undefined
-              ? {}
-              : { previousPath: parsed.value.previousPath }),
-          }),
+          sessionCall(
+            context.services.sessions(sessionId).updateGitFile({
+              action: parsed.value.action,
+              path: parsed.value.path,
+              ...(parsed.value.previousPath === undefined
+                ? {}
+                : { previousPath: parsed.value.previousPath }),
+            }),
+          ),
       );
-      if (updated.status !== "accepted") {
-        return apiError(updated.message, updated.status === "rejected" ? 409 : 503);
-      }
-      return Response.json(updated.acknowledgement, {
-        headers: { "Cache-Control": "no-store" },
-      });
+      if (updateError !== undefined) return apiError(updateError, 409);
+      return Response.json(updated, { headers: { "Cache-Control": "no-store" } });
     },
     async gitSnapshot(context) {
       sessionStage("gitSnapshot");
@@ -174,19 +146,17 @@ export default createController(routes.api.sessions, {
       );
       if (!session) return new Response("Session not found.", { status: 404 });
 
-      const result = await sessionSpan(
-        "runner.git_snapshot",
-        () => context.services.runnerConnections.getSessionGitSnapshot(workspaceId, sessionId),
+      const [snapshot, snapshotError] = await sessionSpan(
+        "session.git_snapshot",
+        () => sessionCall(context.services.sessions(sessionId).gitSnapshot()),
       );
-      if (result.status !== "accepted") {
+      if (snapshotError !== undefined) {
         return Response.json(
-          { error: result.message },
+          { error: snapshotError },
           { status: 503, headers: { "Cache-Control": "no-store" } },
         );
       }
-      return Response.json(result.acknowledgement, {
-        headers: { "Cache-Control": "no-store" },
-      });
+      return Response.json(snapshot, { headers: { "Cache-Control": "no-store" } });
     },
     async gitPatchChunk(context) {
       sessionStage("gitPatchChunk");
@@ -201,23 +171,21 @@ export default createController(routes.api.sessions, {
         () => context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId),
       );
       if (!session) return apiError("Session not found.", 404);
-      const result = await sessionSpan(
-        "runner.git_patch_chunk",
+      const [chunk, chunkError] = await sessionSpan(
+        "session.git_patch_chunk",
         () =>
-          context.services.runnerConnections.readSessionGitPatchChunk({
-            workspaceId,
-            sessionId,
-            snapshotId,
-            section,
-            offset,
-          }),
+          sessionCall(
+            context.services.sessions(sessionId).gitPatchChunk({ snapshotId, section, offset }),
+          ),
       );
-      if (result.status !== "accepted") {
-        return apiError(result.message, result.status === "rejected" ? 409 : 503);
-      }
+      if (chunkError !== undefined) return apiError(chunkError, 409);
       return Response.json({
-        ...result.acknowledgement,
-        bytes: encodeBase64(result.acknowledgement.bytes),
+        snapshotId,
+        section,
+        offset,
+        bytes: encodeBase64(chunk.bytes),
+        nextOffset: chunk.nextOffset,
+        done: chunk.done,
       }, {
         headers: { "Cache-Control": "no-store" },
       });
@@ -238,55 +206,54 @@ export default createController(routes.api.sessions, {
       );
       if (!session) return new Response("Published media not found.", { status: 404 });
 
-      const readChunk = (offset: number) =>
-        context.services.runnerConnections.readSessionArtifactChunk({
-          workspaceId,
-          sessionId,
-          artifactId: artifactId.value,
-          offset,
-        });
-      const first = await sessionSpan("runner.artifact_chunk", () => readChunk(0));
-      if (first.status !== "accepted") {
-        return new Response(first.message, {
-          status: first.status === "rejected" ? 400 : 503,
-          headers: { "Cache-Control": "no-store" },
-        });
-      }
-      const artifact = first.acknowledgement.artifact;
-      const range = parseByteRange(context.request.headers.get("range"), artifact.byteLength);
+      const [media] = await sessionSpan(
+        "session.media",
+        () => sessionCall(context.services.sessions(sessionId).media(artifactId.value)),
+      );
+      if (!media) return new Response("Published media not found.", { status: 404 });
+      const byteLength = media.kind === "published" ? media.byteLength : media.bytes.byteLength;
+      const range = parseByteRange(context.request.headers.get("range"), byteLength);
       if (range === null) {
         return new Response("Requested range not satisfiable.", {
           status: 416,
           headers: {
             "Accept-Ranges": "bytes",
             "Cache-Control": "no-store",
-            "Content-Range": `bytes */${artifact.byteLength}`,
+            "Content-Range": `bytes */${byteLength}`,
           },
         });
       }
       const responseLength = range.end - range.start + 1;
-      const body = createArtifactStream({
-        artifactId: artifact.id,
-        byteLength: artifact.byteLength,
-        ...(range.start === 0 ? { first: first.acknowledgement } : {}),
-        range,
-        readChunk,
-      });
+      let body: BodyInit;
+      if (media.kind === "inline") {
+        body = media.bytes.slice(range.start, range.end + 1);
+      } else {
+        const object = await sessionSpan(
+          "media.read",
+          () =>
+            context.services.media.get(media.key, {
+              range: { offset: range.start, length: responseLength },
+            }),
+        );
+        if (object === null) return new Response("Published media not found.", { status: 404 });
+        body = object.body;
+      }
+      const fileName = media.kind === "published"
+        ? media.fileName
+        : `image.${media.mediaType.slice("image/".length)}`;
       const partial = context.request.headers.has("range");
       return new Response(body, {
         status: partial ? 206 : 200,
         headers: {
           "Accept-Ranges": "bytes",
           "Cache-Control": "private, max-age=3600",
-          "Content-Disposition": `inline; filename="${
-            safeContentDispositionName(artifact.fileName)
-          }"`,
+          "Content-Disposition": `inline; filename="${safeContentDispositionName(fileName)}"`,
           "Content-Length": String(responseLength),
-          "Content-Type": artifact.mediaType,
+          "Content-Type": media.mediaType,
           "Cross-Origin-Resource-Policy": "same-origin",
           "X-Content-Type-Options": "nosniff",
           ...(partial
-            ? { "Content-Range": `bytes ${range.start}-${range.end}/${artifact.byteLength}` }
+            ? { "Content-Range": `bytes ${range.start}-${range.end}/${byteLength}` }
             : {}),
         },
       });
@@ -306,7 +273,7 @@ export default createController(routes.api.sessions, {
 
       return await sessionSpan(
         "events.subscribe",
-        () => context.services.sessionEvents(workspaceId, sessionId, context.request),
+        () => context.services.sessions(sessionId).events(context.request),
       );
     },
   },
@@ -338,52 +305,6 @@ function parseByteRange(header: string | null, byteLength: number): ByteRange | 
   return { start, end: Math.min(requestedEnd, byteLength - 1) };
 }
 
-function createArtifactStream(options: {
-  readonly artifactId: string;
-  readonly byteLength: number;
-  readonly first?: SessionArtifactChunk;
-  readonly range: ByteRange;
-  readonly readChunk: (offset: number) => Promise<
-    | { status: "accepted"; acknowledgement: SessionArtifactChunk }
-    | { status: "rejected" | "unavailable" | "delivery-uncertain"; message: string }
-  >;
-}): ReadableStream<Uint8Array> {
-  let offset = options.range.start;
-  let first = options.first;
-  return new ReadableStream({
-    async pull(controller) {
-      if (offset > options.range.end) {
-        controller.close();
-        return;
-      }
-      const result = first === undefined
-        ? await options.readChunk(offset)
-        : { status: "accepted" as const, acknowledgement: first };
-      first = undefined;
-      if (result.status !== "accepted") {
-        controller.error(new Error("Published media became unavailable."));
-        return;
-      }
-      const chunk = result.acknowledgement;
-      if (
-        chunk.artifact.id !== options.artifactId ||
-        chunk.artifact.byteLength !== options.byteLength ||
-        chunk.offset !== offset || chunk.bytes.byteLength === 0
-      ) {
-        controller.error(new Error("Published media returned an invalid chunk."));
-        return;
-      }
-      const remaining = options.range.end - offset + 1;
-      const bytes = chunk.bytes.byteLength > remaining
-        ? chunk.bytes.subarray(0, remaining)
-        : chunk.bytes;
-      controller.enqueue(bytes);
-      offset += bytes.byteLength;
-      if (offset > options.range.end) controller.close();
-    },
-  });
-}
-
 function safeContentDispositionName(fileName: string): string {
   const safe = Array.from(fileName, (character) => {
     const code = character.codePointAt(0) ?? 0;
@@ -400,4 +321,12 @@ function parseSessionId(value: string): string | null {
 
 function apiError(error: string, status: number): Response {
   return Response.json({ error }, { status, headers: { "Cache-Control": "no-store" } });
+}
+
+/** Session Durable Object calls; their errors carry user-facing messages across native RPC. */
+async function sessionCall<T>(call: Promise<T>) {
+  return await tryAsync(
+    call,
+    (cause) => cause instanceof Error ? cause.message : "The session is unavailable.",
+  );
 }
