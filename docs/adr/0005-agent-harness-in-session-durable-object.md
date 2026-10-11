@@ -1,6 +1,7 @@
 # Host the Agent Harness in a per-Session Durable Object
 
-**Status:** Accepted; runner-side project setup and Git Snapshots superseded by ADR 0006
+**Status:** Accepted and implemented (runner protocol 27); runner-side project setup and Git
+Snapshots superseded by ADR 0006
 
 Pi Durable moves from the runner host into one gateway Session Durable Object per Session. It keeps
 Harness State in that object's SQLite storage and reaches the Agent Environment only through an

@@ -1,5 +1,4 @@
 import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
-import { Stream } from "effect";
 import { serveDir } from "@std/http/file-server";
 import type { Cookie } from "remix/cookie";
 import type { SessionStorage } from "remix/session";
@@ -10,7 +9,6 @@ import {
 } from "@/app/middleware/services.ts";
 import type { Runners } from "@/app/cells/runners/runner-registry-do.ts";
 import { createGatewayAssets } from "@/app/assets.ts";
-import type { RunnerRegistry } from "@/app/cells/runners/runner-registry.ts";
 import {
   createAppRouter as createGatewayRouter,
   createSessionCookie as createGatewayCookie,
@@ -32,20 +30,18 @@ export function createAppRouter(services: AppServices, cookie = createSessionCoo
   return createGatewayRouter(services, cookie);
 }
 
-export type TestRunnerConnections =
-  & Omit<
-    Runners,
-    | "fetch"
-    | "health"
-    | "__DURABLE_OBJECT_BRAND"
-    // Environment procedures serve Session Durable Objects, not browser routes.
-    | "getEnvironment"
-    | "createEnvironment"
-    | "controlEnvironment"
-    | "attachEnvironment"
-    | "deleteEnvironment"
-  >
-  & Pick<RunnerRegistry, "watchSession">;
+export type TestRunnerConnections = Omit<
+  Runners,
+  | "fetch"
+  | "health"
+  | "__DURABLE_OBJECT_BRAND"
+  // Environment procedures serve Session Durable Objects, not browser routes.
+  | "getEnvironment"
+  | "createEnvironment"
+  | "controlEnvironment"
+  | "attachEnvironment"
+  | "deleteEnvironment"
+>;
 
 export function createAppServices(
   workspace: WorkspaceApi,
@@ -95,29 +91,5 @@ export const missingMedia: MediaReader = { get: () => Promise.resolve(null) };
 
 export const disconnectedRunnerRegistry: TestRunnerConnections = {
   getRunnerLiveState: () => Promise.resolve(null),
-  getSessionRunner: () => Promise.resolve(null),
-  getSessionSnapshot: () => Promise.resolve(null),
-  getSessionGitSnapshot: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  updateSessionGitFile: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  readSessionGitPatchChunk: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  readSessionArtifactChunk: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  provisionSession: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  wakeSession: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  promptSession: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  setSessionThinkingLevel: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  abortSession: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  stopSession: () =>
-    Promise.resolve({ status: "unavailable", message: "Runner connections are unavailable." }),
-  deleteSession: () => Promise.resolve(),
-  watchSession: () => Stream.fail(new Error("Runner connections are unavailable.")),
   disconnectRunner: () => Promise.resolve(false),
 };

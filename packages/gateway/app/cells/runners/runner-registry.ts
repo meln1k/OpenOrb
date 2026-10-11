@@ -1,20 +1,6 @@
+import { RunnerBulkApi, runnerBulkRpcSerializationLayer } from "@openorb/protocol/runner-bulk-api";
 import {
-  RunnerBulkApi,
-  runnerBulkRpcSerializationLayer,
-  type SessionArtifactChunk,
-  SessionArtifactId,
-  type SessionGitPatchChunk,
-  SessionGitPatchSection,
-  SessionGitSnapshotId,
-} from "@openorb/protocol/runner-bulk-api";
-import {
-  AbortRejected,
-  type AbortSessionAccepted,
   CapacityExceeded,
-  ClientRequestId,
-  DeleteFailed,
-  DeleteRejected,
-  DeleteSessionPayload,
   type EnvironmentAttachAccepted,
   EnvironmentAttachNonce,
   type EnvironmentControlled,
@@ -22,36 +8,16 @@ import {
   type EnvironmentDeleted,
   EnvironmentNotFound,
   EnvironmentRejected,
-  type GitFileUpdateAccepted,
-  GitFileUpdateRejected,
-  initialPromptPreview,
-  PromptRejected,
-  type PromptSessionAccepted,
-  ProvisionRejected,
-  ProvisionSessionPayload,
-  type ProvisionSessionSuccess,
   RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   type RunnerCapacity,
   type RunnerEnvironmentSnapshot,
-  type RunnerSessionSnapshot,
   type RunnerStateEvent,
   SessionConflict,
-  type SessionGitSnapshot,
   SessionId,
-  SessionNotFound,
-  type SetSessionThinkingLevelPayload,
-  SetSessionThinkingLevelRejected,
-  StopRejected,
-  type StopSessionAccepted,
-  UpdateSessionGitFilePayload,
-  WakeRejected,
-  type WakeSessionAccepted,
-  type WatchSessionEvent,
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { orbSizeResources } from "@openorb/protocol";
-import { sessionWakeKind } from "@/app/utils/session-recovery.ts";
 import {
   Cause,
   Clock,
@@ -78,10 +44,12 @@ import * as Socket from "effect/socket/Socket";
 
 import type { AuthenticatedRunner, WorkspaceApi } from "../workspace/api.ts";
 
+// The Runners Durable Object routes Environment Control to runners (ADR 0006). Sessions live in
+// Session Durable Objects; a runner only reports its environments and capacity.
+
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
 const OPERATION_TIMEOUT_MS = 15_000;
 const COLD_CONTINUATION_TIMEOUT_MS = 5 * 60_000;
-const GIT_UPDATE_TIMEOUT_MS = 60_000;
 export const RUNNER_WATCH_INACTIVITY_TIMEOUT_MS = 60_000;
 export const PERMANENT_REJECTION_CLOSE_CODE = 4401;
 export const BOOTSTRAP_TIMEOUT_CLOSE_CODE = 4408;
@@ -89,7 +57,6 @@ const REJECTION_REASON = "Runner connection rejected";
 
 type Client = RpcClient.RpcClient<RpcGroup.Rpcs<typeof RunnerApi>, RpcClientError>;
 type BulkClient = RpcClient.RpcClient<RpcGroup.Rpcs<typeof RunnerBulkApi>, RpcClientError>;
-type OmitUnion<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 export interface RunnerLiveState {
   capacity: RunnerCapacity;
@@ -102,109 +69,11 @@ export type OperationResult<A> =
   | { status: "unavailable"; message: string }
   | { status: "delivery-uncertain"; message: string };
 
-export interface ProvisionSessionInput {
-  workspaceId: WorkspaceId;
-  runnerId: string;
-  sessionId: string;
-  payload: OmitUnion<Parameters<Client["session.provision"]>[0], "sessionId" | "workspaceId">;
-}
-export interface PromptSessionInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-  payload: Omit<Parameters<Client["session.prompt"]>[0], "sessionId" | "clientRequestId">;
-}
-export interface SetSessionThinkingLevelInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-  level: SetSessionThinkingLevelPayload["level"];
-}
-export interface WakeSessionInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-  payload: Omit<Parameters<Client["session.wake"]>[0], "sessionId">;
-}
-export interface AbortSessionInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-}
-export interface StopSessionInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-}
-export interface DeleteSessionInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-}
-export interface UpdateSessionGitFileInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-  action: "stage" | "unstage";
-  path: string;
-  previousPath?: string;
-}
-export interface ReadSessionGitPatchChunkInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-  snapshotId: string;
-  section: "staged" | "unstaged";
-  offset: number;
-}
-export interface ReadSessionArtifactChunkInput {
-  workspaceId: WorkspaceId;
-  sessionId: string;
-  artifactId: string;
-  offset: number;
-}
-
 export interface RunnerRegistry {
   readonly getRunnerLiveState: (
     workspaceId: WorkspaceId,
     runnerId: string,
   ) => Effect.Effect<RunnerLiveState | null>;
-  readonly getSessionRunner: (
-    workspaceId: WorkspaceId,
-    sessionId: string,
-  ) => Effect.Effect<string | null>;
-  readonly getSessionSnapshot: (
-    workspaceId: WorkspaceId,
-    sessionId: string,
-  ) => Effect.Effect<RunnerSessionSnapshot | null>;
-  readonly getSessionGitSnapshot: (
-    workspaceId: WorkspaceId,
-    sessionId: string,
-  ) => Effect.Effect<OperationResult<SessionGitSnapshot>>;
-  readonly updateSessionGitFile: (
-    input: UpdateSessionGitFileInput,
-  ) => Effect.Effect<OperationResult<GitFileUpdateAccepted>>;
-  readonly readSessionGitPatchChunk: (
-    input: ReadSessionGitPatchChunkInput,
-  ) => Effect.Effect<OperationResult<SessionGitPatchChunk>>;
-  readonly readSessionArtifactChunk: (
-    input: ReadSessionArtifactChunkInput,
-  ) => Effect.Effect<OperationResult<SessionArtifactChunk>>;
-  readonly provisionSession: (
-    input: ProvisionSessionInput,
-  ) => Effect.Effect<OperationResult<ProvisionSessionSuccess>>;
-  readonly wakeSession: (
-    input: WakeSessionInput,
-  ) => Effect.Effect<OperationResult<WakeSessionAccepted>>;
-  readonly promptSession: (
-    input: PromptSessionInput,
-  ) => Effect.Effect<OperationResult<PromptSessionAccepted>>;
-  readonly setSessionThinkingLevel: (
-    input: SetSessionThinkingLevelInput,
-  ) => Effect.Effect<OperationResult<SetSessionThinkingLevelPayload["level"]>>;
-  readonly abortSession: (
-    input: AbortSessionInput,
-  ) => Effect.Effect<OperationResult<AbortSessionAccepted>>;
-  readonly stopSession: (
-    input: StopSessionInput,
-  ) => Effect.Effect<OperationResult<StopSessionAccepted>>;
-  readonly deleteSession: (input: DeleteSessionInput) => Effect.Effect<void>;
-  readonly watchSession: (
-    workspaceId: WorkspaceId,
-    sessionId: string,
-  ) => Stream.Stream<typeof WatchSessionEvent.Type, unknown>;
   readonly disconnectRunner: (workspaceId: WorkspaceId, runnerId: string) => Effect.Effect<boolean>;
   readonly getEnvironment: (
     workspaceId: WorkspaceId,
@@ -233,11 +102,6 @@ interface Connection {
   readonly capacity: RunnerCapacity;
   readonly observedAt: number;
   readonly revision: number;
-  readonly sessions: ReadonlyMap<string, RunnerSessionSnapshot>;
-  readonly reservations: ReadonlySet<string>;
-  readonly createReservations: ReadonlySet<string>;
-  readonly tombstones: ReadonlySet<string>;
-  readonly cleanupInFlight: ReadonlySet<string>;
 }
 interface ConnectionRuntime {
   readonly client: Client;
@@ -302,45 +166,20 @@ interface RunnerSlot {
 interface RegistryState {
   readonly nextGeneration: number;
   readonly runners: ReadonlyMap<string, RunnerSlot>;
-  readonly routes: ReadonlyMap<string, Connection>;
-  readonly deletions: ReadonlySet<string>;
   readonly revoked: ReadonlySet<string>;
-  /** Environment-only Sessions, keyed like routes and valid only for their connection generation. */
+  /** Keyed by Workspace and Session; valid only for the connection generation that reported it. */
   readonly environments: ReadonlyMap<string, EnvironmentRoute>;
 }
-type ReservationResult =
-  | { readonly status: "reserved"; readonly connection: Connection }
-  | { readonly status: "rejected"; readonly message: string };
 type BulkAdmission =
   | { readonly accepted: false }
   | { readonly accepted: true; readonly old?: BulkConnection };
-type RoutedSessionResult =
-  | {
-    readonly status: "routed";
-    readonly connection: Connection;
-    readonly snapshot: RunnerSessionSnapshot;
-  }
-  | { readonly status: "rejected"; readonly message: string }
-  | { readonly status: "unavailable"; readonly message: string };
-type GatewayRepository = Pick<
-  WorkspaceApi,
-  "authenticateRunner" | "reconcileSessionManifestEntries"
->;
+type GatewayRepository = Pick<WorkspaceApi, "authenticateRunner">;
 const OperationRejection = Schema.Union([
   CapacityExceeded,
   SessionConflict,
-  ProvisionRejected,
   EnvironmentNotFound,
   EnvironmentRejected,
-  SessionNotFound,
-  WakeRejected,
-  PromptRejected,
-  SetSessionThinkingLevelRejected,
-  AbortRejected,
-  StopRejected,
-  GitFileUpdateRejected,
 ]);
-const DeletionFailure = Schema.Union([DeleteRejected, DeleteFailed]);
 
 interface RegistryRuntime {
   readonly repository: GatewayRepository;
@@ -362,8 +201,6 @@ export function makeRunnerRegistry(
     const state = yield* SynchronizedRef.make<RegistryState>({
       nextGeneration: 1,
       runners: new Map(),
-      routes: new Map(),
-      deletions: new Set(),
       revoked: new Set(),
       environments: new Map(),
     });
@@ -374,25 +211,6 @@ export function makeRunnerRegistry(
       acceptBulk: (socket) => Effect.scoped(acceptBulk(runtime, socket)),
       getRunnerLiveState: (workspaceId, runnerId) =>
         getRunnerLiveState(runtime, workspaceId, runnerId),
-      getSessionRunner: (workspaceId, sessionId) =>
-        getSessionRunner(runtime, workspaceId, sessionId),
-      getSessionSnapshot: (workspaceId, sessionId) =>
-        getSessionSnapshot(runtime, workspaceId, sessionId),
-      getSessionGitSnapshot: (workspaceId, sessionId) =>
-        getSessionGitSnapshot(runtime, workspaceId, sessionId),
-      updateSessionGitFile: (input) => updateSessionGitFile(runtime, input),
-      readSessionGitPatchChunk: (input) => readSessionGitPatchChunk(runtime, input),
-      readSessionArtifactChunk: (input) => readSessionArtifactChunk(runtime, input),
-      provisionSession: (input) =>
-        observeOperation("provision", input, provisionSession(runtime, input)),
-      wakeSession: (input) => observeOperation("wake", input, wakeSession(runtime, input)),
-      promptSession: (input) => observeOperation("prompt", input, promptSession(runtime, input)),
-      setSessionThinkingLevel: (input) =>
-        observeOperation("thinking-level", input, setSessionThinkingLevel(runtime, input)),
-      abortSession: (input) => observeOperation("abort", input, abortSession(runtime, input)),
-      stopSession: (input) => observeOperation("stop", input, stopSession(runtime, input)),
-      deleteSession: (input) => deleteSession(runtime, input),
-      watchSession: (workspaceId, sessionId) => watchSession(runtime, workspaceId, sessionId),
       disconnectRunner: (workspaceId, runnerId) => disconnectRunner(runtime, workspaceId, runnerId),
       getEnvironment: (workspaceId, sessionId) =>
         routeEnvironment(runtime, workspaceId, sessionId).pipe(
@@ -462,13 +280,11 @@ const accept = Effect.fn("RunnerRegistry.accept")(
       return;
     }
 
-    const initial: RunnerSessionSnapshot[] = [];
     const initialEnvironments: RunnerEnvironmentSnapshot[] = [];
     let complete: {
       capacity: RunnerCapacity;
       revision: number;
       observedAt: number;
-      sessionCount: number;
       environmentCount: number;
     } | undefined;
     let ownedConnection: Connection | undefined;
@@ -483,10 +299,6 @@ const accept = Effect.fn("RunnerRegistry.accept")(
             if (ownedConnection) yield* applyEvent(registry, ownedConnection, event);
             return;
           }
-          if (event.type === "snapshot.session") {
-            initial.push(event.session);
-            return;
-          }
           if (event.type === "snapshot.environment") {
             initialEnvironments.push(event.environment);
             return;
@@ -498,55 +310,25 @@ const accept = Effect.fn("RunnerRegistry.accept")(
           const completed = event;
           complete = completed;
           if (
-            complete.sessionCount !== initial.length ||
-            new Set(initial.map((x) => x.id)).size !== initial.length ||
             complete.environmentCount !== initialEnvironments.length ||
+            new Set(initialEnvironments.map((x) => x.sessionId)).size !==
+              initialEnvironments.length ||
             // Tenant isolation: a runner reports only its own Workspace's environments.
             initialEnvironments.some((x) => x.workspaceId !== authenticated.workspaceId)
           ) {
             yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
             return yield* Effect.fail(new CandidateRejected());
           }
-          const reconciled = yield* reconcile(registry, authenticated.workspaceId, initial).pipe(
-            Effect.catch(() => Effect.fail(new CandidateRejected())),
-          );
-          if (reconciled.rejected.length > 0) {
-            yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
-            return yield* Effect.fail(new CandidateRejected());
-          }
-          const accepted = new Set(reconciled.acceptedSessionIds);
-          const reconciledSessions = new Map(
-            initial.filter((x) => accepted.has(x.id)).map((x) => [x.id, x]),
-          );
           const connectionRuntime: ConnectionRuntime = { client, scope };
           const [connection, old] = yield* SynchronizedRef.modifyEffect(
             registry.state,
             (current) => {
               const key = runnerKey(authenticated.workspaceId, authenticated.id);
               if (current.revoked.has(key)) return Effect.fail(new CandidateRejected());
-              const sessions = new Map(reconciledSessions);
-              const tombstones = new Set(reconciled.tombstonedSessionIds);
-              for (const sessionId of sessions.keys()) {
-                if (current.deletions.has(routeKey(authenticated.workspaceId, sessionId))) {
-                  sessions.delete(sessionId);
-                  tombstones.add(sessionId);
-                }
-              }
-              for (const sessionId of sessions.keys()) {
-                const routed = current.routes.get(routeKey(authenticated.workspaceId, sessionId));
-                if (routed && routed.runner.id !== authenticated.id) {
-                  return Effect.fail(new CandidateRejected());
-                }
-              }
               const connection: Connection = {
                 generation: current.nextGeneration,
                 runner: authenticated,
                 runtime: connectionRuntime,
-                sessions,
-                reservations: new Set(),
-                createReservations: new Set(),
-                tombstones,
-                cleanupInFlight: new Set(),
                 capacity: completed.capacity,
                 revision: completed.revision,
                 observedAt: completed.observedAt,
@@ -558,13 +340,6 @@ const accept = Effect.fn("RunnerRegistry.accept")(
                 control: connection,
                 ...(previousSlot?.bulk === undefined ? {} : { bulk: previousSlot.bulk }),
               });
-              const routes = new Map(current.routes);
-              if (previous) {
-                for (const [id, route] of routes) if (route === previous) routes.delete(id);
-              }
-              for (const id of sessions.keys()) {
-                routes.set(routeKey(authenticated.workspaceId, id), connection);
-              }
               const environments = new Map(current.environments);
               for (const [id, route] of environments) {
                 if (route.runnerId === authenticated.id) environments.delete(id);
@@ -581,7 +356,6 @@ const accept = Effect.fn("RunnerRegistry.accept")(
                   ...current,
                   nextGeneration: current.nextGeneration + 1,
                   runners,
-                  routes,
                   environments,
                 }] as const,
               );
@@ -599,8 +373,7 @@ const accept = Effect.fn("RunnerRegistry.accept")(
             component: "openorb-gateway",
             runnerId: authenticated.id,
             generation: connection.generation,
-            sessionCount: connection.sessions.size,
-            tombstoneCount: connection.tombstones.size,
+            environmentCount: initialEnvironments.length,
             durationMs: now - startedAt,
           }));
           yield* Effect.logInfo("connection.connected").pipe(Effect.annotateLogs({
@@ -617,11 +390,6 @@ const accept = Effect.fn("RunnerRegistry.accept")(
             }));
             yield* Scope.close(old.runtime.scope, Exit.void);
           }
-          yield* Effect.forEach(
-            connection.tombstones,
-            (sessionId) => scheduleDeletedSessionCleanup(registry, connection, sessionId),
-            { discard: true },
-          );
           // A reconnect tells each Session Durable Object its environment is reachable again.
           yield* Effect.forEach(
             initialEnvironments,
@@ -750,126 +518,26 @@ function applyEvent(
   connection: Connection,
   event: typeof RunnerStateEvent.Type,
 ) {
-  if (
-    event.type === "environment.updated" || event.type === "environment.removed"
-  ) return applyEnvironmentEvent(registry, connection, event);
-  return Effect.gen(function* () {
-    let unknownSessionDisposition: "accepted" | "tombstoned" | "rejected" | null = null;
-    if (event.type === "session.updated") {
-      const current = getControlConnection(
-        yield* SynchronizedRef.get(registry.state),
-        connection.runner.workspaceId,
-        connection.runner.id,
-      );
-      if (
-        current?.generation === connection.generation && event.revision > current.revision &&
-        !current.sessions.has(event.session.id) && !current.tombstones.has(event.session.id)
-      ) {
-        const reconciled = yield* reconcile(registry, connection.runner.workspaceId, [
-          event.session,
-        ]);
-        unknownSessionDisposition = reconciled.tombstonedSessionIds.includes(event.session.id)
-          ? "tombstoned"
-          : reconciled.acceptedSessionIds.includes(event.session.id)
-          ? "accepted"
-          : "rejected";
-      }
+  if (event.type === "environment.updated" || event.type === "environment.removed") {
+    return applyEnvironmentEvent(registry, connection, event);
+  }
+  if (event.type !== "runner.observed") return Effect.void;
+  return SynchronizedRef.update(registry.state, (state) => {
+    const current = getControlConnection(
+      state,
+      connection.runner.workspaceId,
+      connection.runner.id,
+    );
+    if (current?.generation !== connection.generation || event.revision <= current.revision) {
+      return state;
     }
-
-    let lifecycleLog = Effect.void;
-    const cleanupSessionId = yield* SynchronizedRef.modify(registry.state, (state) => {
-      const current = getControlConnection(
-        state,
-        connection.runner.workspaceId,
-        connection.runner.id,
-      );
-      if (!current || current.generation !== connection.generation) return [null, state] as const;
-      let cleanupSessionId: string | null = null;
-      const routes = new Map(state.routes);
-      const sessions = new Map(current.sessions);
-      const tombstones = new Set(current.tombstones);
-      if (event.type === "session.updated") {
-        if (
-          unknownSessionDisposition === "tombstoned" ||
-          state.deletions.has(routeKey(connection.runner.workspaceId, event.session.id))
-        ) {
-          tombstones.add(event.session.id);
-        }
-      }
-      if (event.type === "session.updated" && event.revision > current.revision) {
-        if (tombstones.has(event.session.id)) {
-          sessions.delete(event.session.id);
-          routes.delete(routeKey(connection.runner.workspaceId, event.session.id));
-          cleanupSessionId = event.session.id;
-        } else if (unknownSessionDisposition !== "rejected") {
-          const previous = sessions.get(event.session.id);
-          const newIssue = event.session.issues.some((issue) =>
-            !previous?.issues.some((prior) =>
-              prior.category === issue.category && prior.severity === issue.severity &&
-              prior.recovery === issue.recovery
-            )
-          );
-          if (previous?.state !== event.session.state || newIssue) {
-            lifecycleLog = (event.session.state === "error" ||
-                event.session.issues.some((issue) => issue.severity === "failure")
-              ? Effect.logError("session.state-observed")
-              : newIssue
-              ? Effect.logWarning("session.state-observed")
-              : Effect.logInfo("session.state-observed")).pipe(Effect.annotateLogs({
-                component: "openorb-gateway",
-                runnerId: connection.runner.id,
-                generation: connection.generation,
-                sessionId: event.session.id,
-                state: event.session.state,
-                previousState: previous?.state ?? "unknown",
-                issueCategories: event.session.issues.map((issue) => issue.category).join(","),
-              }));
-          }
-          sessions.set(event.session.id, event.session);
-        }
-      } else if (event.type === "session.removed" && event.revision > current.revision) {
-        lifecycleLog = Effect.logInfo("session.removed").pipe(Effect.annotateLogs({
-          component: "openorb-gateway",
-          runnerId: connection.runner.id,
-          generation: connection.generation,
-          sessionId: event.sessionId,
-        }));
-        sessions.delete(event.sessionId);
-        routes.delete(routeKey(connection.runner.workspaceId, event.sessionId));
-      }
-      let updated = current;
-      if (event.type === "runner.observed" && event.revision > current.revision) {
-        updated = {
-          ...current,
-          capacity: event.capacity,
-          observedAt: event.observedAt,
-          revision: event.revision,
-        };
-      } else if (event.type === "session.updated" || event.type === "session.removed") {
-        updated = {
-          ...current,
-          sessions,
-          tombstones,
-          revision: Math.max(current.revision, event.revision),
-        };
-      }
-      if (updated === current) return [cleanupSessionId, state] as const;
-      if (
-        event.type === "session.updated" && !tombstones.has(event.session.id) &&
-        unknownSessionDisposition !== "rejected"
-      ) {
-        routes.set(routeKey(current.runner.workspaceId, event.session.id), updated);
-      }
-      const runners = replaceSlotControl(state.runners, current, updated);
-      for (const [id, route] of routes) {
-        if (route.generation === current.generation) routes.set(id, updated);
-      }
-      return [cleanupSessionId, { ...state, runners, routes }] as const;
-    });
-    yield* lifecycleLog;
-    if (cleanupSessionId) {
-      yield* scheduleDeletedSessionCleanup(registry, connection, cleanupSessionId);
-    }
+    const updated: Connection = {
+      ...current,
+      capacity: event.capacity,
+      observedAt: event.observedAt,
+      revision: event.revision,
+    };
+    return { ...state, runners: replaceSlotControl(state.runners, current, updated) };
   });
 }
 
@@ -884,12 +552,8 @@ function removeConnection(registry: RegistryRuntime, connection: Connection) {
     const runners = new Map(state.runners);
     if (slot.bulk === undefined) runners.delete(key);
     else runners.set(key, { runner: slot.runner, bulk: slot.bulk });
-    const routes = new Map(state.routes);
-    for (const [id, route] of routes) {
-      if (route.generation === connection.generation) routes.delete(id);
-    }
     const [environments, lost] = withoutGeneration(state.environments, connection.generation);
-    return [lost, { ...state, runners, routes, environments }] as const;
+    return [lost, { ...state, runners, environments }] as const;
   }).pipe(
     Effect.flatMap((lost) =>
       Effect.forEach(
@@ -905,490 +569,11 @@ function removeConnection(registry: RegistryRuntime, connection: Connection) {
   );
 }
 
-function reconcile(
-  registry: RegistryRuntime,
-  workspaceId: WorkspaceId,
-  entries: RunnerSessionSnapshot[],
-) {
-  return Effect.tryPromise({
-    try: async () => {
-      const [reconciled, reconciliationError] = await registry.repository
-        .reconcileSessionManifestEntries(
-          workspaceId,
-          entries.map((entry) => ({
-            id: entry.id,
-            projectId: entry.projectId,
-            createdAt: entry.createdAt,
-            initialPromptPreview: entry.initialPromptPreview,
-          })),
-        );
-      if (reconciliationError !== undefined) throw reconciliationError;
-      return reconciled;
-    },
-    catch: (cause) => cause,
-  });
-}
-
 function getRunnerLiveState(registry: RegistryRuntime, workspaceId: WorkspaceId, runnerId: string) {
   return SynchronizedRef.get(registry.state).pipe(Effect.map((state) => {
     const connection = getControlConnection(state, workspaceId, runnerId);
     if (!connection) return null;
-    return {
-      capacity: {
-        ...connection.capacity,
-        activeSessions: connection.capacity.activeSessions + connection.createReservations.size,
-      },
-      lastObservedAt: connection.observedAt,
-    };
-  }));
-}
-
-function getSessionRunner(registry: RegistryRuntime, workspaceId: WorkspaceId, sessionId: string) {
-  return SynchronizedRef.get(registry.state).pipe(
-    Effect.map((state) => state.routes.get(routeKey(workspaceId, sessionId))?.runner.id ?? null),
-  );
-}
-
-function getSessionSnapshot(
-  registry: RegistryRuntime,
-  workspaceId: WorkspaceId,
-  sessionId: string,
-) {
-  return SynchronizedRef.get(registry.state).pipe(
-    Effect.map((state) =>
-      state.routes.get(routeKey(workspaceId, sessionId))?.sessions.get(sessionId) ?? null
-    ),
-  );
-}
-
-const getSessionGitSnapshot = Effect.fn("RunnerRegistry.getSessionGitSnapshot")(
-  function* (registry: RegistryRuntime, workspaceId: WorkspaceId, sessionId: string) {
-    const routed = yield* routeSession(registry, workspaceId, sessionId, () => undefined);
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const decoded = Schema.decodeUnknownOption(SessionId)(sessionId);
-    if (Option.isNone(decoded)) return unavailable("The session identifier is invalid.");
-    return yield* routed.connection.runtime.client["session.git-snapshot.read"]({
-      sessionId: decoded.value,
-    }).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause(() =>
-        Effect.succeed(unavailable("The cached Git Snapshot is unavailable."))
-      ),
-    );
-  },
-);
-
-const readSessionGitPatchChunk = Effect.fn("RunnerRegistry.readSessionGitPatchChunk")(
-  function* (registry: RegistryRuntime, input: ReadSessionGitPatchChunkInput) {
-    const routed = yield* routeSession(
-      registry,
-      input.workspaceId,
-      input.sessionId,
-      () => undefined,
-    );
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const sessionId = Schema.decodeUnknownOption(SessionId)(input.sessionId);
-    const snapshotId = Schema.decodeUnknownOption(SessionGitSnapshotId)(input.snapshotId);
-    const section = Schema.decodeUnknownOption(SessionGitPatchSection)(input.section);
-    if (
-      Option.isNone(sessionId) || Option.isNone(snapshotId) || Option.isNone(section) ||
-      !Number.isInteger(input.offset) || input.offset < 0
-    ) {
-      return { status: "rejected" as const, message: "The Git patch range is invalid." };
-    }
-    const state = yield* SynchronizedRef.get(registry.state);
-    const slot = state.runners.get(
-      runnerKey(routed.connection.runner.workspaceId, routed.connection.runner.id),
-    );
-    if (slot?.control?.generation !== routed.connection.generation) {
-      return unavailable("The runner bulk channel is unavailable.");
-    }
-    const bulk = slot.bulk;
-    if (bulk === undefined) return unavailable("The runner bulk channel is unavailable.");
-    return yield* bulk.client["session.git-patch.read-chunk"]({
-      sessionId: sessionId.value,
-      snapshotId: snapshotId.value,
-      section: section.value,
-      offset: input.offset,
-    }).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause(() =>
-        Effect.succeed(unavailable("The cached Git Snapshot patch is unavailable."))
-      ),
-    );
-  },
-);
-
-const readSessionArtifactChunk = Effect.fn("RunnerRegistry.readSessionArtifactChunk")(
-  function* (registry: RegistryRuntime, input: ReadSessionArtifactChunkInput) {
-    const routed = yield* routeSession(
-      registry,
-      input.workspaceId,
-      input.sessionId,
-      () => undefined,
-    );
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const sessionId = Schema.decodeUnknownOption(SessionId)(input.sessionId);
-    const artifactId = Schema.decodeUnknownOption(SessionArtifactId)(input.artifactId);
-    if (
-      Option.isNone(sessionId) || Option.isNone(artifactId) ||
-      !Number.isInteger(input.offset) || input.offset < 0
-    ) {
-      return { status: "rejected" as const, message: "The artifact range is invalid." };
-    }
-    const state = yield* SynchronizedRef.get(registry.state);
-    const slot = state.runners.get(
-      runnerKey(routed.connection.runner.workspaceId, routed.connection.runner.id),
-    );
-    if (slot?.control?.generation !== routed.connection.generation) {
-      return unavailable("The runner bulk channel is unavailable.");
-    }
-    const bulk = slot.bulk;
-    if (bulk === undefined) return unavailable("The runner bulk channel is unavailable.");
-    return yield* bulk.client["session.artifact.read-chunk"]({
-      sessionId: sessionId.value,
-      artifactId: artifactId.value,
-      offset: input.offset,
-    }).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause(() =>
-        Effect.succeed(unavailable("The published session media is unavailable."))
-      ),
-    );
-  },
-);
-
-const updateSessionGitFile = Effect.fn("RunnerRegistry.updateSessionGitFile")(
-  function* (registry: RegistryRuntime, input: UpdateSessionGitFileInput) {
-    const routed = yield* routeSession(
-      registry,
-      input.workspaceId,
-      input.sessionId,
-      (snapshot) =>
-        snapshot.environmentState === "running"
-          ? undefined
-          : "The environment must be running to change Git files.",
-    );
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const request = Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
-      sessionId: input.sessionId,
-      action: input.action,
-      path: input.path,
-      ...(input.previousPath === undefined ? {} : { previousPath: input.previousPath }),
-    });
-    return yield* routed.connection.runtime.client["session.git-file.update"](request).pipe(
-      Effect.timeout(GIT_UPDATE_TIMEOUT_MS),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
-    );
-  },
-);
-
-const provisionSession = Effect.fn("RunnerRegistry.provisionSession")(
-  function* (registry: RegistryRuntime, input: ProvisionSessionInput) {
-    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
-    const reserved = yield* SynchronizedRef.modifyEffect(
-      registry.state,
-      (state): Effect.Effect<readonly [ReservationResult, RegistryState]> => {
-        const connection = getControlConnection(state, input.workspaceId, input.runnerId);
-        let rejection: string | undefined;
-        if (!connection) {
-          rejection = "Runner is unavailable.";
-        } else if (connection.reservations.has(input.sessionId)) {
-          rejection = "This session already has a provisioning request in flight.";
-        } else if (input.payload.mode === "create") {
-          if (!runnerSupportsOrbSize(connection.capacity, input.payload.orbSize)) {
-            rejection = `Runner cannot provision the ${input.payload.orbSize} orb size.`;
-          } else {
-            const existing = state.routes.get(routeKey(input.workspaceId, input.sessionId));
-            if (existing && existing.generation !== connection.generation) {
-              rejection = "This session is pinned to another runner.";
-            }
-          }
-        }
-        if (!connection || rejection) {
-          return Effect.succeed(
-            [
-              { status: "rejected" as const, message: rejection ?? "Runner is unavailable." },
-              state,
-            ] as const,
-          );
-        }
-        const updated = {
-          ...connection,
-          reservations: new Set(connection.reservations).add(input.sessionId),
-          createReservations: input.payload.mode === "create"
-            ? new Set(connection.createReservations).add(input.sessionId)
-            : connection.createReservations,
-        };
-        return Effect.succeed(
-          [
-            { status: "reserved" as const, connection: updated },
-            replaceConnection(state, connection, updated),
-          ] as const,
-        );
-      },
-    );
-    if (reserved.status === "rejected") {
-      yield* Effect.logWarning("provision.routing-rejected").pipe(Effect.annotateLogs({
-        component: "openorb-gateway",
-        runnerId: input.runnerId,
-        sessionId: input.sessionId,
-        reason: reserved.message,
-      }));
-      return unavailable(reserved.message);
-    }
-    const request = Schema.decodeUnknownSync(ProvisionSessionPayload)({
-      ...input.payload,
-      sessionId,
-      ...(input.payload.mode === "create" ? { workspaceId: input.workspaceId } : {}),
-    });
-    return yield* reserved.connection.runtime.client["session.provision"](request).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
-      Effect.flatMap((acknowledgement) =>
-        acceptProvisioned(registry, reserved.connection, input, acknowledgement).pipe(
-          Effect.as({ status: "accepted" as const, acknowledgement }),
-        )
-      ),
-      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
-      Effect.ensuring(
-        releaseReservation(
-          registry,
-          reserved.connection.generation,
-          input.workspaceId,
-          input.runnerId,
-          input.sessionId,
-        ),
-      ),
-    );
-  },
-);
-const promptSession = Effect.fn("RunnerRegistry.promptSession")(
-  function* (registry: RegistryRuntime, input: PromptSessionInput) {
-    const routed = yield* routeSession(
-      registry,
-      input.workspaceId,
-      input.sessionId,
-      (snapshot) => {
-        if (
-          snapshot.agentState === "error"
-        ) {
-          return "The session cannot accept a prompt right now.";
-        }
-        return snapshot.model === input.payload.modelRuntime.model
-          ? undefined
-          : "The session model cannot change during continuation.";
-      },
-    );
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
-    const clientRequestId = Schema.decodeUnknownSync(ClientRequestId)(crypto.randomUUID());
-    return yield* routed.connection.runtime.client["session.prompt"]({
-      ...input.payload,
-      sessionId,
-      clientRequestId,
-    }).pipe(
-      Effect.timeout(
-        routed.snapshot.agentState === "paused"
-          ? COLD_CONTINUATION_TIMEOUT_MS
-          : OPERATION_TIMEOUT_MS,
-      ),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
-    );
-  },
-);
-const setSessionThinkingLevel = Effect.fn("RunnerRegistry.setSessionThinkingLevel")(
-  function* (registry: RegistryRuntime, input: SetSessionThinkingLevelInput) {
-    const routed = yield* routeSession(
-      registry,
-      input.workspaceId,
-      input.sessionId,
-      (snapshot) => snapshot.agentState !== "error" ? undefined : "The agent is unavailable.",
-    );
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
-    return yield* routed.connection.runtime.client["session.thinking-level.set"]({
-      sessionId,
-      level: input.level,
-    }).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
-      Effect.map((acknowledgement) => ({
-        status: "accepted" as const,
-        acknowledgement: acknowledgement.level,
-      })),
-      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
-    );
-  },
-);
-const wakeSession = Effect.fn("RunnerRegistry.wakeSession")(
-  function* (registry: RegistryRuntime, input: WakeSessionInput) {
-    const routed = yield* routeSession(
-      registry,
-      input.workspaceId,
-      input.sessionId,
-      (snapshot) =>
-        snapshot.model === input.payload.modelRuntime.model
-          ? undefined
-          : "The session model cannot change during restoration.",
-    );
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const wakeKind = sessionWakeKind(routed.snapshot, input.payload.recovery);
-    if (wakeKind === undefined) {
-      return {
-        status: "rejected" as const,
-        message: "The session cannot be restored right now.",
-      };
-    }
-    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
-    return yield* routed.connection.runtime.client["session.wake"]({
-      ...input.payload,
-      sessionId,
-    }).pipe(
-      Effect.timeout(
-        wakeKind === "cold" ? COLD_CONTINUATION_TIMEOUT_MS : OPERATION_TIMEOUT_MS,
-      ),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
-    );
-  },
-);
-const abortSession = Effect.fn("RunnerRegistry.abortSession")(
-  function* (registry: RegistryRuntime, input: AbortSessionInput) {
-    const routed = yield* routeSession(
-      registry,
-      input.workspaceId,
-      input.sessionId,
-      (snapshot) => snapshot.agentState === "running" ? undefined : "The agent is not running.",
-    );
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
-    return yield* routed.connection.runtime.client["session.abort"]({
-      sessionId,
-    }).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
-    );
-  },
-);
-const stopSession = Effect.fn("RunnerRegistry.stopSession")(
-  function* (registry: RegistryRuntime, input: StopSessionInput) {
-    const routed = yield* routeSession(
-      registry,
-      input.workspaceId,
-      input.sessionId,
-      (snapshot) =>
-        snapshot.agentState !== "paused" || snapshot.environmentState !== "stopped"
-          ? undefined
-          : "The session cannot be stopped right now.",
-    );
-    if (routed.status === "unavailable") return unavailable(routed.message);
-    if (routed.status === "rejected") {
-      return { status: "rejected" as const, message: routed.message };
-    }
-    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
-    return yield* routed.connection.runtime.client["session.stop"]({ sessionId }).pipe(
-      Effect.timeout(COLD_CONTINUATION_TIMEOUT_MS),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
-    );
-  },
-);
-const deleteSession = Effect.fn("RunnerRegistry.deleteSession")(
-  function* (registry: RegistryRuntime, input: DeleteSessionInput) {
-    const connection = yield* SynchronizedRef.modify(registry.state, (state) => {
-      const key = routeKey(input.workspaceId, input.sessionId);
-      const deletions = new Set(state.deletions).add(key);
-      const routed = state.routes.get(key);
-      const current = routed && getControlConnection(
-        state,
-        routed.runner.workspaceId,
-        routed.runner.id,
-      );
-      if (
-        !routed || !current || current.generation !== routed.generation ||
-        current.runner.workspaceId !== input.workspaceId
-      ) return [null, { ...state, deletions }] as const;
-
-      const sessions = new Map(current.sessions);
-      sessions.delete(input.sessionId);
-      const reservations = new Set(current.reservations);
-      reservations.delete(input.sessionId);
-      const createReservations = new Set(current.createReservations);
-      createReservations.delete(input.sessionId);
-      const updated: Connection = {
-        ...current,
-        sessions,
-        reservations,
-        createReservations,
-        tombstones: new Set(current.tombstones).add(input.sessionId),
-      };
-      const replaced = replaceConnection(state, current, updated);
-      const routes = new Map(replaced.routes);
-      routes.delete(key);
-      return [updated, { ...replaced, routes, deletions }] as const;
-    });
-    yield* Effect.logInfo("deletion.accepted").pipe(Effect.annotateLogs({
-      component: "openorb-gateway",
-      sessionId: input.sessionId,
-      workspaceId: input.workspaceId,
-      cleanup: connection ? "scheduled" : "deferred-until-reconnect",
-    }));
-    if (connection) {
-      yield* scheduleDeletedSessionCleanup(registry, connection, input.sessionId);
-    }
-  },
-);
-
-function watchSession(
-  registry: RegistryRuntime,
-  workspaceId: WorkspaceId,
-  sessionId: string,
-) {
-  return Stream.unwrap(Effect.gen(function* () {
-    const decoded = Schema.decodeUnknownOption(SessionId)(sessionId);
-    if (Option.isNone(decoded)) return Stream.fail(new Error("The session identifier is invalid."));
-    const connection = (yield* SynchronizedRef.get(registry.state)).routes.get(
-      routeKey(workspaceId, sessionId),
-    );
-    if (!connection) return Stream.fail(new Error("The pinned runner is offline."));
-    const routed = (yield* SynchronizedRef.get(registry.state)).routes.get(
-      routeKey(workspaceId, sessionId),
-    );
-    if (!routed || routed.generation !== connection.generation) {
-      return Stream.fail(new Error("The pinned runner is offline."));
-    }
-    return connection.runtime.client["session.watch"]({
-      sessionId: decoded.value,
-    });
+    return { capacity: connection.capacity, lastObservedAt: connection.observedAt };
   }));
 }
 
@@ -1401,12 +586,6 @@ const disconnectRunner = Effect.fn("RunnerRegistry.disconnectRunner")(
         const slot = state.runners.get(key);
         const runners = new Map(state.runners);
         runners.delete(key);
-        const routes = new Map(state.routes);
-        if (slot?.control !== undefined) {
-          for (const [id, route] of routes) {
-            if (route.generation === slot.control.generation) routes.delete(id);
-          }
-        }
         const environments = new Map(state.environments);
         const revokedSessions: string[] = [];
         for (const [id, route] of environments) {
@@ -1418,7 +597,6 @@ const disconnectRunner = Effect.fn("RunnerRegistry.disconnectRunner")(
         return [{ slot, revokedSessions }, {
           ...state,
           runners,
-          routes,
           environments,
           revoked: new Set(state.revoked).add(key),
         }] as const;
@@ -1450,7 +628,7 @@ const closeRegistryConnections = Effect.fn("RunnerRegistry.close")(
   function* (registry: RegistryRuntime) {
     const slots = yield* SynchronizedRef.modify(registry.state, (state) => [
       Array.from(state.runners.values()),
-      { ...state, runners: new Map(), routes: new Map() },
+      { ...state, runners: new Map() },
     ]);
     yield* Effect.forEach(slots, closeRunnerSlot, { concurrency: "unbounded", discard: true });
   },
@@ -1461,226 +639,6 @@ function closeRunnerSlot(slot: RunnerSlot) {
     slot.control === undefined ? Effect.void : Scope.close(slot.control.runtime.scope, Exit.void),
     slot.bulk === undefined ? Effect.void : Scope.close(slot.bulk.scope, Exit.void),
   ], { concurrency: "unbounded", discard: true });
-}
-
-function releaseReservation(
-  registry: RegistryRuntime,
-  generation: number,
-  workspaceId: WorkspaceId,
-  runnerId: string,
-  sessionId: string,
-) {
-  return SynchronizedRef.update(registry.state, (state) => {
-    const connection = getControlConnection(state, workspaceId, runnerId);
-    if (
-      !connection || connection.generation !== generation ||
-      !connection.reservations.has(sessionId)
-    ) return state;
-    const reservations = new Set(connection.reservations);
-    reservations.delete(sessionId);
-    const createReservations = new Set(connection.createReservations);
-    createReservations.delete(sessionId);
-    return replaceConnection(state, connection, {
-      ...connection,
-      reservations,
-      createReservations,
-    });
-  });
-}
-
-function scheduleDeletedSessionCleanup(
-  registry: RegistryRuntime,
-  connection: Connection,
-  sessionId: string,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    const runtime = yield* SynchronizedRef.modify(registry.state, (state) => {
-      const current = getControlConnection(
-        state,
-        connection.runner.workspaceId,
-        connection.runner.id,
-      );
-      if (
-        !current || current.generation !== connection.generation ||
-        !current.tombstones.has(sessionId) || current.cleanupInFlight.has(sessionId)
-      ) return [null, state] as const;
-      const updated = {
-        ...current,
-        cleanupInFlight: new Set(current.cleanupInFlight).add(sessionId),
-      };
-      return [updated.runtime, replaceConnection(state, current, updated)] as const;
-    });
-    if (!runtime) return;
-    const decoded = Schema.decodeUnknownOption(SessionId)(sessionId);
-    if (Option.isNone(decoded)) return;
-    yield* Effect.forkIn(
-      cleanupDeletedSession(connection, decoded.value).pipe(
-        Effect.ensuring(clearCleanupInFlight(registry, connection, sessionId)),
-      ),
-      runtime.scope,
-    );
-  });
-}
-
-function cleanupDeletedSession(
-  connection: Connection,
-  sessionId: typeof SessionId.Type,
-  attempt = 1,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    const startedAt = yield* Clock.currentTimeMillis;
-    yield* Effect.logInfo("deletion.cleanup-started");
-    const result = yield* connection.runtime.client["session.delete"](
-      new DeleteSessionPayload({ sessionId }),
-    ).pipe(Effect.timeout(OPERATION_TIMEOUT_MS), Effect.exit);
-    const now = yield* Clock.currentTimeMillis;
-    if (Exit.isSuccess(result)) {
-      yield* Effect.logInfo("deletion.cleanup-completed").pipe(
-        Effect.annotateLogs({ durationMs: now - startedAt }),
-      );
-      return;
-    }
-    const failure = Option.flatMap(
-      Cause.findErrorOption(result.cause),
-      Schema.decodeUnknownOption(DeletionFailure),
-    );
-    yield* Effect.logWarning("deletion.cleanup-retry-scheduled").pipe(Effect.annotateLogs({
-      reason: Option.isSome(failure) ? failure.value._tag : "delivery-uncertain",
-      durationMs: now - startedAt,
-      delayMs: 1_000,
-    }));
-    yield* Effect.sleep(1_000);
-    yield* cleanupDeletedSession(connection, sessionId, attempt + 1);
-  }).pipe(Effect.annotateLogs({
-    component: "openorb-gateway",
-    runnerId: connection.runner.id,
-    generation: connection.generation,
-    sessionId,
-    attempt,
-  }));
-}
-
-function clearCleanupInFlight(
-  registry: RegistryRuntime,
-  connection: Connection,
-  sessionId: string,
-) {
-  return SynchronizedRef.update(registry.state, (state) => {
-    const current = getControlConnection(
-      state,
-      connection.runner.workspaceId,
-      connection.runner.id,
-    );
-    if (
-      !current || current.generation !== connection.generation ||
-      !current.cleanupInFlight.has(sessionId)
-    ) return state;
-    const cleanupInFlight = new Set(current.cleanupInFlight);
-    cleanupInFlight.delete(sessionId);
-    return replaceConnection(state, current, { ...current, cleanupInFlight });
-  });
-}
-
-function routeSession(
-  registry: RegistryRuntime,
-  workspaceId: WorkspaceId,
-  sessionId: string,
-  validate: (snapshot: RunnerSessionSnapshot) => string | undefined,
-): Effect.Effect<RoutedSessionResult> {
-  return SynchronizedRef.get(registry.state).pipe(
-    Effect.map((state): RoutedSessionResult => {
-      const connection = state.routes.get(routeKey(workspaceId, sessionId));
-      const snapshot = connection?.sessions.get(sessionId);
-      if (!connection || !snapshot) {
-        return { status: "unavailable", message: "The pinned runner is offline." };
-      }
-      const rejection = validate(snapshot);
-      if (rejection) {
-        return { status: "rejected", message: rejection };
-      }
-      return { status: "routed", connection, snapshot };
-    }),
-  );
-}
-
-function acceptProvisioned(
-  registry: RegistryRuntime,
-  connection: Connection,
-  input: ProvisionSessionInput,
-  acknowledgement: ProvisionSessionSuccess,
-) {
-  return Effect.gen(function* () {
-    if (input.payload.mode === "create") {
-      if (
-        acknowledgement.session.projectId !== input.payload.projectId ||
-        acknowledgement.ref !== input.payload.ref ||
-        acknowledgement.branchName !== input.payload.branchName ||
-        acknowledgement.session.orbSize !== input.payload.orbSize ||
-        acknowledgement.session.initialPromptPreview !==
-          initialPromptPreview(input.payload.initialPrompt)
-      ) {
-        return yield* Effect.fail(
-          new ProvisionAcceptanceError(
-            "Runner provisioning acceptance did not match the request.",
-          ),
-        );
-      }
-      const reconciled = yield* reconcile(registry, input.workspaceId, [acknowledgement.session])
-        .pipe(
-          Effect.mapError(() =>
-            new ProvisionAcceptanceError("Session catalog reconciliation failed.")
-          ),
-        );
-      if (
-        reconciled.rejected.length > 0 ||
-        !reconciled.acceptedSessionIds.includes(input.sessionId)
-      ) {
-        return yield* Effect.fail(
-          new ProvisionAcceptanceError("Session catalog reconciliation was rejected."),
-        );
-      }
-    }
-    const cleanupConnection = yield* SynchronizedRef.modify(registry.state, (state) => {
-      const current = getControlConnection(
-        state,
-        connection.runner.workspaceId,
-        connection.runner.id,
-      );
-      if (!current || current.generation !== connection.generation) {
-        return [null, state] as const;
-      }
-      if (
-        current.tombstones.has(input.sessionId) ||
-        state.deletions.has(routeKey(input.workspaceId, input.sessionId))
-      ) {
-        const sessions = new Map(current.sessions);
-        sessions.delete(input.sessionId);
-        const updated = {
-          ...current,
-          sessions,
-          tombstones: new Set(current.tombstones).add(input.sessionId),
-        };
-        const replaced = replaceConnection(state, current, updated);
-        const routes = new Map(replaced.routes);
-        routes.delete(routeKey(input.workspaceId, input.sessionId));
-        return [updated, { ...replaced, routes }] as const;
-      }
-      const sessions = new Map(current.sessions).set(
-        input.sessionId,
-        acknowledgement.session,
-      );
-      const updated = { ...current, sessions };
-      const replaced = replaceConnection(state, current, updated);
-      const routes = new Map(replaced.routes).set(
-        routeKey(input.workspaceId, input.sessionId),
-        updated,
-      );
-      return [null, { ...replaced, routes }] as const;
-    });
-    if (cleanupConnection) {
-      yield* scheduleDeletedSessionCleanup(registry, cleanupConnection, input.sessionId);
-    }
-  });
 }
 
 function observeOperation<A>(
@@ -1724,16 +682,6 @@ function operationFailure(cause: Cause.Cause<unknown>, uncertain: boolean): Oper
       : "Runner is unavailable.",
   };
 }
-function replaceConnection(
-  state: RegistryState,
-  previous: Connection,
-  next: Connection,
-): RegistryState {
-  const runners = replaceSlotControl(state.runners, previous, next);
-  const routes = new Map(state.routes);
-  for (const [id, route] of routes) if (route === previous) routes.set(id, next);
-  return { ...state, runners, routes };
-}
 function replaceSlotControl(
   runners: ReadonlyMap<string, RunnerSlot>,
   previous: Connection,
@@ -1757,14 +705,13 @@ function getControlConnection(
 }
 function runnerSupportsOrbSize(
   capacity: RunnerCapacity,
-  orbSize: Extract<ProvisionSessionInput["payload"], { mode: "create" }>["orbSize"],
+  orbSize: CreateEnvironmentInput["payload"]["orbSize"],
 ) {
   const resources = orbSizeResources(orbSize);
   return resources.cpuCount <= capacity.vmCpuCount && resources.memoryMiB <= capacity.vmMemoryMiB;
 }
 
 class CandidateRejected extends Error {}
-class ProvisionAcceptanceError extends Error {}
 function runnerKey(workspaceId: WorkspaceId, runnerId: string) {
   return `${workspaceId}:${runnerId}`;
 }

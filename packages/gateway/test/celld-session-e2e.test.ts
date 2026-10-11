@@ -223,6 +223,33 @@ Deno.test({
       );
       console.log(`[e2e] git snapshot: ${JSON.stringify(snapshot?.sections.unstaged.files)}`);
 
+      // Skills load once from the first checkout and stay fixed so the prompt prefix stays
+      // cacheable: the skill the guest command wrote later is not picked up by a restart.
+      const restarted = await json(
+        "/__session/control",
+        { sessionId, action: "restart" },
+        15 * 60_000,
+      );
+      assertEquals(restarted.state, "running");
+      await json("/__session/submit", {
+        sessionId,
+        prompt: "Which skills do you have?",
+        requestId: "skills-after-restart",
+      }, 60_000);
+      const answered = await waitForConversation(
+        sessionId,
+        (current) =>
+          current.some((message) =>
+            message.role === "assistant" && JSON.stringify(message).includes("Skills: ")
+          ),
+        5 * 60_000,
+      );
+      const skills = JSON.stringify(answered.findLast((message) => message.role === "assistant"));
+      // The test repository has no skills: the catalog is empty, not pending and not refreshed.
+      assertStringIncludes(skills, "Skills: <repository-skills>\\n\\n</repository-skills>");
+      assert(!skills.includes("e2e-skill"), `the catalog changed after checkout: ${skills}`);
+      console.log("[e2e] repository skills stayed fixed across an environment restart");
+
       const view = await (await fetch(
         new URL(`/__session/view?sessionId=${sessionId}`, gatewayUrl),
       )).json();

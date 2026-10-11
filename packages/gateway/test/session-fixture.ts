@@ -1,4 +1,5 @@
 import { createModels, type CredentialStore, type Models } from "@earendil-works/pi-ai";
+import type { TranscriptContext } from "@earendil-works/pi-ai";
 import {
   fauxAssistantMessage,
   fauxProvider,
@@ -12,21 +13,22 @@ export const SCRIPTED_PNG_BASE64 =
 
 /**
  * Runs in the checkout: proves the clone and session branch, writes a change for the Git
- * Snapshot, and creates media to publish.
+ * Snapshot, creates media to publish, and adds a skill that the fixed catalog must not pick up.
  */
 export const SCRIPTED_GUEST_COMMAND = [
   "git rev-parse --abbrev-ref HEAD",
   "uname -s",
   'printf "guest=%s\\n" "$OPENORB_GUEST"',
   "echo e2e > e2e.txt",
-  "mkdir -p .openorb/artifacts",
+  "mkdir -p .openorb/artifacts .agents/skills/e2e-skill",
+  `printf '%s\\n' '---' 'name: e2e-skill' 'description: Proves skill discovery.' '---' > .agents/skills/e2e-skill/SKILL.md`,
   `printf '%s' '${SCRIPTED_PNG_BASE64}' | base64 -d > .openorb/artifacts/dot.png`,
   "echo e2e-done",
 ].join(" && ");
 
 /**
  * A Session whose model is pi-ai's scripted faux provider: a bash call in the guest, a
- * publish_media call, then an answer. Disposable fixture only; production Sessions use Workspace
+ * publish_media call, then an answer; later prompts echo the repository skills it sees. Disposable fixture only; production Sessions use Workspace
  * credentials.
  */
 export class ScriptedSession extends Session {
@@ -41,9 +43,22 @@ export class ScriptedSession extends Session {
         { stopReason: "toolUse" },
       ),
       fauxAssistantMessage("The guest answered."),
+      // Later prompts report the repository skills section the model was given.
+      ...Array.from(
+        { length: 8 },
+        () => (context: TranscriptContext) =>
+          fauxAssistantMessage(`Skills: ${repositorySkillsSection(context)}`),
+      ),
     ]);
     const models = createModels();
     models.setProvider(faux.provider);
     return models;
   }
+}
+
+/** The last `repository-skills` prompt section in effect for a model request. */
+function repositorySkillsSection(context: TranscriptContext): string {
+  return context.messages.filter((message) => message.role === "system")
+    .map((message) => message.sections?.["repository-skills"])
+    .findLast((section) => section !== undefined) ?? "";
 }

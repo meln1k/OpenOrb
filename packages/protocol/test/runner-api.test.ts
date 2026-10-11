@@ -5,40 +5,34 @@ import * as RpcTest from "effect/rpc/RpcTest";
 
 import { sessionGitSnapshotSchema } from "@/src/browser-session-git-snapshot.ts";
 import {
-  type AbortRejected,
-  AbortSessionAccepted,
-  AbortSessionPayload,
+  AttachEnvironmentPayload,
   type CapacityExceeded,
-  ClientRequestId,
+  ControlEnvironmentPayload,
   ConversationViewSchema,
+  CreateEnvironmentPayload,
+  DeleteEnvironmentPayload,
   type DeleteFailed,
-  type DeleteRejected,
-  DeleteSessionAccepted,
-  DeleteSessionPayload,
-  GitFileUpdateAccepted,
-  type GitFileUpdateRejected,
+  EnvironmentAttachAccepted,
+  EnvironmentAttachNonce,
+  EnvironmentControlled,
+  EnvironmentCreated,
+  EnvironmentDeleted,
+  type EnvironmentNotFound,
+  type EnvironmentRejected,
+  GitAuthor,
   GitMutationRevision,
-  type GitSnapshotReadError,
-  type HistoryReadError,
   MAX_SESSION_ISSUES,
   ProjectId,
-  type PromptRejected,
-  PromptSessionAccepted,
-  PromptSessionPayload,
-  type ProvisionRejected,
-  ProvisionSessionPayload,
-  ProvisionSessionSuccess,
-  ReadSessionGitSnapshotPayload,
   RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   RunnerCapacity,
+  RunnerEnvironmentSnapshot,
   RunnerId,
   RunnerIdentity,
   type RunnerIdentityError,
   RunnerSessionSnapshot,
   type RunnerWatchError,
   type SessionConflict,
-  type SessionCorrupt,
   SessionEnvironmentSecret,
   SessionEnvironmentSecrets,
   SessionEvent,
@@ -47,18 +41,6 @@ import {
   SessionIssue,
   SessionIssues,
   SessionModelRuntime,
-  type SessionNotFound,
-  SetSessionThinkingLevelAccepted,
-  type StopRejected,
-  StopSessionAccepted,
-  StopSessionPayload,
-  SubmissionId,
-  UpdateSessionGitFilePayload,
-  type WakeRejected,
-  WakeSessionAccepted,
-  WakeSessionPayload,
-  WatchSessionEvent,
-  WatchSessionPayload,
   WorkspaceId,
 } from "@/src/runner-api.ts";
 import {
@@ -71,29 +53,18 @@ import {
 } from "@/src/runner-api-limits.ts";
 
 type RunnerApiError =
-  | AbortRejected
   | CapacityExceeded
   | DeleteFailed
-  | DeleteRejected
-  | GitFileUpdateRejected
-  | GitSnapshotReadError
-  | HistoryReadError
-  | PromptRejected
-  | ProvisionRejected
+  | EnvironmentNotFound
+  | EnvironmentRejected
   | RunnerIdentityError
   | RunnerWatchError
-  | SessionConflict
-  | SessionCorrupt
-  | SessionNotFound
-  | StopRejected
-  | WakeRejected;
+  | SessionConflict;
 
 const SESSION_ID = SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
 const WORKSPACE_ID = WorkspaceId.make("01989d78-65ee-7f6a-a97e-0f16ad134c12");
 const PROJECT_ID = ProjectId.make("01989d78-65ee-7f6a-a97e-0f16ad134c10");
 const RUNNER_ID = RunnerId.make("01989d78-65ee-7f6a-a97e-0f16ad134c11");
-const SUBMISSION_ID = 42;
-const CLIENT_REQUEST_ID = ClientRequestId.make("prompt-request-1");
 const RUNNER_TOKEN = `openorb_runner_${"a".repeat(43)}`;
 
 Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () => {
@@ -114,47 +85,44 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       protocolVersion: RUNNER_PROTOCOL_VERSION,
     })
   );
-  const provision = Schema.decodeUnknownSync(ProvisionSessionPayload)({
-    mode: "create",
+  const created = Schema.decodeUnknownSync(CreateEnvironmentPayload)({
     sessionId: SESSION_ID,
     workspaceId: WORKSPACE_ID,
-    projectId: PROJECT_ID,
-    repositoryUrl: "https://github.com/openorb/example.git",
-    ref: "main",
-    branchName: "openorb/session",
-    gitAuthor: { name: "OpenOrb User", email: "user@example.com" },
     orbSize: "medium",
-    initialPrompt: "Implement the change.",
-    modelRuntime: modelRuntime(),
+    repositoryUrl: "https://github.com/openorb/example.git",
+    gitAuthor: { name: "OpenOrb User", email: "user@example.com" },
+  });
+  assertEquals(created.workspaceId, WORKSPACE_ID);
+  assertThrows(() =>
+    Schema.decodeUnknownSync(CreateEnvironmentPayload)({
+      ...created,
+      repositoryUrl: "https://example.com/openorb/example.git",
+    })
+  );
+  assertThrows(() =>
+    Schema.decodeUnknownSync(CreateEnvironmentPayload)({
+      ...created,
+      gitAuthor: { name: "OpenOrb User", email: "not-an-email" },
+    })
+  );
+
+  const started = Schema.decodeUnknownSync(ControlEnvironmentPayload)({
+    sessionId: SESSION_ID,
+    action: "start",
+    githubToken: "github-token",
     environmentSecrets: [{
       name: "SERVICE_TOKEN",
       value: "service-secret",
       allowedHosts: ["api.example.com", "*.service.example"],
     }],
   });
-  assertEquals(provision.sessionId, SESSION_ID);
-  assertEquals(provision.mode, "create");
-  if (provision.mode !== "create") throw new Error("Expected a create payload.");
-  assertEquals(provision.workspaceId, WORKSPACE_ID);
-  assertEquals(provision.environmentSecrets, [
+  assertEquals(started.environmentSecrets, [
     new SessionEnvironmentSecret({
       name: "SERVICE_TOKEN",
       value: "service-secret",
       allowedHosts: ["api.example.com", "*.service.example"],
     }),
   ]);
-  assertThrows(() =>
-    Schema.decodeUnknownSync(ProvisionSessionPayload)({
-      ...provision,
-      repositoryUrl: "https://example.com/openorb/example.git",
-    })
-  );
-  assertThrows(() =>
-    Schema.decodeUnknownSync(ProvisionSessionPayload)({
-      ...provision,
-      gitAuthor: { name: "OpenOrb User", email: "not-an-email" },
-    })
-  );
   for (
     const environmentSecrets of [
       [
@@ -170,60 +138,13 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
     ]
   ) {
     assertThrows(() =>
-      Schema.decodeUnknownSync(ProvisionSessionPayload)({
-        ...provision,
-        environmentSecrets,
-      })
+      Schema.decodeUnknownSync(ControlEnvironmentPayload)({ ...started, environmentSecrets })
     );
-  }
-
-  assertEquals(
-    Schema.decodeUnknownSync(PromptSessionPayload)({
-      sessionId: SESSION_ID,
-      clientRequestId: CLIENT_REQUEST_ID,
-      prompt: "Continue.",
-      modelRuntime: modelRuntime(),
-    }).clientRequestId,
-    CLIENT_REQUEST_ID,
-  );
-  assertEquals(
-    Schema.decodeUnknownSync(WakeSessionPayload)({
-      sessionId: SESSION_ID,
-      modelRuntime: modelRuntime(),
-      githubToken: "github-token",
-    }).githubToken,
-    "github-token",
-  );
-  assertEquals(
-    Schema.decodeUnknownSync(AbortSessionPayload)({
-      sessionId: SESSION_ID,
-    }).sessionId,
-    SESSION_ID,
-  );
-});
-
-Deno.test("submission IDs are Durable non-negative safe integers, not run labels", () => {
-  for (const id of [0, 2, 42, Number.MAX_SAFE_INTEGER]) {
-    assertEquals(Schema.decodeUnknownSync(SubmissionId)(id), id);
-    assertEquals(
-      Schema.decodeUnknownSync(PromptSessionAccepted)({
-        clientRequestId: CLIENT_REQUEST_ID,
-        submissionId: id,
-      }).submissionId,
-      id,
-    );
-  }
-  for (const id of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "42", "run-1", null]) {
-    assertThrows(() => Schema.decodeUnknownSync(SubmissionId)(id));
   }
   assertThrows(() =>
-    Schema.decodeUnknownSync(PromptSessionAccepted)({
-      clientRequestId: CLIENT_REQUEST_ID,
-      runId: "run-1",
-      mode: "started",
-    })
+    Schema.decodeUnknownSync(ControlEnvironmentPayload)({ ...started, action: "suspend" })
   );
-  assertEquals(RUNNER_PROTOCOL_VERSION, 26);
+  assertEquals(RUNNER_PROTOCOL_VERSION, 27);
 });
 
 Deno.test("session model runtime accepts only explicit credential transports", () => {
@@ -270,22 +191,17 @@ Deno.test("environment secrets reserve enough room for the RPC request envelope"
     byteLength(JSON.stringify(acceptedSecrets)) < MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES,
   );
 
-  const payload = Schema.decodeUnknownSync(PromptSessionPayload)({
+  const payload = Schema.decodeUnknownSync(ControlEnvironmentPayload)({
     sessionId: SESSION_ID,
-    clientRequestId: "\0".repeat(100),
-    prompt: "\0".repeat(32 * 1_024),
-    modelRuntime: {
-      model: `x/${"\\".repeat(510)}`,
-      thinkingLevel: "xhigh",
-      credential: { type: "api_key", value: "\0".repeat(4_096) },
-    },
+    action: "restart",
     githubToken: "\0".repeat(4_096),
     environmentSecrets: acceptedSecrets,
+    recovery: "restart-environment",
   });
   const frame = {
     _tag: "Request",
     id: Number.MAX_SAFE_INTEGER,
-    tag: "session.prompt",
+    tag: "environment.control",
     payload,
     headers: [],
     traceId: "f".repeat(32),
@@ -299,34 +215,6 @@ Deno.test("environment secrets reserve enough room for the RPC request envelope"
   assert(oversizedBytes > MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES);
   assert(oversizedBytes < MAX_RUNNER_RPC_FRAME_BYTES);
   assertThrows(() => Schema.decodeUnknownSync(SessionEnvironmentSecrets)(oversizedSecrets));
-});
-
-Deno.test("WatchSession events wrap only the session event", () => {
-  const snapshot = {
-    event: {
-      type: "conversation.snapshot" as const,
-      view: { conversation: { id: 0 }, entries: [], docs: {} },
-    },
-  };
-  assertEquals<unknown>(
-    Schema.decodeUnknownSync(WatchSessionEvent)(snapshot),
-    snapshot,
-  );
-  assertEquals(
-    Schema.decodeUnknownSync(WatchSessionEvent)({
-      event: { type: "conversation.ops", ops: [["s", ["docs", "pi.live"], {}]] },
-    }).event.type,
-    "conversation.ops",
-  );
-  const snapshotUpdated = Schema.decodeUnknownSync(WatchSessionEvent)({
-    event: { type: "git.snapshot.updated" },
-  });
-  assertEquals(snapshotUpdated.event.type, "git.snapshot.updated");
-  assertEquals(
-    Schema.decodeUnknownSync(SessionEvent)(snapshotUpdated.event).type,
-    "git.snapshot.updated",
-  );
-  assertThrows(() => Schema.decodeUnknownSync(WatchSessionEvent)({}));
 });
 
 Deno.test("structural frames reject normalized events, host objects and malformed ops", () => {
@@ -531,15 +419,6 @@ Deno.test("Git Snapshot paths preserve exact mutation operands separately from d
   assert(browserSnapshot.success);
   assertEquals(browserSnapshot.value.sections.staged.files[0]?.path, path);
   assertEquals(browserSnapshot.value.sections.staged.files[0]?.displayPath, displayPath);
-  assertEquals(
-    Schema.decodeUnknownSync(UpdateSessionGitFilePayload)({
-      sessionId: SESSION_ID,
-      action: "stage",
-      path,
-      previousPath,
-    }).path,
-    path,
-  );
 });
 
 Deno.test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse in the browser", () => {
@@ -588,112 +467,71 @@ Deno.test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse 
   assert(byteLength(JSON.stringify(snapshot)) < MAX_RUNNER_RPC_FRAME_BYTES);
 });
 
-Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest", async () => {
-  const mutationRevision = GitMutationRevision.make(7);
+Deno.test("RunnerApi exposes only runner and environment procedures through RpcTest", async () => {
   const identity = new RunnerIdentity({
     token: RUNNER_TOKEN,
     runnerId: RUNNER_ID,
     runnerVersion: "0.0.0",
     protocolVersion: RUNNER_PROTOCOL_VERSION,
   });
-  const session = sessionSnapshot();
   const capacity = runnerCapacity();
+  const environment = new RunnerEnvironmentSnapshot({
+    sessionId: SESSION_ID,
+    workspaceId: WORKSPACE_ID,
+    createdAt: "2026-08-23T12:00:00Z",
+    orbSize: "small",
+    state: "stopped",
+  });
+  assertEquals(Array.from(RunnerApi.requests.keys()).sort(), [
+    "environment.attach",
+    "environment.control",
+    "environment.create",
+    "environment.delete",
+    "runner.identify",
+    "runner.watch",
+  ]);
   const handlers = RunnerApi.toLayer({
     "runner.identify": () => Effect.succeed(identity),
     "runner.watch": () =>
-      Stream.make({
-        type: "snapshot.complete" as const,
-        revision: 1,
-        sessionCount: 1,
-        environmentCount: 0,
-        observedAt: 1,
-        capacity,
-      }),
-    "session.provision": ({ sessionId }) =>
-      Effect.succeed(
-        new ProvisionSessionSuccess({
-          session: new RunnerSessionSnapshot({ ...session, id: sessionId }),
-          ref: "main",
-          branchName: "openorb/session",
-          checkoutState: "pending",
-        }),
-      ),
-    "session.prompt": ({ clientRequestId }) =>
-      Effect.succeed(
-        new PromptSessionAccepted({
-          clientRequestId,
-          submissionId: SUBMISSION_ID,
-        }),
-      ),
-    "session.thinking-level.set": ({ level }) =>
-      Effect.succeed(new SetSessionThinkingLevelAccepted({ level })),
-    "session.wake": () => Effect.succeed(new WakeSessionAccepted({})),
-    "session.abort": () => Effect.succeed(new AbortSessionAccepted({})),
-    "session.stop": () => Effect.succeed(new StopSessionAccepted({})),
-    "session.delete": () => Effect.succeed(new DeleteSessionAccepted({})),
-    "session.git-snapshot.read": () =>
-      Effect.succeed(
-        new SessionGitSnapshot({
-          generatedAt: "2026-08-23T12:00:00Z",
-          completeness: "complete",
-          stale: false,
-          truncated: false,
-          sections: {
-            staged: { files: [], patch: "", truncated: false },
-            unstaged: {
-              files: [{
-                kind: "tracked",
-                path: "src/main.ts",
-                displayPath: "src/main.ts",
-                status: "modified",
-                diffState: "available",
-              }],
-              patch: "diff --git a/src/main.ts b/src/main.ts\n",
-              truncated: false,
-            },
-          },
-        }),
-      ),
-    "session.git-file.update": () =>
-      Effect.succeed(new GitFileUpdateAccepted({ mutationRevision })),
-    "environment.create": () => Effect.die("unused environment create"),
-    "environment.control": () => Effect.die("unused environment control"),
-    "environment.attach": () => Effect.die("unused environment attach"),
-    "environment.delete": () => Effect.die("unused environment delete"),
-    "session.watch": () =>
-      Stream.make({
-        event: {
-          type: "conversation.snapshot" as const,
-          view: Schema.decodeUnknownSync(ConversationViewSchema)({
-            conversation: { id: 0 },
-            entries: [],
-            docs: {},
-          }),
+      Stream.make(
+        { type: "snapshot.environment" as const, environment },
+        {
+          type: "snapshot.complete" as const,
+          revision: 1,
+          environmentCount: 1,
+          observedAt: 1,
+          capacity,
         },
-      }),
+      ),
+    "environment.create": () => Effect.succeed(new EnvironmentCreated({ environment })),
+    "environment.control": ({ action }) =>
+      Effect.succeed(
+        new EnvironmentControlled({
+          state: action === "stop" ? "stopped" : "running",
+          forced: false,
+        }),
+      ),
+    "environment.attach": () => Effect.succeed(new EnvironmentAttachAccepted({})),
+    "environment.delete": () => Effect.succeed(new EnvironmentDeleted({})),
   });
-  const promptPayload = new PromptSessionPayload({
+
+  const createPayload = new CreateEnvironmentPayload({
     sessionId: SESSION_ID,
-    clientRequestId: CLIENT_REQUEST_ID,
-    prompt: "Continue.",
-    modelRuntime: new SessionModelRuntime(modelRuntime()),
+    workspaceId: WORKSPACE_ID,
+    orbSize: "small",
+    repositoryUrl: "https://github.com/acme/repo.git",
+    gitAuthor: new GitAuthor({ name: "Ada", email: "ada@example.com" }),
   });
-  const abortPayload = new AbortSessionPayload({ sessionId: SESSION_ID });
-  const stopPayload = new StopSessionPayload({ sessionId: SESSION_ID });
-  const deletePayload = new DeleteSessionPayload({ sessionId: SESSION_ID });
-  const wakePayload = new WakeSessionPayload({
+  const controlPayload = new ControlEnvironmentPayload({
     sessionId: SESSION_ID,
-    modelRuntime: new SessionModelRuntime(modelRuntime()),
+    action: "start",
     githubToken: "github-token",
   });
-  const watchPayload = new WatchSessionPayload({ sessionId: SESSION_ID });
-  const snapshotPayload = new ReadSessionGitSnapshotPayload({ sessionId: SESSION_ID });
-  const updatePayload = new UpdateSessionGitFilePayload({
+  const attachPayload = new AttachEnvironmentPayload({
     sessionId: SESSION_ID,
-    action: "stage",
-    path: "src/main.ts",
-    previousPath: "src/old-main.ts",
+    nonce: Schema.decodeUnknownSync(EnvironmentAttachNonce)("A".repeat(43)),
   });
+  const deletePayload = new DeleteEnvironmentPayload({ sessionId: SESSION_ID });
 
   await Effect.runPromise(Effect.scoped(Effect.gen(function* (): Effect.fn.Return<
     void,
@@ -703,38 +541,24 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
     const client = yield* RpcTest.makeClient(RunnerApi).pipe(Effect.provide(handlers));
     assertEquals((yield* client["runner.identify"]()).runnerId, RUNNER_ID);
     assertEquals(
-      Array.from(yield* client["runner.watch"]().pipe(Stream.runCollect))[0]?.type,
-      "snapshot.complete",
+      Array.from(yield* client["runner.watch"]().pipe(Stream.runCollect)).map((event) =>
+        event.type
+      ),
+      ["snapshot.environment", "snapshot.complete"],
     );
     assertEquals(
-      (yield* client["session.provision"]({
-        mode: "retry",
-        sessionId: SESSION_ID,
-        modelRuntime: modelRuntime(),
-      })).session.id,
+      (yield* client["environment.create"](createPayload)).environment.sessionId,
       SESSION_ID,
     );
     assertEquals(
-      (yield* client["session.prompt"](promptPayload)).submissionId,
-      SUBMISSION_ID,
+      (yield* client["environment.control"](controlPayload)).state,
+      "running",
     );
-    assert((yield* client["session.wake"](wakePayload)) instanceof WakeSessionAccepted);
-    assert((yield* client["session.abort"](abortPayload)) instanceof AbortSessionAccepted);
-    assert((yield* client["session.stop"](stopPayload)) instanceof StopSessionAccepted);
-    assert((yield* client["session.delete"](deletePayload)) instanceof DeleteSessionAccepted);
-    assertEquals(
-      (yield* client["session.git-snapshot.read"](snapshotPayload)).sections.unstaged.files[0]
-        ?.path,
-      "src/main.ts",
+    assert(
+      (yield* client["environment.attach"](attachPayload)) instanceof EnvironmentAttachAccepted,
     );
-    const updateAccepted = yield* client["session.git-file.update"](updatePayload);
-    assert(updateAccepted instanceof GitFileUpdateAccepted);
-    assertEquals(updateAccepted.mutationRevision, mutationRevision);
-    assertEquals(
-      Array.from(
-        yield* client["session.watch"](watchPayload).pipe(Stream.runCollect),
-      )[0]?.event.type,
-      "conversation.snapshot",
+    assert(
+      (yield* client["environment.delete"](deletePayload)) instanceof EnvironmentDeleted,
     );
   })));
 });

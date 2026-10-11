@@ -1,24 +1,17 @@
 import { assert, assertEquals } from "@std/assert";
 import * as DenoSocket from "@effect/platform-deno/DenoSocket";
 import {
-  DeleteSessionAccepted,
+  EnvironmentControlled,
   RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   RunnerCapacity,
+  RunnerEnvironmentSnapshot,
   RunnerIdentity,
-  RunnerSessionSnapshot,
   RunnerStateEvent,
-  StopSessionAccepted,
+  SessionId,
+  type WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import {
-  RunnerBulkApi,
-  runnerBulkRpcSerializationLayer,
-  SessionArtifact,
-  SessionArtifactChunk,
-  SessionArtifactId,
-  SessionGitPatchChunk,
-} from "@openorb/protocol/runner-bulk-api";
-import { MAX_RUNNER_BULK_CHUNK_BYTES } from "@openorb/protocol/runner-api-limits";
+import { RunnerBulkApi, runnerBulkRpcSerializationLayer } from "@openorb/protocol/runner-bulk-api";
 import {
   runnerControlRpcSerializationLayer,
   runnerControlWebSocket,
@@ -39,13 +32,16 @@ const capacity = new RunnerCapacity({
   vmMemoryMiB: 16_384,
   diskFreeMiB: 50_000,
 });
-const image = Uint8Array.from({ length: MAX_RUNNER_BULK_CHUNK_BYTES + 19 }, (_, i) => i % 256);
-const artifact = new SessionArtifact({
-  id: SessionArtifactId.make(crypto.randomUUID()),
-  fileName: "native-rpc.png",
-  mediaType: "image/png",
-  byteLength: image.length,
-});
+
+function environment(sessionId: string, workspaceId: WorkspaceId) {
+  return new RunnerEnvironmentSnapshot({
+    sessionId: SessionId.make(sessionId),
+    workspaceId,
+    createdAt: "2026-10-08T12:00:00Z",
+    orbSize: "small",
+    state: "running",
+  });
+}
 
 function endpoint(path: string, params: Record<string, string> = {}) {
   assert(gatewayUrl);
@@ -83,16 +79,12 @@ const eventually = (predicate: () => Effect.Effect<boolean>, message: string) =>
 
 const makeProbe = Effect.fn(function* (identity: RunnerIdentity) {
   const stops: string[] = [];
-  const artifactOffsets: number[] = [];
-  const watches: Deferred.Deferred<void>[] = [];
   return {
     identity,
-    events: yield* Queue.unbounded<typeof RunnerStateEvent.Type>(),
+    events: yield* Queue.unbounded<RunnerStateEvent>(),
     identifyCalls: 0,
     watchCalls: 0,
     stops,
-    artifactOffsets,
-    watches,
     closed: yield* Deferred.make<void>(),
     closeCode: yield* Deferred.make<number>(),
   };
@@ -107,36 +99,15 @@ function controlHandlers(probe: Probe) {
       probe.watchCalls++;
       return Stream.fromQueue(probe.events);
     },
-    "session.provision": unused,
-    "session.prompt": unused,
-    "session.thinking-level.set": unused,
-    "session.wake": unused,
-    "session.abort": unused,
-    "session.git-snapshot.read": unused,
-    "session.git-file.update": unused,
     "environment.create": unused,
-    "environment.control": unused,
+    "environment.control": ({ sessionId, action }) =>
+      Effect.sync(() => {
+        assertEquals(action, "stop");
+        probe.stops.push(sessionId);
+        return new EnvironmentControlled({ state: "stopped", forced: false });
+      }),
     "environment.attach": unused,
     "environment.delete": unused,
-    "session.stop": ({ sessionId }) =>
-      Effect.sync(() => {
-        probe.stops.push(sessionId);
-        return new StopSessionAccepted({});
-      }),
-    "session.delete": ({ sessionId }) =>
-      Effect.sync(() => {
-        assert(sessionId);
-        return new DeleteSessionAccepted({});
-      }),
-    "session.watch": () =>
-      Stream.unwrap(Effect.gen(function* () {
-        const finalized = yield* Deferred.make<void>();
-        probe.watches.push(finalized);
-        return Stream.make({ event: { type: "git.snapshot.updated" as const } }).pipe(
-          Stream.concat(Stream.never),
-          Stream.ensuring(Deferred.succeed(finalized, undefined)),
-        );
-      })),
   }));
 }
 
@@ -147,24 +118,6 @@ function bulkHandlers(probe: Probe) {
       probe.watchCalls++;
       return Stream.make({ observedAt: 1 }).pipe(Stream.concat(Stream.never));
     },
-    "session.git-patch.read-chunk": (input) =>
-      Effect.succeed(
-        new SessionGitPatchChunk({
-          ...input,
-          bytes: new Uint8Array([0, 255]),
-          nextOffset: input.offset + 2,
-          done: true,
-        }),
-      ),
-    "session.artifact.read-chunk": ({ offset }) =>
-      Effect.sync(() => {
-        probe.artifactOffsets.push(offset);
-        return new SessionArtifactChunk({
-          artifact,
-          offset,
-          bytes: image.slice(offset, offset + MAX_RUNNER_BULK_CHUNK_BYTES),
-        });
-      }),
   }));
 }
 
@@ -220,13 +173,6 @@ const fixture = Effect.fn(function* () {
   );
   assert(identity, "use a fresh disposable celld fixture");
   const workspaceId = identity.workspaceId;
-  const project = yield* Effect.promise(() =>
-    workspace.saveProject(workspaceId, {
-      name: `Native Runners ${crypto.randomUUID()}`,
-      repositoryUrl: "https://github.com/example/native-rpc.git",
-    })
-  );
-  assert(project.status === "saved");
   const enrollment = yield* Effect.promise(() => workspace.getRunnerEnrollmentToken(workspaceId));
   const enrolled = yield* Effect.promise(() =>
     workspace.enrollRunner({
@@ -237,34 +183,14 @@ const fixture = Effect.fn(function* () {
   );
   assert(enrolled);
   const runnerParams = { workspaceId, runnerId: enrolled.runnerId };
-  const snapshots = [crypto.randomUUID(), crypto.randomUUID()].map((id) =>
-    decode(RunnerSessionSnapshot)({
-      id,
-      projectId: project.project.id,
-      createdAt: "2026-10-08T12:00:00Z",
-      initialPromptPreview: "Native manifest",
-      model: "openai/gpt-4.1",
-      initialThinkingLevel: "medium",
-      orbSize: "small",
-      state: "ready",
-      agentState: "idle",
-      environmentState: "running",
-      issues: [],
-    })
+  const environments = [crypto.randomUUID(), crypto.randomUUID()].map((id) =>
+    environment(id, workspaceId)
   );
   yield* Effect.addFinalizer(() =>
     Effect.promise(async () => {
       await workspace.revokeRunner(workspaceId, enrolled.runnerId);
       await json("/__registry/disconnect", {}, runnerParams);
-      for (const session of snapshots) {
-        await workspace.deleteSessionCatalogEntry(
-          workspaceId,
-          session.id,
-          new Date().toISOString(),
-        );
-      }
       await workspace.deleteRunner(workspaceId, enrolled.runnerId);
-      await workspace.deleteProject(workspaceId, project.project.id);
     }).pipe(Effect.timeout("5 seconds"), Effect.orDie)
   );
   const runnerIdentity = decode(RunnerIdentity)({
@@ -274,22 +200,33 @@ const fixture = Effect.fn(function* () {
     protocolVersion: RUNNER_PROTOCOL_VERSION,
   });
   const probe = yield* makeProbe(runnerIdentity);
-  return { workspace, workspaceId, runnerParams, snapshots, probe };
+  return { workspace, workspaceId, runnerParams, environments, probe };
 });
 
-const publish = (probe: Probe, sessions: RunnerSessionSnapshot[], revision = 1) =>
-  Effect.forEach([
-    ...sessions.map((session) => ({ type: "snapshot.session" as const, session })),
-    {
-      type: "snapshot.complete" as const,
-      revision,
-      sessionCount: sessions.length,
-      environmentCount: 0,
-      observedAt: revision,
-      capacity,
-    },
-  ], (event) =>
-    Queue.offer(probe.events, decode(RunnerStateEvent)(event)), { discard: true });
+const publish = (probe: Probe, environments: RunnerEnvironmentSnapshot[], revision = 1) =>
+  Effect.forEach(
+    [
+      ...environments.map((environment) => ({
+        type: "snapshot.environment" as const,
+        environment,
+      })),
+      {
+        type: "snapshot.complete" as const,
+        revision,
+        environmentCount: environments.length,
+        observedAt: revision,
+        capacity,
+      },
+    ],
+    (event) => Queue.offer(probe.events, decode(RunnerStateEvent)(event)),
+    { discard: true },
+  );
+
+/** The routed environment as native RPC returns it: a plain record, not a Schema.Class. */
+const routedEnvironment = (runnerId: string, environment: RunnerEnvironmentSnapshot) => ({
+  runnerId,
+  environment: { ...environment },
+});
 
 const admitted = (params: Record<string, string>) =>
   eventually(
@@ -298,14 +235,20 @@ const admitted = (params: Record<string, string>) =>
   );
 
 Deno.test({
-  name: "native celld Runners admits manifests, routes commands, replaces connections and revokes",
+  name:
+    "native celld Runners admits environments, routes control, replaces connections and revokes",
   ignore: !gatewayUrl,
   fn: () =>
     Effect.runPromise(Effect.scoped(
       Effect.gen(function* () {
         const f = yield* fixture();
-        const [first, second] = f.snapshots;
+        const [first, second] = f.environments;
         assert(first && second);
+        const runnerId = f.runnerParams.runnerId;
+        const firstParams = { workspaceId: f.workspaceId, sessionId: first.sessionId };
+        const secondParams = { workspaceId: f.workspaceId, sessionId: second.sessionId };
+        const routed = (params: Record<string, string>) =>
+          Effect.promise(() => json("/__registry/environment", params));
         yield* connect(f.probe);
         yield* eventually(
           () => Effect.sync(() => f.probe.watchCalls === 1),
@@ -314,18 +257,24 @@ Deno.test({
         assertEquals(yield* Effect.promise(() => json("/__registry/live", f.runnerParams)), null);
         yield* publish(f.probe, [first]);
         yield* admitted(f.runnerParams);
-        const sessionParams = { workspaceId: f.workspaceId, sessionId: first.id };
-        assertEquals(yield* Effect.promise(() => json("/__registry/snapshot", sessionParams)), {
-          ...first,
-        });
-        assertEquals(yield* Effect.promise(() => json("/__registry/stop", {}, sessionParams)), {
-          status: "accepted",
-          acknowledgement: {},
-        });
-        assertEquals(f.probe.stops, [first.id]);
+        assertEquals(yield* routed(firstParams), routedEnvironment(runnerId, first));
+        assertEquals(
+          yield* Effect.promise(() =>
+            json("/__registry/environment/control", {}, { ...firstParams, action: "stop" })
+          ),
+          { status: "accepted", acknowledgement: { state: "stopped", forced: false } },
+        );
+        assertEquals(f.probe.stops, [first.sessionId]);
         assertEquals(f.probe.identifyCalls, 1);
-        const foreign = { ...sessionParams, workspaceId: crypto.randomUUID() };
-        assertEquals(yield* Effect.promise(() => json("/__registry/snapshot", foreign)), null);
+        const foreign = { ...firstParams, workspaceId: crypto.randomUUID() };
+        assertEquals(yield* routed(foreign), null);
+        assertEquals(
+          (yield* Effect.promise(() =>
+            json("/__registry/environment/control", {}, { ...foreign, action: "stop" })
+          )).status,
+          "unavailable",
+        );
+        assertEquals(f.probe.stops, [first.sessionId]);
         for (
           const identity of [
             decode(RunnerIdentity)({ ...f.probe.identity, token: "openorb_runner_invalid" }),
@@ -349,21 +298,13 @@ Deno.test({
           () => Effect.sync(() => replacement.watchCalls === 1),
           "replacement watch missing",
         );
-        assertEquals(yield* Effect.promise(() => json("/__registry/snapshot", sessionParams)), {
-          ...first,
-        });
+        assertEquals(yield* routed(firstParams), routedEnvironment(runnerId, first));
         yield* publish(replacement, [second], 10);
-        yield* eventually(() =>
-          Effect.promise(async () =>
-            (await json("/__registry/snapshot", {
-              workspaceId: f.workspaceId,
-              sessionId: second.id,
-            })) !== null
-          ), "replacement manifest missing");
-        assertEquals(
-          yield* Effect.promise(() => json("/__registry/snapshot", sessionParams)),
-          null,
+        yield* eventually(
+          () => Effect.map(routed(secondParams), (route) => route !== null),
+          "replacement environments missing",
         );
+        assertEquals(yield* routed(firstParams), null);
         assertEquals(
           yield* Effect.promise(() =>
             f.workspace.revokeRunner(f.workspaceId, f.runnerParams.runnerId)
@@ -375,12 +316,7 @@ Deno.test({
           true,
         );
         assertEquals(yield* Effect.promise(() => json("/__registry/live", f.runnerParams)), null);
-        assertEquals(
-          yield* Effect.promise(() =>
-            json("/__registry/snapshot", { workspaceId: f.workspaceId, sessionId: second.id })
-          ),
-          null,
-        );
+        assertEquals(yield* routed(secondParams), null);
         const revoked = yield* makeProbe(f.probe.identity);
         yield* connect(revoked);
         assertEquals(
@@ -393,123 +329,6 @@ Deno.test({
 });
 
 Deno.test({
-  name: "native celld Runners bulk artifact RPC preserves Uint8Array and multi-chunk bytes",
-  ignore: !gatewayUrl,
-  fn: () =>
-    Effect.runPromise(Effect.scoped(
-      Effect.gen(function* () {
-        const f = yield* fixture();
-        const session = f.snapshots[0]!;
-        yield* connect(f.probe);
-        yield* publish(f.probe, [session]);
-        yield* admitted(f.runnerParams);
-        const bulk = yield* makeProbe(f.probe.identity);
-        yield* connect(bulk, true);
-        const input = {
-          workspaceId: f.workspaceId,
-          sessionId: session.id,
-          artifactId: artifact.id,
-          offset: 0,
-        };
-        let first: Uint8Array | undefined;
-        yield* eventually(() =>
-          Effect.promise(async () => {
-            const response = await request("/__registry/artifact", {}, input);
-            if (response.status === 409) {
-              await response.text();
-              return false;
-            }
-            assertEquals(response.status, 200, await response.clone().text());
-            assertEquals(response.headers.get("x-native-byte-type"), "Uint8Array");
-            assertEquals(response.headers.get("x-artifact-id"), artifact.id);
-            assertEquals(response.headers.get("x-artifact-byte-length"), String(image.length));
-            assertEquals(response.headers.get("x-artifact-offset"), "0");
-            first = new Uint8Array(await response.arrayBuffer());
-            return true;
-          }), "native bulk artifact RPC was not admitted");
-        assert(first);
-        assertEquals(first, image.slice(0, MAX_RUNNER_BULK_CHUNK_BYTES));
-        const offset = first.length;
-        const response = yield* Effect.promise(() =>
-          request("/__registry/artifact", {}, { ...input, offset })
-        );
-        assertEquals(response.status, 200);
-        assertEquals(response.headers.get("x-native-byte-type"), "Uint8Array");
-        assertEquals(response.headers.get("x-artifact-offset"), String(first.length));
-        const tail = new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()));
-        assertEquals(new Uint8Array([...first, ...tail]), image);
-        assertEquals(bulk.artifactOffsets, [0, MAX_RUNNER_BULK_CHUNK_BYTES]);
-        assertEquals(
-          yield* Effect.promise(() => json("/__registry/disconnect", {}, f.runnerParams)),
-          true,
-        );
-        assertEquals(yield* Effect.promise(() => json("/__registry/live", f.runnerParams)), null);
-      }).pipe(Effect.timeout("20 seconds")),
-    )),
-});
-
-Deno.test({
-  name: "native celld Runners SSE reader cancellation reaches only its runner watch finalizer",
-  ignore: !gatewayUrl,
-  fn: () =>
-    Effect.runPromise(Effect.scoped(
-      Effect.gen(function* () {
-        const f = yield* fixture();
-        yield* connect(f.probe);
-        yield* publish(f.probe, [f.snapshots[0]!]);
-        yield* admitted(f.runnerParams);
-        const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
-        for (let i = 0; i < 2; i++) {
-          const controller = new AbortController();
-          const response = yield* Effect.acquireRelease(
-            Effect.promise(() =>
-              fetch(
-                endpoint("/__registry/watch", {
-                  workspaceId: f.workspaceId,
-                  sessionId: f.snapshots[0]!.id,
-                }),
-                { signal: controller.signal },
-              )
-            ),
-            () => Effect.sync(() => controller.abort()),
-          );
-          assertEquals(response.status, 200);
-          assert(response.headers.get("content-type")?.startsWith("text/event-stream"));
-          assert(response.body);
-          const reader = response.body.getReader();
-          readers.push(reader);
-          const initial = yield* Effect.promise(() => reader.read()).pipe(
-            Effect.timeout("3 seconds"),
-          );
-          assert(!initial.done);
-          assert(
-            new TextDecoder().decode(initial.value).includes(
-              'event: session\ndata: {"type":"git.snapshot.updated"}',
-            ),
-          );
-        }
-        assertEquals(f.probe.watches.length, 2);
-        yield* Effect.promise(() => readers[0]!.cancel()).pipe(
-          Effect.timeout("3 seconds"),
-          Effect.catch(() => Effect.die("SSE reader.cancel() did not complete")),
-        );
-        yield* Deferred.await(f.probe.watches[0]!).pipe(
-          Effect.timeout("3 seconds"),
-          Effect.catch(() => Effect.die("SSE cancellation did not finalize its runner watch")),
-        );
-        assert(Option.isNone(yield* Deferred.poll(f.probe.watches[1]!)));
-        yield* Effect.promise(() => readers[1]!.cancel());
-        yield* Deferred.await(f.probe.watches[1]!).pipe(
-          Effect.timeout("3 seconds"),
-          Effect.catch(() =>
-            Effect.die("Second SSE cancellation did not finalize its runner watch")
-          ),
-        );
-      }).pipe(Effect.timeout("20 seconds")),
-    )),
-});
-
-Deno.test({
   name: "native celld Runners revocation closes control and bulk peer connections",
   ignore: !gatewayUrl,
   fn: () =>
@@ -517,7 +336,7 @@ Deno.test({
       Effect.gen(function* () {
         const f = yield* fixture();
         yield* connect(f.probe);
-        yield* publish(f.probe, [f.snapshots[0]!]);
+        yield* publish(f.probe, [f.environments[0]!]);
         yield* admitted(f.runnerParams);
         const bulk = yield* makeProbe(f.probe.identity);
         yield* connect(bulk, true);

@@ -23,6 +23,7 @@ import type { EnvironmentAction, ThinkingLevel } from "@openorb/protocol/runner-
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { EnvironmentControlResult } from "./environment/provider.ts";
 import { ARTIFACTS_DIRECTORY, detectMediaType } from "./media.ts";
+import { REPOSITORY_SKILLS_SECTION } from "./skills.ts";
 
 export class SessionError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -44,6 +45,8 @@ export interface AgentOptions {
   readonly controlEnvironment: (action: EnvironmentAction) => Promise<EnvironmentControlResult>;
   /** Copies a guest artifact into Session media storage and returns its transcript Markdown. */
   readonly publishMedia: (path: string, description: string) => Promise<string>;
+  /** The repository skills prompt section, rendered for every generation. */
+  readonly repositorySkills: () => string;
 }
 
 export interface Agent {
@@ -171,6 +174,10 @@ export async function openAgent(
     name: "openorb",
     tools: agentTools(options),
     sections: [{ key: "openorb", render: () => systemPrompt(options) }],
+  });
+  registry.install({
+    name: REPOSITORY_SKILLS_SECTION,
+    sections: [{ key: REPOSITORY_SKILLS_SECTION, render: options.repositorySkills }],
   });
   const storage = await openDurableObjectSqliteStorage(storageHost);
   const harness = await Harness.open(storage, {

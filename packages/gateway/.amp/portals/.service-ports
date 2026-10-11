@@ -1,0 +1,6 @@
+{
+  "servicePorts": {
+    "openorb-e2e-gateway": 32624,
+    "session-e2e": 31835
+  }
+}

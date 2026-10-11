@@ -50,6 +50,14 @@ import { type RunnerEnvironmentApi, runnerProvider } from "./environment/runner-
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { SessionArtifactMediaType as SessionArtifactMediaTypeSchema } from "@openorb/protocol/runner-bulk-api";
 import { gatedExecutionEnv } from "./gate.ts";
+import { migrateDurableObjectDatabase } from "../migrations.ts";
+import { sessionMigrations } from "./migrations.ts";
+import {
+  discoverRepositorySkills,
+  repositorySkillsPrompt,
+  shownRepositorySkills,
+  SKILLS_PENDING_PROMPT,
+} from "./skills.ts";
 import {
   asJson,
   ConversationProjection,
@@ -96,11 +104,13 @@ const IDLE_STOP_MS = 15 * 60_000;
 /** Git Snapshot refreshes: debounce tool boundaries, and refresh periodically during a run. */
 const GIT_REFRESH_DEBOUNCE_MS = 1_000;
 const GIT_REFRESH_INTERVAL_MS = 15_000;
+const SKILL_DISCOVERY_TIMEOUT_MS = 10_000;
 
 export interface SessionStorage extends DurableObjectSqliteStorage {
   setAlarm(time: number): Promise<void>;
   deleteAlarm(): Promise<void>;
   deleteAll(): Promise<void>;
+  sync(): Promise<void>;
 }
 
 export interface SessionContext {
@@ -192,6 +202,10 @@ export class Session extends DurableObject<Env> {
   #idle: Promise<void> | undefined;
   #admitting = 0;
   readonly #gitRefresh: GitRefreshState = { loop: undefined, dueAt: undefined, wake: undefined };
+  /** Discovered after setup or resume; the agent sees it only while the environment runs. */
+  /** Loaded once from the first checkout, then fixed for the Session; see `#loadSkills`. */
+  #skills: string | undefined;
+  #skillsScan: Promise<void> | undefined;
 
   constructor(ctx: SessionContext, env: Env) {
     super(ctx, env);
@@ -206,21 +220,14 @@ export class Session extends DurableObject<Env> {
     // deno-lint-ignore openorb/no-chained-type-assertions
     this.#media = env.MEDIA as unknown as MediaBucket;
     this.#links = new EnvironmentLinks(ctx);
-    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS openorb_media (
-      id TEXT PRIMARY KEY,
-      file_name TEXT NOT NULL,
-      media_type TEXT NOT NULL,
-      byte_length INTEGER NOT NULL
-    )`);
-    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS openorb_inline_image (
-      id TEXT PRIMARY KEY,
-      media_type TEXT NOT NULL,
-      entry_id INTEGER
-    )`);
     // Link liveness answered by the platform, so an idle link never wakes this object.
     ctx.setWebSocketAutoResponse?.(new WebSocketRequestResponsePair("ping", "pong"));
-    this.#record = readRecord(ctx.storage);
-    this.#runtime = ctx.blockConcurrencyWhile(() => this.#open());
+    // Requests wait until the schema is current and the record and runtime are loaded.
+    this.#runtime = ctx.blockConcurrencyWhile(async () => {
+      await migrateDurableObjectDatabase(ctx.storage, sessionMigrations);
+      this.#record = readRecord(ctx.storage);
+      return await this.#open();
+    });
   }
 
   // --- Native RPC -------------------------------------------------------------------------------
@@ -573,9 +580,15 @@ export class Session extends DurableObject<Env> {
         return await this.#control(runtime, action);
       },
       publishMedia: (path, description) => this.#publishMedia(gated, path, description),
+      repositorySkills: () => this.#skills ?? SKILLS_PENDING_PROMPT,
     }, context);
     const runtime: Runtime = { environment, agent };
+    // The transcript records the catalog the model was shown; reopening restores it unchanged.
+    this.#skills ??= shownRepositorySkills((await agent.conversation.context(context)).messages);
     await this.#watchActivity(agent);
+    if (record.operation === undefined && record.environmentState === "running") {
+      this.#background(this.#loadSkills(runtime));
+    }
     if (record.operation !== undefined) {
       // An eviction interrupted setup; finish it from the start, which is idempotent.
       this.#background(
@@ -640,7 +653,14 @@ export class Session extends DurableObject<Env> {
       const checkout = await provisionCheckout(
         runtime.environment.env,
         { repositoryUrl: record.repositoryUrl, ref: record.ref, branchName: record.branchName },
-        reporter,
+        {
+          ...reporter,
+          // Skills are repository content; load them before setup, which may take minutes.
+          checkedOut: (baseCommit) => {
+            this.#update({ checkoutState: "available", baseCommit });
+            this.#background(this.#loadSkills(runtime));
+          },
+        },
         secrets,
         context,
       );
@@ -676,6 +696,34 @@ export class Session extends DurableObject<Env> {
       const issues = await resumeCheckout(runtime.environment.env, reporter, secrets, context);
       this.#update({ issues: appendIssues(this.#record!.issues, issues) });
     });
+  }
+
+  /**
+   * Loads repository skills once, from the first checkout. The catalog then stays fixed for the
+   * Session: a changed system prompt section would rewrite the model's cached prompt prefix. It is
+   * kept only in the transcript, so a load the model has not yet been shown is redone after an
+   * eviction; a failed load is retried at the next start or reopen. Never blocks the agent.
+   */
+  #loadSkills(runtime: Runtime): Promise<void> {
+    const record = this.#record;
+    if (
+      this.#skills !== undefined || this.#skillsScan !== undefined ||
+      record?.checkoutState !== "available" || record.environmentState !== "running"
+    ) return this.#skillsScan ?? Promise.resolve();
+    this.#skillsScan = (async () => {
+      const [skills, failure] = await tryAsync(
+        discoverRepositorySkills(
+          runtime.environment.env,
+          withAbortSignal(AbortSignal.timeout(SKILL_DISCOVERY_TIMEOUT_MS), context),
+        ),
+        () => new SessionError("Repository skill discovery failed or timed out."),
+      );
+      if (failure !== undefined) return;
+      this.#skills ??= repositorySkillsPrompt(skills);
+    })().finally(() => {
+      this.#skillsScan = undefined;
+    });
+    return this.#skillsScan;
   }
 
   /** Runs one setup operation with its stages and logs published, and the readiness gate held. */
@@ -768,7 +816,7 @@ export class Session extends DurableObject<Env> {
     if (secretsError !== undefined) throw secretsError;
     this.#touch();
     const provider = this.#provider(record.environmentProvider);
-    return await runtime.environment.control(action, {
+    const result = await runtime.environment.control(action, {
       credentials: permittedCredentials(
         provider.capabilities,
         record.guestCredentialOptIn,
@@ -779,6 +827,9 @@ export class Session extends DurableObject<Env> {
       ),
       ...(recovery === undefined ? {} : { recovery }),
     });
+    // Retries a first load that failed or was interrupted; a loaded catalog is never rescanned.
+    if (result.state === "running") this.#background(this.#loadSkills(runtime));
+    return result;
   }
 
   /** Values redacted from setup output shown to Session viewers. */

@@ -149,8 +149,8 @@ export function SessionPageScope(
 function parseSessionEvent(source: string): SessionEvent | null {
   const [value, parseError] = trySync(
     () => {
-      // SAFETY: The gateway emits only runner events decoded by the canonical WatchSessionEvent
-      // schema, and serves the matching browser assets in the same deployment.
+      // SAFETY: The Session Durable Object emits only SessionEvent values it constructs, and the
+      // gateway serves the matching browser assets in the same deployment.
       return JSON.parse(source) as SessionEvent;
     },
     () => true,

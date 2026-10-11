@@ -2,7 +2,6 @@
   "version": "5",
   "specifiers": {
     "jsr:@std/assert@1.0.19": "1.0.19",
-    "jsr:@std/async@1.0.14": "1.0.14",
     "jsr:@std/async@1.5.0": "1.5.0",
     "jsr:@std/async@^1.5.1": "1.5.1",
     "jsr:@std/bytes@^1.0.6": "1.0.6",
@@ -63,9 +62,6 @@
       "dependencies": [
         "jsr:@std/internal@^1.0.12"
       ]
-    },
-    "@std/async@1.0.14": {
-      "integrity": "62e954a418652c704d37563a3e54a37d4cf0268a9dcaeac1660cc652880b5326"
     },
     "@std/async@1.5.0": {
       "integrity": "4c1f22d287a17ad7d8643b1952bc5a4d21e5d8b68dc8c20d8268eecc69096e82",
@@ -3499,11 +3495,9 @@
       "packages/runner": {
         "dependencies": [
           "jsr:@std/assert@1.0.19",
-          "jsr:@std/async@1.0.14",
           "jsr:@std/cli@1.0.32",
           "jsr:@std/tar@0.1.10",
           "npm:@earendil-works/gondolin@0.12.0",
-          "npm:@earendil-works/pi-ai@1.1.0",
           "npm:@effect/platform-node@4.0.0",
           "npm:@opentelemetry/api@1.9.0",
           "npm:@remix-run/data-schema@1.0.0"

@@ -23,7 +23,7 @@ import {
   type EnvironmentSupervisor,
   makeEnvironmentSupervisor,
 } from "../../../src/environment/session/supervisor.ts";
-import { FakeEnvironment } from "../../session/actor/fixture.ts";
+import { FakeEnvironment } from "../fake-environment.ts";
 
 const SESSION_ID = SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134d10");
 const RUNNER_ID = RunnerId.make("01989d78-65ee-7f6a-a97e-0f16ad134d09");

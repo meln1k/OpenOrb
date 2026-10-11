@@ -74,7 +74,7 @@ const resumedMarker = `resumed-${runId}`;
 const temporaryDirectory = await Deno.makeTempDir({ prefix: "openorb-release-acceptance-" });
 const gatewayDirectory = join(temporaryDirectory, "gateway");
 const runnerDirectory = join(temporaryDirectory, "runner");
-const runnerSessionDirectory = join(runnerDirectory, "sessions", sessionId);
+const runnerSessionDirectory = join(runnerDirectory, "environments", sessionId);
 
 let gateway: ManagedProcess | undefined;
 let runner: ManagedProcess | undefined;

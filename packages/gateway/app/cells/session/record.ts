@@ -54,10 +54,6 @@ export interface SessionRecord {
 }
 
 export function readRecord(storage: DurableObjectSqliteStorage): SessionRecord | undefined {
-  storage.sql.exec(`CREATE TABLE IF NOT EXISTS openorb_session (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    record TEXT NOT NULL
-  )`);
   const row = storage.sql.exec("SELECT record FROM openorb_session WHERE id = 1").toArray()[0];
   if (row === undefined) return undefined;
   const parsed = JSON.parse(String(row.record));
@@ -128,10 +124,6 @@ export function sessionSnapshot(record: SessionRecord, busy: boolean): RunnerSes
 export function readGitSnapshot(
   storage: DurableObjectSqliteStorage,
 ): SessionGitSnapshot | undefined {
-  storage.sql.exec(`CREATE TABLE IF NOT EXISTS openorb_git_snapshot (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    snapshot TEXT NOT NULL
-  )`);
   const row = storage.sql.exec("SELECT snapshot FROM openorb_git_snapshot WHERE id = 1")
     .toArray()[0];
   return row === undefined

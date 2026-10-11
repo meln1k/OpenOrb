@@ -1,6 +1,6 @@
 # Store the project checkout on a persistent session root disk
 
-**Status:** Accepted
+**Status:** Accepted; Stop ordering superseded by ADR 0004, and Git Snapshot capture by ADR 0006
 
 Each session uses one private, sparse 40 GiB qcow2 root disk at the stable runner-owned path
 `root-disk.qcow2`. `/workspace` is an ordinary directory on that disk. OpenOrb does not mount a host

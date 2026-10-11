@@ -3,9 +3,7 @@ import { Effect, Schema } from "effect";
 import {
   AgentState,
   EnvironmentState,
-  RunnerCheckoutState,
   SessionEnvironmentRecoveryMode,
-  SessionEvent,
   SessionIssues,
 } from "./runner-api-session-events.ts";
 import {
@@ -25,7 +23,7 @@ export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
 export const MAX_SESSION_SECRET_HOSTS = 32;
 export const MAX_SESSION_SECRET_HOST_CHARACTERS = 253;
-export const RUNNER_PROTOCOL_VERSION = 26;
+export const RUNNER_PROTOCOL_VERSION = 27;
 
 export * from "./runner-api-limits.ts";
 
@@ -44,17 +42,6 @@ export const UserId = Uuid.pipe(Schema.brand("UserId"));
 export type UserId = typeof UserId.Type;
 export const WorkspaceId = Uuid.pipe(Schema.brand("WorkspaceId"));
 export type WorkspaceId = typeof WorkspaceId.Type;
-
-export const SubmissionId = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(0),
-  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-);
-export type SubmissionId = typeof SubmissionId.Type;
-
-export const ClientRequestId = boundedString(1, 100, "Client request identifiers").pipe(
-  Schema.brand("ClientRequestId"),
-);
-export type ClientRequestId = typeof ClientRequestId.Type;
 
 export const RunnerRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
@@ -181,15 +168,9 @@ export class RunnerEnvironmentSnapshot extends Schema.Class<RunnerEnvironmentSna
 
 const ObservedAt = NonNegativeInt;
 
-const SnapshotSessionEvent = Schema.Struct({
-  type: Schema.Literal("snapshot.session"),
-  session: RunnerSessionSnapshot,
-});
-
 const SnapshotCompleteEvent = Schema.Struct({
   type: Schema.Literal("snapshot.complete"),
   revision: RunnerRevision,
-  sessionCount: NonNegativeInt,
   environmentCount: NonNegativeInt,
   observedAt: ObservedAt,
   capacity: RunnerCapacity,
@@ -202,26 +183,10 @@ const RunnerObservedEvent = Schema.Struct({
   capacity: RunnerCapacity,
 });
 
-const SessionUpdatedEvent = Schema.Struct({
-  type: Schema.Literal("session.updated"),
-  revision: RunnerRevision,
-  session: RunnerSessionSnapshot,
-});
-
-const SessionRemovedEvent = Schema.Struct({
-  type: Schema.Literal("session.removed"),
-  revision: RunnerRevision,
-  sessionId: SessionId,
-});
-
+/** A runner's environments and capacity (ADR 0006); Sessions live in Session Durable Objects. */
 export const RunnerStateEvent = Schema.Union([
-  SnapshotSessionEvent,
   SnapshotCompleteEvent,
   RunnerObservedEvent,
-  SessionUpdatedEvent,
-  SessionRemovedEvent,
-  // Environment-only sessions under ADR 0006; the session events above go away with the
-  // runner-hosted harness.
   Schema.Struct({
     type: Schema.Literal("snapshot.environment"),
     environment: RunnerEnvironmentSnapshot,
@@ -351,136 +316,6 @@ export const SessionGitHead = Schema.String.check(
     message: "Expected a Git object identifier.",
   }),
 );
-const InitialPrompt = Schema.String.check(
-  Schema.makeFilter((value) =>
-    value.trim().length > 0 && utf8Length(value) <= MAX_RPC_INITIAL_PROMPT_BYTES
-      ? undefined
-      : `Initial prompts must contain text and be at most ${MAX_RPC_INITIAL_PROMPT_BYTES} UTF-8 bytes.`
-  ),
-);
-const Prompt = Schema.String.check(
-  Schema.makeFilter((value) =>
-    value.trim().length > 0 && utf8Length(value) <= MAX_RPC_INITIAL_PROMPT_BYTES
-      ? undefined
-      : `Session prompts must contain text and be at most ${MAX_RPC_INITIAL_PROMPT_BYTES} UTF-8 bytes.`
-  ),
-);
-
-const CreateSessionPayload = Schema.Struct({
-  mode: Schema.Literal("create"),
-  sessionId: SessionId,
-  workspaceId: WorkspaceId,
-  projectId: ProjectId,
-  repositoryUrl: SessionRepositoryUrl,
-  ref: SessionGitReference,
-  branchName: SessionGitReference,
-  gitAuthor: GitAuthor,
-  orbSize: OrbSize,
-  initialPrompt: InitialPrompt,
-  modelRuntime: SessionModelRuntime,
-  githubToken: Schema.optionalKey(Secret),
-  environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
-});
-
-const RetrySessionPayload = Schema.Struct({
-  mode: Schema.Literal("retry"),
-  sessionId: SessionId,
-  modelRuntime: SessionModelRuntime,
-  githubToken: Schema.optionalKey(Secret),
-  environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
-});
-
-export const ProvisionSessionPayload = Schema.Union([
-  CreateSessionPayload,
-  RetrySessionPayload,
-]);
-
-export class ProvisionSessionSuccess extends Schema.Class<ProvisionSessionSuccess>(
-  "ProvisionSessionSuccess",
-)({
-  session: RunnerSessionSnapshot,
-  ref: SessionGitReference,
-  branchName: SessionGitReference,
-  checkoutState: RunnerCheckoutState,
-}) {}
-
-export class PromptSessionPayload extends Schema.Class<PromptSessionPayload>(
-  "PromptSessionPayload",
-)({
-  sessionId: SessionId,
-  clientRequestId: ClientRequestId,
-  prompt: Prompt,
-  modelRuntime: SessionModelRuntime,
-  thinkingLevel: Schema.optionalKey(ThinkingLevel),
-  githubToken: Schema.optionalKey(Secret),
-  environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
-}) {}
-
-export class PromptSessionAccepted extends Schema.Class<PromptSessionAccepted>(
-  "PromptSessionAccepted",
-)({
-  clientRequestId: ClientRequestId,
-  submissionId: SubmissionId,
-}) {}
-
-export class SetSessionThinkingLevelPayload extends Schema.Class<SetSessionThinkingLevelPayload>(
-  "SetSessionThinkingLevelPayload",
-)({
-  sessionId: SessionId,
-  level: ThinkingLevel,
-}) {}
-
-export class SetSessionThinkingLevelAccepted
-  extends Schema.Class<SetSessionThinkingLevelAccepted>("SetSessionThinkingLevelAccepted")({
-    level: ThinkingLevel,
-  }) {}
-
-export class WakeSessionPayload extends Schema.Class<WakeSessionPayload>("WakeSessionPayload")({
-  sessionId: SessionId,
-  modelRuntime: SessionModelRuntime,
-  githubToken: Schema.optionalKey(Secret),
-  environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
-  recovery: Schema.optionalKey(SessionEnvironmentRecoveryMode),
-}) {}
-
-export class WakeSessionAccepted
-  extends Schema.Class<WakeSessionAccepted>("WakeSessionAccepted")({}) {}
-
-export class AbortSessionPayload extends Schema.Class<AbortSessionPayload>("AbortSessionPayload")({
-  sessionId: SessionId,
-}) {}
-
-export class AbortSessionAccepted extends Schema.Class<AbortSessionAccepted>(
-  "AbortSessionAccepted",
-)({}) {}
-
-export class StopSessionPayload extends Schema.Class<StopSessionPayload>("StopSessionPayload")({
-  sessionId: SessionId,
-}) {}
-
-export class StopSessionAccepted extends Schema.Class<StopSessionAccepted>(
-  "StopSessionAccepted",
-)({}) {}
-
-export class DeleteSessionPayload extends Schema.Class<DeleteSessionPayload>(
-  "DeleteSessionPayload",
-)({
-  sessionId: SessionId,
-}) {}
-
-export class DeleteSessionAccepted extends Schema.Class<DeleteSessionAccepted>(
-  "DeleteSessionAccepted",
-)({}) {}
-
-export class WatchSessionPayload extends Schema.Class<WatchSessionPayload>("WatchSessionPayload")({
-  sessionId: SessionId,
-}) {}
-
-export class ReadSessionGitSnapshotPayload
-  extends Schema.Class<ReadSessionGitSnapshotPayload>("ReadSessionGitSnapshotPayload")({
-    sessionId: SessionId,
-  }) {}
-
 export const SessionGitFileAction = Schema.Literals(["stage", "unstage"]);
 export type SessionGitFileAction = typeof SessionGitFileAction.Type;
 
@@ -606,24 +441,6 @@ export class SessionGitSnapshot extends Schema.Class<SessionGitSnapshot>("Sessio
   }).pipe(strictObject),
 ) {}
 
-export class UpdateSessionGitFilePayload
-  extends Schema.Class<UpdateSessionGitFilePayload>("UpdateSessionGitFilePayload")({
-    sessionId: SessionId,
-    action: SessionGitFileAction,
-    path: SessionGitPath,
-    previousPath: Schema.optionalKey(SessionGitPath),
-  }) {}
-
-export class GitFileUpdateAccepted extends Schema.Class<GitFileUpdateAccepted>(
-  "GitFileUpdateAccepted",
-)({
-  mutationRevision: GitMutationRevision,
-}) {}
-
-export const WatchSessionEvent = Schema.Struct({
-  event: SessionEvent,
-});
-
 export class RunnerIdentityError extends Schema.TaggedError<RunnerIdentityError>()(
   "RunnerIdentityError",
   { message: SafeMessage },
@@ -644,69 +461,8 @@ export class SessionConflict extends Schema.TaggedError<SessionConflict>()(
   { sessionId: SessionId, message: SafeMessage },
 ) {}
 
-export class ProvisionRejected extends Schema.TaggedError<ProvisionRejected>()(
-  "ProvisionRejected",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class SessionNotFound extends Schema.TaggedError<SessionNotFound>()(
-  "SessionNotFound",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class PromptRejected extends Schema.TaggedError<PromptRejected>()(
-  "PromptRejected",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class SetSessionThinkingLevelRejected
-  extends Schema.TaggedError<SetSessionThinkingLevelRejected>()(
-    "SetSessionThinkingLevelRejected",
-    { sessionId: SessionId, message: SafeMessage },
-  ) {}
-
-export class WakeRejected extends Schema.TaggedError<WakeRejected>()(
-  "WakeRejected",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class AbortRejected extends Schema.TaggedError<AbortRejected>()(
-  "AbortRejected",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class StopRejected extends Schema.TaggedError<StopRejected>()(
-  "StopRejected",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class DeleteRejected extends Schema.TaggedError<DeleteRejected>()(
-  "DeleteRejected",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
 export class DeleteFailed extends Schema.TaggedError<DeleteFailed>()(
   "DeleteFailed",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class SessionCorrupt extends Schema.TaggedError<SessionCorrupt>()(
-  "SessionCorrupt",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class HistoryReadError extends Schema.TaggedError<HistoryReadError>()(
-  "HistoryReadError",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class GitSnapshotReadError extends Schema.TaggedError<GitSnapshotReadError>()(
-  "GitSnapshotReadError",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
-
-export class GitFileUpdateRejected extends Schema.TaggedError<GitFileUpdateRejected>()(
-  "GitFileUpdateRejected",
   { sessionId: SessionId, message: SafeMessage },
 ) {}
 

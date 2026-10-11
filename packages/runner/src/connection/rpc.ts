@@ -1,31 +1,13 @@
 import { runnerWebSocketLayer } from "./websocket.ts";
 import { Deferred, Effect, Layer, Stream } from "effect";
 import {
-  AbortRejected,
-  AbortSessionAccepted,
-  DeleteFailed,
-  DeleteRejected,
-  DeleteSessionAccepted,
-  type DeleteSessionPayload,
   EnvironmentAttachAccepted,
   EnvironmentCreated,
   EnvironmentDeleted,
-  GitFileUpdateAccepted,
-  GitFileUpdateRejected,
-  GitSnapshotReadError,
-  PromptRejected,
-  PromptSessionAccepted,
   RunnerApi,
   type RunnerCapacity,
   type RunnerId,
   RunnerIdentity,
-  SessionNotFound,
-  SetSessionThinkingLevelAccepted,
-  SetSessionThinkingLevelRejected,
-  StopRejected,
-  StopSessionAccepted,
-  WakeRejected,
-  WakeSessionAccepted,
 } from "@openorb/protocol/runner-api";
 import {
   runnerControlRpcSerializationLayer,
@@ -35,9 +17,6 @@ import * as RpcServer from "effect/rpc/RpcServer";
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
 
-import { SessionEvents } from "../session/events.ts";
-import { RunnerSessionStore } from "../session/store.ts";
-import { SessionSupervisor } from "../session/supervisor.ts";
 import { EnvironmentSupervisor } from "../environment/session/supervisor.ts";
 import { makeOutboundSocketServer, type RunnerRpcStartupError } from "./outbound-socket.ts";
 import { watchRunner } from "./runner-watch.ts";
@@ -58,10 +37,7 @@ export interface RunnerRpcOptions {
 }
 
 export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: RunnerRpcOptions) {
-  const store = yield* RunnerSessionStore;
-  const supervisor = yield* SessionSupervisor;
   const environments = yield* EnvironmentSupervisor;
-  const events = yield* SessionEvents;
   const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
   const logRejection =
     (operation: string, sessionId: string) => (error: { readonly _tag: string }) =>
@@ -73,20 +49,6 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
           reason: error._tag,
         }),
       );
-  const deleteSession = (payload: DeleteSessionPayload) =>
-    supervisor.deleteSession(payload.sessionId).pipe(
-      Effect.mapError(() =>
-        new DeleteFailed({
-          sessionId: payload.sessionId,
-          message: "Runner session storage cleanup failed and can be retried.",
-        })
-      ),
-      Effect.flatMap((acceptance) =>
-        acceptance.ok
-          ? Effect.succeed(new DeleteSessionAccepted({}))
-          : new DeleteRejected({ sessionId: payload.sessionId, message: acceptance.message })
-      ),
-    );
   const handlers = RunnerApi.toLayer(RunnerApi.of({
     "runner.identify": () =>
       Effect.succeed(
@@ -99,152 +61,9 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
       ),
     "runner.watch": () =>
       watchRunner(options.getCapacity).pipe(
-        Stream.provideService(RunnerSessionStore, store),
-        Stream.provideService(SessionSupervisor, supervisor),
-        Stream.provideService(SessionEvents, events),
         Stream.provideService(EnvironmentSupervisor, environments),
         Stream.rechunk(1),
       ),
-    "session.provision": (payload) =>
-      supervisor.provision(payload).pipe(
-        Effect.tapError((error) =>
-          Effect.logWarning("provision.rejected").pipe(
-            Effect.annotateLogs({
-              component: "openorb-runner",
-              runnerId: options.runnerId,
-              sessionId: payload.sessionId,
-              reason: error._tag,
-            }),
-          )
-        ),
-      ),
-    "session.wake": (payload) =>
-      store.readMetadata(payload.sessionId).pipe(
-        Effect.mapError(() =>
-          new SessionNotFound({
-            sessionId: payload.sessionId,
-            message: "The session does not exist on this runner.",
-          })
-        ),
-        Effect.flatMap((metadata) =>
-          metadata.definition.model !== payload.modelRuntime.model
-            ? new WakeRejected({
-              sessionId: payload.sessionId,
-              message: "The session model cannot change during restoration.",
-            })
-            : supervisor.findOrRestoreActor(payload.sessionId).pipe(
-              Effect.flatMap((actor) =>
-                actor ? actor.wake(payload) : Effect.succeed(
-                  {
-                    ok: false,
-                    message: "The session environment could not be restored.",
-                  } as const,
-                )
-              ),
-              Effect.flatMap((result) =>
-                result.ok ? Effect.succeed(new WakeSessionAccepted({})) : new WakeRejected({
-                  sessionId: payload.sessionId,
-                  message: result.message,
-                })
-              ),
-            )
-        ),
-        Effect.tapError((error) =>
-          Effect.logWarning("wake.rejected").pipe(
-            Effect.annotateLogs({
-              component: "openorb-runner",
-              runnerId: options.runnerId,
-              sessionId: payload.sessionId,
-              reason: error._tag,
-            }),
-          )
-        ),
-      ),
-    "session.prompt": (payload) =>
-      supervisor.findOrRestoreActor(payload.sessionId).pipe(
-        Effect.flatMap((actor) =>
-          actor ? actor.prompt(payload) : Effect.succeed(
-            {
-              ok: false,
-              message: "The session is not ready and idle.",
-            } as const,
-          )
-        ),
-        Effect.flatMap((result) =>
-          result.ok
-            ? Effect.succeed(
-              new PromptSessionAccepted({
-                clientRequestId: payload.clientRequestId,
-                submissionId: result.submissionId,
-              }),
-            )
-            : new PromptRejected({ sessionId: payload.sessionId, message: result.message })
-        ),
-      ),
-    "session.thinking-level.set": (payload) =>
-      supervisor.findOrRestoreActor(payload.sessionId).pipe(
-        Effect.flatMap((actor) =>
-          actor ? actor.setThinkingLevel(payload) : Effect.succeed(
-            {
-              ok: false,
-              message: "The session is not ready and idle.",
-            } as const,
-          )
-        ),
-        Effect.flatMap((result) =>
-          result.ok
-            ? Effect.succeed(new SetSessionThinkingLevelAccepted({ level: result.level }))
-            : new SetSessionThinkingLevelRejected({
-              sessionId: payload.sessionId,
-              message: result.message,
-            })
-        ),
-      ),
-    "session.abort": (payload) => {
-      const actor = supervisor.findActor(payload.sessionId);
-      if (!actor) {
-        return new AbortRejected({
-          sessionId: payload.sessionId,
-          message: "The agent is not running.",
-        });
-      }
-      return actor.abort(payload).pipe(
-        Effect.flatMap((result) =>
-          result.ok ? Effect.succeed(new AbortSessionAccepted({})) : new AbortRejected({
-            sessionId: payload.sessionId,
-            message: result.message,
-          })
-        ),
-      );
-    },
-    "session.stop": (payload) =>
-      supervisor.findOrRestoreActor(payload.sessionId).pipe(
-        Effect.flatMap((actor) =>
-          actor ? actor.stop(payload) : Effect.succeed(
-            {
-              ok: false,
-              message: "The session is not ready and idle.",
-            } as const,
-          )
-        ),
-        Effect.flatMap((result) =>
-          result.ok ? Effect.succeed(new StopSessionAccepted({})) : new StopRejected({
-            sessionId: payload.sessionId,
-            message: result.message,
-          })
-        ),
-        Effect.tapError((error) =>
-          Effect.logWarning("stop.rejected").pipe(
-            Effect.annotateLogs({
-              component: "openorb-runner",
-              runnerId: options.runnerId,
-              sessionId: payload.sessionId,
-              reason: error._tag,
-            }),
-          )
-        ),
-      ),
-    "session.delete": deleteSession,
     "environment.create": (payload) =>
       environments.create(payload).pipe(
         Effect.map((environment) => new EnvironmentCreated({ environment })),
@@ -264,56 +83,6 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         Effect.as(new EnvironmentDeleted({})),
         Effect.tapError(logRejection("environment.delete", payload.sessionId)),
       ),
-    "session.git-snapshot.read": ({ sessionId }) =>
-      store.readMetadata(sessionId).pipe(
-        Effect.mapError(() =>
-          new SessionNotFound({ sessionId, message: "The session does not exist on this runner." })
-        ),
-        Effect.andThen(
-          store.readGitSnapshot(sessionId).pipe(
-            Effect.mapError(() =>
-              new GitSnapshotReadError({
-                sessionId,
-                message: "The cached Git Snapshot is unavailable.",
-              })
-            ),
-          ),
-        ),
-      ),
-    "session.git-file.update": (payload) =>
-      store.readMetadata(payload.sessionId).pipe(
-        Effect.mapError(() =>
-          new SessionNotFound({
-            sessionId: payload.sessionId,
-            message: "The session does not exist on this runner.",
-          })
-        ),
-        Effect.andThen(
-          supervisor.findOrRestoreActor(payload.sessionId).pipe(
-            Effect.flatMap((actor) =>
-              actor ? actor.updateGitFile(payload) : Effect.succeed(
-                {
-                  ok: false,
-                  message: "The session environment is unavailable.",
-                } as const,
-              )
-            ),
-            Effect.flatMap((result) =>
-              result.ok
-                ? Effect.succeed(
-                  new GitFileUpdateAccepted({
-                    mutationRevision: result.mutationRevision,
-                  }),
-                )
-                : new GitFileUpdateRejected({
-                  sessionId: payload.sessionId,
-                  message: result.message,
-                })
-            ),
-          ),
-        ),
-      ),
-    "session.watch": ({ sessionId }) => events.watch(sessionId).pipe(Stream.rechunk(1)),
   }));
   const socketUrl = new URL("/api/runners/connect", options.gatewayUrl);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";

@@ -49,10 +49,9 @@ jobs:
           deno run --frozen -A npm:playwright@1.55.0 install --with-deps chromium
       - name: Build pinned x64 guest image
         run: deno task build:image x86_64
-      - name: Run credential-enabled Gondolin and Pi security suite
+      - name: Run credential-enabled Gondolin security suite
         env:
           OPENORB_RUN_GITHUB_WRITE_TESTS: "1"
-          OPENORB_RUN_DURABLE_MODEL_TESTS: "1"
         run: deno task test:gondolin
       - name: Run full browser-to-Pi release lifecycle
         run: deno task release:acceptance

@@ -8,7 +8,7 @@ ownership. Passwords and Git author identity remain user-owned. Projects, encryp
 provider/Git credentials, runners, enrollment credentials, session catalog rows, and deletion
 markers are scoped by immutable Workspace IDs, with tenant-relative uniqueness and reference checks
 in the Workspace Durable Object. Cross-Workspace identifiers are treated as not found. Runner tokens
-resolve ownership from trusted persistence, never from runner-supplied manifests. Encryption AAD
+resolve ownership from trusted persistence, never from runner-supplied snapshots. Encryption AAD
 binds `workspaceId`, credential key, and key version.
 
 First setup atomically creates one Workspace and the single administrator; concurrent attempts must
@@ -28,17 +28,20 @@ not leave an orphan Workspace or create another administrator.
   Environment Link, never project behaviour: clone, `.agents/setup`/`.agents/resume`, Git Snapshots,
   skill discovery, and Published Media run in the Session DO. Providers declare persistence, Egress
   Secret Mediation, and hibernatable-link capabilities rather than inheriting the runner's
-  guarantees. Provider selection is the Workspace default, a Project override, or a Session override
-  at creation.
+  guarantees. The runner is the only implemented provider. The Session record stores its provider
+  kind and the Project's Guest Credential Opt-in at creation; the Workspace default and Project
+  override are deferred until a second provider exists.
 - Pi Durable runs in one gateway Session Durable Object per Session with an explicit registry and
   in-memory credentials, never on the runner host. It discovers no gateway, runner, project, or
-  global Pi resources. OpenOrb reads passive repository skill metadata from
-  `/workspace/.agents/skills/**/SKILL.md` through the guest only after the Session DO's own project
-  setup or resume. The bounded background scan publishes names, descriptions, and guest paths for
-  the next model request; full instructions are read on demand. Skill content remains untrusted
-  guidance, never gateway or host code or policy. Stop cancels discovery and clears the catalog;
-  start/restart and harness reopen refresh it. Model work and Environment Control never wait for
-  skill discovery or guest readiness.
+  global Pi resources. The Session DO reads passive repository skill metadata (YAML frontmatter
+  only) from `/workspace/.agents/skills/**/SKILL.md` over the provider's `ExecutionEnv` once, as
+  soon as the first checkout of the session branch exists; nothing is executed. The bounded (10 s)
+  background scan publishes names, descriptions, and guest paths in the `repository-skills` prompt
+  section; full instructions are read on demand. The catalog stays fixed for the Session and is
+  recorded only in the conversation transcript's system prompt section; a failed first load is
+  retried at the next start or reopen. Skill content remains untrusted guidance, never gateway or
+  host code or policy. Model work and Environment Control never wait for skill discovery or guest
+  readiness.
 - File and shell tools use a vendored copy of pi-env's `RemoteExecutionEnv` client served by the
   unmodified static pi-env Environment Daemon inside the guest; providers that run the daemon share
   this client and differ only in link transport. A provider may instead return its own
@@ -83,12 +86,15 @@ not leave an orphan Workspace or create another administrator.
 - The public Worker enforces browser authentication, Workspace ownership, and CSRF before calling
   Workspace/Runners/Session native RPC. There is no public generic Workspace RPC endpoint. The
   Runners DO owns live control/bulk sockets, authenticates runner tokens against Workspace
-  persistence, and isolates live state by Workspace ID. It no longer carries conversation streams or
-  agent tool traffic. Replacement/revocation closes connection scopes and sockets, including the
-  runner's Environment Links. Its live projections are reconstructed from runner manifests after
-  restart, not treated as durable Session state. OpenAI Codex device authorization, alarm-driven
-  polling, exchange, refresh, and revocation remain in Workspace; the Worker does not handle OAuth
-  callbacks. PostgreSQL-to-DO data import is not implemented.
+  persistence, tracks capacity, and isolates live state by Workspace ID. It routes Environment
+  Control by connection generation and notifies Session DOs when environments update, disappear,
+  become unreachable, or lose a revoked runner. It does not route Sessions, write catalog rows, or
+  carry conversation streams or agent tool traffic; the bulk socket carries only identification and
+  a heartbeat. Replacement/revocation closes connection scopes and sockets, including the runner's
+  Environment Links. Its live projections are reconstructed from runners' environment snapshots
+  after restart, not treated as durable Session state. OpenAI Codex device authorization,
+  alarm-driven polling, exchange, refresh, and revocation remain in Workspace; the Worker does not
+  handle OAuth callbacks. PostgreSQL-to-DO data import is not implemented.
 - The runner's Environment Link is a dedicated per-Session WebSocket dialed by the runner to the
   Session DO and authenticated by the runner token plus a one-time attach nonce. Other providers
   supply their own link transport. The runner relays daemon frames verbatim. Revoking a runner
@@ -104,29 +110,30 @@ not leave an orphan Workspace or create another administrator.
   Browsers can read it only through the authenticated, Workspace-scoped gateway route, including
   while the runner is offline. The route serves a fixed allowlist of non-scriptable image and video
   MIME types with `nosniff` and Range support; arbitrary guest paths, SVG, HTML, and remote image
-  embeds are not mounted in the transcript. Session deletion removes Session DO storage and the
-  Session's R2 prefix.
+  embeds are not mounted in the transcript. Session deletion removes the Session's R2 prefix and its
+  Agent Environment, retried by the Session DO's alarm while the runner is offline, and then the
+  Session DO storage.
 - Ambiguous command handoffs are reported rather than retried automatically. Durable deduplicates
   admitted inputs by request ID and recovers checkpointed work on Wake. Model requests may repeat;
   interrupted unsafe tools report possible partial execution. OpenOrb does not claim exactly-once
   execution.
-- Conversation streams come from the Session DO and carry snapshots, structural updates, and relayed
-  runner infrastructure events. Reconnect replaces the baseline; subscribing alone never starts
-  compute or resumes harness scheduling. Opening a session page separately sends a CSRF-protected
-  Wake request; stream updates and reconnects do not repeat it. Harness ownership is serialized in
-  the Session DO. Inline conversation images retain their bytes in Harness State/model context but
-  cross the stream only as Session artifact references; the Session DO serves them from Harness
-  State through the same MIME allowlist and authenticated gateway route, without the runner or bulk
-  socket. Conversation images use Pi's declared MIME type, checked against the image allowlist
-  without inspecting byte signatures again; raw guest files still use signature detection.
-  Unsupported images or failed publication produce placeholders, never inline-byte fallback. Runner
-  control RPC uses UTF-8 JSON with bounded SchemaBinary reassembly across binary WebSocket chunks (1
-  MiB per chunk, 16 MiB per logical frame). JSON is decoded only after frame reassembly; malformed
-  UTF-8 and JSON are rejected. Chunking is transport-only: it does not bypass RPC validation or
-  per-field limits. Disconnect discards partial frames; no partial RPC payload is dispatched. The
-  control channel has no CBOR decoder or tagged-bignum expansion; application bigints use the RPC
-  schema's string representation. Identification still requires decoding bounded input before
-  authentication.
+- Conversation streams come from the Session DO and carry snapshots, structural updates, and Session
+  infrastructure state, including environment changes the runner reports. Reconnect replaces the
+  baseline; subscribing alone never starts compute or resumes harness scheduling. Opening a session
+  page separately sends a CSRF-protected Wake request; stream updates and reconnects do not repeat
+  it. Harness ownership is serialized in the Session DO. Inline conversation images retain their
+  bytes in Harness State/model context but cross the stream only as Session artifact references; the
+  Session DO serves them from Harness State through the same MIME allowlist and authenticated
+  gateway route, without the runner or bulk socket. Conversation images use Pi's declared MIME type,
+  checked against the image allowlist without inspecting byte signatures again; raw guest files
+  still use signature detection. Unsupported images or failed publication produce placeholders,
+  never inline-byte fallback. Runner control RPC uses UTF-8 JSON with bounded SchemaBinary
+  reassembly across binary WebSocket chunks (1 MiB per chunk, 16 MiB per logical frame). JSON is
+  decoded only after frame reassembly; malformed UTF-8 and JSON are rejected. Chunking is
+  transport-only: it does not bypass RPC validation or per-field limits. Disconnect discards partial
+  frames; no partial RPC payload is dispatched. The control channel has no CBOR decoder or
+  tagged-bignum expansion; application bigints use the RPC schema's string representation.
+  Identification still requires decoding bounded input before authentication.
 
 The executable release criteria and regression evidence for these boundaries are maintained in the
 [release acceptance guide](docs/release-acceptance.md).

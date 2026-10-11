@@ -1,20 +1,17 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 
 const RUNNER_SOURCE_ROOT = "packages/runner/src";
+const SESSION_SOURCE_ROOT = "packages/gateway/app/cells/session";
 
-Deno.test("runner source keeps Durable construction and tools behind the audited boundary", async () => {
-  const sources = await typescriptSourcesUnder(RUNNER_SOURCE_ROOT);
-  const defaultLoaderUsers: string[] = [];
-  const agentSessionFactories: string[] = [];
+Deno.test("runner source hosts no agent and launches only audited host processes", async () => {
   const hostProcessUsers: string[] = [];
-
-  for (const path of sources) {
+  for (const path of await typescriptSourcesUnder(RUNNER_SOURCE_ROOT)) {
     const source = await Deno.readTextFile(path);
-    if (source.includes("DefaultResourceLoader")) defaultLoaderUsers.push(path);
-    assert(!source.includes("@earendil-works/pi-coding-agent"), `${path} imports the retired SDK`);
-    assert(!source.includes("NodeExecutionEnv"), `${path} exposes host execution`);
-    if (source.includes("Harness.open(")) {
-      agentSessionFactories.push(path);
+    // ADR 0005: the agent runs in the Session Durable Object; the runner only supplies compute.
+    for (
+      const forbidden of ["@earendil-works/pi-durable", "@earendil-works/pi-ai", "pi-coding-agent"]
+    ) {
+      assert(!source.includes(forbidden), `${path} imports ${forbidden}`);
     }
     if (source.includes("node:child_process") || source.includes("new Deno.Command")) {
       hostProcessUsers.push(path);
@@ -24,47 +21,38 @@ Deno.test("runner source keeps Durable construction and tools behind the audited
       `${path} can launch native host Git`,
     );
   }
-
-  assertEquals(defaultLoaderUsers, []);
-  assertEquals(agentSessionFactories, [
-    "packages/runner/src/harness/durable/layer.ts",
-    "packages/runner/src/harness/durable/storage.ts",
-  ]);
   assertEquals(hostProcessUsers, [
     "packages/runner/src/environment/gondolin/persistent-root-disk.ts",
     "packages/runner/src/runtime/prerequisites.ts",
   ]);
+});
 
-  const factory = await Deno.readTextFile("packages/runner/src/harness/durable/layer.ts");
-  assertStringIncludes(factory, "createRegistry()");
-  assertStringIncludes(factory, "createGuestExecutionEnv(options.environment");
-  assertStringIncludes(factory, "options.environmentStates.pipe(");
-  const skills = await Deno.readTextFile("packages/runner/src/harness/durable/skills.ts");
+Deno.test("the Session Durable Object reaches the guest only through the provider ExecutionEnv", async () => {
+  const harnessFactories: string[] = [];
+  for (const path of await typescriptSourcesUnder(SESSION_SOURCE_ROOT)) {
+    const source = await Deno.readTextFile(path);
+    assert(!source.includes("NodeExecutionEnv"), `${path} exposes host execution`);
+    assert(!source.includes("DefaultResourceLoader"), `${path} loads host resources`);
+    assert(!source.includes("pi-coding-agent"), `${path} imports the retired SDK`);
+    assert(!source.includes("Deno.Command"), `${path} launches host processes`);
+    if (source.includes("Harness.open(")) harnessFactories.push(path);
+  }
+  assertEquals(harnessFactories, [`${SESSION_SOURCE_ROOT}/agent.ts`]);
+
+  const agent = await Deno.readTextFile(`${SESSION_SOURCE_ROOT}/agent.ts`);
+  assertStringIncludes(agent, "createRegistry()");
+  assertStringIncludes(agent, "env: () => options.env");
+  // Neither ambient environment variables nor host files may supply model credentials.
+  assertStringIncludes(agent, "env: () => Promise.resolve(undefined)");
+  assertStringIncludes(agent, "fileExists: () => Promise.resolve(false)");
+
+  const skills = await Deno.readTextFile(`${SESSION_SOURCE_ROOT}/skills.ts`);
   assertStringIncludes(skills, '"/workspace/.agents/skills"');
-  assertStringIncludes(skills, "guest.listDirectory");
-  assertStringIncludes(skills, "guest.readFile");
-  for (const forbidden of ["node:fs", "Deno.read", "guest.run", "import("]) {
+  assertStringIncludes(skills, "env.listDir");
+  assertStringIncludes(skills, "env.readTextFile");
+  for (const forbidden of ["node:fs", "Deno.read", "env.exec", "import("]) {
     assert(!skills.includes(forbidden), `skill discovery includes ${forbidden}`);
   }
-  const models = await Deno.readTextFile("packages/runner/src/harness/durable/models.ts");
-  assertStringIncludes(models, "InMemoryCredentialStore");
-  const tools = (await Promise.all([
-    "packages/runner/src/harness/durable/tools.ts",
-    "packages/runner/src/harness/durable/environment.ts",
-  ].map((path) => Deno.readTextFile(path)))).join("\n");
-  for (
-    const operation of [
-      "guest.readFile",
-      "guest.writeFile",
-      "guest.run(",
-      "guest.runShell",
-    ]
-  ) {
-    assertStringIncludes(tools, operation);
-  }
-  assert(!tools.includes("Deno.readFile"));
-  assert(!tools.includes("Deno.writeFile"));
-  assert(!tools.includes("Deno.Command"));
 });
 
 Deno.test("release routes and runner protocol keep deferred product surfaces absent", async () => {

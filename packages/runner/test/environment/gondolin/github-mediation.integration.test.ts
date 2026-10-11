@@ -6,12 +6,7 @@ import { Effect, Exit, Scope } from "effect";
 
 import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
 import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin/layer.ts";
-import {
-  durableTestOptions,
-  guestTools,
-  openDurableSession,
-  submitAndWait,
-} from "./durable-test-helpers.ts";
+import { guestExecutionEnv, guestTools, writeGuestText } from "./guest-tools.ts";
 import {
   gondolinTestEnvironmentOptions,
   installLocalGuestImage,
@@ -29,14 +24,10 @@ const RUN_GONDOLIN_TESTS = Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") === "1";
 const PRIVATE_REPOSITORY_URL = Deno.env.get("OPENORB_GITHUB_TEST_REPOSITORY");
 const PRIVATE_TOKEN = Deno.env.get("OPENORB_GITHUB_TEST_TOKEN");
 const RUN_GITHUB_WRITE_TESTS = Deno.env.get("OPENORB_RUN_GITHUB_WRITE_TESTS") === "1";
-const REAL_MODEL_API_KEY = Deno.env.get("OPENCODE_API_KEY");
 const RUN_PRIVATE_TEST = RUN_GONDOLIN_TESTS &&
   PRIVATE_REPOSITORY_URL !== undefined &&
   PRIVATE_TOKEN !== undefined &&
   RUN_GITHUB_WRITE_TESTS;
-const RUN_AGENT_PUSH_TEST = RUN_PRIVATE_TEST &&
-  Deno.env.get("OPENORB_RUN_DURABLE_MODEL_TESTS") === "1" &&
-  REAL_MODEL_API_KEY !== undefined;
 
 Deno.test({
   name: "generic secrets are non-plaintext environment placeholders inside Gondolin",
@@ -95,7 +86,7 @@ Deno.test({
         memoryMiB: 2 * 1024,
       });
       runtime = opened.runtime;
-      const { execute } = guestTools(durableTestOptions(runtime, temporaryDirectory));
+      const { execute } = guestTools(guestExecutionEnv(runtime).env);
       monitor.start();
       const clone = await execute("bash", {
         command: [
@@ -202,7 +193,7 @@ Deno.test({
         memoryMiB: 2 * 1024,
       });
       runtime = opened.runtime;
-      tools = guestTools(durableTestOptions(runtime, temporaryDirectory));
+      tools = guestTools(guestExecutionEnv(runtime).env);
       const { execute } = tools;
       monitor.start();
       const exercise = await execute("bash", {
@@ -317,155 +308,6 @@ Deno.test({
   },
 });
 
-Deno.test({
-  name: RUN_AGENT_PUSH_TEST
-    ? "real Durable agent preserves its prior commit and pushes only the explicit session branch"
-    : "real Durable GitHub push (skipped: enable Gondolin, GitHub writes, OPENORB_RUN_DURABLE_MODEL_TESTS=1, and their credentials)",
-  ignore: !RUN_AGENT_PUSH_TEST,
-  async fn() {
-    const repositoryUrl = PRIVATE_REPOSITORY_URL!;
-    const token = PRIVATE_TOKEN!;
-    const modelApiKey = REAL_MODEL_API_KEY!;
-    const temporaryDirectory = await Deno.makeTempDir();
-    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
-    const branch = `openorb-agent-push-${crypto.randomUUID()}`;
-    const firstFile = `.openorb-agent-push-first-${crypto.randomUUID()}`;
-    const secondFile = `.openorb-agent-push-second-${crypto.randomUUID()}`;
-    const monitor = new LinuxHostGitProcessMonitor(temporaryDirectory);
-    let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
-    let harness: Awaited<ReturnType<typeof openDurableSession>> | undefined;
-    let tools: ReturnType<typeof guestTools> | undefined;
-    let pushed = false;
-
-    try {
-      opened = await openRuntime({
-        rootDiskPath,
-        guestImage: await installLocalGuestImage(temporaryDirectory),
-        sessionLabel: "openorb real agent GitHub push test",
-        github: { repositoryUrl, gitAuthor: GIT_AUTHOR, token },
-        cpuCount: 2,
-        memoryMiB: 2 * 1024,
-      });
-      const options = durableTestOptions(
-        opened.runtime,
-        `${temporaryDirectory}/durable`,
-        { repositoryUrl, branchName: branch },
-        modelApiKey,
-      );
-      harness = await openDurableSession(options);
-      tools = guestTools(options);
-      const { execute } = tools;
-      monitor.start();
-
-      await execute("bash", {
-        command: [
-          "set -eu",
-          `git clone --quiet --depth=1 --no-recurse-submodules ${shellQuote(repositoryUrl)} .`,
-          `git switch --create ${shellQuote(branch)}`,
-          `test \"$(git remote get-url origin)\" = ${shellQuote(repositoryUrl)}`,
-        ].join("\n"),
-        timeout: 180,
-      });
-
-      pushed = true;
-      await submitAndWait(
-        harness.session,
-        `Create ${firstFile} containing exactly "first OpenOrb agent change" and commit it ` +
-          `with message "OpenOrb first agent commit". Do not push this commit.`,
-      );
-      await execute("bash", {
-        command: [
-          "set -eu",
-          `test \"$(git branch --show-current)\" = ${shellQuote(branch)}`,
-          `test \"$(cat ${shellQuote(firstFile)})\" = 'first OpenOrb agent change'`,
-          `test \"$(git show ${shellQuote(`HEAD:${firstFile}`)})\" = 'first OpenOrb agent change'`,
-          'test "$(git show -s --format=%s HEAD)" = "OpenOrb first agent commit"',
-          `test \"$(git show -s --format=%an HEAD)\" = ${shellQuote(GIT_AUTHOR.name)}`,
-          `test \"$(git show -s --format=%ae HEAD)\" = ${shellQuote(GIT_AUTHOR.email)}`,
-          `test -z \"$(git ls-remote --heads ${shellQuote(repositoryUrl)} ${
-            shellQuote(`refs/heads/${branch}`)
-          })\"`,
-          "git rev-parse HEAD > /tmp/openorb-agent-push-first-head",
-        ].join("\n"),
-        timeout: 120,
-      });
-
-      await submitAndWait(
-        harness.session,
-        `Create ${secondFile} containing exactly "second OpenOrb agent change", commit it ` +
-          `with message "OpenOrb second agent commit", and push the session branch. ` +
-          `This is an explicit request to commit and push.`,
-      );
-      const verified = await execute("bash", {
-        command: [
-          "set -eu",
-          "first_head=$(cat /tmp/openorb-agent-push-first-head)",
-          "head=$(git rev-parse HEAD)",
-          `test \"$(git branch --show-current)\" = ${shellQuote(branch)}`,
-          `test \"$(cat ${shellQuote(secondFile)})\" = 'second OpenOrb agent change'`,
-          `test \"$(git show ${
-            shellQuote(`HEAD:${secondFile}`)
-          })\" = 'second OpenOrb agent change'`,
-          'test "$(git show -s --format=%s HEAD)" = "OpenOrb second agent commit"',
-          'test "$head" != "$first_head"',
-          'git merge-base --is-ancestor "$first_head" "$head"',
-          `test \"$(git show -s --format=%an HEAD)\" = ${shellQuote(GIT_AUTHOR.name)}`,
-          `test \"$(git show -s --format=%ae HEAD)\" = ${shellQuote(GIT_AUTHOR.email)}`,
-          `remote_head=$(git ls-remote --heads ${shellQuote(repositoryUrl)} ${
-            shellQuote(`refs/heads/${branch}`)
-          } | cut -f1)`,
-          'test "$remote_head" = "$head"',
-          "printf real-agent-push-ok",
-        ].join("\n"),
-        timeout: 120,
-      });
-      assert(verified.output.endsWith("real-agent-push-ok"));
-      const transcript = JSON.stringify(harness.session.view.entries);
-      assert(!transcript.includes("--force"));
-      assert(!/git(?:\s|\\n)+push[^"]*(?:\s|\\n)+-f(?:\s|\\n|")/.test(transcript));
-      await execute("bash", {
-        command: `git push ${shellQuote(repositoryUrl)} ${shellQuote(`:refs/heads/${branch}`)}`,
-        timeout: 120,
-      });
-      pushed = false;
-    } finally {
-      // Close the owning scope to pause recoverable work before branch cleanup. This stops
-      // model scheduling, not guest descendants; the environment has its own scope.
-      try {
-        if (harness) await harness.close();
-      } finally {
-        try {
-          if (pushed && tools) {
-            await tools.execute("bash", {
-              command: [
-                `remote_head=$(git ls-remote --heads ${shellQuote(repositoryUrl)} ${
-                  shellQuote(`refs/heads/${branch}`)
-                } | cut -f1)`,
-                'if [ -n "$remote_head" ]; then',
-                `  git push ${shellQuote(repositoryUrl)} ${shellQuote(`:refs/heads/${branch}`)}`,
-                "fi",
-              ].join("\n"),
-              timeout: 120,
-            });
-          }
-        } finally {
-          try {
-            if (opened) await opened.close();
-          } finally {
-            let findings: string[] = [];
-            try {
-              findings = await monitor.stop();
-            } finally {
-              await Deno.remove(temporaryDirectory, { recursive: true });
-            }
-            assertEquals(findings, [], `native host Git touched the session storage: ${findings}`);
-          }
-        }
-      }
-    }
-  },
-});
-
 async function openRuntime(
   options: Parameters<ReturnType<typeof makeGondolinAgentEnvironmentProvider>["make"]>[0] & {
     readonly guestImage: Parameters<typeof makeGondolinAgentEnvironmentProvider>[0];
@@ -505,12 +347,13 @@ async function installHostileGitMetadata(
 ): Promise<string> {
   const markerPath = `${temporaryDirectory}/host-git-marker`;
   const hostileCommandPath = "/workspace/repository/hostile-host-git";
-  await Effect.runPromise(runtime.writeFile(
+  await writeGuestText(
+    runtime,
     hostileCommandPath,
     `#!/bin/sh\nmkdir -p ${shellQuote(temporaryDirectory)}\nprintf hostile-host-git > ${
       shellQuote(markerPath)
     }\nprintf '{}\\n'\n`,
-  ));
+  );
   const configured = await Effect.runPromise(runtime.run(
     [
       "/bin/sh",
@@ -526,12 +369,12 @@ async function installHostileGitMetadata(
     ],
   ));
   assertEquals(configured.exitCode, 0);
-  await Effect.runPromise(
-    runtime.writeFile("repository/.gitattributes", "* diff=openorb-hostile\n"),
+  await writeGuestText(
+    runtime,
+    "/workspace/repository/.gitattributes",
+    "* diff=openorb-hostile\n",
   );
-  await Effect.runPromise(
-    runtime.writeFile("repository/hostile-diff-target", "changed\n"),
-  );
+  await writeGuestText(runtime, "/workspace/repository/hostile-diff-target", "changed\n");
   return markerPath;
 }
 

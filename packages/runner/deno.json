@@ -5,7 +5,6 @@
   "exports": {
     ".": "./src/index.ts",
     "./agent-environment": "./src/environment/agent-environment.ts",
-    "./agent-harness": "./src/harness/agent-harness.ts",
     "./guest-image": "./src/environment/gondolin/guest-image/installer.ts",
     "./guest-image-release": "./src/environment/gondolin/guest-image/release.ts",
     "./enrollment": "./src/runtime/enrollment.ts",
@@ -13,21 +12,15 @@
     "./identity": "./src/runtime/identity.ts",
     "./runner-services": "./src/runtime/services.ts",
     "./prerequisites": "./src/runtime/prerequisites.ts",
-    "./rpc-transport": "./src/connection/rpc.ts",
-    "./session-events": "./src/session/events.ts",
-    "./session-supervisor": "./src/session/supervisor.ts",
-    "./session-store": "./src/session/store.ts",
-    "./session-actor": "./src/session/actor/index.ts"
+    "./rpc-transport": "./src/connection/rpc.ts"
   },
   "imports": {
     "@/": "./",
     "@earendil-works/gondolin": "npm:@earendil-works/gondolin@0.12.0",
-    "@earendil-works/pi-ai": "npm:@earendil-works/pi-ai@1.1.0",
     "@effect/platform-node": "npm:@effect/platform-node@4.0.0",
     "@opentelemetry/api": "npm:@opentelemetry/api@1.9.0",
     "@remix-run/data-schema": "npm:@remix-run/data-schema@1.0.0",
     "@std/assert": "jsr:@std/assert@1.0.19",
-    "@std/async/delay": "jsr:@std/async@1.0.14/delay",
     "@std/cli/parse-args": "jsr:@std/cli@1.0.32/parse-args",
     "@std/tar": "jsr:@std/tar@0.1.10"
   },

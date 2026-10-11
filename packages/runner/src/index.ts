@@ -7,7 +7,6 @@ import { readRunnerIdentity, writeRunnerIdentity } from "./runtime/identity.ts";
 import { parseRunnerCommand } from "./runtime/options.ts";
 import { checkRunnerPrerequisites } from "./runtime/prerequisites.ts";
 import { validateRunnerWorkingDirectory } from "./runtime/working-directory.ts";
-import { SessionSupervisor } from "./session/supervisor.ts";
 import { runnerServicesLayer } from "./runtime/services.ts";
 import { EnvironmentSupervisor } from "./environment/session/supervisor.ts";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
@@ -224,10 +223,8 @@ export async function main(
       const rpcExit = await Effect.runPromiseExit(
         Effect.scoped(
           Effect.gen(function* () {
-            const sessionSupervisor = yield* SessionSupervisor;
             const environmentSupervisor = yield* EnvironmentSupervisor;
-            getActiveSessionCount = () =>
-              sessionSupervisor.activeSessionCount() + environmentSupervisor.activeCount();
+            getActiveSessionCount = () => environmentSupervisor.activeCount();
             const options = {
               gatewayUrl: identity.gatewayUrl,
               runnerId,

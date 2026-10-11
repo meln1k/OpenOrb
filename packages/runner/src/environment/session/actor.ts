@@ -11,7 +11,7 @@ import { orbSizeResources } from "@openorb/protocol";
 import { Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
 
 import { AgentEnvironmentError, AgentEnvironmentProvider } from "../agent-environment.ts";
-import { makeEnvironmentLifecycle } from "../../session/actor/environment.ts";
+import { makeEnvironmentLifecycle } from "./lifecycle.ts";
 import { dialEnvironmentLink } from "../link/dial.ts";
 import { relayEnvironmentDaemon } from "../link/relay.ts";
 import {
@@ -124,7 +124,6 @@ export const makeEnvironmentActor = Effect.fn("makeEnvironmentActor")(function* 
           new AgentEnvironmentError("Environment state could not be recorded.", cause)
         ),
       ),
-    snapshot: () => Effect.void,
     syncDisk: store.syncRootDisk(sessionId),
     warning: (message) =>
       Effect.logWarning("environment.warning").pipe(

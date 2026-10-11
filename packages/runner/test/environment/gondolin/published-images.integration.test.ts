@@ -252,10 +252,11 @@ async function assertGuestIdentity(environment: Environment, releaseId: string):
 }
 
 async function writeMarkers(environment: Environment, marker: string): Promise<void> {
-  const result = await Effect.runPromise(environment.runShell(
+  const result = await Effect.runPromise(environment.run([
+    "/bin/sh",
+    "-c",
     `set -eu; printf %s '${marker}' > /workspace/runtime-e2e-marker; mkdir -p /opt/openorb-runtime-e2e; printf %s '${marker}' > /opt/openorb-runtime-e2e/marker; sync`,
-    { cwd: "/workspace", onOutput: () => Effect.void },
-  ));
+  ]));
   assertEquals(result.exitCode, 0);
 }
 

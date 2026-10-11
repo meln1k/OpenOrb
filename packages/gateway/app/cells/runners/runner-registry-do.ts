@@ -1,29 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
 import type { DurableObjectState } from "@cloudflare/workers-types";
-import { Effect, ManagedRuntime, Schema, Scope } from "effect";
+import { Effect, ManagedRuntime, Scope } from "effect";
 import * as Socket from "effect/socket/Socket";
 import type { Env } from "../../env.ts";
 import type { WorkspaceApi } from "../workspace/api.ts";
 import { RunnerRegistry as Registry, runnerRegistryLayer } from "./runner-registry.ts";
 import type {
-  AbortSessionInput,
   AttachEnvironmentInput,
   ControlEnvironmentInput,
   CreateEnvironmentInput,
-  DeleteSessionInput,
   EnvironmentInput,
   EnvironmentObserver,
-  PromptSessionInput,
-  ProvisionSessionInput,
-  ReadSessionArtifactChunkInput,
-  ReadSessionGitPatchChunkInput,
-  SetSessionThinkingLevelInput,
-  StopSessionInput,
-  UpdateSessionGitFileInput,
-  WakeSessionInput,
 } from "./runner-registry.ts";
-import { WorkspaceId } from "@openorb/protocol/runner-api";
-import { createSessionEventStream } from "../../actions/api/sessions/session-event-stream.ts";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
 
 export class Runners extends DurableObject<Env> {
   readonly #runtime;
@@ -59,45 +48,6 @@ export class Runners extends DurableObject<Env> {
   getRunnerLiveState(id: WorkspaceId, runner: string) {
     return this.#run(Effect.flatMap(Registry, (r) => r.getRunnerLiveState(id, runner)));
   }
-  getSessionRunner(id: WorkspaceId, session: string) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.getSessionRunner(id, session)));
-  }
-  getSessionSnapshot(id: WorkspaceId, session: string) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.getSessionSnapshot(id, session)));
-  }
-  getSessionGitSnapshot(id: WorkspaceId, session: string) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.getSessionGitSnapshot(id, session)));
-  }
-  provisionSession(input: ProvisionSessionInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.provisionSession(input)));
-  }
-  promptSession(input: PromptSessionInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.promptSession(input)));
-  }
-  wakeSession(input: WakeSessionInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.wakeSession(input)));
-  }
-  setSessionThinkingLevel(input: SetSessionThinkingLevelInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.setSessionThinkingLevel(input)));
-  }
-  abortSession(input: AbortSessionInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.abortSession(input)));
-  }
-  stopSession(input: StopSessionInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.stopSession(input)));
-  }
-  deleteSession(input: DeleteSessionInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.deleteSession(input)));
-  }
-  updateSessionGitFile(input: UpdateSessionGitFileInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.updateSessionGitFile(input)));
-  }
-  readSessionGitPatchChunk(input: ReadSessionGitPatchChunkInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.readSessionGitPatchChunk(input)));
-  }
-  readSessionArtifactChunk(input: ReadSessionArtifactChunkInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.readSessionArtifactChunk(input)));
-  }
   disconnectRunner(id: WorkspaceId, runner: string) {
     return this.#run(Effect.flatMap(Registry, (r) => r.disconnectRunner(id, runner)));
   }
@@ -121,21 +71,6 @@ export class Runners extends DurableObject<Env> {
   // Only upgrade and stream transport use fetch; commands use named native RPC methods.
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/watch") {
-      const id = Schema.decodeUnknownSync(WorkspaceId)(url.searchParams.get("workspaceId"));
-      const session = url.searchParams.get("sessionId");
-      if (!session) return new Response("Missing session", { status: 400 });
-      const stream = await this.#runtime.runPromise(
-        Effect.flatMap(Registry, (r) => createSessionEventStream(r.watchSession(id, session))),
-      );
-      return new Response(stream, {
-        headers: {
-          "Content-Type": "text/event-stream; charset=utf-8",
-          "Cache-Control": "no-cache, no-transform",
-          "X-Accel-Buffering": "no",
-        },
-      });
-    }
     if (url.pathname !== "/api/runners/connect" && url.pathname !== "/api/runners/connect/bulk") {
       return new Response("Not found", { status: 404 });
     }

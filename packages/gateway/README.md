@@ -1,10 +1,12 @@
 # OpenOrb gateway
 
-The Remix 3 gateway is a native celld Worker exporting `Workspace` and `Runners` Durable Objects.
-Deno 2.9.5 builds the Worker, browser assets, and model metadata; requests use the `ASSETS` binding
-and native DO RPC, not a Deno HTTP server or a request-time compiler. Workspace SQLite owns
-configuration, authentication, enrollment, and the minimal Session catalog. Runners owns live
-connections and routing; complete Session state remains runner-owned. PostgreSQL is not required.
+The Remix 3 gateway is a native celld Worker exporting `Workspace`, `Runners`, and `Session` Durable
+Objects. Deno 2.9.5 builds the Worker, browser assets, and model metadata; requests use the `ASSETS`
+binding and native DO RPC, not a Deno HTTP server or a request-time compiler. Workspace SQLite owns
+configuration, authentication, enrollment, and the minimal Session catalog. Runners owns live runner
+connections, capacity, and Environment Control routing. Each Session DO hosts the agent and owns its
+Session's Harness State, project setup, Git Snapshots, and Published Media records (bytes in the
+`MEDIA` R2 bucket); runners keep only Agent Environments. PostgreSQL is not required.
 
 From the repository root, install the pinned tools and dependencies, then configure independent
 session-cookie and encryption secrets in the ignored `packages/gateway/.env`. Do not overwrite an

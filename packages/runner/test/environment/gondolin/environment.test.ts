@@ -4,30 +4,21 @@ import {
   AssertionError,
   assertRejects,
   assertStringIncludes,
-  assertThrows,
 } from "@std/assert";
-import { SessionId } from "@openorb/protocol/runner-api";
-import { Effect, Exit, Logger, Schema, Scope } from "effect";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { Effect, Exit, Scope } from "effect";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { createGuestExecutionEnv } from "../../../src/harness/durable/environment.ts";
 
 import {
   createOpenOrbGondolinSandboxOptions,
   makeGondolinAgentEnvironmentProvider,
-  MAX_GUEST_FILE_BYTES,
   OPENORB_GUEST_MARKER,
 } from "@/src/environment/gondolin/layer.ts";
-import { resolveAgentPath } from "@/src/environment/agent-environment.ts";
-import { durableTestOptions, guestTools } from "./durable-test-helpers.ts";
+import { guestExecutionEnv, guestPathExists, guestTools, readGuestText } from "./guest-tools.ts";
 import {
   gondolinTestEnvironmentOptions,
   installLocalGuestImage,
 } from "@/test/environment/gondolin/local-guest-image.ts";
-
-const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
-  "01989d78-65ee-7f6a-a97e-0f16ad134c10",
-);
 
 Deno.test("Linux Gondolin VMs expose host CPU virtualization through KVM", () => {
   const options = createOpenOrbGondolinSandboxOptions("/guest-image");
@@ -52,42 +43,6 @@ Deno.test("Linux Gondolin VMs can explicitly use QEMU software emulation", () =>
     assertEquals(options.accel, "tcg");
     assertEquals(options.cpu, undefined);
   }
-});
-
-Deno.test("agent path mapping anchors relative paths and preserves guest absolute paths", () => {
-  assertEquals(resolveAgentPath(""), "/workspace");
-  assertEquals(resolveAgentPath("file.txt"), "/workspace/file.txt");
-  assertEquals(resolveAgentPath("nested/../file.txt"), "/workspace/file.txt");
-  assertEquals(resolveAgentPath("/workspace/file.txt"), "/workspace/file.txt");
-  assertEquals(resolveAgentPath("/workspace"), "/workspace");
-  assertEquals(resolveAgentPath("@nested/file.txt"), "/workspace/nested/file.txt");
-  assertEquals(
-    resolveAgentPath("file:///workspace/nested/file.txt"),
-    "/workspace/nested/file.txt",
-  );
-
-  const guestPathCases = [
-    ["../outside", "/outside"],
-    ["../../outside", "/outside"],
-    ["/outside", "/outside"],
-    ["/workspace/../../outside", "/outside"],
-    ["/workspace-adjacent/file", "/workspace-adjacent/file"],
-    ["file:///outside", "/outside"],
-    ["@file:///outside", "/outside"],
-  ] as const;
-  for (const [input, expected] of guestPathCases) {
-    assertEquals(resolveAgentPath(input), expected);
-  }
-  assertThrows(
-    () => resolveAgentPath("~/outside"),
-    Error,
-    "Agent paths must use an absolute guest path instead of ~.",
-  );
-  assertThrows(
-    () => resolveAgentPath("inside\0outside"),
-    Error,
-    "Agent paths must not contain NUL bytes.",
-  );
 });
 
 Deno.test({
@@ -133,339 +88,6 @@ Deno.test({
       );
       assertEquals(result.exitCode, 0);
       assertEquals(output, "retained");
-
-      assertEquals(
-        (await Effect.runPromise(runtime.run([
-          "/usr/bin/truncate",
-          "-s",
-          String(MAX_GUEST_FILE_BYTES + 1),
-          "/tmp/openorb-oversized-read",
-        ]))).exitCode,
-        0,
-      );
-      for (
-        const [path, message] of [
-          ["/dev/zero", "Guest file could not be read"],
-          ["/tmp/openorb-oversized-read", "Guest file exceeds the 16777216-byte read limit."],
-        ] as const
-      ) {
-        await assertRejects(
-          () =>
-            withWatchdog(
-              Effect.runPromise(runtime.readFile(path)),
-              5_000,
-              `Guest read of ${path} did not settle`,
-            ),
-          Error,
-          message,
-        );
-      }
-    } finally {
-      await opened.close();
-      await Deno.remove(temporaryDirectory, { recursive: true });
-    }
-  },
-});
-
-Deno.test({
-  name: "shell timeouts bound retained output descriptors and preserve the VM",
-  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
-  async fn() {
-    const temporaryDirectory = await Deno.makeTempDir();
-    const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
-    const opened = await openRuntime({
-      rootDiskPath,
-      guestImage: await installLocalGuestImage(temporaryDirectory),
-      sessionLabel: `openorb session ${SESSION_ID}`,
-      sessionId: SESSION_ID,
-      cpuCount: 2,
-      memoryMiB: 2 * 1024,
-    });
-    const runtime = opened.runtime;
-    const shellOptions = { cwd: "/workspace", onOutput: () => Effect.void };
-    try {
-      const largeChunkSize = 128 * 1024;
-      let foregroundOutput = "";
-      assertEquals(
-        (await withWatchdog(
-          Effect.runPromise(runtime.runShell(
-            `python3 -c 'import os,time; os.write(1,b"A"*${largeChunkSize}); time.sleep(0.2); os.write(2,b"B"*${largeChunkSize}); time.sleep(0.2); os.write(1,b"C"*${largeChunkSize})'`,
-            {
-              cwd: "/workspace",
-              onOutput: (data) =>
-                Effect.sync(() => foregroundOutput += new TextDecoder().decode(data)),
-            },
-          )),
-          10_000,
-          "Large foreground output did not settle",
-        )).exitCode,
-        0,
-      );
-      assertEquals(
-        foregroundOutput,
-        "A".repeat(largeChunkSize) + "B".repeat(largeChunkSize) +
-          "C".repeat(largeChunkSize),
-      );
-
-      assertEquals(
-        (await Effect.runPromise(runtime.runShell(
-          "printf retained >/opt/timeout-root; printf retained >/tmp/timeout-tmp",
-          shellOptions,
-        ))).exitCode,
-        0,
-      );
-      const bootId = await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id"));
-      for (
-        const command of [
-          "sleep 2; touch /workspace/timeout-late",
-          "trap '' TERM; sleep 2; touch /workspace/timeout-late",
-        ]
-      ) {
-        const result = await Effect.runPromise(runtime.runShell(command, {
-          ...shellOptions,
-          timeoutSeconds: 0.1,
-        }));
-        assert([124, 137].includes(result.exitCode));
-        assertEquals(
-          await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id")),
-          bootId,
-        );
-        for (const path of ["/opt/timeout-root", "/tmp/timeout-tmp"]) {
-          assertEquals(
-            new TextDecoder().decode(await Effect.runPromise(runtime.readFile(path))),
-            "retained",
-          );
-        }
-      }
-      for (const exitCode of [0, 7, 124, 137]) {
-        assertEquals(
-          (await Effect.runPromise(runtime.runShell(`exit ${exitCode}`, {
-            ...shellOptions,
-            timeoutSeconds: 1,
-          }))).exitCode,
-          exitCode,
-        );
-      }
-
-      let retainedOutput = "";
-      const retainedError = await assertRejects(
-        () =>
-          withWatchdog(
-            Effect.runPromise(runtime.runShell(
-              [
-                'cd /workspace && export PATH="$HOME/.deno/bin:$PATH" &&',
-                "nohup bash -c 'exec -a openorb-and-list-child sleep 300' >/tmp/openorb-and-list.log 2>&1 &",
-                'echo "started pid $!"',
-                'printf %s "$!" >/tmp/openorb-and-list.pid',
-                "sleep 0.2",
-                "tail -30 /tmp/openorb-and-list.log",
-              ].join("\n"),
-              {
-                cwd: "/workspace",
-                timeoutSeconds: 0.5,
-                onOutput: (data) =>
-                  Effect.sync(() => retainedOutput += new TextDecoder().decode(data)),
-              },
-            )),
-            8_000,
-            "Retained output descriptors exceeded the host watchdog",
-          ),
-        Error,
-        "Stopped waiting after 2.5 seconds",
-      );
-      assertStringIncludes(retainedError.message, "The VM was preserved");
-      assertStringIncludes(retainedOutput, "started pid ");
-
-      let detachedOutput = "";
-      assertEquals(
-        (await withWatchdog(
-          Effect.runPromise(runtime.runShell(
-            [
-              "cd /workspace || exit 1",
-              "nohup bash -c 'exec -a openorb-detached-child sleep 300' </dev/null >/tmp/openorb-detached.log 2>&1 &",
-              'echo "$!"',
-              'printf %s "$!" >/tmp/openorb-detached.pid',
-            ].join("\n"),
-            {
-              cwd: "/workspace",
-              timeoutSeconds: 5,
-              onOutput: (data) =>
-                Effect.sync(() => detachedOutput += new TextDecoder().decode(data)),
-            },
-          )),
-          8_000,
-          "Correctly detached shell did not settle promptly",
-        )).exitCode,
-        0,
-      );
-      assert(/^\d+$/.test(detachedOutput.trim()), "Detached shell did not print its child PID");
-
-      for (
-        const [pidFile, processName] of [
-          ["/tmp/openorb-and-list.pid", "openorb-and-list-child"],
-          ["/tmp/openorb-detached.pid", "openorb-detached-child"],
-        ]
-      ) {
-        assertEquals(
-          (await Effect.runPromise(runtime.runShell(
-            [
-              `pid=$(cat ${pidFile})`,
-              'kill -0 "$pid"',
-              `tr '\\0' ' ' </proc/$pid/cmdline | grep -q ${processName}`,
-            ].join("\n"),
-            shellOptions,
-          ))).exitCode,
-          0,
-        );
-      }
-      assertEquals(
-        (await Effect.runPromise(runtime.runShell(
-          "kill $(cat /tmp/openorb-and-list.pid) $(cat /tmp/openorb-detached.pid)",
-          shellOptions,
-        ))).exitCode,
-        0,
-      );
-
-      let timeoutOutput = "";
-      const timeoutError = await assertRejects(
-        () =>
-          withWatchdog(
-            Effect.runPromise(runtime.runShell(
-              [
-                'setsid python3 -I -c $\'import os, signal, time\\nsignal.signal(signal.SIGHUP, signal.SIG_IGN)\\nopen("/tmp/openorb-timeout-output.ready", "w").close()\\nwhile True:\\n os.write(1, b"timeout-chunk")\\n time.sleep(0.02)\' &',
-                'printf %s "$!" >/tmp/openorb-timeout-output.pid',
-                "while test ! -e /tmp/openorb-timeout-output.ready; do sleep 0.01; done",
-              ].join("\n"),
-              {
-                cwd: "/workspace",
-                timeoutSeconds: 1,
-                onOutput: (data) =>
-                  Effect.sync(() => timeoutOutput += new TextDecoder().decode(data)),
-              },
-            )),
-            8_000,
-            "Host fallback did not bound continuing post-exit output",
-          ),
-        Error,
-        "Stopped waiting after 3 seconds",
-      );
-      assertStringIncludes(timeoutError.message, "The VM was preserved");
-      assertStringIncludes(timeoutOutput, "timeout-chunk");
-      assertEquals(
-        (await withWatchdog(
-          Effect.runPromise(runtime.runShell(
-            "kill -KILL $(cat /tmp/openorb-timeout-output.pid)",
-            shellOptions,
-          )),
-          8_000,
-          "The VM did not accept cleanup after the host fallback",
-        )).exitCode,
-        0,
-      );
-      assertEquals(
-        await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id")),
-        bootId,
-      );
-      for (const path of ["/opt/timeout-root", "/tmp/timeout-tmp"]) {
-        assertEquals(
-          new TextDecoder().decode(await Effect.runPromise(runtime.readFile(path))),
-          "retained",
-        );
-      }
-
-      const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
-      const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
-      const controller = new AbortController();
-      await assertRejects(
-        () =>
-          withWatchdog(
-            Effect.runPromise(
-              runtime.runShell(
-                [
-                  "bash -c 'while test ! -s /tmp/openorb-abort-output.pid; do sleep 0.01; done; exec -a openorb-abort-output sh -c \"while :; do printf abort-chunk; sleep 0.05; done\"' &",
-                  'printf %s "$!" >/tmp/openorb-abort-output.pid',
-                ].join("\n"),
-                {
-                  cwd: "/workspace",
-                  signal: controller.signal,
-                  onOutput: () => Effect.sync(() => controller.abort()),
-                },
-              ).pipe(Effect.provide(Logger.layer([logger]))),
-            ),
-            8_000,
-            "Abort did not settle continuing post-exit output",
-          ),
-        Error,
-        "Command aborted",
-      );
-      assertEquals(
-        (await withWatchdog(
-          Effect.runPromise(runtime.runShell(
-            "kill -KILL $(cat /tmp/openorb-abort-output.pid)",
-            shellOptions,
-          )),
-          8_000,
-          "The VM did not accept cleanup after Abort",
-        )).exitCode,
-        0,
-      );
-      const recovered = await Effect.runPromise(
-        runtime.run(["/bin/true"]).pipe(Effect.provide(Logger.layer([logger]))),
-      );
-      assertEquals(recovered.exitCode, 0);
-      assertEquals(logs.filter((entry) => String(entry.message).startsWith("gondolin.vm.")), []);
-      const directAbort = new AbortController();
-      await assertRejects(
-        () =>
-          Effect.runPromise(runtime.run([
-            "/bin/bash",
-            "-lc",
-            "printf ready; sleep 30",
-          ], {
-            signal: directAbort.signal,
-            onOutput: () => Effect.sync(() => directAbort.abort()),
-          })),
-        Error,
-        "Command aborted",
-      );
-      await assertRejects(
-        () =>
-          Effect.runPromise(runtime.runShell("printf output", {
-            cwd: "/workspace",
-            onOutput: () => Effect.fail("observer failed"),
-          })),
-        Error,
-        "Guest shell command execution failed",
-      );
-      // Invalid cwd fails at the exec boundary rather than returning a command exit status.
-      await assertRejects(
-        () =>
-          Effect.runPromise(runtime.run(["/bin/true"], {
-            cwd: "invalid\0cwd",
-          })),
-        Error,
-        "Guest command execution failed",
-      );
-      await assertRejects(
-        () =>
-          Effect.runPromise(runtime.runShell("true", {
-            ...shellOptions,
-            cwd: "invalid\0cwd",
-          })),
-        Error,
-        "Guest shell command execution failed",
-      );
-      assertEquals(
-        await Effect.runPromise(runtime.readFile("/proc/sys/kernel/random/boot_id")),
-        bootId,
-      );
-      for (const path of ["/opt/timeout-root", "/tmp/timeout-tmp"]) {
-        assertEquals(
-          new TextDecoder().decode(await Effect.runPromise(runtime.readFile(path))),
-          "retained",
-        );
-      }
-      assertEquals((await Effect.runPromise(runtime.run(["/bin/true"]))).exitCode, 0);
     } finally {
       await opened.close();
       await Deno.remove(temporaryDirectory, { recursive: true });
@@ -542,16 +164,9 @@ Deno.test({
 
       opened = await openRuntime(runtimeOptions);
       assertEquals((await Deno.lstat(rootDiskPath)).ino, rootDiskBeforeStop.ino);
+      assertEquals(await readGuestText(opened.runtime, "/opt/persistent-root"), "persistent-root");
       assertEquals(
-        new TextDecoder().decode(
-          await Effect.runPromise(opened.runtime.readFile("/opt/persistent-root")),
-        ),
-        "persistent-root",
-      );
-      assertEquals(
-        new TextDecoder().decode(
-          await Effect.runPromise(opened.runtime.readFile("persistent-workspace")),
-        ),
+        await readGuestText(opened.runtime, "/workspace/persistent-workspace"),
         "persistent-workspace",
       );
       const reopened = await Effect.runPromise(opened.runtime.run([
@@ -581,7 +196,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "Durable tools execute only in Gondolin and recover after cancellation",
+  name: "Durable tools over the Environment Daemon execute only in Gondolin and recover",
   ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
   async fn() {
     const temporaryDirectory = await Deno.makeTempDir();
@@ -602,14 +217,10 @@ Deno.test({
     });
     const runtime = opened.runtime;
     const softwareEmulation = gondolinTestEnvironmentOptions().softwareEmulation === true;
-    const { tools, execute } = guestTools(durableTestOptions(runtime, temporaryDirectory));
+    const guest = guestExecutionEnv(runtime);
+    const { execute } = guestTools(guest.env);
 
     try {
-      assertEquals(
-        tools.map((tool) => tool.name).sort(),
-        ["bash", "edit", "environment", "publish_media", "read", "readImage", "write"],
-      );
-
       const imageProbe = await execute("bash", {
         command: [
           "set -eu",
@@ -680,19 +291,18 @@ Deno.test({
         timeout: 420,
       });
       assertStringIncludes(browserProbe.output, "browser-ok");
-      const screenshot = await execute("readImage", { path: "/tmp/openorb-image-smoke.png" });
-      const image = screenshot.result.content?.find((content) => content.type === "image");
-      assert(image && image.mimeType === "image/png");
-      assertEquals(
-        Uint8Array.from(atob(image.data), (char) => char.charCodeAt(0)),
-        await Effect.runPromise(runtime.readFile("/tmp/openorb-image-smoke.png")),
+      // Binary guest files cross the Environment Link intact; image tools build on this read.
+      const screenshot = getOrThrow(
+        await guest.env.readBinaryFile("/tmp/openorb-image-smoke.png", BACKGROUND_CONTEXT),
       );
+      const encoded = await execute("bash", {
+        command: "base64 -w0 /tmp/openorb-image-smoke.png",
+        timeout: 30,
+      });
+      assertEquals(screenshot.toBase64(), encoded.output.trim());
 
       await execute("write", { path: "nested/message.txt", content: "before\n" });
-      assertEquals(
-        new TextDecoder().decode(await Effect.runPromise(runtime.readFile("nested/message.txt"))),
-        "before\n",
-      );
+      assertEquals(await readGuestText(runtime, "/workspace/nested/message.txt"), "before\n");
 
       const readResult = await execute("read", { path: "nested/message.txt" });
       assertEquals(readResult.text, "before\n");
@@ -706,10 +316,7 @@ Deno.test({
         path: "index.html",
         edits: [{ oldText: "before", newText: "after" }],
       });
-      assertEquals(
-        new TextDecoder().decode(await Effect.runPromise(runtime.readFile("index.html"))),
-        "after\n",
-      );
+      assertEquals(await readGuestText(runtime, "/workspace/index.html"), "after\n");
 
       // Host-shaped absolute paths remain in the guest namespace. The existing runner-host
       // file must neither satisfy the initial read nor receive the subsequent guest mutations.
@@ -791,12 +398,7 @@ Deno.test({
       );
       assertStringIncludes(markerResult.output, "firstsecond:1");
       assert(updates.some((update) => update.includes("first")), "Bash output did not stream");
-      assertEquals(
-        new TextDecoder().decode(
-          await Effect.runPromise(runtime.readFile("guest-process-marker")),
-        ),
-        "guest",
-      );
+      assertEquals(await readGuestText(runtime, "/workspace/guest-process-marker"), "guest");
       await assertRejects(() => Deno.stat(hostProcessMarker), Deno.errors.NotFound);
 
       const linkResult = await execute(
@@ -806,7 +408,7 @@ Deno.test({
       assertStringIncludes(linkResult.output, "relative-guest-link after");
       assertEquals(await Deno.readTextFile(hostSecretPath), "runner-host-secret");
 
-      // Gondolin owns command deadlines after readiness, including its bounded host wait.
+      // The Environment Daemon owns command deadlines and kills the timed-out process group.
       const timedOut = await withWatchdog(
         execute(
           "bash",
@@ -821,14 +423,12 @@ Deno.test({
       );
       assert(
         timedOut.diagnostics.some((entry) =>
-          entry.message === "Command exited with code 124" ||
-          entry.message === "Command exited with code 137"
+          entry.message === "Command timed out after 0.1 seconds"
         ),
+        JSON.stringify(timedOut.diagnostics),
       );
       await new Promise((resolve) => setTimeout(resolve, 1_100));
-      await Effect.runPromise(
-        Effect.flip(runtime.access("timed-out-marker")),
-      );
+      assert(!await guestPathExists(runtime, "/workspace/timed-out-marker"));
       const afterTimeout = await execute("bash", {
         command: "printf recovered",
         timeout: 10,
@@ -860,98 +460,11 @@ Deno.test({
       });
       assertStringIncludes(afterAbort.output, "reusable");
     } finally {
+      guest.close();
       await opened.close();
       if (originalHostMarker === undefined) Deno.env.delete("OPENORB_HOST_PROCESS_MARKER");
       else Deno.env.set("OPENORB_HOST_PROCESS_MARKER", originalHostMarker);
       await Deno.remove(temporaryDirectory, { recursive: true });
-    }
-  },
-});
-
-Deno.test({
-  name: "Durable filesystem capabilities operate entirely inside Gondolin",
-  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
-  async fn() {
-    const directory = await Deno.makeTempDir();
-    const hostFile = `${directory}/host-only`;
-    await Deno.writeTextFile(hostFile, "untouched");
-    const guestImage = await installLocalGuestImage(directory);
-    const opened = await openRuntime({
-      rootDiskPath: `${directory}/root-disk.qcow2`,
-      guestImage,
-      sessionLabel: "Durable filesystem integration",
-      cpuCount: 2,
-      memoryMiB: 1024,
-    });
-    const env = createGuestExecutionEnv(opened.runtime, "filesystem-integration");
-    try {
-      const root = "/workspace/durable-filesystem";
-      const path = `${root}/nested/quo'te😀.bin`;
-      const bytes = new Uint8Array([99, 0, 255, 13, 10, 88]);
-      getOrThrow(await env.writeFile(path, bytes.subarray(1, 5), context));
-      assertEquals(
-        getOrThrow(await env.readBinaryFile(path, context)),
-        new Uint8Array([0, 255, 13, 10]),
-      );
-      const info = getOrThrow(await env.fileInfo(path, context));
-      assertEquals({ name: info.name, path: info.path, kind: info.kind, size: info.size }, {
-        name: "quo'te😀.bin",
-        path,
-        kind: "file",
-        size: 4,
-      });
-      assert(info.mtimeMs > 0);
-      assertEquals(getOrThrow(await env.listDir(`${root}/nested`, context)), [info]);
-      getOrThrow(await env.writeFile(`${root}/target`, "replace me", context));
-      getOrThrow(await env.renameFile(path, `${root}/target`, context));
-      assertEquals(getOrThrow(await env.exists(path, context)), false);
-      assertEquals(
-        getOrThrow(await env.readBinaryFile(`${root}/target`, context)),
-        bytes.subarray(1, 5),
-      );
-      const mkdir = await env.createDir(`${root}/missing/child`, { recursive: false }, context);
-      assert(!mkdir.ok && mkdir.error.code === "unknown");
-      getOrThrow(await env.createDir(`${root}/missing/child`, undefined, context));
-      assertEquals(
-        (await Effect.runPromise(opened.runtime.run([
-          "/usr/bin/ln",
-          "-s",
-          `${root}/target`,
-          `${root}/link`,
-        ]))).exitCode,
-        0,
-      );
-      const canonical = await env.canonicalPath(`${root}/link`, context);
-      assert(!canonical.ok && canonical.error.code === "not_supported");
-      // Gondolin stat follows symlinks; it does not expose lstat.
-      assertEquals(getOrThrow(await env.fileInfo(`${root}/link`, context)).kind, "file");
-      const listing = getOrThrow(await env.listDir(root, context));
-      assertEquals(listing.map(({ name, kind }) => [name, kind]).sort(), [
-        ["link", "file"],
-        ["missing", "directory"],
-        ["nested", "directory"],
-        ["target", "file"],
-      ]);
-      getOrThrow(await env.remove(`${root}/link`, { recursive: true }, context));
-      assert(getOrThrow(await env.exists(`${root}/target`, context)));
-      const nonRecursive = await env.remove(root, undefined, context);
-      assert(!nonRecursive.ok);
-
-      const textFile = `${root}/lines`;
-      const text = "a".repeat(65535) + "😀\r\nlast";
-      getOrThrow(await env.writeFile(textFile, text, context));
-      assertEquals(getOrThrow(await env.readTextFile(textFile, context)), text);
-      getOrThrow(await env.remove(textFile, undefined, context));
-      getOrThrow(await env.remove(textFile, { force: true }, context));
-      getOrThrow(await env.writeFile(hostFile, "guest only", context));
-      assertEquals(getOrThrow(await env.readTextFile(hostFile, context)), "guest only");
-      getOrThrow(await env.remove(hostFile, undefined, context));
-      assertEquals(await Deno.readTextFile(hostFile), "untouched");
-      getOrThrow(await env.remove(root, { recursive: true }, context));
-      assertEquals(getOrThrow(await env.exists(root, context)), false);
-    } finally {
-      await opened.close();
-      await Deno.remove(directory, { recursive: true });
     }
   },
 });

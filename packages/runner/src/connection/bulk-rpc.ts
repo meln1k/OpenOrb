@@ -1,32 +1,19 @@
-import {
-  ArtifactReadError,
-  GitPatchReadError,
-  RunnerBulkApi,
-  runnerBulkRpcSerializationLayer,
-  SessionArtifactChunk,
-  SessionGitPatchChunk,
-} from "@openorb/protocol/runner-bulk-api";
+import { RunnerBulkApi, runnerBulkRpcSerializationLayer } from "@openorb/protocol/runner-bulk-api";
 import { RunnerIdentity } from "@openorb/protocol/runner-api";
-import {
-  MAX_RUNNER_BULK_CHUNK_BYTES,
-  MAX_RUNNER_BULK_RPC_FRAME_BYTES,
-} from "@openorb/protocol/runner-api-limits";
+import { MAX_RUNNER_BULK_RPC_FRAME_BYTES } from "@openorb/protocol/runner-api-limits";
 import { Deferred, Effect, Layer, Predicate, Schedule, Stream } from "effect";
 import * as RpcServer from "effect/rpc/RpcServer";
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
 
-import { RunnerSessionStore } from "../session/store.ts";
-import { SessionArtifactStore } from "../session/artifact-store.ts";
 import { makeOutboundSocketServer, type RunnerRpcStartupError } from "./outbound-socket.ts";
 import type { RunnerRpcOptions } from "./rpc.ts";
 import { runnerWebSocketLayer } from "./websocket.ts";
 
+/** Identify and heartbeat only; the connection is kept for terminal and preview tunnels. */
 export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
   options: RunnerRpcOptions,
 ) {
-  const store = yield* RunnerSessionStore;
-  const artifacts = yield* SessionArtifactStore;
   const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
   const identity = new RunnerIdentity({
     token: options.runnerToken,
@@ -39,52 +26,6 @@ export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
     "runner.bulk.watch": () =>
       Stream.fromEffect(Effect.sync(() => ({ observedAt: Date.now() }))).pipe(
         Stream.repeat(Schedule.spaced("10 seconds")),
-      ),
-    "session.git-patch.read-chunk": ({ sessionId, snapshotId, section, offset }) =>
-      store.readGitSnapshotPatchChunk(
-        sessionId,
-        snapshotId,
-        section,
-        offset,
-        MAX_RUNNER_BULK_CHUNK_BYTES,
-      ).pipe(
-        Effect.map((chunk) =>
-          new SessionGitPatchChunk({
-            snapshotId,
-            section,
-            offset,
-            bytes: chunk.bytes,
-            nextOffset: chunk.nextOffset,
-            done: chunk.done,
-          })
-        ),
-        Effect.mapError(() =>
-          new GitPatchReadError({
-            sessionId,
-            message: "The cached Git Snapshot patch is unavailable.",
-          })
-        ),
-      ),
-    "session.artifact.read-chunk": ({ sessionId, artifactId, offset }) =>
-      artifacts.readChunk(
-        sessionId,
-        artifactId,
-        offset,
-        MAX_RUNNER_BULK_CHUNK_BYTES,
-      ).pipe(
-        Effect.map((chunk) =>
-          new SessionArtifactChunk({
-            artifact: chunk.artifact,
-            offset,
-            bytes: chunk.bytes,
-          })
-        ),
-        Effect.mapError(() =>
-          new ArtifactReadError({
-            sessionId,
-            message: "The published session media is unavailable.",
-          })
-        ),
       ),
   }));
   const socketUrl = new URL("/api/runners/connect/bulk", options.gatewayUrl);

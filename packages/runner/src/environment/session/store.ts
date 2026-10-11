@@ -11,8 +11,8 @@ import {
 } from "@openorb/protocol/runner-api";
 import { Context, Data, Effect, FileSystem, Layer, Path, Schema } from "effect";
 
-import type { EventCodec, Journal } from "../../session/persistent-actor/journal.ts";
-import { makeJsonlJournal } from "../../session/persistent-actor/jsonl-journal.ts";
+import type { EventCodec, Journal } from "./journal.ts";
+import { makeJsonlJournal } from "./jsonl-journal.ts";
 
 const ENVIRONMENTS_DIRECTORY = "environments";
 const ENVIRONMENT_DELETIONS_DIRECTORY = "environment-deletions";

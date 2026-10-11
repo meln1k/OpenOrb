@@ -43,7 +43,7 @@ Deno.test("gateway ownership signatures reject swapped IDs and unvalidated strin
   identity.userId satisfies Parameters<WorkspaceApi["getAdministrator"]>[0];
   identity.userId satisfies Parameters<WorkspaceApi["getGitAuthorConfiguration"]>[0];
   identity.workspaceId satisfies Parameters<
-    AppServices["runnerConnections"]["getSessionRunner"]
+    AppServices["runnerConnections"]["getRunnerLiveState"]
   >[0];
   identity.workspaceId satisfies SecretMetadata["workspaceId"];
 
@@ -53,8 +53,8 @@ Deno.test("gateway ownership signatures reject swapped IDs and unvalidated strin
   identity.workspaceId satisfies Parameters<WorkspaceApi["getAdministrator"]>[0];
   // @ts-expect-error Git author identity belongs to a user, not a tenant.
   identity.workspaceId satisfies Parameters<WorkspaceApi["getGitAuthorConfiguration"]>[0];
-  // @ts-expect-error Runner routing must be Workspace-scoped.
-  identity.userId satisfies Parameters<AppServices["runnerConnections"]["getSessionRunner"]>[0];
+  // @ts-expect-error Runner live state must be Workspace-scoped.
+  identity.userId satisfies Parameters<AppServices["runnerConnections"]["getRunnerLiveState"]>[0];
   // @ts-expect-error Encryption metadata must be Workspace-scoped.
   identity.userId satisfies SecretMetadata["workspaceId"];
   // @ts-expect-error Unvalidated strings cannot enter tenant Workspace operations.

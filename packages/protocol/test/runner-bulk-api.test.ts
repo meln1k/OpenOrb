@@ -1,80 +1,17 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { Effect, Exit, Schema, Stream } from "effect";
+import { Effect, Schema, Stream } from "effect";
 import * as SchemaBinary from "effect/encoding/SchemaBinary";
-import { Rpc } from "effect/rpc";
 import * as RpcMessage from "effect/rpc/RpcMessage";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 
-import {
-  ReadSessionArtifactChunkPayload,
-  ReadSessionGitPatchChunk,
-  ReadSessionGitPatchChunkPayload,
-  RunnerBulkApi,
-  runnerBulkRpcSerializationLayer,
-  SessionArtifact,
-  SessionArtifactChunk,
-  SessionArtifactId,
-  SessionGitPatchChunk,
-  SessionGitSnapshotId,
-} from "@/src/runner-bulk-api.ts";
-import {
-  RUNNER_PROTOCOL_VERSION,
-  RunnerId,
-  RunnerIdentity,
-  SessionId,
-} from "@/src/runner-api-schemas.ts";
-import {
-  MAX_RUNNER_BULK_CHUNK_BYTES,
-  MAX_RUNNER_BULK_RPC_FRAME_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
-} from "@/src/runner-api-limits.ts";
+import { RunnerBulkApi, runnerBulkRpcSerializationLayer } from "@/src/runner-bulk-api.ts";
+import { RUNNER_PROTOCOL_VERSION, RunnerId, RunnerIdentity } from "@/src/runner-api-schemas.ts";
+import { MAX_RUNNER_BULK_RPC_FRAME_BYTES } from "@/src/runner-api-limits.ts";
 
 const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
   "018f47f2-39b1-7b30-8000-000000000001",
 );
-const SESSION_ID = Schema.decodeUnknownSync(SessionId)(
-  "018f47f2-39b1-7b30-8000-000000000011",
-);
-const SNAPSHOT_ID = Schema.decodeUnknownSync(SessionGitSnapshotId)("a".repeat(64));
-const ARTIFACT_ID = Schema.decodeUnknownSync(SessionArtifactId)(
-  "018f47f2-39b1-7b30-8000-000000000012",
-);
-
-Deno.test("bulk patch chunks remain independently frame-bounded", () => {
-  const valid = new SessionGitPatchChunk({
-    snapshotId: SNAPSHOT_ID,
-    section: "unstaged",
-    offset: MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES - MAX_RUNNER_BULK_CHUNK_BYTES,
-    bytes: new Uint8Array(MAX_RUNNER_BULK_CHUNK_BYTES),
-    nextOffset: MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
-    done: true,
-  });
-  assertEquals(
-    Schema.decodeUnknownSync(SessionGitPatchChunk)(valid).bytes.length,
-    MAX_RUNNER_BULK_CHUNK_BYTES,
-  );
-  assertThrows(() =>
-    Schema.decodeUnknownSync(SessionGitPatchChunk)({
-      ...valid,
-      bytes: new Uint8Array(MAX_RUNNER_BULK_CHUNK_BYTES + 1),
-    })
-  );
-
-  const exit = Schema.encodeSync(
-    SchemaBinary.toCodec(Rpc.exitSchema(ReadSessionGitPatchChunk)),
-  )(Exit.succeed(valid));
-  const frame = SchemaBinary.encoder(RpcMessage.EncodedSchema, {
-    fingerprint: true,
-    dictionary: false,
-  }).encode({
-    _tag: "Exit",
-    requestId: Number.MAX_SAFE_INTEGER,
-    exit,
-  });
-  assert(frame.byteLength <= MAX_RUNNER_BULK_RPC_FRAME_BYTES);
-});
-
 Deno.test("bulk serialization preserves native bytes across traced RPC frames", async () => {
   const program = Effect.gen(function* () {
     const serialization = yield* RpcSerialization.RpcSerialization;
@@ -85,7 +22,7 @@ Deno.test("bulk serialization preserves native bytes across traced RPC frames", 
       const message = {
         _tag: "Request",
         id,
-        tag: "session.git-patch.read-chunk",
+        tag: "runner.bulk.watch",
         payload,
         headers: [["x-openorb-test", "repeated"]],
         traceId: "0123456789abcdef0123456789abcdef",
@@ -99,7 +36,7 @@ Deno.test("bulk serialization preserves native bytes across traced RPC frames", 
     const oversized = SchemaBinary.encoder(RpcMessage.EncodedSchema, { fingerprint: true }).encode({
       _tag: "Request",
       id: 3,
-      tag: "session.git-patch.read-chunk",
+      tag: "runner.bulk.watch",
       payload: new Uint8Array(MAX_RUNNER_BULK_RPC_FRAME_BYTES + 1),
       headers: [],
     });
@@ -109,41 +46,20 @@ Deno.test("bulk serialization preserves native bytes across traced RPC frames", 
   await Effect.runPromise(program as Effect.Effect<void>);
 });
 
-Deno.test("RunnerBulkApi grants one patch chunk per request", async () => {
+Deno.test("RunnerBulkApi carries only identification and the heartbeat", async () => {
   const identity = new RunnerIdentity({
     token: "openorb_runner_test-token",
     runnerId: RUNNER_ID,
     runnerVersion: "0.0.0",
     protocolVersion: RUNNER_PROTOCOL_VERSION,
   });
-  let reads = 0;
+  assertEquals(Array.from(RunnerBulkApi.requests.keys()).sort(), [
+    "runner.bulk.identify",
+    "runner.bulk.watch",
+  ]);
   const handlers = RunnerBulkApi.toLayer({
     "runner.bulk.identify": () => Effect.succeed(identity),
     "runner.bulk.watch": () => Stream.make({ observedAt: 1 }),
-    "session.git-patch.read-chunk": (request) => {
-      reads++;
-      return Effect.succeed(
-        new SessionGitPatchChunk({
-          ...request,
-          bytes: new TextEncoder().encode("chunk"),
-          nextOffset: request.offset + 5,
-          done: true,
-        }),
-      );
-    },
-    "session.artifact.read-chunk": (request) =>
-      Effect.succeed(
-        new SessionArtifactChunk({
-          artifact: new SessionArtifact({
-            id: request.artifactId,
-            fileName: "preview.png",
-            mediaType: "image/png",
-            byteLength: 5,
-          }),
-          offset: request.offset,
-          bytes: new TextEncoder().encode("media"),
-        }),
-      ),
   });
   const program = Effect.scoped(Effect.gen(function* () {
     const client = yield* RpcTest.makeClient(RunnerBulkApi).pipe(Effect.provide(handlers));
@@ -152,25 +68,6 @@ Deno.test("RunnerBulkApi grants one patch chunk per request", async () => {
       Array.from(yield* client["runner.bulk.watch"]().pipe(Stream.runCollect))[0]?.observedAt,
       1,
     );
-    const chunk = yield* client["session.git-patch.read-chunk"](
-      new ReadSessionGitPatchChunkPayload({
-        sessionId: SESSION_ID,
-        snapshotId: SNAPSHOT_ID,
-        section: "unstaged",
-        offset: 0,
-      }),
-    );
-    assertEquals(new TextDecoder().decode(chunk.bytes), "chunk");
-    const artifact = yield* client["session.artifact.read-chunk"](
-      new ReadSessionArtifactChunkPayload({
-        sessionId: SESSION_ID,
-        artifactId: ARTIFACT_ID,
-        offset: 0,
-      }),
-    );
-    assertEquals(artifact.artifact.mediaType, "image/png");
-    assertEquals(new TextDecoder().decode(artifact.bytes), "media");
-    assertEquals(reads, 1);
   }));
   // SAFETY: RpcTest supplies the complete in-memory client protocol and all handlers above.
   await Effect.runPromise(program as Effect.Effect<void>);

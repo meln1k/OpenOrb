@@ -1,6 +1,8 @@
 # Put Agent Environment Providers behind Pi's ExecutionEnv
 
-**Status:** Accepted
+**Status:** Accepted; implemented with the OpenOrb runner as the only provider. The Session records
+its provider kind and the Project's Guest Credential Opt-in; Workspace defaults, Project overrides,
+and their storage and UI are deferred until a second provider exists.
 
 The Agent Harness sees only Pi's `ExecutionEnv` interface, unchanged. Everything that supplies it
 sits behind an OpenOrb Agent Environment Provider. That includes the OpenOrb runner, which becomes

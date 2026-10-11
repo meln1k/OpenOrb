@@ -2,62 +2,14 @@ import { assert, assertEquals, assertGreater, assertObjectMatch, assertRejects }
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createEnvConformance } from "@earendil-works/pi-durable/testing";
-import {
-  Connection,
-  type EnvLink,
-  type EnvLinkHandlers,
-  RemoteExecutionEnv,
-} from "@openorb/pi-env";
+import { RemoteExecutionEnv } from "@openorb/pi-env";
 import { Effect, Exit, Scope } from "effect";
-import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
 import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin/layer.ts";
-import { type EnvironmentLinkEnd, relayEnvironmentDaemon } from "@/src/environment/link/relay.ts";
+import { relayedConnection } from "./guest-tools.ts";
 import {
   gondolinTestEnvironmentOptions,
   installLocalGuestImage,
 } from "@/test/environment/gondolin/local-guest-image.ts";
-
-/** An Environment Link that delivers one frame per message asynchronously, as a WebSocket does. */
-interface InMemoryLink {
-  readonly client: EnvLink;
-  readonly runner: EnvironmentLinkEnd;
-}
-
-function inMemoryLink(handlers: EnvLinkHandlers): InMemoryLink {
-  let open = true;
-  let toRunner!: ReadableStreamDefaultController<Uint8Array>;
-  const messages = new ReadableStream<Uint8Array>({
-    start: (controller) => void (toRunner = controller),
-  });
-  const close = (reason: string) => {
-    if (!open) return;
-    open = false;
-    toRunner.close();
-    handlers.closed(reason);
-  };
-  return {
-    client: {
-      send: (frame) => open && toRunner.enqueue(frame.slice()),
-      close: () => close("client closed the link"),
-    },
-    runner: {
-      send: (frame) => queueMicrotask(() => open && handlers.frame(frame.slice())),
-      messages,
-      close,
-    },
-  };
-}
-
-function relayedConnection(environment: AgentEnvironment): Connection {
-  return new Connection({
-    open: async (handlers) => {
-      const daemon = await Effect.runPromise(environment.startDaemon);
-      const link = inMemoryLink(handlers);
-      void Effect.runPromise(relayEnvironmentDaemon(daemon, link.runner));
-      return link.client;
-    },
-  });
-}
 
 Deno.test({
   name: "the guest Environment Daemon conforms to ExecutionEnv over a relayed link",

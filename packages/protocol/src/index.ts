@@ -31,24 +31,17 @@ export {
 } from "@/src/orb-size.ts";
 export {
   IdentifyBulkRunner,
-  ReadSessionGitPatchChunk,
   RunnerBulkApi,
-  SessionGitPatchChunk,
   SessionGitPatchSection,
   SessionGitSnapshotId,
   WatchBulkRunner,
 } from "@/src/runner-bulk-api.ts";
 export {
-  AbortSession,
-  DeleteSession,
+  AttachEnvironment,
+  ControlEnvironment,
+  CreateEnvironment,
+  DeleteEnvironment,
   IdentifyRunner,
-  PromptSession,
-  ProvisionSession,
-  ReadSessionGitSnapshot,
   RunnerApi,
-  SetSessionThinkingLevel,
-  UpdateSessionGitFile,
-  WakeSession,
   WatchRunner,
-  WatchSession,
 } from "@/src/runner-api.ts";

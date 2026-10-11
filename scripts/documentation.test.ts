@@ -109,15 +109,18 @@ Deno.test("operations documentation records the recovery contract and release pi
   const protocol = await Deno.readTextFile("packages/protocol/src/runner-api-schemas.ts");
   const rootConfiguration = await Deno.readTextFile("deno.json");
   const runnerConfiguration = await Deno.readTextFile("packages/runner/deno.json");
+  // Pi packages are pinned where the Session Durable Object uses them, not by the runner.
+  const gatewayConfiguration = await Deno.readTextFile("packages/gateway/deno.json");
   assert(release.includes('id: "mvp-7"'));
   assert(release.includes('id: "release-1"'));
   assert(release.includes('id: "release-2"'));
   assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_2"));
-  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 26"));
+  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 27"));
   for (const pin of ["2.9.5", "0.12.0", "1.1.0", "3.0.0"]) {
     assert(
       operations.includes(pin) &&
-        (pin === "2.9.5" || rootConfiguration.includes(pin) || runnerConfiguration.includes(pin)),
+        (pin === "2.9.5" || rootConfiguration.includes(pin) || runnerConfiguration.includes(pin) ||
+          gatewayConfiguration.includes(pin)),
       `operations documentation does not match pin ${pin}`,
     );
   }

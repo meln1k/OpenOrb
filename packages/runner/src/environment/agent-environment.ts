@@ -1,12 +1,7 @@
 import { Context, Data, type Effect, type Scope } from "effect";
 import type { SessionEnvironmentSecret } from "@openorb/protocol/runner-api";
-import type { Stats } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { posix } from "node:path";
 
 export const AGENT_WORKSPACE = "/workspace";
-
-const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 export interface AgentEnvironmentOutput {
   readonly stream: "stdout" | "stderr";
@@ -17,16 +12,6 @@ export interface AgentEnvironmentCommandOptions {
   readonly cwd?: string;
   readonly signal?: AbortSignal;
   readonly onOutput?: (output: AgentEnvironmentOutput) => Effect.Effect<void, unknown>;
-}
-
-export interface AgentEnvironmentShellOptions {
-  readonly cwd: string;
-  readonly signal?: AbortSignal;
-  readonly timeoutSeconds?: number;
-  readonly onOutput: (
-    data: Uint8Array,
-    stream: "stdout" | "stderr",
-  ) => Effect.Effect<void, unknown>;
 }
 
 export interface AgentEnvironmentCommandResult {
@@ -47,44 +32,13 @@ export interface EnvironmentDaemon {
   readonly close: Effect.Effect<void>;
 }
 
+/** One Session's guest VM as the runner sees it; the agent reaches it only via the daemon. */
 export interface AgentEnvironment {
+  /** Runs an absolute-path command in the guest, for lifecycle probes and durability. */
   readonly run: (
     command: readonly string[],
     options?: AgentEnvironmentCommandOptions,
   ) => Effect.Effect<AgentEnvironmentCommandResult, AgentEnvironmentError>;
-  readonly runShell: (
-    command: string | readonly string[],
-    options: AgentEnvironmentShellOptions,
-  ) => Effect.Effect<AgentEnvironmentCommandResult, AgentEnvironmentError>;
-  readonly readFile: (
-    path: string,
-    options?: { readonly signal?: AbortSignal; readonly maxBytes?: number },
-  ) => Effect.Effect<Uint8Array, AgentEnvironmentError>;
-  readonly access: (path: string) => Effect.Effect<void, AgentEnvironmentError>;
-  readonly writeFile: (
-    path: string,
-    content: string | Uint8Array,
-  ) => Effect.Effect<void, AgentEnvironmentError>;
-  readonly makeDirectory: (
-    path: string,
-    options?: { readonly recursive?: boolean },
-  ) => Effect.Effect<void, AgentEnvironmentError>;
-  readonly stat: (path: string) => Effect.Effect<
-    Pick<Stats, "isFile" | "isDirectory" | "size" | "mtimeMs">,
-    AgentEnvironmentError
-  >;
-  readonly listDirectory: (path: string) => Effect.Effect<string[], AgentEnvironmentError>;
-  readonly renameFile: (
-    source: string,
-    destination: string,
-  ) => Effect.Effect<void, AgentEnvironmentError>;
-  readonly remove: (
-    path: string,
-    options?: { readonly recursive?: boolean; readonly force?: boolean },
-  ) => Effect.Effect<void, AgentEnvironmentError>;
-  readonly detectImageMimeType: (
-    path: string,
-  ) => Effect.Effect<string | null, AgentEnvironmentError>;
   readonly startDaemon: Effect.Effect<EnvironmentDaemon, AgentEnvironmentError>;
   readonly stop: Effect.Effect<void, AgentEnvironmentError>;
 }
@@ -127,27 +81,4 @@ export class AgentEnvironmentError extends Data.TaggedError("AgentEnvironmentErr
   constructor(message: string, cause: unknown) {
     super({ message, cause });
   }
-}
-
-export function resolveAgentPath(inputPath: string): string {
-  if (inputPath.includes("\0")) {
-    throw new AgentEnvironmentError("Agent paths must not contain NUL bytes.", undefined);
-  }
-
-  let normalized = inputPath.replace(UNICODE_SPACES, " ");
-  if (normalized.startsWith("@")) normalized = normalized.slice(1);
-  if (normalized === "~" || normalized.startsWith("~/")) {
-    throw new AgentEnvironmentError(
-      "Agent paths must use an absolute guest path instead of ~.",
-      undefined,
-    );
-  }
-  if (/^file:\/\//.test(normalized)) normalized = fileURLToPath(normalized);
-  if (normalized.includes("\0")) {
-    throw new AgentEnvironmentError("Agent paths must not contain NUL bytes.", undefined);
-  }
-
-  return posix.isAbsolute(normalized)
-    ? posix.resolve(normalized)
-    : posix.resolve(AGENT_WORKSPACE, normalized);
 }

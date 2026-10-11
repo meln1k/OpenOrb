@@ -4,8 +4,9 @@
 
 OpenOrb runs coding-agent sessions on your own compute. The **gateway** serves the browser UI and
 runs as a native celld Worker. Its **Workspace Durable Object** stores configuration in SQLite;
-the **Runners Durable Object** owns live connections and routing. The **runner** executes sessions
-in isolated QEMU virtual machines and connects outbound to the gateway.
+the **Runners Durable Object** owns live runner connections; and one **Session Durable Object** per
+session runs the agent and keeps its conversation. The **runner** provides each session's isolated
+QEMU virtual machine and connects outbound to the gateway.
 
 ## Developer quickstart
 

@@ -1,9 +1,8 @@
 import { basename } from "node:path";
 
-import { VM, type VmFs, type VMOptions } from "@earendil-works/gondolin";
-import { Effect, Layer, Schema, type Scope, Semaphore } from "effect";
+import { VM, type VMOptions } from "@earendil-works/gondolin";
+import { Effect, Layer, type Scope, Semaphore } from "effect";
 import { type Result, trySync } from "@openorb/result";
-import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
 
 import { type GuestImage, prepareGuestImageForVm } from "./guest-image/installer.ts";
 import {
@@ -16,7 +15,6 @@ import {
   type OpenOrbGitHubMediationOptions,
 } from "./network-mediation.ts";
 import { installGondolinTlsCompatibility } from "./tls-compatibility.ts";
-import { shellWaitTimeoutMs } from "./shell-timeout.ts";
 import {
   assertPersistentRootDiskDetached,
   initializePersistentRootDisk,
@@ -30,12 +28,9 @@ import {
   type AgentEnvironmentOptions,
   AgentEnvironmentProvider,
   type EnvironmentDaemon,
-  resolveAgentPath,
 } from "../agent-environment.ts";
 
 export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
-export const MAX_GUEST_FILE_BYTES = 16 * 1024 * 1024;
-const GUEST_FILE_READ_TIMEOUT_MS = 30_000;
 /** The pinned pi-env daemon baked into the guest image. */
 export const ENVIRONMENT_DAEMON_PATH = "/usr/local/libexec/openorb/pi-env";
 const ENVIRONMENT_DAEMON_EXIT_GRACE_MS = 5_000;
@@ -344,7 +339,7 @@ function makeGondolinEnvironment(
         try: async () => {
           let observerError: AgentEnvironmentError | undefined;
           const process = activeVm.vm.exec([...command], {
-            cwd: options.cwd === undefined ? AGENT_WORKSPACE : resolveAgentPath(options.cwd),
+            cwd: options.cwd ?? AGENT_WORKSPACE,
             env: { [OPENORB_GUEST_MARKER]: "1" },
             ...(options.signal === undefined ? {} : { signal: options.signal }),
             stdout: "pipe",
@@ -370,212 +365,6 @@ function makeGondolinEnvironment(
       return { exitCode: execution.value.exitCode };
     });
 
-    const runShell: AgentEnvironment["runShell"] = Effect.fn("AgentEnvironment.runShell")(
-      function* (command, options) {
-        const timeoutSeconds = options.timeoutSeconds;
-        const waitTimeoutMs = yield* shellWaitTimeoutMs(timeoutSeconds);
-        if (options.signal?.aborted) return yield* aborted(options.signal.reason);
-        const activeVm = yield* getVm;
-        if (options.signal?.aborted) return yield* aborted(options.signal.reason);
-        let waitTimedOut = false;
-        const execution = yield* Effect.exit(Effect.tryPromise({
-          try: async () => {
-            const controller = new AbortController();
-            const abort = () => controller.abort(options.signal?.reason);
-            options.signal?.addEventListener("abort", abort, { once: true });
-            using cleanup = new DisposableStack();
-            cleanup.defer(() => options.signal?.removeEventListener("abort", abort));
-            // Allow the guest's one-second kill grace plus one second for output draining.
-            // Gondolin abort only abandons the host wait: surviving descendants are accepted.
-            if (waitTimeoutMs !== undefined) {
-              const timer = setTimeout(() => {
-                waitTimedOut = true;
-                controller.abort();
-              }, waitTimeoutMs);
-              cleanup.defer(() => clearTimeout(timer));
-            }
-            // Guest process-group cleanup is best effort; never reset the VM for a timeout.
-            const shellCommand = Schema.is(Schema.String)(command)
-              ? [activeVm.shellPath, "-lc", command]
-              : [...command];
-            const process = activeVm.vm.exec(
-              timeoutSeconds === undefined ? shellCommand : [
-                "/usr/bin/timeout",
-                "--kill-after=1s",
-                `${timeoutSeconds}s`,
-                ...shellCommand,
-              ],
-              {
-                cwd: resolveAgentPath(options.cwd),
-                env: { [OPENORB_GUEST_MARKER]: "1" },
-                signal: controller.signal,
-                stdout: "pipe",
-                stderr: "pipe",
-              },
-            );
-            for await (const chunk of process.output()) {
-              const observerError = await runObserver(options.onOutput(chunk.data, chunk.stream));
-              if (observerError) throw observerError;
-            }
-            return { exitCode: (await process).exitCode };
-          },
-          catch: (cause) =>
-            new AgentEnvironmentError("Guest shell command execution failed.", cause),
-        }));
-        if (execution._tag === "Failure") {
-          if (waitTimedOut && waitTimeoutMs !== undefined && !options.signal?.aborted) {
-            return yield* new AgentEnvironmentError(
-              `Stopped waiting after ${
-                waitTimeoutMs / 1000
-              } seconds. The VM was preserved; command descendants may still be running.`,
-              undefined,
-            );
-          }
-          if (options.signal?.aborted) return yield* aborted(options.signal.reason);
-          return yield* Effect.failCause(execution.cause);
-        }
-        return { exitCode: execution.value.exitCode };
-      },
-    );
-
-    const readFile: AgentEnvironment["readFile"] = Effect.fn("AgentEnvironment.readFile")(
-      function* (path, options = {}) {
-        if (options.signal?.aborted) return yield* aborted(options.signal.reason);
-        const maxBytes = options.maxBytes ?? MAX_GUEST_FILE_BYTES;
-        if (
-          !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_SESSION_ARTIFACT_BYTES
-        ) {
-          return yield* new AgentEnvironmentError("Guest file read limit is invalid.", undefined);
-        }
-        const activeVm = yield* getVm;
-        const resolvedPath = resolveAgentPath(path);
-        const read = yield* Effect.exit(Effect.tryPromise({
-          try: async () => {
-            const regularFile = await activeVm.vm.exec(["/usr/bin/test", "-f", resolvedPath]);
-            if (!regularFile.ok) {
-              throw new AgentEnvironmentError("Guest file could not be read.", undefined);
-            }
-            const controller = new AbortController();
-            const abort = () => controller.abort(options.signal?.reason);
-            options.signal?.addEventListener("abort", abort, { once: true });
-            using cleanup = new DisposableStack();
-            cleanup.defer(() => options.signal?.removeEventListener("abort", abort));
-            const timer = setTimeout(() => controller.abort(), GUEST_FILE_READ_TIMEOUT_MS);
-            cleanup.defer(() => clearTimeout(timer));
-
-            const chunks: Uint8Array[] = [];
-            let byteLength = 0;
-            let oversized = false;
-            const process = activeVm.vm.exec([
-              "/usr/bin/head",
-              "-c",
-              String(maxBytes + 1),
-              "--",
-              resolvedPath,
-            ], {
-              signal: controller.signal,
-              stdout: "pipe",
-              stderr: "pipe",
-            });
-            for await (const chunk of process.output()) {
-              if (chunk.stream !== "stdout") continue;
-              byteLength += chunk.data.byteLength;
-              if (byteLength > maxBytes) {
-                oversized = true;
-                continue;
-              }
-              chunks.push(chunk.data);
-            }
-            const result = await process;
-            if (oversized) {
-              throw new AgentEnvironmentError(
-                `Guest file exceeds the ${maxBytes}-byte read limit.`,
-                undefined,
-              );
-            }
-            if (!result.ok) {
-              throw new AgentEnvironmentError("Guest file could not be read.", undefined);
-            }
-            const content = new Uint8Array(byteLength);
-            let offset = 0;
-            for (const chunk of chunks) {
-              content.set(chunk, offset);
-              offset += chunk.byteLength;
-            }
-            return content;
-          },
-          catch: (cause) => {
-            return cause instanceof AgentEnvironmentError
-              ? cause
-              : new AgentEnvironmentError("Guest file could not be read.", cause);
-          },
-        }));
-        if (read._tag === "Failure") {
-          if (options.signal?.aborted) return yield* aborted(options.signal.reason);
-          return yield* Effect.failCause(read.cause);
-        }
-        return read.value;
-      },
-    );
-    const access: AgentEnvironment["access"] = Effect.fn("AgentEnvironment.access")(
-      function* (path) {
-        const activeVm = yield* getVm;
-        yield* Effect.tryPromise({
-          try: async () => {
-            const result = await activeVm.vm.exec([
-              "/usr/bin/test",
-              "-e",
-              resolveAgentPath(path),
-            ]);
-            if (!result.ok) {
-              throw new AgentEnvironmentError("Guest file could not be accessed.", undefined);
-            }
-          },
-          catch: (cause) => new AgentEnvironmentError("Guest file could not be accessed.", cause),
-        });
-      },
-    );
-    const filesystem = <A>(operation: (fs: VmFs, signal: AbortSignal) => Promise<A>) =>
-      getVm.pipe(Effect.flatMap(({ vm }) =>
-        Effect.tryPromise({
-          try: (signal) => operation(vm.fs, signal),
-          catch: (cause) => new AgentEnvironmentError("Guest filesystem operation failed.", cause),
-        })
-      ));
-    const writeFile: AgentEnvironment["writeFile"] = (path, content) =>
-      filesystem((fs, signal) => fs.writeFile(resolveAgentPath(path), content, { signal }));
-    const makeDirectory: AgentEnvironment["makeDirectory"] = (path, options) =>
-      filesystem((fs, signal) =>
-        fs.mkdir(resolveAgentPath(path), { recursive: options?.recursive ?? true, signal })
-      );
-    const stat: AgentEnvironment["stat"] = (path) =>
-      filesystem((fs, signal) => fs.stat(resolveAgentPath(path), { signal }));
-    const listDirectory: AgentEnvironment["listDirectory"] = (path) =>
-      filesystem((fs, signal) => fs.listDir(resolveAgentPath(path), { signal }));
-    const renameFile: AgentEnvironment["renameFile"] = (source, destination) =>
-      filesystem((fs, signal) =>
-        fs.rename(resolveAgentPath(source), resolveAgentPath(destination), { signal })
-      );
-    const remove: AgentEnvironment["remove"] = (path, options) =>
-      filesystem((fs, signal) => fs.deleteFile(resolveAgentPath(path), { ...options, signal }));
-    const detectImageMimeType: AgentEnvironment["detectImageMimeType"] = (path) =>
-      Effect.sync(() => {
-        const extension = path.toLowerCase().match(/\.[^.\/]+$/)?.[0];
-        switch (extension) {
-          case ".png":
-            return "image/png";
-          case ".jpg":
-          case ".jpeg":
-            return "image/jpeg";
-          case ".gif":
-            return "image/gif";
-          case ".webp":
-            return "image/webp";
-          default:
-            return null;
-        }
-      });
-
     const startDaemon: AgentEnvironment["startDaemon"] = Effect.gen(function* () {
       const activeVm = yield* getVm;
       const token = Array.from(
@@ -584,7 +373,7 @@ function makeGondolinEnvironment(
       ).join("");
       const controller = new AbortController();
       const process = yield* Effect.try({
-        // A login shell gives commands the same profile environment as `runShell`; anything the
+        // A login shell gives the daemon's commands the guest profile environment; anything the
         // profile prints arrives before the daemon's sync line and is discarded as noise.
         try: () =>
           activeVm.vm.exec([
@@ -654,16 +443,6 @@ function makeGondolinEnvironment(
       close,
       getVm,
       run,
-      runShell,
-      readFile,
-      access,
-      writeFile,
-      makeDirectory,
-      stat,
-      listDirectory,
-      renameFile,
-      remove,
-      detectImageMimeType,
       startDaemon,
       stop: close,
     };

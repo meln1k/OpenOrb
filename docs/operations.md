@@ -2,12 +2,15 @@
 
 ## Native celld Worker migration
 
-The gateway webapp runs in the stateless Worker and calls named RPC methods on `Workspace` and
-`Runners` Durable Objects. Both extend native `DurableObject` from `cloudflare:workers` without a
-compatibility flag. Workspace owns SQLite-backed configuration, browser sessions, enrollment
-records, the Session catalog, and alarm-driven provider OAuth. Runners owns live control/bulk
-WebSockets, runner presence, command routing, and viewer subscriptions. Only WebSocket upgrades and
-SSE use DO `fetch`; no public generic Workspace RPC endpoint exists.
+The gateway webapp runs in the stateless Worker and calls named RPC methods on the `Workspace`,
+`Runners`, and per-Session `Session` Durable Objects. All extend native `DurableObject` from
+`cloudflare:workers` without a compatibility flag. Workspace owns SQLite-backed configuration,
+browser sessions, enrollment records, the Session catalog, and alarm-driven provider OAuth. Runners
+owns live control/bulk WebSockets, runner presence and capacity, and Environment Control routing; it
+notifies Session DOs of environment changes. Each Session DO hosts Pi Durable and owns that
+Session's Harness State, project setup, Git Snapshots, Published Media records (bytes in the `MEDIA`
+R2 bucket), and browser event stream. Only WebSocket upgrades and SSE use DO `fetch`; no public
+generic Workspace RPC endpoint exists.
 
 Workspace uses relational tables through native `ctx.storage.sql`, not KV entity records. Remix Data
 table declarations and inferred row types live in `packages/gateway/app/cells/workspace/schema.ts`.
@@ -15,7 +18,11 @@ Plain SQL migrations live in `packages/gateway/app/cells/workspace/migrations/<i
 the initial migration enforces indexes, unique constraints, and Workspace-scoped foreign keys.
 Register each migration in `packages/gateway/app/cells/workspace/migrations.ts`, which imports SQL
 as text bundled into the Worker and applies it through Remix's migration journal and checksum checks
-inside one native storage transaction. `blockConcurrencyWhile` gates startup. Add numbered
+inside one native storage transaction. `blockConcurrencyWhile` gates startup. Session Durable
+Objects use the same driver (`packages/gateway/app/cells/migrations.ts`) for OpenOrb's own Session
+tables, registered in `packages/gateway/app/cells/session/migrations.ts` with SQL under
+`packages/gateway/app/cells/session/migrations/`; each Session migrates lazily when its object next
+starts, and Pi Durable versions its own tables separately (`durable_schema`). Add numbered
 migrations and update row declarations for schema changes; never edit applied SQL, including
 whitespace, because Remix checksums the exact bytes. The former integer-ledger bootstrap is
 unsupported; use fresh state instead of upgrading it. Ciphertext and password hashes are BLOBs. Only
@@ -23,9 +30,9 @@ browser session dictionaries, allowed-host lists, and private OAuth checkpoints 
 and OAuth alarm changes commit together in awaited storage transactions.
 
 Runner Registry state is ephemeral: normal accepted sockets keep the object live, not hibernating.
-Restart/eviction disconnects runners and viewers; runner reconnect/manifests and browser reconnect
-rebuild live state. Full Pi sessions remain runner-owned. Pi AI, Pi Durable, Pi Env, and Chord are
-pinned to 1.1.0; the configuration object does not create a Pi harness.
+Restart/eviction disconnects runners; runner reconnect and environment snapshots rebuild live state.
+Agent work runs in the Session DOs, not on runners. Pi AI, Pi Durable, Pi Env, and Chord are pinned
+to 1.1.0; the Workspace configuration object does not create a Pi harness.
 
 Orb setup installs celld 0.6.2 and esbuild 0.28.2. Run `amp orb services ensure`, or outside an orb
 `deno task dev:gateway`, to build and start the single public gateway Worker. Dev state lives in
@@ -44,9 +51,9 @@ initialized; GoTel remains available for runner telemetry.
 
 After changing Worker bindings, run `deno task --filter @openorb/gateway generate-types` and commit
 `packages/gateway/worker-configuration.d.ts`. Wrangler generates `Env`, including the typed
-`WORKSPACE` and `RUNNERS` namespaces and environment binding names, without recording secret values.
-`deno task check` checks that the generated types are current. Deno uses a test base class; bundles
-retain the native `cloudflare:workers` import.
+`WORKSPACE`, `RUNNERS`, and `SESSIONS` namespaces and environment binding names, without recording
+secret values. `deno task check` checks that the generated types are current. Deno uses a test base
+class; bundles retain the native `cloudflare:workers` import.
 
 Back up the original secrets and `packages/gateway/.celld/dev` together after stopping celld. Never
 delete that state or use a clean/reset operation against wanted data. PostgreSQL is no longer opened
@@ -68,7 +75,7 @@ Treat the gateway, runner, and protocol as one release unit. Check out the same 
 SHA on the gateway and every source-installed runner; do not mix independently updated checkouts.
 Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as the
 release revision. A standalone runner must come from the release for that same source revision.
-Protocol version **26** is source-owned and is not a separately upgradeable public API.
+Protocol version **27** is source-owned and is not a separately upgradeable public API.
 
 The exact runtime and application pins in this release graph are:
 
@@ -80,7 +87,7 @@ The exact runtime and application pins in this release graph are:
 | OpenOrb guest image                 | `release-2` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi Durable / Pi Env / Chord | 1.1.0                                            |
 | Remix                               | 3.0.0                                            |
-| Runner protocol                     | 26                                               |
+| Runner protocol                     | 27                                               |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
 build IDs, hashes, sizes, and immutable URLs are in
@@ -88,12 +95,15 @@ build IDs, hashes, sizes, and immutable URLs are in
 [guest image release process](guest-image.md), rather than rebuilding an asset under an existing
 release ID.
 
-Protocol 26 uses UTF-8 JSON inside SchemaBinary framing on the binary control WebSocket. Runner and
-gateway must be upgraded together; neither the former CBOR format nor unframed JSON text messages
-are supported. Logical control messages are capped at 16 MiB and split into WebSocket messages of at
-most 1 MiB. Reassembly is per connection and is discarded on disconnect; reconnect still obtains a
-fresh conversation snapshot. Images and Git patches continue to use the separate bulk channel.
-Chunking does not make arbitrarily large conversations unbounded or remove the need for compaction.
+Protocol 27 carries only runner identification, the `runner.watch` environment stream, and the
+`environment.create`, `environment.control`, `environment.attach`, and `environment.delete`
+procedures; it has no `session.*` procedures. A v27 gateway rejects v26 runners, so runner and
+gateway must be upgraded together. Control messages use UTF-8 JSON inside SchemaBinary framing on
+the binary control WebSocket; neither the former CBOR format nor unframed JSON text messages are
+supported. Logical control messages are capped at 16 MiB and split into WebSocket messages of at
+most 1 MiB. Reassembly is per connection and is discarded on disconnect; reconnect obtains a fresh
+environment snapshot. The bulk channel carries only identification and a heartbeat and is reserved
+for future terminal and preview tunnels; Git patches and media no longer cross it.
 
 Streaming RPC handlers emit one event per RPC envelope, so queue batching cannot combine
 individually valid events into an oversized message. The control transport owns its limits; the
@@ -101,10 +111,10 @@ outbound adapter only reconnects. Bulk retains its own frame limit. Values use E
 codecs, including strings for schema-declared bigints. Ordinary numbers retain JavaScript's usual
 precision limits; there is no custom numeric conversion.
 
-Prompt acknowledgements carry the Durable `submissionId` and echoed `clientRequestId`, not a run
-group or admission mode. Duplicate request IDs return the existing submission without resuming
-paused agent work. Abort targets the Session's conversation and leaves its environment running.
-Runner snapshots and session events no longer carry synthetic run IDs.
+Prompts, Abort, and thinking-level changes go to the Session DO, never to a runner. Prompt
+acknowledgements carry the Durable `submissionId`, not a run group or admission mode. Duplicate
+request IDs return the existing submission without resuming paused agent work. Abort targets the
+Session's conversation and leaves its environment running.
 
 ## Build and run the native gateway locally
 
@@ -125,9 +135,10 @@ not start celld or rewrite `.dev.vars`:
 deno task --filter @openorb/gateway build
 ```
 
-`packages/gateway/wrangler.jsonc` declares `WORKSPACE`, `RUNNERS`, `ASSETS`, and the native SQLite
-class migrations. Do not change the named objects or run two celld processes against its state
-directory. Worker/assets build output is replaceable; keep wanted `.celld/dev` state with its keys.
+`packages/gateway/wrangler.jsonc` declares `WORKSPACE`, `RUNNERS`, `SESSIONS`, `ASSETS`, the `MEDIA`
+R2 bucket, and the native SQLite class migrations. Do not change the named objects or run two celld
+processes against its state directory. Worker/assets build output is replaceable; keep wanted
+`.celld/dev` state with its keys.
 
 For a separately approved HTTPS deployment, the public origin must be configured consistently (for
 example `PUBLIC_URL=https://openorb.example.com` and `OPENORB_SESSION_COOKIE_SECURE=true`). The
@@ -177,8 +188,8 @@ manual credential replacement is then required. Changing `SESSION_SECRET` invali
 cookies and requires login again; it does not decrypt credentials. Workspace state loss removes
 users, browser sessions, projects, encrypted credentials, enrollment, and the minimal Session
 catalog. Runner files cannot reconstruct that configuration. Runners DO live projections are not a
-Session backup: restart drops connections and reconnect/manifests rebuild them from the
-authoritative runner. No master-key rotation or PostgreSQL import procedure is implemented.
+Session backup: restart drops connections and reconnecting runners' environment snapshots rebuild
+them. No master-key rotation or PostgreSQL import procedure is implemented.
 
 ## Runner session-file backups
 
@@ -188,26 +199,28 @@ start it again. Restore it only to the same trusted runner identity and the matc
 and guest-asset release, preserving owner `openorb-runner`, directory mode `0700`, and identity-file
 mode `0600`.
 
-Do not claim a crash-consistent copy of a running directory is a session backup. Durable's
-`harness/harness.sqlite` and its WAL/SHM sidecars, each session's `root-disk.qcow2`, deletion
-markers, and Session Journals can change independently while a session runs. QEMU mutates the
-persistent root disk in place while its VM is running, so copying it concurrently can produce a
-corrupt or internally inconsistent backup. Stop the service first; filesystem snapshots alone do not
-coordinate with an active VM.
+Do not claim a crash-consistent copy of a running directory is a session backup. Each environment's
+`root-disk.qcow2`, Session Journal, and pending environment deletions under `environment-deletions/`
+can change independently while a session runs. QEMU mutates the persistent root disk in place while
+its VM is running, so copying it concurrently can produce a corrupt or internally inconsistent
+backup. Stop the service first; filesystem snapshots alone do not coordinate with an active VM.
 
 Even a consistent runner backup is not a gateway backup and does not make sessions portable or
-provide migration/HA. Keep the matching guest assets or allow the same immutable release assets to
-be downloaded and verified. After restore, run `doctor` before starting the service. A missing or
-corrupt `root-disk.qcow2` prevents that Session from being resumed; the Project Checkout is on that
-disk, not separately stored on the host. The explicit **Restart environment** recovery reopens the
-preserved disk after a Stop durability or VM-start failure and never substitutes an older copy.
+provide migration/HA. Runners hold no Harness State, conversation content, Git Snapshots, or
+Published Media; those live in the gateway's Session DOs and R2 bucket. Keep the matching guest
+assets or allow the same immutable release assets to be downloaded and verified. After restore, run
+`doctor` before starting the service. A missing or corrupt `root-disk.qcow2` prevents that Session
+from being resumed; the Project Checkout is on that disk, not separately stored on the host. The
+explicit **Restart environment** recovery reopens the preserved disk after a Stop durability or
+VM-start failure and never substitutes an older copy.
 
-Pi Durable is a clean break from the former Pi JSONL format. Old development sessions are not
-converted; create new sessions after upgrading. Stop Session pauses checkpointed agent work and
-durably stops compute; Wake resumes it. Abort cancels work without stopping compute. Agent-issued
-environment restart can force a hung VM to close and reports possible loss of unsynced writes.
-Conversation stream subscriptions/reconnects are read-only and never wake the Session. Opening a
-Session page separately sends an authenticated, CSRF-protected Wake request.
+Pi Durable runs in the Session DO; runner-hosted sessions from earlier releases are not migrated,
+and a runner's former `sessions/` directory is not read. Create new sessions after upgrading. Stop
+Session pauses checkpointed agent work and durably stops compute; Wake resumes it. Abort cancels
+work without stopping compute. Agent-issued environment restart can force a hung VM to close and
+reports possible loss of unsynced writes. Conversation stream subscriptions/reconnects are read-only
+and never wake the Session. Opening a Session page separately sends an authenticated, CSRF-protected
+Wake request.
 
 ## Troubleshooting
 

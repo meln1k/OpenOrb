@@ -27,6 +27,8 @@ export interface CheckoutDefinition {
 export interface ProvisioningReporter {
   readonly stage: (stage: SessionProvisioningStage) => void;
   readonly log: (stream: "stdout" | "stderr", text: string) => void;
+  /** The session branch is checked out; `.agents/setup` has not run yet. */
+  readonly checkedOut?: (baseCommit: string) => void;
 }
 
 export interface CheckoutResult {
@@ -197,6 +199,8 @@ export async function provisionCheckout(
       recovery: "retry-provisioning",
     }));
   }
+  const baseCommit = revision.stdout.trim();
+  reporter.checkedOut?.(baseCommit);
   reporter.stage("setup");
   const setup = await commands.run([
     "/bin/sh",
@@ -217,7 +221,7 @@ export async function provisionCheckout(
       `.agents/setup exited with status ${setup.exitCode}; continuing to Pi so it can repair the project.\n`,
     );
   }
-  return { checkoutState: "available", baseCommit: revision.stdout.trim(), issues };
+  return { checkoutState: "available", baseCommit, issues };
 }
 
 /** Runs `.agents/resume` after a restart of an available checkout. Failure is a warning. */
