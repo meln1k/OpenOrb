@@ -23,6 +23,7 @@ jobs:
       - run: deno task check
       - run: deno task check:docs
       - run: deno task test
+      - run: deno task test:pi-env
       - run: deno task test:security
       - name: Record secret-test policy
         run: |

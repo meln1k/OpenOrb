@@ -11,6 +11,9 @@ const daemonPath = new URL(
   }/pi-env`,
   import.meta.url,
 ).pathname;
+// Only `deno task test:pi-env` may run the daemon; the repository-wide test task skips it.
+const daemonRunnable = Deno.build.os === "linux" &&
+  (await Deno.permissions.query({ name: "run", command: daemonPath })).state === "granted";
 
 function startLocalDaemon(): Promise<DaemonProcess> {
   const token = encodeHex(crypto.getRandomValues(new Uint8Array(16)));
@@ -47,7 +50,7 @@ for (
 ) {
   Deno.test({
     name: `pi-env over a relayed link: ${conformance.name}`,
-    ignore: Deno.build.os !== "linux",
+    ignore: !daemonRunnable,
     sanitizeOps: false,
     sanitizeResources: false,
     fn: () => conformance.run(),
@@ -56,7 +59,7 @@ for (
 
 Deno.test({
   name: "pi-env over a relayed link: closing the connection stops the daemon",
-  ignore: Deno.build.os !== "linux",
+  ignore: !daemonRunnable,
   sanitizeOps: false,
   sanitizeResources: false,
   fn: () => connection.close(),
