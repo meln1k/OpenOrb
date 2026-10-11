@@ -11,6 +11,7 @@ for (
   const directory of [
     "",
     "packages/gateway/",
+    "packages/pi-env/",
     "packages/protocol/",
     "packages/result/",
   ]

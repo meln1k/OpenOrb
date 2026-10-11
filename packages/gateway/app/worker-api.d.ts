@@ -5,6 +5,8 @@ declare global {
   type DurableObjectNamespace<T extends Rpc.DurableObjectBranded> = WorkerNamespace<T>;
   type Fetcher = import("./assets.ts").AssetsBinding;
   const WebSocketPair: typeof import("@cloudflare/workers-types").WebSocketPair;
+  const WebSocketRequestResponsePair:
+    typeof import("@cloudflare/workers-types").WebSocketRequestResponsePair;
   interface ResponseInit {
     webSocket?: import("@cloudflare/workers-types").WebSocket;
   }

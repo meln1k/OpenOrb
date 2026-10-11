@@ -95,6 +95,7 @@ export class FakeEnvironment implements AgentEnvironment {
   renameFile = () => Effect.die("unexpected rename");
   remove = () => Effect.die("unexpected remove");
   detectImageMimeType = () => Effect.succeed(null);
+  startDaemon: AgentEnvironment["startDaemon"] = Effect.die("unexpected Environment Daemon start");
   stop = Effect.sync(() => {
     this.stops++;
   });

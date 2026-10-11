@@ -17,6 +17,10 @@ ARG COREPACK_VERSION
 ARG NODE_ASSET
 ARG NODE_SHA256
 ARG NODE_VERSION
+ARG PI_ENV_ASSET
+ARG PI_ENV_LICENSE_SHA256
+ARG PI_ENV_SHA256
+ARG PI_ENV_VERSION
 ARG PNPM_SHA256
 ARG PNPM_VERSION
 ARG WEBSOCAT_ASSET
@@ -128,9 +132,11 @@ RUN install -d \
         /usr/local/lib/openorb \
         /usr/local/lib/openorb/node \
         /usr/local/libexec \
+        /usr/local/libexec/openorb \
         /usr/local/share/agent-browser/skills \
         /usr/share/doc/agent-browser \
         /usr/share/doc/bun \
+        /usr/share/doc/pi-env \
         /usr/share/doc/websocat \
     && curl --fail --location --show-error \
         "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_ASSET}" \
@@ -216,14 +222,27 @@ RUN install -d \
         --output /usr/share/doc/websocat/copyright \
     && printf '%s  %s\n' "${WEBSOCAT_LICENSE_SHA256}" /usr/share/doc/websocat/copyright \
         | sha256sum --check --strict - \
-    && rm -rf /tmp/agent-browser-source.tar.gz /tmp/bun /tmp/bun.zip /tmp/corepack.tgz /tmp/node.tar.xz /tmp/npm-cache /tmp/pnpm.tgz /tmp/yarn.tgz \
+    && curl --fail --location --show-error \
+        "https://registry.npmjs.org/@earendil-works/pi-env/-/pi-env-${PI_ENV_VERSION}.tgz" \
+        --output /tmp/pi-env.tgz \
+    && printf '%s  %s\n' "${PI_ENV_SHA256}" /tmp/pi-env.tgz \
+        | sha256sum --check --strict - \
+    && tar -xzf /tmp/pi-env.tgz -C /tmp "package/bin/${PI_ENV_ASSET}/pi-env" \
+    && install -m 0755 "/tmp/package/bin/${PI_ENV_ASSET}/pi-env" /usr/local/libexec/openorb/pi-env \
+    && curl --fail --location --show-error \
+        "https://raw.githubusercontent.com/earendil-works/pi/v${PI_ENV_VERSION}/LICENSE" \
+        --output /usr/share/doc/pi-env/copyright \
+    && printf '%s  %s\n' "${PI_ENV_LICENSE_SHA256}" /usr/share/doc/pi-env/copyright \
+        | sha256sum --check --strict - \
+    && rm -rf /tmp/agent-browser-source.tar.gz /tmp/bun /tmp/bun.zip /tmp/corepack.tgz /tmp/node.tar.xz /tmp/npm-cache /tmp/package /tmp/pi-env.tgz /tmp/pnpm.tgz /tmp/yarn.tgz \
     && node --version \
     && npm --version \
     && corepack --version \
     && pnpm --version \
     && yarn --version \
     && bun --version \
-    && websocat --version
+    && websocat --version \
+    && /usr/local/libexec/openorb/pi-env --version
 
 COPY agent-browser-wrapper.sh /tmp/agent-browser-wrapper.sh
 

@@ -88,7 +88,7 @@ Deno.test("operations documentation records the recovery contract and release pi
   assert(!normalizedOperations.includes("no durable gateway files"));
 
   const workerConfiguration = await Deno.readTextFile("packages/gateway/wrangler.jsonc");
-  for (const className of ["Workspace", "Runners"]) {
+  for (const className of ["Workspace", "Runners", "Session"]) {
     assert(
       new RegExp(`"class_name"\\s*:\\s*"${className}"`, "u").test(workerConfiguration),
       `${className} must be a native DO binding`,
@@ -112,7 +112,7 @@ Deno.test("operations documentation records the recovery contract and release pi
   assert(release.includes('id: "mvp-7"'));
   assert(release.includes('id: "release-1"'));
   assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_1"));
-  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 25"));
+  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 26"));
   for (const pin of ["2.9.5", "0.12.0", "1.1.0", "3.0.0"]) {
     assert(
       operations.includes(pin) &&

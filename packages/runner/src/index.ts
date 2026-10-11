@@ -1,24 +1,17 @@
 import { runRunnerBulkRpc } from "./connection/bulk-rpc.ts";
 import { runRunnerRpc } from "./connection/rpc.ts";
 import { ensureGuestImage } from "./environment/gondolin/guest-image/installer.ts";
-import { gondolinAgentEnvironmentProviderLayer } from "./environment/gondolin/layer.ts";
-import { durableAgentHarnessLayer } from "./harness/durable/layer.ts";
-import { sessionArtifactStoreLayer } from "./session/artifact-store.ts";
 import { createRunnerCapacityReporter } from "./runtime/capacity.ts";
 import { enrollRunner } from "./runtime/enrollment.ts";
 import { readRunnerIdentity, writeRunnerIdentity } from "./runtime/identity.ts";
 import { parseRunnerCommand } from "./runtime/options.ts";
 import { checkRunnerPrerequisites } from "./runtime/prerequisites.ts";
 import { validateRunnerWorkingDirectory } from "./runtime/working-directory.ts";
-import { sessionActorFactoryLayer } from "./session/actor/index.ts";
-import { sessionEventsLayer } from "./session/events.ts";
-import { sessionJournalLayer } from "./session/persistent-actor/session-journal.ts";
-import { runnerSessionStoreLayer } from "./session/store.ts";
-import { SessionSupervisor, sessionSupervisorLayer } from "./session/supervisor.ts";
-import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
-import * as DenoPath from "@effect/platform-deno/DenoPath";
+import { SessionSupervisor } from "./session/supervisor.ts";
+import { runnerServicesLayer } from "./runtime/services.ts";
+import { EnvironmentSupervisor } from "./environment/session/supervisor.ts";
 import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
-import { Effect, Exit, Layer, Predicate, Runtime, Schema } from "effect";
+import { Effect, Exit, Predicate, Runtime, Schema } from "effect";
 import { RUNNER_PROTOCOL_VERSION, RunnerId } from "@openorb/protocol/runner-api";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
@@ -218,38 +211,23 @@ export async function main(
       });
       const initialCapacity = await getCapacity();
       const runnerId = Schema.decodeUnknownSync(RunnerId)(identity.runnerId);
-      const platformLive = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
-      const sessionJournalLive = sessionJournalLayer(workingDirectory).pipe(
-        Layer.provideMerge(platformLive),
-      );
-      const sessionStoreLive = runnerSessionStoreLayer({
+      const runnerServicesLive = runnerServicesLayer({
         workingDirectory,
-        runnerId: identity.runnerId,
-      }).pipe(Layer.provideMerge(sessionJournalLive));
-      const sessionArtifactsLive = sessionArtifactStoreLayer({ workingDirectory });
-      const sessionEventsLive = sessionEventsLayer.pipe(
-        Layer.provideMerge(Layer.merge(sessionStoreLive, sessionArtifactsLive)),
-      );
-      const environmentLive = gondolinAgentEnvironmentProviderLayer(
-        guestImage,
-        report.platform === "linux" && report.kvm === undefined,
-      );
-      const harnessLive = durableAgentHarnessLayer().pipe(
-        Layer.provideMerge(Layer.merge(sessionEventsLive, sessionArtifactsLive)),
-      );
-      const sessionActorLive = sessionActorFactoryLayer().pipe(
-        Layer.provideMerge(Layer.merge(harnessLive, environmentLive)),
-      );
-      const runnerServicesLive = sessionSupervisorLayer({
         runnerId,
-        cpuCount: initialCapacity.vmCpuCount,
-        memoryMiB: initialCapacity.vmMemoryMiB,
-      }).pipe(Layer.provideMerge(sessionActorLive));
+        gatewayUrl: identity.gatewayUrl,
+        runnerToken: identity.runnerToken,
+        guestImage,
+        softwareEmulation: report.platform === "linux" && report.kvm === undefined,
+        vmCpuCount: initialCapacity.vmCpuCount,
+        vmMemoryMiB: initialCapacity.vmMemoryMiB,
+      });
       const rpcExit = await Effect.runPromiseExit(
         Effect.scoped(
           Effect.gen(function* () {
             const sessionSupervisor = yield* SessionSupervisor;
-            getActiveSessionCount = sessionSupervisor.activeSessionCount;
+            const environmentSupervisor = yield* EnvironmentSupervisor;
+            getActiveSessionCount = () =>
+              sessionSupervisor.activeSessionCount() + environmentSupervisor.activeCount();
             const options = {
               gatewayUrl: identity.gatewayUrl,
               runnerId,

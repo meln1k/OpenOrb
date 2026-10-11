@@ -19,7 +19,8 @@
       "@cloudflare/workers-types": ["node_modules/@cloudflare/workers-types/index.ts"],
       "@openorb/protocol": ["packages/protocol/src/index.ts"],
       "@openorb/protocol/*": ["packages/protocol/src/*.ts"],
-      "@openorb/result": ["packages/result/src/index.ts"]
+      "@openorb/result": ["packages/result/src/index.ts"],
+      "@openorb/pi-env": ["packages/pi-env/src/index.ts"]
     },
     "plugins": [
       {

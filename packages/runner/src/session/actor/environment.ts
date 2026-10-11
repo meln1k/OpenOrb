@@ -227,6 +227,7 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
       use((environment) => environment.renameFile(source, destination)),
     remove: (path, args) => use((environment) => environment.remove(path, args)),
     detectImageMimeType: (path) => use((environment) => environment.detectImageMimeType(path)),
+    startDaemon: use((environment) => environment.startDaemon),
     stop: control("stop").pipe(Effect.asVoid),
   };
   return {

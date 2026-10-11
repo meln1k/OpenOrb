@@ -34,7 +34,18 @@ export function createAppRouter(services: AppServices, cookie = createSessionCoo
 }
 
 export type TestRunnerConnections =
-  & Omit<Runners, "fetch" | "health" | "__DURABLE_OBJECT_BRAND">
+  & Omit<
+    Runners,
+    | "fetch"
+    | "health"
+    | "__DURABLE_OBJECT_BRAND"
+    // Environment procedures serve Session Durable Objects, not browser routes.
+    | "getEnvironment"
+    | "createEnvironment"
+    | "controlEnvironment"
+    | "attachEnvironment"
+    | "deleteEnvironment"
+  >
   & Pick<RunnerRegistry, "watchSession">;
 
 export function createAppServices(

@@ -7,6 +7,9 @@ import {
   DeleteRejected,
   DeleteSessionAccepted,
   type DeleteSessionPayload,
+  EnvironmentAttachAccepted,
+  EnvironmentCreated,
+  EnvironmentDeleted,
   GitFileUpdateAccepted,
   GitFileUpdateRejected,
   GitSnapshotReadError,
@@ -35,6 +38,7 @@ import * as SocketServer from "effect/socket/SocketServer";
 import { SessionEvents } from "../session/events.ts";
 import { RunnerSessionStore } from "../session/store.ts";
 import { SessionSupervisor } from "../session/supervisor.ts";
+import { EnvironmentSupervisor } from "../environment/session/supervisor.ts";
 import { makeOutboundSocketServer, type RunnerRpcStartupError } from "./outbound-socket.ts";
 import { watchRunner } from "./runner-watch.ts";
 
@@ -56,8 +60,19 @@ export interface RunnerRpcOptions {
 export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: RunnerRpcOptions) {
   const store = yield* RunnerSessionStore;
   const supervisor = yield* SessionSupervisor;
+  const environments = yield* EnvironmentSupervisor;
   const events = yield* SessionEvents;
   const terminal = yield* Deferred.make<never, RunnerRpcStartupError>();
+  const logRejection =
+    (operation: string, sessionId: string) => (error: { readonly _tag: string }) =>
+      Effect.logWarning(`${operation}.rejected`).pipe(
+        Effect.annotateLogs({
+          component: "openorb-runner",
+          runnerId: options.runnerId,
+          sessionId,
+          reason: error._tag,
+        }),
+      );
   const deleteSession = (payload: DeleteSessionPayload) =>
     supervisor.deleteSession(payload.sessionId).pipe(
       Effect.mapError(() =>
@@ -87,6 +102,7 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         Stream.provideService(RunnerSessionStore, store),
         Stream.provideService(SessionSupervisor, supervisor),
         Stream.provideService(SessionEvents, events),
+        Stream.provideService(EnvironmentSupervisor, environments),
         Stream.rechunk(1),
       ),
     "session.provision": (payload) =>
@@ -229,6 +245,25 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         ),
       ),
     "session.delete": deleteSession,
+    "environment.create": (payload) =>
+      environments.create(payload).pipe(
+        Effect.map((environment) => new EnvironmentCreated({ environment })),
+        Effect.tapError(logRejection("environment.create", payload.sessionId)),
+      ),
+    "environment.control": (payload) =>
+      environments.control(payload).pipe(
+        Effect.tapError(logRejection("environment.control", payload.sessionId)),
+      ),
+    "environment.attach": (payload) =>
+      environments.attach(payload.sessionId, payload.nonce).pipe(
+        Effect.as(new EnvironmentAttachAccepted({})),
+        Effect.tapError(logRejection("environment.attach", payload.sessionId)),
+      ),
+    "environment.delete": (payload) =>
+      environments.delete(payload.sessionId).pipe(
+        Effect.as(new EnvironmentDeleted({})),
+        Effect.tapError(logRejection("environment.delete", payload.sessionId)),
+      ),
     "session.git-snapshot.read": ({ sessionId }) =>
       store.readMetadata(sessionId).pipe(
         Effect.mapError(() =>

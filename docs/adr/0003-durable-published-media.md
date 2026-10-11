@@ -1,6 +1,6 @@
 # Snapshot transcript media into private Session storage
 
-**Status:** Accepted
+**Status:** Accepted; runner-owned storage superseded by ADR 0005
 
 Agents publish images and videos explicitly from `/workspace/.openorb/artifacts`; the runner copies
 validated bytes into immutable, bounded, Session-owned storage and the authenticated gateway serves

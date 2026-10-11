@@ -9,6 +9,10 @@ import type { Request as WorkerRequest } from "@cloudflare/workers-types";
 
 export { Workspace } from "@/app/cells/workspace/workspace.ts";
 export { Runners } from "@/app/cells/runners/runner-registry-do.ts";
+export { Session } from "@/app/cells/session/session.ts";
+
+const ENVIRONMENT_LINK_PATH =
+  /^\/api\/runners\/environments\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/link$/;
 
 const routers = new WeakMap<Env, {
   services: ReturnType<typeof createAppServices>;
@@ -28,6 +32,14 @@ export default {
           // SAFETY: the runtime uses Workers Web APIs; only the checker retains Deno's API types.
           // deno-lint-ignore openorb/no-chained-type-assertions
           return await runners.fetch(request as unknown as WorkerRequest) as unknown as Response;
+        }
+        const link = ENVIRONMENT_LINK_PATH.exec(url.pathname);
+        if (link !== null) {
+          // The Session Durable Object authenticates the runner in-band before relaying frames.
+          const session = env.SESSIONS.getByName(link[1]!);
+          // SAFETY: same Web API boundary as the runner upgrades above.
+          // deno-lint-ignore openorb/no-chained-type-assertions
+          return await session.fetch(request as unknown as WorkerRequest) as unknown as Response;
         }
         let cache = routers.get(env);
         if (!cache) {

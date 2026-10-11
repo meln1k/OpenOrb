@@ -92,6 +92,7 @@ const ENVIRONMENT: AgentEnvironment = {
   renameFile: () => Effect.die("unexpected rename"),
   remove: () => Effect.die("unexpected remove"),
   detectImageMimeType: () => Effect.die("unexpected image detection"),
+  startDaemon: Effect.die("unexpected Environment Daemon start"),
   stop: Effect.die("unexpected stop"),
 };
 

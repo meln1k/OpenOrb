@@ -7,6 +7,8 @@ import type { Request as WorkerRequest } from "@cloudflare/workers-types";
 
 export { Workspace } from "./workspace/celld-worker.ts";
 export { Runners } from "../app/cells/runners/runner-registry-do.ts";
+// The SESSIONS binding resolves this class by name; the fixture scripts its model.
+export { ScriptedSession as Session } from "./session-fixture.ts";
 
 const sessionInput = Schema.Struct({ workspaceId: WorkspaceId, sessionId: Schema.String });
 const artifactInput = Schema.Struct({
@@ -83,6 +85,24 @@ export default {
       // SAFETY: return the native response unchanged, preserving stream cancellation.
       // deno-lint-ignore openorb/no-chained-type-assertions
       return await env.RUNNERS.getByName("runners").fetch(streamRequest) as unknown as Response;
+    }
+    // Disposable fixture only: Session Durable Object probes for the phase 1 end-to-end test.
+    if (url.pathname === "/__session/create" && request.method === "POST") {
+      const input = await request.json();
+      const session = env.SESSIONS.getByName(String(input.sessionId));
+      return Response.json(await session.create(input));
+    }
+    if (url.pathname === "/__session/events") {
+      const session = env.SESSIONS.getByName(url.searchParams.get("sessionId")!);
+      // SAFETY: same native Request/Response boundary as the registry watch above.
+      // deno-lint-ignore openorb/no-chained-type-assertions
+      const eventsRequest = new Request(
+        "https://session.internal/events",
+        request,
+      ) as unknown as WorkerRequest;
+      // SAFETY: return the native streaming response unchanged.
+      // deno-lint-ignore openorb/no-chained-type-assertions
+      return await session.fetch(eventsRequest) as unknown as Response;
     }
     return gateway.fetch(request, env);
   },

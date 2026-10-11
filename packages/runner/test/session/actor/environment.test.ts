@@ -23,6 +23,7 @@ function guest(id: number, calls: string[]): AgentEnvironment {
     renameFile: () => Effect.die("unexpected rename"),
     remove: () => Effect.die("unexpected remove"),
     detectImageMimeType: () => Effect.succeed(null),
+    startDaemon: Effect.die("unexpected Environment Daemon start"),
     stop: Effect.sync(() => {
       calls.push(`${id}:stop`);
     }),

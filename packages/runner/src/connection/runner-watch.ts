@@ -8,6 +8,7 @@ import {
 import { SessionEvents } from "../session/events.ts";
 import { RunnerSessionStore } from "../session/store.ts";
 import { SessionSupervisor } from "../session/supervisor.ts";
+import { EnvironmentSupervisor } from "../environment/session/supervisor.ts";
 
 const WATCH_HANDOFF_BUFFER_CAPACITY = 64;
 
@@ -15,8 +16,11 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
   return Stream.unwrap(Effect.gen(function* () {
     const store = yield* RunnerSessionStore;
     const supervisor = yield* SessionSupervisor;
+    const environments = yield* EnvironmentSupervisor;
     const events = yield* SessionEvents;
     let revision = 0;
+    // Subscribed before the snapshot is read, like session changes below.
+    const environmentChanges = yield* environments.changes;
     // Subscribe before manifest I/O. Both handoff and upstream buffers are bounded; overflow
     // fails the watch so the gateway reconnects for a new manifest rather than missing removals.
     const stateChanges = yield* events.watchStateChanges().pipe(
@@ -43,10 +47,15 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
       type: "snapshot.session" as const,
       session: supervisor.withLiveState(session),
     }));
-    const snapshot = Stream.fromIterable([...sessions, {
+    const environmentSnapshots = environments.snapshots().map((environment) => ({
+      type: "snapshot.environment" as const,
+      environment,
+    }));
+    const snapshot = Stream.fromIterable([...sessions, ...environmentSnapshots, {
       type: "snapshot.complete" as const,
       revision,
       sessionCount: sessions.length,
+      environmentCount: environmentSnapshots.length,
       observedAt: Date.now(),
       capacity,
     }]);
@@ -101,15 +110,23 @@ export function watchRunner(getCapacity: () => Promise<RunnerCapacity>) {
       }),
       Stream.filter(Predicate.isNotNull),
     );
+    const environmentUpdates = environmentChanges.pipe(
+      Stream.map((change): typeof RunnerStateEvent.Type =>
+        change.type === "removed"
+          ? { type: "environment.removed", revision: ++revision, sessionId: change.sessionId }
+          : { type: "environment.updated", revision: ++revision, environment: change.environment }
+      ),
+    );
     return Stream.concat(
       snapshot,
-      Stream.merge(observed, sessionUpdates).pipe(
-        Stream.onStart(
-          Effect.logInfo("snapshot.sent").pipe(
-            Effect.annotateLogs({ component: "openorb-runner", sessionCount: sessions.length }),
+      Stream.mergeAll([observed, sessionUpdates, environmentUpdates], { concurrency: "unbounded" })
+        .pipe(
+          Stream.onStart(
+            Effect.logInfo("snapshot.sent").pipe(
+              Effect.annotateLogs({ component: "openorb-runner", sessionCount: sessions.length }),
+            ),
           ),
         ),
-      ),
     );
   }));
 }

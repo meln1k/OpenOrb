@@ -1,6 +1,6 @@
 # Let Pi Durable own agent work independently of the environment
 
-**Status:** Accepted
+**Status:** Accepted; agent placement and Harness State storage superseded by ADR 0005
 
 Replace pi-coding-agent with Pi Durable, with no conversion or compatibility path for disposable
 development sessions. Durable owns conversation entries, queued inputs, tasks, and recovery in a

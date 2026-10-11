@@ -25,7 +25,7 @@ export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
 export const MAX_SESSION_SECRET_HOSTS = 32;
 export const MAX_SESSION_SECRET_HOST_CHARACTERS = 253;
-export const RUNNER_PROTOCOL_VERSION = 25;
+export const RUNNER_PROTOCOL_VERSION = 26;
 
 export * from "./runner-api-limits.ts";
 
@@ -166,6 +166,19 @@ export class RunnerSessionSnapshot extends Schema.Class<RunnerSessionSnapshot>(
   issues: SessionIssues,
 }) {}
 
+/** An environment-only Session on a runner (ADR 0006). */
+export class RunnerEnvironmentSnapshot extends Schema.Class<RunnerEnvironmentSnapshot>(
+  "RunnerEnvironmentSnapshot",
+)({
+  sessionId: SessionId,
+  workspaceId: WorkspaceId,
+  createdAt: RunnerSessionCreatedAt,
+  orbSize: OrbSize,
+  state: EnvironmentState,
+  /** A Stopping state interrupted by a runner restart needs an explicit forced restart. */
+  recovery: Schema.optionalKey(SessionEnvironmentRecoveryMode),
+}) {}
+
 const ObservedAt = NonNegativeInt;
 
 const SnapshotSessionEvent = Schema.Struct({
@@ -177,6 +190,7 @@ const SnapshotCompleteEvent = Schema.Struct({
   type: Schema.Literal("snapshot.complete"),
   revision: RunnerRevision,
   sessionCount: NonNegativeInt,
+  environmentCount: NonNegativeInt,
   observedAt: ObservedAt,
   capacity: RunnerCapacity,
 });
@@ -206,7 +220,24 @@ export const RunnerStateEvent = Schema.Union([
   RunnerObservedEvent,
   SessionUpdatedEvent,
   SessionRemovedEvent,
+  // Environment-only sessions under ADR 0006; the session events above go away with the
+  // runner-hosted harness.
+  Schema.Struct({
+    type: Schema.Literal("snapshot.environment"),
+    environment: RunnerEnvironmentSnapshot,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("environment.updated"),
+    revision: RunnerRevision,
+    environment: RunnerEnvironmentSnapshot,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("environment.removed"),
+    revision: RunnerRevision,
+    sessionId: SessionId,
+  }),
 ]);
+export type RunnerStateEvent = typeof RunnerStateEvent.Type;
 
 const Secret = Schema.String.check(
   Schema.isTrimmed(),

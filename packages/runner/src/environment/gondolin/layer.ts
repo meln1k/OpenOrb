@@ -2,7 +2,7 @@ import { basename } from "node:path";
 
 import { VM, type VmFs, type VMOptions } from "@earendil-works/gondolin";
 import { Effect, Layer, Schema, type Scope, Semaphore } from "effect";
-import type { Result } from "@openorb/result";
+import { type Result, trySync } from "@openorb/result";
 import { MAX_SESSION_ARTIFACT_BYTES } from "@openorb/protocol/runner-api";
 
 import { type GuestImage, prepareGuestImageForVm } from "./guest-image/installer.ts";
@@ -29,12 +29,16 @@ import {
   AgentEnvironmentError,
   type AgentEnvironmentOptions,
   AgentEnvironmentProvider,
+  type EnvironmentDaemon,
   resolveAgentPath,
 } from "../agent-environment.ts";
 
 export const OPENORB_GUEST_MARKER = "OPENORB_GUEST";
 export const MAX_GUEST_FILE_BYTES = 16 * 1024 * 1024;
 const GUEST_FILE_READ_TIMEOUT_MS = 30_000;
+/** The pinned pi-env daemon baked into the guest image. */
+export const ENVIRONMENT_DAEMON_PATH = "/usr/local/libexec/openorb/pi-env";
+const ENVIRONMENT_DAEMON_EXIT_GRACE_MS = 5_000;
 
 export interface GondolinAgentEnvironmentConfig extends AgentEnvironmentOptions {
   readonly guestImage: GuestImage;
@@ -572,6 +576,59 @@ function makeGondolinEnvironment(
         }
       });
 
+    const startDaemon: AgentEnvironment["startDaemon"] = Effect.gen(function* () {
+      const activeVm = yield* getVm;
+      const token = Array.from(
+        crypto.getRandomValues(new Uint8Array(16)),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join("");
+      const controller = new AbortController();
+      const process = yield* Effect.try({
+        // A login shell gives commands the same profile environment as `runShell`; anything the
+        // profile prints arrives before the daemon's sync line and is discarded as noise.
+        try: () =>
+          activeVm.vm.exec([
+            activeVm.shellPath,
+            "-lc",
+            `exec ${ENVIRONMENT_DAEMON_PATH} serve --token "$1"`,
+            "pi-env",
+            token,
+          ], {
+            cwd: "/",
+            env: { [OPENORB_GUEST_MARKER]: "1" },
+            signal: controller.signal,
+            stdin: true,
+            stdout: "pipe",
+            stderr: "pipe",
+          }),
+        catch: (cause) =>
+          new AgentEnvironmentError("The Environment Daemon could not be started.", cause),
+      });
+      const exited = process.result.then(() => undefined, () => undefined);
+      async function* stdout(): AsyncGenerator<Uint8Array> {
+        for await (const chunk of process.output()) {
+          if (chunk.stream === "stdout") yield new Uint8Array(chunk.data);
+          else console.warn(`Environment Daemon: ${chunk.text.trimEnd()}`);
+        }
+      }
+      let closing: Promise<void> | undefined;
+      const daemon: EnvironmentDaemon = {
+        token,
+        write: (bytes) => process.write(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length)),
+        stdout: stdout(),
+        close: Effect.promise(() =>
+          closing ??= (async () => {
+            // Ending stdin fails only when the daemon already exited.
+            trySync(() => process.end(), () => undefined);
+            const timer = setTimeout(() => controller.abort(), ENVIRONMENT_DAEMON_EXIT_GRACE_MS);
+            await exited;
+            clearTimeout(timer);
+          })()
+        ),
+      };
+      return daemon;
+    });
+
     const close = gate.withPermit(
       Effect.suspend(() => {
         if (closed) return Effect.void;
@@ -607,6 +664,7 @@ function makeGondolinEnvironment(
       renameFile,
       remove,
       detectImageMimeType,
+      startDaemon,
       stop: close,
     };
   });

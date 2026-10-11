@@ -114,6 +114,10 @@ function controlHandlers(probe: Probe) {
     "session.abort": unused,
     "session.git-snapshot.read": unused,
     "session.git-file.update": unused,
+    "environment.create": unused,
+    "environment.control": unused,
+    "environment.attach": unused,
+    "environment.delete": unused,
     "session.stop": ({ sessionId }) =>
       Effect.sync(() => {
         probe.stops.push(sessionId);
@@ -280,6 +284,7 @@ const publish = (probe: Probe, sessions: RunnerSessionSnapshot[], revision = 1) 
       type: "snapshot.complete" as const,
       revision,
       sessionCount: sessions.length,
+      environmentCount: 0,
       observedAt: revision,
       capacity,
     },

@@ -1,4 +1,5 @@
 // deno-lint-ignore-file openorb/no-chained-type-assertions -- boundary-only test doubles intentionally implement only methods reached by the composed RPC scenarios
+import { EnvironmentSupervisor } from "@/src/environment/session/supervisor.ts";
 import { Socket as NetSocket } from "node:net";
 import { assert, assertEquals } from "@std/assert";
 import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
@@ -1089,9 +1090,11 @@ function provideRunnerServices(
     findOrRestoreActor: () => Effect.die("unexpected actor restore"),
     provision: () => Effect.die("unexpected provision"),
   } as unknown as SessionSupervisor,
+  environments: EnvironmentSupervisor = idleEnvironmentSupervisor,
 ) {
   return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
+      Effect.provideService(EnvironmentSupervisor, environments),
       Effect.provideService(RunnerSessionStore, store),
       Effect.provideService(
         SessionSupervisor,
@@ -1207,3 +1210,13 @@ function closeError(code: number) {
     reason: new Socket.SocketCloseError({ code, closeReason: "rejected" }),
   });
 }
+
+const idleEnvironmentSupervisor = EnvironmentSupervisor.of({
+  activeCount: () => 0,
+  snapshots: () => [],
+  changes: Effect.succeed(Stream.never),
+  create: () => Effect.die("unexpected environment create"),
+  control: () => Effect.die("unexpected environment control"),
+  attach: () => Effect.die("unexpected environment attach"),
+  delete: () => Effect.die("unexpected environment delete"),
+});

@@ -11,6 +11,7 @@
     "./enrollment": "./src/runtime/enrollment.ts",
     "./gondolin": "./src/environment/gondolin/layer.ts",
     "./identity": "./src/runtime/identity.ts",
+    "./runner-services": "./src/runtime/services.ts",
     "./prerequisites": "./src/runtime/prerequisites.ts",
     "./rpc-transport": "./src/connection/rpc.ts",
     "./session-events": "./src/session/events.ts",

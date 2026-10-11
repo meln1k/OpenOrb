@@ -17,11 +17,13 @@
   "durable_objects": {
     "bindings": [
       { "name": "WORKSPACE", "class_name": "Workspace" },
-      { "name": "RUNNERS", "class_name": "Runners" }
+      { "name": "RUNNERS", "class_name": "Runners" },
+      { "name": "SESSIONS", "class_name": "Session" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Workspace"] },
-    { "tag": "v2", "new_sqlite_classes": ["Runners"] }
+    { "tag": "v2", "new_sqlite_classes": ["Runners"] },
+    { "tag": "v3", "new_sqlite_classes": ["Session"] }
   ]
 }

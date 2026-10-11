@@ -40,6 +40,10 @@ const CHROMIUM_VERSION = "151.0.7922.71-1~deb13u1";
 const COREPACK_VERSION = "0.20.0";
 const COREPACK_SHA256 = "3fa310217f641e51dc8d7f707ded3c75261d2745e9601b190d7c16901e11624b";
 const NODE_VERSION = "26.5.1";
+const PI_ENV_LICENSE_SHA256 = "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48";
+const PI_ENV_SHA256 = "c0746be56adee00499633bb9a18f7e27a3734ceba50d50fb5b011bbd3d4d154b";
+// Must match the vendored client in packages/pi-env.
+const PI_ENV_VERSION = "1.1.0";
 const PNPM_VERSION = "11.1.3";
 const PNPM_SHA256 = "740302fe768aaf1ba680c5213bd08983f219e0bcf0c96c0c6d7be393b8620c98";
 const WEBSOCAT_VERSION = "1.14.1";
@@ -58,6 +62,7 @@ const DEBIAN_ROOTFS_BUILDS = {
     image: "localhost/openorb-guest-debian:x86_64",
     nodeAsset: "node-v26.5.1-linux-x64.tar.xz",
     nodeSha256: "cc7b3484ade63bd203a9d304f21ec37a3b622b988d7bdecf1dc4d68fc44a91b7",
+    piEnvAsset: "pi-env-linux-x64",
     platform: "linux/amd64",
     websocatAsset: "websocat.x86_64-unknown-linux-musl",
     websocatSha256: "66f8dd3a0394761556339117f8bb5123bddefd44e087af2a72ec22b0bd08d514",
@@ -72,6 +77,7 @@ const DEBIAN_ROOTFS_BUILDS = {
     image: "localhost/openorb-guest-debian:aarch64",
     nodeAsset: "node-v26.5.1-linux-arm64.tar.xz",
     nodeSha256: "0b6b0cc2a1eecbe736f9918de8b5a6c9a48d286b88bec1298a3c1e3376182ea8",
+    piEnvAsset: "pi-env-linux-arm64",
     platform: "linux/arm64",
     websocatAsset: "websocat.aarch64-unknown-linux-musl",
     websocatSha256: "711a69576a2ff473fb01a90ffafb571c2ed019e55479d7ae71b12c2eadeb7011",
@@ -87,6 +93,7 @@ const DEBIAN_ROOTFS_BUILDS = {
     image: string;
     nodeAsset: string;
     nodeSha256: string;
+    piEnvAsset: string;
     platform: string;
     websocatAsset: string;
     websocatSha256: string;
@@ -238,6 +245,10 @@ async function buildGuestRootfsImage(
       `--build-arg=NODE_ASSET=${build.nodeAsset}`,
       `--build-arg=NODE_SHA256=${build.nodeSha256}`,
       `--build-arg=NODE_VERSION=${NODE_VERSION}`,
+      `--build-arg=PI_ENV_ASSET=${build.piEnvAsset}`,
+      `--build-arg=PI_ENV_LICENSE_SHA256=${PI_ENV_LICENSE_SHA256}`,
+      `--build-arg=PI_ENV_SHA256=${PI_ENV_SHA256}`,
+      `--build-arg=PI_ENV_VERSION=${PI_ENV_VERSION}`,
       `--build-arg=PNPM_SHA256=${PNPM_SHA256}`,
       `--build-arg=PNPM_VERSION=${PNPM_VERSION}`,
       `--build-arg=WEBSOCAT_ASSET=${build.websocatAsset}`,

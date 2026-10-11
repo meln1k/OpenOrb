@@ -71,6 +71,7 @@ export function memoryGuest() {
     renameFile: () => Effect.die("unexpected rename"),
     remove: () => Effect.die("unexpected remove"),
     detectImageMimeType: () => Effect.succeed(null),
+    startDaemon: Effect.die("unexpected Environment Daemon start"),
     stop: Effect.void,
   };
   return { environment, files, reads };

@@ -1,7 +1,7 @@
-# OpenOrb Runner
+# OpenOrb
 
-The OpenOrb Runner hosts durable agent sessions while acquiring isolated compute only for periods of
-agent activity.
+OpenOrb hosts durable agent sessions on the gateway while runners supply isolated compute only for
+periods of agent activity.
 
 ## Language
 
@@ -13,9 +13,13 @@ identities/sessions, configuration, enrollment records, catalog entries, deletio
 provider authorization. _Avoid_: Session host, Runner Registry
 
 **Runner Registry**: The live connection and command-routing authority for enrolled runners. It owns
-control and bulk connections, runner presence, live Session projections, and viewer subscriptions.
-Runners remain authoritative for complete Session state; Workspace remains authoritative for runner
-credentials and the minimal Session catalog. _Avoid_: Runner host, Session store
+control and bulk connections, runner presence, and live environment projections. Workspace remains
+authoritative for runner credentials and the minimal Session catalog. _Avoid_: Runner host, Session
+store
+
+**Session Durable Object**: The per-Session authority that hosts the Agent Harness. It owns Harness
+State, the Conversation View, Published Media records, and Stop Session orchestration. _Avoid_:
+Agent cell, Session host, Session runner
 
 **User**: A person who belongs directly to exactly one Workspace, with their own password and Git
 author identity. _Avoid_: Tenant, member
@@ -23,8 +27,8 @@ author identity. _Avoid_: Tenant, member
 **Session**: A durable association between a conversation and its Project Checkout that persists
 across agent activity and idle periods.
 
-**Agent Harness**: The provider-neutral agent capability used by the runner, independent of any
-particular agent implementation or version. _Avoid_: Pi interface, Pi runtime
+**Agent Harness**: The provider-neutral agent capability hosted by the Session Durable Object,
+independent of any particular agent implementation or version. _Avoid_: Pi interface, Pi runtime
 
 **Harness State**: The durable conversation, queued inputs, and unfinished agent work needed by an
 Agent Harness to continue a Session. _Avoid_: Conversation journal
@@ -47,27 +51,45 @@ Session. It is separate from the agent work owned by Harness State. _Avoid_: Con
 **Conversation View**: The current active transcript, queued input, agent configuration, usage, and
 live progress presented to a Session viewer. _Avoid_: Event replay
 
-**Project Checkout**: The session-specific repository at `/workspace` inside the persistent Agent
-Environment root disk. _Avoid_: Host workspace, mounted workspace
+**Project Checkout**: The session-specific repository at `/workspace` inside the Agent Environment.
+_Avoid_: Host workspace, mounted workspace
 
-**Git Snapshot**: A bounded point-in-time summary of a Project Checkout's Git state, including file
-status and staged and unstaged patches, cached by the runner independently of the Agent
-Environment's lifecycle. _Avoid_: Git report, Diff Snapshot
+**Git Snapshot**: A bounded point-in-time record of a Project Checkout's Git state. Its file status
+and patch previews are cached by the Session Durable Object independently of the Agent Environment,
+while its full staged and unstaged patches remain in the Agent Environment. _Avoid_: Git report,
+Diff Snapshot
 
 **Published Media**: An immutable image or video that the Agent Harness copies from the designated
-guest artifact directory into private, Session-owned runner storage for display in the transcript.
+guest artifact directory into private, Session-owned object storage for display in the transcript.
 _Avoid_: Attachment, guest file, external embed
 
 **Agent Environment**: The live isolated compute capabilities and Project Checkout available to an
 Agent Harness during an Agent Run, independent of how the underlying compute was created or
 restored. _Avoid_: Workspace Runtime, VM
 
-**Agent Environment Provider**: The authority that supplies Agent Environments backed by a durable,
-session-owned root disk. _Avoid_: Workspace Runtime
+**Environment Link**: The connection over which a Session Durable Object reaches the Environment
+Daemon of its Agent Environment. Its Agent Environment Provider determines how it is opened.
+_Avoid_: Env socket, bridge, tunnel
 
-**Persistent Root Disk**: The private, sparse 40 GiB `root-disk.qcow2` retained for one Session and
-reopened by each new VM. It includes the Project Checkout and other non-tmpfs guest state, but not
-RAM, processes, or tmpfs-backed paths. _Avoid_: Workspace disk, host checkout
+**Environment Daemon**: The guest process that performs an Agent Harness's file and shell operations
+inside the Agent Environment. _Avoid_: pi-env server, guest agent
+
+**Agent Environment Provider**: The authority that creates, starts, stops, and deletes Agent
+Environments and opens Environment Links to them, such as an OpenOrb runner or a sandbox vendor. It
+declares its persistence and Egress Secret Mediation instead of sharing one guarantee. _Avoid_:
+Sandbox provider, vendor, Workspace Runtime
+
+**Egress Secret Mediation**: Substitution of real credentials for guest-visible placeholders outside
+the guest, so the real values never enter it. _Avoid_: Secret proxy, redaction
+
+**Guest Credential Opt-in**: A Project's explicit consent to place real Git credentials and
+Workspace secrets inside guests whose Agent Environment Provider lacks Egress Secret Mediation.
+_Avoid_: Insecure mode
+
+**Persistent Root Disk**: The private, sparse 40 GiB `root-disk.qcow2` that an OpenOrb runner
+retains for one Session and reopens in each new VM. It includes the Project Checkout and other
+non-tmpfs guest state, but not RAM, processes, or tmpfs-backed paths. _Avoid_: Workspace disk, host
+checkout
 
 **Stop Session**: A recoverable pause of agent work together with a durable stop of its Agent
 Environment. _Avoid_: Abort, cancellation

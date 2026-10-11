@@ -7,7 +7,12 @@ import type { WorkspaceApi } from "../workspace/api.ts";
 import { RunnerRegistry as Registry, runnerRegistryLayer } from "./runner-registry.ts";
 import type {
   AbortSessionInput,
+  AttachEnvironmentInput,
+  ControlEnvironmentInput,
+  CreateEnvironmentInput,
   DeleteSessionInput,
+  EnvironmentInput,
+  EnvironmentObserver,
   PromptSessionInput,
   ProvisionSessionInput,
   ReadSessionArtifactChunkInput,
@@ -28,7 +33,13 @@ export class Runners extends DurableObject<Env> {
     // SAFETY: native RPC implements WorkspaceApi; platform thenables differ only in checker types.
     // deno-lint-ignore openorb/no-chained-type-assertions
     const workspace = env.WORKSPACE.getByName("workspace") as unknown as WorkspaceApi;
-    this.#runtime = ManagedRuntime.make(runnerRegistryLayer(workspace));
+    // Runner-side environment changes go to the Session Durable Object that owns the agent.
+    const observer: EnvironmentObserver = {
+      notify: async (workspaceId, sessionId, notice) => {
+        await env.SESSIONS.getByName(sessionId).environmentNotice(workspaceId, sessionId, notice);
+      },
+    };
+    this.#runtime = ManagedRuntime.make(runnerRegistryLayer(workspace, observer));
   }
 
   async #run<A>(operation: Effect.Effect<A, never, Registry>): Promise<A> {
@@ -84,6 +95,22 @@ export class Runners extends DurableObject<Env> {
   }
   disconnectRunner(id: WorkspaceId, runner: string) {
     return this.#run(Effect.flatMap(Registry, (r) => r.disconnectRunner(id, runner)));
+  }
+
+  getEnvironment(id: WorkspaceId, session: string) {
+    return this.#run(Effect.flatMap(Registry, (r) => r.getEnvironment(id, session)));
+  }
+  createEnvironment(input: CreateEnvironmentInput) {
+    return this.#run(Effect.flatMap(Registry, (r) => r.createEnvironment(input)));
+  }
+  controlEnvironment(input: ControlEnvironmentInput) {
+    return this.#run(Effect.flatMap(Registry, (r) => r.controlEnvironment(input)));
+  }
+  attachEnvironment(input: AttachEnvironmentInput) {
+    return this.#run(Effect.flatMap(Registry, (r) => r.attachEnvironment(input)));
+  }
+  deleteEnvironment(input: EnvironmentInput) {
+    return this.#run(Effect.flatMap(Registry, (r) => r.deleteEnvironment(input)));
   }
 
   // Only upgrade and stream transport use fetch; commands use named native RPC methods.

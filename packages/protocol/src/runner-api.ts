@@ -44,8 +44,22 @@ import {
   WatchSessionPayload,
 } from "./runner-api-schemas.ts";
 
+import {
+  AttachEnvironmentPayload,
+  ControlEnvironmentPayload,
+  CreateEnvironmentPayload,
+  DeleteEnvironmentPayload,
+  EnvironmentAttachAccepted,
+  EnvironmentControlled,
+  EnvironmentCreated,
+  EnvironmentDeleted,
+  EnvironmentNotFound,
+  EnvironmentRejected,
+} from "./runner-api-environment.ts";
+
 export * from "./runner-api-schemas.ts";
 export * from "./runner-api-session-events.ts";
+export * from "./runner-api-environment.ts";
 
 export class IdentifyRunner extends Rpc.make("runner.identify", {
   success: RunnerIdentity,
@@ -119,6 +133,31 @@ export class UpdateSessionGitFile extends Rpc.make("session.git-file.update", {
   error: Schema.Union([SessionNotFound, GitFileUpdateRejected]),
 }) {}
 
+export class CreateEnvironment extends Rpc.make("environment.create", {
+  payload: CreateEnvironmentPayload,
+  success: EnvironmentCreated,
+  error: Schema.Union([CapacityExceeded, SessionConflict, EnvironmentRejected]),
+}) {}
+
+export class ControlEnvironment extends Rpc.make("environment.control", {
+  payload: ControlEnvironmentPayload,
+  success: EnvironmentControlled,
+  error: Schema.Union([EnvironmentNotFound, EnvironmentRejected]),
+}) {}
+
+/** Starts an Environment Daemon and makes the runner dial the Session's Environment Link. */
+export class AttachEnvironment extends Rpc.make("environment.attach", {
+  payload: AttachEnvironmentPayload,
+  success: EnvironmentAttachAccepted,
+  error: Schema.Union([EnvironmentNotFound, EnvironmentRejected]),
+}) {}
+
+export class DeleteEnvironment extends Rpc.make("environment.delete", {
+  payload: DeleteEnvironmentPayload,
+  success: EnvironmentDeleted,
+  error: Schema.Union([EnvironmentRejected, DeleteFailed]),
+}) {}
+
 export const RunnerApi = RpcGroup.make(
   IdentifyRunner,
   WatchRunner,
@@ -132,4 +171,8 @@ export const RunnerApi = RpcGroup.make(
   WatchSession,
   ReadSessionGitSnapshot,
   UpdateSessionGitFile,
+  CreateEnvironment,
+  ControlEnvironment,
+  AttachEnvironment,
+  DeleteEnvironment,
 );

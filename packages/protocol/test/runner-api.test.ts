@@ -223,7 +223,7 @@ Deno.test("submission IDs are Durable non-negative safe integers, not run labels
       mode: "started",
     })
   );
-  assertEquals(RUNNER_PROTOCOL_VERSION, 25);
+  assertEquals(RUNNER_PROTOCOL_VERSION, 26);
 });
 
 Deno.test("session model runtime accepts only explicit credential transports", () => {
@@ -605,6 +605,7 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
         type: "snapshot.complete" as const,
         revision: 1,
         sessionCount: 1,
+        environmentCount: 0,
         observedAt: 1,
         capacity,
       }),
@@ -655,6 +656,10 @@ Deno.test("RunnerApi exposes all unary and streaming procedures through RpcTest"
       ),
     "session.git-file.update": () =>
       Effect.succeed(new GitFileUpdateAccepted({ mutationRevision })),
+    "environment.create": () => Effect.die("unused environment create"),
+    "environment.control": () => Effect.die("unused environment control"),
+    "environment.attach": () => Effect.die("unused environment attach"),
+    "environment.delete": () => Effect.die("unused environment delete"),
     "session.watch": () =>
       Stream.make({
         event: {
