@@ -14,6 +14,7 @@
     "html_handling": "none",
     "run_worker_first": true
   },
+  "worker_loaders": [{ "binding": "LOADER" }],
   "r2_buckets": [
     { "binding": "MEDIA", "bucket_name": "openorb-media" }
   ],

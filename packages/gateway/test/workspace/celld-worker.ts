@@ -3,6 +3,25 @@ import worker from "./http-worker.ts";
 import { Workspace as ConfigurationWorkspace } from "../../app/cells/workspace/workspace.ts";
 
 export class Workspace extends ConfigurationWorkspace {
+  /** Disposable fixture only: reads of the credentials a Session may pass to its provider. */
+  #credentialReads = 0;
+
+  override getGitHubToken(...args: Parameters<ConfigurationWorkspace["getGitHubToken"]>) {
+    this.#credentialReads++;
+    return super.getGitHubToken(...args);
+  }
+
+  override getEnvironmentSecrets(
+    ...args: Parameters<ConfigurationWorkspace["getEnvironmentSecrets"]>
+  ) {
+    this.#credentialReads++;
+    return super.getEnvironmentSecrets(...args);
+  }
+
+  credentialReads(): number {
+    return this.#credentialReads;
+  }
+
   fetch(): never {
     throw new Error("DO fetch forwarding is forbidden: the Worker must call named RPC methods");
   }

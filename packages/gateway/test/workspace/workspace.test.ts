@@ -160,18 +160,21 @@ Deno.test("Workspace migrations preserve records, roll back failed upgrades, and
   const reopened = activate(storage).workspace;
   assertEquals(await reopened.verifyAdministratorPassword("test-password"), administrator);
   assertEquals(await reopened.getProject(workspaceId, project.id), project);
-  assertEquals(storage.rows("SELECT id FROM data_table_migrations"), [{ id: "0001" }]);
+  assertEquals(storage.rows("SELECT id FROM data_table_migrations"), [
+    { id: "0001" },
+    { id: "0002" },
+  ]);
   const unchanged = storage.dump();
   assertEquals((await migrateWorkspaceDatabase(storage, workspaceMigrations)).applied, []);
   assertEquals(storage.dump(), unchanged);
 
   const upgrade = {
-    id: "0002",
+    id: "0003",
     name: "project_note",
     up: "ALTER TABLE projects ADD COLUMN note TEXT NOT NULL DEFAULT 'retained';",
   };
   const failed = {
-    id: "0003",
+    id: "0004",
     name: "migration_probe",
     up: "CREATE TABLE migration_probe (value TEXT); INSERT INTO missing_table VALUES ('fail');",
   };
@@ -198,8 +201,8 @@ Deno.test("Workspace migrations preserve records, roll back failed upgrades, and
     },
   ];
   assertEquals((await migrateWorkspaceDatabase(storage, migrations)).applied.map((m) => m.id), [
-    "0002",
     "0003",
+    "0004",
   ]);
   assertEquals(storage.rows("SELECT id, note FROM projects"), [{
     id: project.id,
@@ -220,6 +223,36 @@ Deno.test("Workspace migrations preserve records, roll back failed upgrades, and
   const older = activate(storage).workspace;
   await assertRejects(() => older.health());
   await assertRejects(() => older.getProject(workspaceId, project.id));
+});
+
+Deno.test("migration 0002 keeps catalog rows and lets Sessions go without a project", async () => {
+  const storage = new MemoryStorage();
+  await migrateWorkspaceDatabase(storage, workspaceMigrations.slice(0, 1));
+  storage.sql.exec("INSERT INTO workspaces (id, singleton, createdAt) VALUES ('w', 1, 'now')");
+  storage.sql.exec(
+    "INSERT INTO projects (workspaceId, id, name, repositoryUrl, defaultRef, defaultBranchPattern, createdAt, updatedAt) VALUES ('w', 'p', 'P', 'https://github.com/a/b.git', 'main', 'openorb/*', 'now', 'now')",
+  );
+  storage.sql.exec(
+    "INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview) VALUES ('w', 'with-project', 'p', '1', 'kept')",
+  );
+  storage.sql.exec(
+    "INSERT INTO deleted_sessions (workspaceId, sessionId, deletedAt) VALUES ('w', 'gone', 'now')",
+  );
+  await migrateWorkspaceDatabase(storage, workspaceMigrations);
+  storage.sql.exec(
+    "INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview) VALUES ('w', 'without-project', NULL, '2', 'new')",
+  );
+  assertEquals(storage.rows("SELECT id, projectId FROM sessions ORDER BY createdAt"), [
+    { id: "with-project", projectId: "p" },
+    { id: "without-project", projectId: null },
+  ]);
+  // The rebuilt table keeps its deletion guard and project reference.
+  assertThrows(() =>
+    storage.sql.exec(
+      "INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview) VALUES ('w', 'gone', NULL, '3', 'x')",
+    )
+  );
+  assertThrows(() => storage.sql.exec("DELETE FROM projects WHERE id = 'p'"));
 });
 
 Deno.test("Worker validates HTTP before RPC and keeps remote failures private", async () => {

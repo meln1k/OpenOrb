@@ -20,7 +20,7 @@ export class MemoryStorage implements WorkspaceStorage {
       if (/^\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i.test(query)) {
         throw new Error("Use native storage transactions instead of transaction-control SQL");
       }
-      if (/^\s*(CREATE|ALTER|DROP)\b/i.test(query) && bindings.length === 0) {
+      if (/^\s*(?:--[^\n]*\n\s*)*(CREATE|ALTER|DROP)\b/i.test(query) && bindings.length === 0) {
         // Migration scripts include multiple DDL statements; consume the whole script.
         this.#database.exec(query);
         rows = [];

@@ -1,12 +1,11 @@
 import {
   EnvironmentState,
-  GitAuthor,
   OrbSize,
   RunnerEnvironmentSnapshot,
   RunnerId,
   RunnerSessionCreatedAt,
   SessionId,
-  SessionRepositoryUrl,
+  SessionRepository,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Context, Data, Effect, FileSystem, Layer, Path, Schema } from "effect";
@@ -27,8 +26,8 @@ export class EnvironmentDefinition extends Schema.Class<EnvironmentDefinition>(
   runnerId: RunnerId,
   createdAt: RunnerSessionCreatedAt,
   orbSize: OrbSize,
-  repositoryUrl: SessionRepositoryUrl,
-  gitAuthor: GitAuthor,
+  /** Absent for a Session without a project; its guest gets no GitHub mediation. */
+  repository: Schema.optionalKey(SessionRepository),
 }) {}
 
 /** Infrastructure facts only: an environment journal never records agent or project work. */

@@ -34,8 +34,7 @@ export interface RunnerEnvironmentApi {
     sessionId: string;
     payload: {
       orbSize: OrbSize;
-      repositoryUrl: string;
-      gitAuthor: { name: string; email: string };
+      repository?: { url: string; gitAuthor: { name: string; email: string } };
     };
   }): Promise<OperationResult<EnvironmentCreated>>;
   controlEnvironment(input: {
@@ -78,6 +77,8 @@ export interface RunnerEnvironmentState {
 }
 
 export interface RunnerProviderOptions {
+  /** The runner that owns the Session's root disk, from its placement. */
+  readonly runnerId: string;
   readonly runners: RunnerEnvironmentApi;
   readonly links: EnvironmentLinkHost;
   /** The last environment state the Session Durable Object recorded. */
@@ -89,7 +90,13 @@ export interface RunnerProviderOptions {
 export function runnerProvider(options: RunnerProviderOptions): AgentEnvironmentProvider {
   return {
     kind: "runner",
-    capabilities: { persistence: "root-disk", egressSecretMediation: true, hibernatableLink: true },
+    capabilities: {
+      persistence: "root-disk",
+      credentials: "mediated",
+      hibernatableLink: true,
+      git: true,
+    },
+    guestPrompt: [],
     bind: (binding) => bindRunnerEnvironment(binding, options),
   };
 }
@@ -107,7 +114,8 @@ function bindRunnerEnvironment(
   binding: EnvironmentBinding,
   options: RunnerProviderOptions,
 ): SessionEnvironment {
-  const { workspaceId, sessionId, placement: runnerId } = binding;
+  const { workspaceId, sessionId } = binding;
+  const { runnerId } = options;
   const connection = new Connection({
     open: async (handlers, signal) => {
       const existing = options.links.current();
@@ -177,11 +185,15 @@ function bindRunnerEnvironment(
         sessionId,
         payload: {
           orbSize: spec.orbSize,
-          repositoryUrl: binding.repository.url,
-          gitAuthor: {
-            name: binding.repository.gitAuthor.name,
-            email: binding.repository.gitAuthor.email,
-          },
+          ...(binding.repository === undefined ? {} : {
+            repository: {
+              url: binding.repository.url,
+              gitAuthor: {
+                name: binding.repository.gitAuthor.name,
+                email: binding.repository.gitAuthor.email,
+              },
+            },
+          }),
         },
       });
       options.recordState(accepted(result, "create the environment").environment.state);

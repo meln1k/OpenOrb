@@ -38,8 +38,10 @@ const create = (orbSize: "small" | "xxlarge" = "small") =>
     sessionId: SESSION_ID,
     workspaceId: WORKSPACE_ID,
     orbSize,
-    repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
-    gitAuthor: new GitAuthor({ name: "Tester", email: "test@example.com" }),
+    repository: {
+      url: "https://github.com/meln1k/openorb-test-repo.git",
+      gitAuthor: new GitAuthor({ name: "Tester", email: "test@example.com" }),
+    },
   });
 const control = (
   action: "start" | "stop" | "restart",
@@ -188,6 +190,22 @@ Deno.test("start passes mediation inputs to the provider and stop records a clea
       assertEquals({ ...stopped }, { state: "stopped", forced: false });
       assertEquals(supervisor.snapshots()[0]?.state, "stopped");
       assertEquals(supervisor.activeCount(), 0);
+    } finally {
+      await close();
+    }
+  }));
+
+Deno.test("an environment without a project gets no GitHub mediation, even with a token", () =>
+  withFixture(async ({ open, made }) => {
+    const { supervisor, close } = await open();
+    try {
+      const { repository: _repository, ...withoutProject } = create();
+      await Effect.runPromise(supervisor.create(new CreateEnvironmentPayload(withoutProject)));
+      const started = await Effect.runPromise(
+        supervisor.control(control("start", { githubToken: "gh-secret" })),
+      );
+      assertEquals(started.state, "running");
+      assertEquals(made[0]?.github, undefined);
     } finally {
       await close();
     }

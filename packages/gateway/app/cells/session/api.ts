@@ -9,14 +9,15 @@ import {
 import { Schema } from "effect";
 import type { SessionGitPatchSection } from "@openorb/protocol/runner-bulk-api";
 import type { GitPatchChunk } from "./git-snapshot.ts";
-import type { CreateSessionInput, SessionMedia, SessionView } from "./session.ts";
+import type { CreateSessionInput, SessionMedia } from "./session.ts";
 
-export type { CreateSessionInput, SessionMedia, SessionView } from "./session.ts";
+export type { CreateSessionInput, SessionMedia } from "./session.ts";
 
 /** The Session Durable Object's native RPC surface used by browser routes. */
 export interface SessionApi {
   create(input: CreateSessionInput): Promise<{ readonly created: boolean }>;
-  view(): Promise<SessionView | null>;
+  /** The view browser pages render; null once the Session is deleted. */
+  view(): Promise<RunnerSessionSnapshot | null>;
   submit(
     input: { prompt: string; requestId: string; thinkingLevel?: ThinkingLevel },
   ): Promise<{ submissionId: number }>;
@@ -43,20 +44,14 @@ export interface SessionApi {
  * Schema classes, so their encoded forms cross and `decodeSessionRpc` restores them.
  */
 export interface SessionRpc extends Omit<SessionApi, "view" | "gitSnapshot"> {
-  view(): Promise<EncodedSessionView | null>;
+  view(): Promise<(typeof RunnerSessionSnapshot)["Encoded"] | null>;
   gitSnapshot(): Promise<(typeof SessionGitSnapshot)["Encoded"]>;
 }
 
-export interface EncodedSessionView {
-  readonly runnerId: string;
-  readonly snapshot: (typeof RunnerSessionSnapshot)["Encoded"];
-}
-
-export function encodeSessionView(view: SessionView): EncodedSessionView {
-  return {
-    runnerId: view.runnerId,
-    snapshot: Schema.encodeSync(RunnerSessionSnapshot)(view.snapshot),
-  };
+export function encodeSessionView(
+  snapshot: RunnerSessionSnapshot,
+): (typeof RunnerSessionSnapshot)["Encoded"] {
+  return Schema.encodeSync(RunnerSessionSnapshot)(snapshot);
 }
 
 export function encodeGitSnapshot(
@@ -74,10 +69,7 @@ export function decodeSessionRpc(
     create: (input) => rpc.create(input),
     view: async () => {
       const view = await rpc.view();
-      return view === null ? null : {
-        runnerId: view.runnerId,
-        snapshot: Schema.decodeUnknownSync(RunnerSessionSnapshot)(view.snapshot),
-      };
+      return view === null ? null : Schema.decodeUnknownSync(RunnerSessionSnapshot)(view);
     },
     submit: (input) => rpc.submit(input),
     setThinkingLevel: (level) => rpc.setThinkingLevel(level),

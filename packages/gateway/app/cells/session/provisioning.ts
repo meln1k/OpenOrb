@@ -1,5 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { EnvironmentCredentials } from "./environment/provider.ts";
 import {
   MAX_RPC_SESSION_EVENT_TEXT_BYTES,
   MAX_SESSION_ISSUES,
@@ -130,20 +131,11 @@ export async function provisionCheckout(
 ): Promise<CheckoutResult> {
   const commands = new GuestCommands(env, reporter, secrets, context);
   const issues: SessionIssue[] = [];
-  const created = await env.createDir(WORKSPACE, { recursive: true }, context);
-  if (!created.ok) {
-    throw new ProvisioningFailure(sessionIssue({
-      category: "runner-storage",
-      severity: "failure",
-      message: "The session workspace could not be prepared for cloning.",
-      diagnostics: created.error.message,
-      recovery: "retry-provisioning",
-    }));
-  }
+  await createWorkspace(env, context);
   const cleared = await commands.run(["/usr/bin/find", WORKSPACE, "-mindepth", "1", "-delete"]);
   if (cleared.exitCode !== 0) {
     throw new ProvisioningFailure(sessionIssue({
-      category: "runner-storage",
+      category: "environment-storage",
       severity: "failure",
       message: "The session workspace could not be prepared for cloning.",
       diagnostics: commands.diagnostics(cleared),
@@ -222,6 +214,31 @@ export async function provisionCheckout(
     );
   }
   return { checkoutState: "available", baseCommit, issues };
+}
+
+/**
+ * Values redacted from setup output shown to Session viewers: the credentials the provider
+ * received, which are the only real values the guest could echo.
+ */
+export function redactedValues(credentials: EnvironmentCredentials): readonly string[] {
+  return [
+    ...(credentials.githubToken === undefined ? [] : [credentials.githubToken]),
+    ...(credentials.environmentSecrets ?? []).map((secret) => secret.value),
+  ];
+}
+
+/** Creates /workspace: empty for a Session without a project, or to clone into. */
+export async function createWorkspace(env: ExecutionEnv, context: Context): Promise<void> {
+  const created = await env.createDir(WORKSPACE, { recursive: true }, context);
+  if (!created.ok) {
+    throw new ProvisioningFailure(sessionIssue({
+      category: "environment-storage",
+      severity: "failure",
+      message: "The session workspace could not be created.",
+      diagnostics: created.error.message,
+      recovery: "retry-provisioning",
+    }));
+  }
 }
 
 /** Runs `.agents/resume` after a restart of an available checkout. Failure is a warning. */

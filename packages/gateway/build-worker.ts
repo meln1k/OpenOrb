@@ -86,6 +86,27 @@ const bundleOptions = [
   "--external=cloudflare:workers",
   `--import-map=${map.pathname}`,
 ];
+// The sandbox runs in its own Worker Loader isolate; the gateway carries its bundle as a string.
+const sandboxEntry = "app/cells/session/environment/sandbox/worker.ts";
+const sandbox = await new Deno.Command(Deno.execPath(), {
+  args: [...bundleOptions, "--external=node:*", sandboxEntry, "-o", "dist/sandbox.js"],
+  cwd: gateway.pathname,
+  stdin: "null",
+  stdout: "inherit",
+  stderr: "inherit",
+}).spawn().status;
+if (!sandbox.success) Deno.exit(sandbox.code);
+const sandboxCode = await Deno.readTextFile(new URL("dist/sandbox.js", gateway));
+const sandboxHash = Array.from(
+  new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sandboxCode))),
+  (byte) => byte.toString(16).padStart(2, "0"),
+).join("").slice(0, 16);
+await Deno.writeTextFile(
+  new URL("app/cells/session/environment/sandbox/code.ts", output),
+  `export const SANDBOX_WORKER = ${
+    JSON.stringify({ code: sandboxCode, hash: sandboxHash })
+  } as const;\n`,
+);
 const command = new Deno.Command(Deno.execPath(), {
   args: [...bundleOptions, "server.ts", "-o", "dist/worker.js"],
   cwd: gateway.pathname,

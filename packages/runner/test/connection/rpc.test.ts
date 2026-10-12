@@ -403,8 +403,10 @@ Deno.test("transient gateway restart keeps runner environments and re-reports th
         sessionId,
         payload: {
           orbSize: "small",
-          repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
-          gitAuthor: new GitAuthor({ name: "Tester", email: "test@example.com" }),
+          repository: {
+            url: "https://github.com/meln1k/openorb-test-repo.git",
+            gitAuthor: new GitAuthor({ name: "Tester", email: "test@example.com" }),
+          },
         },
       });
       assertEquals(created.status, "accepted");

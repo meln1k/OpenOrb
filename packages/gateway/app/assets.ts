@@ -36,8 +36,8 @@ function getEntry(input: string): ScriptEntry {
 }
 
 /**
- * Inject createGatewayAssets(env.ASSETS) into render({ assets }) and the assets controller.
- * Use fetchPublic(request) before app routing instead of filesystem-backed publicFiles middleware.
+ * Inject createGatewayAssets(env.ASSETS) into render({ assets }) and the router's static file
+ * middleware, which serves fetchPublic(request) and fetch(request) before app routing.
  * Configure celld assets.directory = "./dist/assets", binding = "ASSETS", html_handling = "none";
  * do not enable SPA/404-page fallbacks. Build assets before bundling the Worker.
  */

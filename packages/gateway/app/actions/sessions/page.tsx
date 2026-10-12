@@ -44,14 +44,14 @@ export function SessionDetailPage(handle: Handle<SessionDetailPageProps>) {
 interface SessionDetailFrameProps {
   csrfToken: string;
   error: string | undefined;
-  runnerId: string | null;
   session: SessionCatalogEntry;
   snapshot: RunnerSessionSnapshot | null;
 }
 
 export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
-  const { csrfToken, error, runnerId, session, snapshot } = handle.props;
-  const state = snapshot?.state ?? (runnerId ? "created" : "offline");
+  const { csrfToken, error, session, snapshot } = handle.props;
+  // Without a view the Session Durable Object is unreachable.
+  const state = snapshot?.state ?? "offline";
   const issues: readonly SessionIssue[] = snapshot?.issues ?? [];
   const initialThinkingLevel = snapshot === null
     ? DEFAULT_SESSION_THINKING_LEVEL
@@ -59,6 +59,8 @@ export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
 
   return () => (
     <SessionDetailClient
+      // Only a Session with a project loads Git integration (ADR 0007).
+      changes={session.projectId !== undefined}
       contextWindow={snapshot === null ? 0 : modelContextWindow(snapshot.model) ?? 0}
       csrfToken={csrfToken}
       error={error}

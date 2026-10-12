@@ -53,6 +53,7 @@ export type SessionComposerValues = {
   model: string;
   ref: string;
   orbSize: string;
+  environment: string;
   thinkingLevel: string;
   branchName: string;
   initialPrompt: string;
@@ -72,6 +73,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
     csrfToken,
     dialogId,
     error,
+    hasConfiguredRunner,
     hasConnectedRunner,
     models,
     projects,
@@ -86,6 +88,11 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
     models[0]?.id ??
     "";
   const selectedOrbSize = values?.orbSize || DEFAULT_ORB_SIZE;
+  // The built-in Sandbox needs no runner; runners are offered once one is configured (ADR 0007).
+  const environments = hasConfiguredRunner ? ENVIRONMENTS : [SANDBOX_ENVIRONMENT];
+  const selectedEnvironment =
+    environments.find((environment) => environment.value === values?.environment) ??
+      (hasConnectedRunner ? RUNNER_ENVIRONMENT : SANDBOX_ENVIRONMENT);
   const selectedModelOption = models.find((model) => model.id === selectedModel);
   const supportedThinkingLevels = selectedModelOption?.thinkingLevels ?? SESSION_THINKING_LEVELS;
   const selectedThinkingLevel = clampThinkingLevel(
@@ -94,7 +101,9 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
   );
   const ref = values?.ref ?? firstProject?.defaultRef ?? "main";
   const branchName = values?.branchName ?? ref;
-  const canSubmit = projects.length > 0 && models.length > 0 && hasConnectedRunner;
+  const canSubmit = models.length > 0;
+  // Any Session may go without a project; then it has no checkout and no Git integration.
+  const projectOptions = [NO_PROJECT, ...projects];
 
   return () => (
     <dialog
@@ -105,6 +114,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
       open={autoOpen || undefined}
       data-slot="session-composer"
       data-thinking-level={selectedThinkingLevel}
+      data-environment={selectedEnvironment.value}
       mix={dialogStyle}
     >
       <form
@@ -142,30 +152,21 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
             autoFocus
             mix={promptStyle}
           />
-          {projects.length === 0
-            ? (
-              <p mix={noticeStyle}>
-                Add a <a href={routes.app.projects.index.href()}>project</a>{" "}
-                before starting a session.
-              </p>
-            )
-            : !hasConnectedRunner
-            ? <p mix={noticeStyle}>Connect an available runner before starting a session.</p>
-            : models.length === 0
+          {models.length === 0
             ? <p mix={noticeStyle}>Configure a model provider before starting a session.</p>
             : null}
         </div>
         <footer mix={footerStyle}>
           <div mix={controlsStyle}>
             <selectControl.Context
-              defaultLabel={selectedProject?.name ?? "No projects"}
-              defaultValue={selectedProjectId}
-              disabled={projects.length === 0}
+              defaultLabel={selectedProject?.name ?? NO_PROJECT.name}
+              defaultValue={selectedProject?.id ?? NO_PROJECT.id}
               name="projectId"
             >
               <button
                 type="button"
                 aria-label="Project"
+                data-slot="project"
                 mix={[sessionSelectControlStyle, projectTriggerStyle, selectControl.trigger()]}
               >
                 <Icon name="folder" />
@@ -182,7 +183,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
                 >
                   <SelectorPopoverHeader title="Choose a project" />
                   <div mix={[selectControl.list(), sessionSelectorListStyle]}>
-                    {projects.map((project) => (
+                    {projectOptions.map((project) => (
                       <div
                         key={project.id}
                         mix={[
@@ -203,11 +204,61 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
                   </div>
                 </div>
               </popover.Context>
-              <input
-                name="projectId"
-                required
-                mix={selectControl.hiddenInput()}
-              />
+              <input name="projectId" mix={selectControl.hiddenInput()} />
+            </selectControl.Context>
+            <selectControl.Context
+              defaultLabel={selectedEnvironment.label}
+              defaultValue={selectedEnvironment.value}
+              name="environment"
+            >
+              <button
+                type="button"
+                aria-label="Environment"
+                mix={[
+                  sessionSelectControlStyle,
+                  environmentTriggerStyle,
+                  selectControl.trigger(),
+                ]}
+              >
+                <Icon name="terminal" />
+                <SelectLabel />
+                <Icon name="chevron-down" />
+              </button>
+              <popover.Context>
+                <div
+                  mix={[
+                    selectControl.popover(),
+                    sessionSelectorPopoverStyle,
+                    environmentPopoverPositionStyle,
+                  ]}
+                >
+                  <SelectorPopoverHeader title="Choose an environment" />
+                  <div mix={[selectControl.list(), sessionSelectorListStyle]}>
+                    {environments.map((environment) => (
+                      <div
+                        key={environment.value}
+                        mix={[
+                          selectControl.option({
+                            label: environment.label,
+                            value: environment.value,
+                          }),
+                          sessionSelectorOptionStyle,
+                        ]}
+                      >
+                        <span>{environment.description}</span>
+                        <span
+                          aria-hidden="true"
+                          data-slot="selector-option-indicator"
+                          mix={sessionSelectorOptionIndicatorStyle}
+                        >
+                          <Icon name="check" />
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </popover.Context>
+              <input mix={selectControl.hiddenInput()} />
             </selectControl.Context>
             <selectControl.Context
               defaultLabel={selectedOrbSize}
@@ -217,6 +268,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
               <button
                 type="button"
                 aria-label="Orb size"
+                data-slot="orb-size"
                 mix={[sessionSelectControlStyle, orbSizeTriggerStyle, selectControl.trigger()]}
               >
                 <Icon name="server" />
@@ -274,7 +326,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
             size="icon-lg"
             aria-label="Start session"
             aria-keyshortcuts="Enter"
-            title={canSubmit ? "Start session" : "Project, model, and runner required"}
+            title={canSubmit ? "Start session" : "A model provider is required"}
             data-submit-enabled={canSubmit ? "true" : "false"}
             data-submit-label="Start session"
             data-submit-pending-label="Starting session"
@@ -304,6 +356,20 @@ export const SessionComposerClient = clientEntry<SessionComposerProps>(
     return () => <SessionComposer {...handle.props} />;
   },
 );
+
+const NO_PROJECT = { id: "", name: "No project" } as const;
+
+const SANDBOX_ENVIRONMENT = {
+  value: "sandbox",
+  label: "Sandbox",
+  description: "Sandbox · built-in just-bash, no Git or network",
+} as const;
+const RUNNER_ENVIRONMENT = {
+  value: "runner",
+  label: "Runner",
+  description: "Runner · full Linux VM with Git",
+} as const;
+const ENVIRONMENTS = [RUNNER_ENVIRONMENT, SANDBOX_ENVIRONMENT] as const;
 
 function formatOrbSize(orbSize: OrbSize): string {
   const resources = ORB_SIZE_RESOURCES[orbSize];
@@ -470,6 +536,11 @@ const dialogStyle = css({
   "&[data-thinking-level='high']": { borderColor: "#a335ee" },
   "&[data-thinking-level='xhigh']": { borderColor: "#ff8000" },
   "&[data-thinking-level='max']": { borderColor: "#e6cc80" },
+  // The Sandbox has no orb sizes and never checks out a project. Important overrides the
+  // controls' layers.
+  "&[data-environment='sandbox'] :is([data-slot='orb-size'], [data-slot='project'])": {
+    display: "none !important",
+  },
   "&::backdrop": { background: "rgb(0 0 0 / 0.5)" },
   [media.sm]: {
     width: "min(calc(100% - 32px), 880px)",
@@ -574,6 +645,17 @@ const orbSizeTriggerStyle = css({
 const thinkingLevelTriggerStyle = css({
   anchorName: "--openorb-thinking-level-trigger",
   outline: 0,
+});
+const environmentTriggerStyle = css({
+  anchorName: "--openorb-environment-trigger",
+  outline: 0,
+});
+const environmentPopoverPositionStyle = css({
+  inset: "12px !important",
+  [media.sm]: {
+    inset:
+      "calc(anchor(--openorb-environment-trigger bottom) + 4px) auto auto anchor(--openorb-environment-trigger left) !important",
+  },
 });
 const orbSizePopoverPositionStyle = css({
   inset: "12px !important",

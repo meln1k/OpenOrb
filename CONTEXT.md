@@ -24,8 +24,9 @@ Agent cell, Session host, Session runner
 **User**: A person who belongs directly to exactly one Workspace, with their own password and Git
 author identity. _Avoid_: Tenant, member
 
-**Session**: A durable association between a conversation and its Project Checkout that persists
-across agent activity and idle periods.
+**Session**: A durable association between a conversation and its Agent Environment that persists
+across agent activity and idle periods. A Session with a project also owns its Project Checkout; a
+Session without one starts from an empty `/workspace` and loads no Git integration.
 
 **Agent Harness**: The provider-neutral agent capability hosted by the Session Durable Object,
 independent of any particular agent implementation or version. _Avoid_: Pi interface, Pi runtime
@@ -78,6 +79,11 @@ inside the Agent Environment. _Avoid_: pi-env server, guest agent
 Environments and opens Environment Links to them, such as an OpenOrb runner or a sandbox vendor. It
 declares its persistence and Egress Secret Mediation instead of sharing one guarantee. _Avoid_:
 Sandbox provider, vendor, Workspace Runtime
+
+**Sandbox**: The built-in Agent Environment Provider that runs just-bash, a TypeScript bash
+interpreter with a virtual filesystem, in an isolated Dynamic Worker hosted by the Session Durable
+Object, for inspecting untrusted content. It needs no runner and has no project, Git, or network.
+_Avoid_: Local runner, bash VM
 
 **Egress Secret Mediation**: Substitution of real credentials for guest-visible placeholders outside
 the guest, so the real values never enter it. _Avoid_: Secret proxy, redaction

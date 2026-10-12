@@ -360,3 +360,47 @@ Deno.test("concurrent setup creates exactly one workspace and resolves persisted
     administrator,
   );
 });
+
+Deno.test("public files and compiled assets are served without reading the browser session", async () => {
+  const { workspace: store } = activate();
+  const password = "asset session isolation password";
+  await store.createAdministrator(password);
+  const administrator = await store.verifyAdministratorPassword(password);
+  assert(administrator);
+  const memory = createMemorySessionStorage();
+  let reads = 0;
+  const sessionStorage: typeof memory = {
+    ...memory,
+    read: (value) => {
+      reads++;
+      return memory.read(value);
+    },
+  };
+  const cookie = createSessionCookie();
+  const router = createAppRouter(createAppServices(store, undefined, sessionStorage), cookie);
+  const session = await memory.read(null);
+  session.set("auth", administrator);
+  const sessionId = await memory.save(session);
+  assert(sessionId && cookie.maxAge !== undefined);
+  const header = (await cookie.serialize(
+    JSON.stringify({ value: sessionId, expires: Date.now() + cookie.maxAge * 1000 }),
+  )).split(";", 1)[0]!;
+  const get = (path: string) =>
+    router.fetch(new Request(new URL(path, "http://localhost"), { headers: { Cookie: header } }));
+
+  // Each read of the browser session is a Workspace Durable Object call in production.
+  for (const path of ["/assets/app/public/client.ts", "/favicon.svg"]) {
+    const response = await get(path);
+    assertEquals(response.status, 200, path);
+    await response.body?.cancel();
+  }
+  assertEquals(reads, 0);
+  const missing = await get("/assets/app/does-not-exist.ts");
+  assertEquals(missing.status, 404);
+  await missing.body?.cancel();
+
+  const page = await get(routes.app.index.href());
+  assertEquals(page.status, 200);
+  await page.body?.cancel();
+  assert(reads > 0, "authenticated pages still read the browser session");
+});

@@ -76,6 +76,7 @@ export function AppShellLayout(handle: Handle<AppShellLayoutProps>) {
 }
 
 type SessionProjectGroup = {
+  /** Empty for the group of Sessions without a project. */
   projectId: string;
   projectName: string;
   sessions: SessionNavigationEntry[];
@@ -548,12 +549,13 @@ function groupSessionsByProject(sessions: SessionNavigationEntry[]): SessionProj
   const groups = new Map<string, SessionProjectGroup>();
 
   for (const session of sessions) {
-    const group = groups.get(session.projectId);
+    const projectId = session.projectId ?? "";
+    const group = groups.get(projectId);
     if (group) group.sessions.push(session);
     else {
-      groups.set(session.projectId, {
-        projectId: session.projectId,
-        projectName: session.projectName,
+      groups.set(projectId, {
+        projectId,
+        projectName: session.projectName ?? "No project",
         sessions: [session],
       });
     }

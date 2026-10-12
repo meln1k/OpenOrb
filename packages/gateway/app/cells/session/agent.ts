@@ -24,6 +24,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { EnvironmentControlResult } from "./environment/provider.ts";
 import { ARTIFACTS_DIRECTORY, detectMediaType } from "./media.ts";
 import { REPOSITORY_SKILLS_SECTION } from "./skills.ts";
+import type { SessionProject } from "./record.ts";
 
 export class SessionError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -36,8 +37,10 @@ export interface AgentOptions {
   readonly sessionId: string;
   readonly model: string;
   readonly thinkingLevel: ThinkingLevel;
-  readonly repositoryUrl: string;
-  readonly branchName: string;
+  /** The project checked out in /workspace; absent when the Session has none. */
+  readonly project: SessionProject | undefined;
+  /** What the provider says about its guest in the system prompt. */
+  readonly guestPrompt: readonly string[];
   readonly models: Models;
   /** The guest as the agent sees it: the provider's ExecutionEnv behind the readiness gate. */
   readonly env: ExecutionEnv;
@@ -145,22 +148,33 @@ export function agentTools(
   ] satisfies readonly ToolRegistration[];
 }
 
-export function systemPrompt(options: Pick<AgentOptions, "branchName" | "repositoryUrl">): string {
+export function systemPrompt(options: Pick<AgentOptions, "guestPrompt" | "project">): string {
   return [
     "You are an expert coding assistant. Use only the tools supplied by OpenOrb.",
     "All shell and file operations run in an isolated guest environment, never on a trusted host. Relative paths resolve from /workspace.",
-    "Guest tools fail immediately while the environment is stopped or its runner is offline. The environment tool controls the guest independently of this conversation; stopping preserves disk, not RAM or processes. Do not shut down the guest using bash.",
+    "Guest tools fail immediately while the environment is stopped or unreachable. The environment tool controls the guest independently of this conversation; stopping preserves disk, not RAM or processes. Do not shut down the guest using bash.",
     "Use bash for ls, rg, and find. Be concise and show file paths clearly.",
     "Use read for text files and readImage to inspect images.",
     "To show media, use publish_media and include its exact returned Markdown.",
-    "Create commits or push only when the user explicitly requests it. Preserve existing commits: never amend, squash, reset, rewrite history, or force-push.",
-    `Keep all work on session branch ${
-      JSON.stringify(options.branchName)
-    }. Push only that branch to canonical repository ${
-      JSON.stringify(options.repositoryUrl)
-    }, never an agent-modified remote destination.`,
+    ...options.guestPrompt,
+    ...(options.project === undefined ? NO_PROJECT_PROMPT : projectPrompt(options.project)),
   ].join("\n");
 }
+
+function projectPrompt(project: SessionProject) {
+  return [
+    "Create commits or push only when the user explicitly requests it. Preserve existing commits: never amend, squash, reset, rewrite history, or force-push.",
+    `Keep all work on session branch ${
+      JSON.stringify(project.branchName)
+    }. Push only that branch to canonical repository ${
+      JSON.stringify(project.repositoryUrl)
+    }, never an agent-modified remote destination.`,
+  ];
+}
+
+const NO_PROJECT_PROMPT = [
+  "This Session has no project: /workspace starts empty, and OpenOrb tracks no repository or Git changes for it.",
+];
 
 /** Opens Pi Durable on the Durable Object's own SQLite storage. Opening never resumes work. */
 export async function openAgent(

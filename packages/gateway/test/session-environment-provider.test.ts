@@ -1,29 +1,22 @@
 import { assertEquals } from "@std/assert";
 import {
   type AgentEnvironmentCapabilities,
-  DEFAULT_ENVIRONMENT_PROVIDER,
-  permittedCredentials,
-  resolveEnvironmentProvider,
+  receivesCredentials,
 } from "../app/cells/session/environment/provider.ts";
 
 const mediated: AgentEnvironmentCapabilities = {
   persistence: "root-disk",
-  egressSecretMediation: true,
+  credentials: "mediated",
   hibernatableLink: true,
+  git: true,
 };
-const unmediated: AgentEnvironmentCapabilities = { ...mediated, egressSecretMediation: false };
-const credentials = {
-  githubToken: "gho_test",
-  environmentSecrets: [{ name: "API_KEY", value: "secret" }],
-};
-
-Deno.test("Sessions without a provider choice use the default provider", () => {
-  assertEquals(resolveEnvironmentProvider({}), DEFAULT_ENVIRONMENT_PROVIDER);
-  assertEquals(resolveEnvironmentProvider({ workspace: "runner" }), "runner");
-});
+const optIn: AgentEnvironmentCapabilities = { ...mediated, credentials: "opt-in" };
+const none: AgentEnvironmentCapabilities = { ...mediated, credentials: "none" };
 
 Deno.test("credentials reach unmediated providers only with Guest Credential Opt-in", () => {
-  assertEquals(permittedCredentials(mediated, false, credentials), credentials);
-  assertEquals(permittedCredentials(unmediated, false, credentials), {});
-  assertEquals(permittedCredentials(unmediated, true, credentials), credentials);
+  assertEquals(receivesCredentials(mediated, false), true);
+  assertEquals(receivesCredentials(optIn, false), false);
+  assertEquals(receivesCredentials(optIn, true), true);
+  // Providers without egress, such as the Sandbox, never receive them, even when opted in.
+  assertEquals(receivesCredentials(none, true), false);
 });

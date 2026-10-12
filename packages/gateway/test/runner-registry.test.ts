@@ -448,7 +448,7 @@ Deno.test("valid identity admits; invalid token and previous protocol close 4401
         workspaceId: FOREIGN_WORKSPACE_ID,
         runnerId: RUNNER_ID,
         sessionId: SESSION_2,
-        payload: { orbSize: "small", repositoryUrl: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+        payload: { orbSize: "small", repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR } },
       })).status,
       "unavailable",
     );
@@ -718,7 +718,7 @@ Deno.test("disconnect after environment create dispatch reports uncertain delive
       workspaceId: WORKSPACE_ID,
       runnerId: RUNNER_ID,
       sessionId: SESSION_2,
-      payload: { orbSize: "small", repositoryUrl: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+      payload: { orbSize: "small", repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR } },
     }).pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(block.started);
     assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
@@ -735,7 +735,10 @@ Deno.test("environment creation checks the runner is online and can host the orb
       workspaceId: WORKSPACE_ID,
       runnerId: RUNNER_ID,
       sessionId: SESSION_1,
-      payload: { orbSize: "small" as const, repositoryUrl: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+      payload: {
+        orbSize: "small" as const,
+        repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+      },
     };
     assertEquals((yield* gateway.createEnvironment(input)).status, "unavailable");
 
@@ -767,7 +770,7 @@ Deno.test("typed environment commands carry Workspace-scoped payloads and discon
       yield* gateway.createEnvironment({
         ...input,
         runnerId: RUNNER_ID,
-        payload: { orbSize: "small", repositoryUrl: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+        payload: { orbSize: "small", repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR } },
       }),
       yield* gateway.controlEnvironment({
         ...input,
@@ -789,8 +792,7 @@ Deno.test("typed environment commands carry Workspace-scoped payloads and discon
           sessionId: SESSION_2,
           workspaceId: WORKSPACE_ID,
           orbSize: "small",
-          repositoryUrl: REPOSITORY_URL,
-          gitAuthor: GIT_AUTHOR,
+          repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
         }),
       },
       {
@@ -955,8 +957,10 @@ Deno.test("created environments are routed before the runner's watch reports the
       sessionId: SESSION_1,
       payload: {
         orbSize: "small",
-        repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
-        gitAuthor: new GitAuthor({ name: "Tester", email: "test@example.com" }),
+        repository: {
+          url: "https://github.com/meln1k/openorb-test-repo.git",
+          gitAuthor: new GitAuthor({ name: "Tester", email: "test@example.com" }),
+        },
       },
     });
     assertEquals(created.status, "accepted");

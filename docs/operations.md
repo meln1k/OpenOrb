@@ -75,7 +75,7 @@ Treat the gateway, runner, and protocol as one release unit. Check out the same 
 SHA on the gateway and every source-installed runner; do not mix independently updated checkouts.
 Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as the
 release revision. A standalone runner must come from the release for that same source revision.
-Protocol version **27** is source-owned and is not a separately upgradeable public API.
+Protocol version **28** is source-owned and is not a separately upgradeable public API.
 
 The exact runtime and application pins in this release graph are:
 
@@ -87,7 +87,7 @@ The exact runtime and application pins in this release graph are:
 | OpenOrb guest image                 | `release-2` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi Durable / Pi Env / Chord | 1.1.0                                            |
 | Remix                               | 3.0.0                                            |
-| Runner protocol                     | 27                                               |
+| Runner protocol                     | 28                                               |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
 build IDs, hashes, sizes, and immutable URLs are in
@@ -95,11 +95,13 @@ build IDs, hashes, sizes, and immutable URLs are in
 [guest image release process](guest-image.md), rather than rebuilding an asset under an existing
 release ID.
 
-Protocol 27 carries only runner identification, the `runner.watch` environment stream, and the
+Protocol 28 carries only runner identification, the `runner.watch` environment stream, and the
 `environment.create`, `environment.control`, `environment.attach`, and `environment.delete`
-procedures; it has no `session.*` procedures. A v27 gateway rejects v26 runners, so runner and
-gateway must be upgraded together. Control messages use UTF-8 JSON inside SchemaBinary framing on
-the binary control WebSocket; neither the former CBOR format nor unframed JSON text messages are
+procedures; it has no `session.*` procedures. Since v28, `environment.create` omits `repository`
+(its URL and Git author together) for a Session without a project, whose guest then gets no GitHub
+mediation; v27 environment journals are not converted. A v28 gateway rejects v27 runners, so runner
+and gateway must be upgraded together. Control messages use UTF-8 JSON inside SchemaBinary framing
+on the binary control WebSocket; neither the former CBOR format nor unframed JSON text messages are
 supported. Logical control messages are capped at 16 MiB and split into WebSocket messages of at
 most 1 MiB. Reassembly is per connection and is discarded on disconnect; reconnect obtains a fresh
 environment snapshot. The bulk channel carries only identification and a heartbeat and is reserved

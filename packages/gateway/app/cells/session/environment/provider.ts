@@ -12,20 +12,27 @@ import type {
 
 /** What an Agent Environment Provider guarantees, declared rather than assumed (ADR 0006). */
 export interface AgentEnvironmentCapabilities {
-  readonly persistence: "root-disk" | "snapshot" | "ephemeral";
-  /** Real credentials are substituted outside the guest and never enter it. */
-  readonly egressSecretMediation: boolean;
+  readonly persistence: "root-disk" | "virtual-disk" | "snapshot" | "ephemeral";
+  /**
+   * How real credentials reach the guest: `mediated` substitutes them outside it (Egress Secret
+   * Mediation), `opt-in` places them in it only with the Project's Guest Credential Opt-in, and
+   * `none` never gives them to the provider at all.
+   */
+  readonly credentials: "mediated" | "opt-in" | "none";
   /** The Session Durable Object can hibernate while the Environment Link stays open. */
   readonly hibernatableLink: boolean;
+  /** The guest runs Git, which a Session's project needs: its checkout and Git Snapshots. */
+  readonly git: boolean;
 }
 
 export interface EnvironmentBinding {
   readonly workspaceId: WorkspaceId;
   readonly sessionId: SessionId;
-  /** Provider-specific placement, such as the runner that owns the Session's root disk. */
-  readonly placement: string;
-  /** The Session's repository, which scopes credential mediation where the provider has it. */
-  readonly repository: { readonly url: string; readonly gitAuthor: GitAuthor };
+  /**
+   * The project's repository, which scopes credential mediation where the provider has it, and
+   * the Git identity for its commits. Absent for a Session without a project.
+   */
+  readonly repository?: { readonly url: string; readonly gitAuthor: GitAuthor };
 }
 
 export interface EnvironmentSpec {
@@ -75,37 +82,35 @@ export interface SessionEnvironment {
   readonly close: () => void;
 }
 
+/**
+ * Where a Session's Agent Environment runs, fixed at creation: its provider and whatever that
+ * provider needs to find the environment, such as the runner that owns its root disk.
+ */
+export type SessionPlacement =
+  | { readonly provider: "runner"; readonly runnerId: string }
+  | { readonly provider: "sandbox" };
+
 /** The implemented Agent Environment Providers. */
-export type EnvironmentProviderKind = "runner";
-
-export const DEFAULT_ENVIRONMENT_PROVIDER: EnvironmentProviderKind = "runner";
-
-/** The most specific choice wins: Session over Project over the Workspace default (ADR 0006). */
-export function resolveEnvironmentProvider(
-  levels: {
-    readonly session?: EnvironmentProviderKind;
-    readonly project?: EnvironmentProviderKind;
-    readonly workspace?: EnvironmentProviderKind;
-  },
-): EnvironmentProviderKind {
-  return levels.session ?? levels.project ?? levels.workspace ?? DEFAULT_ENVIRONMENT_PROVIDER;
-}
+export type EnvironmentProviderKind = SessionPlacement["provider"];
 
 /**
- * Credentials a provider may receive: all of them where egress mediation keeps them out of the
- * guest, otherwise none without the Project's Guest Credential Opt-in.
+ * Whether a provider receives the Workspace's credentials: always where egress mediation keeps
+ * them out of the guest, never where it declares none, otherwise only with the Project's Guest
+ * Credential Opt-in.
  */
-export function permittedCredentials(
+export function receivesCredentials(
   capabilities: AgentEnvironmentCapabilities,
   guestCredentialOptIn: boolean,
-  credentials: EnvironmentCredentials,
-): EnvironmentCredentials {
-  return capabilities.egressSecretMediation || guestCredentialOptIn ? credentials : {};
+): boolean {
+  return capabilities.credentials === "mediated" ||
+    (capabilities.credentials === "opt-in" && guestCredentialOptIn);
 }
 
 export interface AgentEnvironmentProvider {
   readonly kind: EnvironmentProviderKind;
   readonly capabilities: AgentEnvironmentCapabilities;
+  /** What the agent's system prompt says about this provider's guest, beyond the common rules. */
+  readonly guestPrompt: readonly string[];
   /** Binds a Session to its environment. Creates no compute. */
   readonly bind: (binding: EnvironmentBinding) => SessionEnvironment;
 }

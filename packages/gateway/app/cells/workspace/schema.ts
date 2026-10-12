@@ -145,7 +145,7 @@ export const sessions = table({
   columns: {
     workspaceId: c.text().notNull(),
     id: c.text().notNull(),
-    projectId: c.text().notNull(),
+    projectId: c.text().nullable(),
     createdAt: c.text().notNull(),
     initialPromptPreview: c.text().notNull(),
   },

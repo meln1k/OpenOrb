@@ -23,7 +23,7 @@ export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
 export const MAX_SESSION_SECRET_HOSTS = 32;
 export const MAX_SESSION_SECRET_HOST_CHARACTERS = 253;
-export const RUNNER_PROTOCOL_VERSION = 27;
+export const RUNNER_PROTOCOL_VERSION = 28;
 
 export * from "./runner-api-limits.ts";
 
@@ -141,7 +141,8 @@ export class RunnerSessionSnapshot extends Schema.Class<RunnerSessionSnapshot>(
   "RunnerSessionSnapshot",
 )({
   id: SessionId,
-  projectId: ProjectId,
+  /** Absent for a Session without a project, which has no checkout and no Git integration. */
+  projectId: Schema.optionalKey(ProjectId),
   createdAt: RunnerSessionCreatedAt,
   initialPromptPreview: InitialPromptPreview,
   model: ModelReference,

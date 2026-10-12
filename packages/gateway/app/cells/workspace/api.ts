@@ -81,15 +81,17 @@ export interface AuthenticatedRunner {
 
 export interface SessionCatalogEntry {
   id: string;
-  projectId: string;
+  /** Absent for a Session without a project. */
+  projectId?: string;
   createdAt: string;
   initialPromptPreview: string;
 }
 
 export interface SessionNavigationEntry {
   id: string;
-  projectId: string;
-  projectName: string;
+  /** Absent, with the name, for a Session without a project. */
+  projectId?: string;
+  projectName?: string;
   initialPromptPreview: string;
 }
 

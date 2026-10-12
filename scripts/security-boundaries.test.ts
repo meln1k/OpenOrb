@@ -55,6 +55,27 @@ Deno.test("the Session Durable Object reaches the guest only through the provide
   }
 });
 
+Deno.test("the sandbox runs in a capability-free isolate without network", async () => {
+  // ADR 0007: an escape from just-bash must find no bindings, network, or shared isolate.
+  const provider = await Deno.readTextFile(
+    `${SESSION_SOURCE_ROOT}/environment/sandbox-provider.ts`,
+  );
+  assertStringIncludes(provider, "env: {},");
+  assertStringIncludes(provider, "globalOutbound: null,");
+  assertStringIncludes(provider, 'credentials: "none",');
+  assertStringIncludes(provider, "limits: { cpuMs: SANDBOX_CPU_MS }");
+  assertStringIncludes(provider, "`openorb-sandbox:${sessionId}:${SANDBOX_WORKER.hash}`");
+  const sandboxRoot = `${SESSION_SOURCE_ROOT}/environment/sandbox`;
+  for (const path of await typescriptSourcesUnder(sandboxRoot)) {
+    const source = await Deno.readTextFile(path);
+    // Only the browser build: no host filesystem adapters, Python, JavaScript, or SQLite.
+    assert(!/from "just-bash"/u.test(source), `${path} imports just-bash's Node build`);
+    for (const forbidden of ["network:", "fetch:", "python:", "javascript:", "OverlayFs"]) {
+      assert(!source.includes(forbidden), `${path} enables ${forbidden}`);
+    }
+  }
+});
+
 Deno.test("release routes and runner protocol keep deferred product surfaces absent", async () => {
   const routes = await Deno.readTextFile("packages/gateway/app/routes.ts");
   const protocol = (await Promise.all(

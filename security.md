@@ -19,18 +19,33 @@ not leave an orphan Workspace or create another administrator.
 - Session repositories, files, and Git metadata are untrusted. Native Git on the gateway or a
   provider host never consumes a session checkout; clone, branch, status, diff, fetch, commit, and
   push execute inside the guest (Gondolin on a runner), issued by the Session DO over Pi's
-  `ExecutionEnv`. Guest-reported base commits, branches, and Git Snapshot summaries are cached by
-  the Session DO as untrusted display data. Full Git Snapshot patches stay in a guest file outside
-  `/workspace`. The Session DO reads them in byte ranges only while the environment is running,
-  never past the section size recorded at capture, and the browser renders them as untrusted text.
-- The Agent Harness sees only Pi's `ExecutionEnv`. An Agent Environment Provider (the OpenOrb runner
-  first, sandbox vendors later) supplies compute, lifecycle, persistence, network policy, and the
-  Environment Link, never project behaviour: clone, `.agents/setup`/`.agents/resume`, Git Snapshots,
-  skill discovery, and Published Media run in the Session DO. Providers declare persistence, Egress
-  Secret Mediation, and hibernatable-link capabilities rather than inheriting the runner's
-  guarantees. The runner is the only implemented provider. The Session record stores its provider
-  kind and the Project's Guest Credential Opt-in at creation; the Workspace default and Project
-  override are deferred until a second provider exists.
+  `ExecutionEnv`. A Session without a project, which every Sandbox Session is, has no checkout and
+  loads no Git integration: no clone, project hooks, skill discovery, or Git Snapshots, and a runner
+  guest gets no GitHub mediation. Guest-reported base commits, branches, and Git Snapshot summaries
+  are cached by the Session DO as untrusted display data. Full Git Snapshot patches stay in a guest
+  file outside `/workspace`. The Session DO reads them in byte ranges only while the environment is
+  running, never past the section size recorded at capture, and the browser renders them as
+  untrusted text.
+- The Agent Harness sees only Pi's `ExecutionEnv`. An Agent Environment Provider (the OpenOrb
+  runner, the built-in Sandbox, sandbox vendors later) supplies compute, lifecycle, persistence,
+  network policy, and the Environment Link, never project behaviour: clone,
+  `.agents/setup`/`.agents/resume`, Git Snapshots, skill discovery, and Published Media run in the
+  Session DO. Providers declare persistence, credentials (mediated, opt-in, or none),
+  hibernatable-link, and Git capabilities rather than inheriting the runner's guarantees; the
+  Session DO reads Workspace credentials only for providers that receive them. The Session record
+  stores its provider kind and the Project's Guest Credential Opt-in at creation; the user picks the
+  provider in the composer, and Workspaces without runners default to the Sandbox. Workspace
+  defaults and Project overrides are deferred.
+- The Sandbox ([ADR 0007](docs/adr/0007-built-in-sandbox-provider.md)) runs just-bash's browser
+  build in a celld Worker Loader isolate per Session, loaded with no bindings (`env: {}`), no
+  network (`globalOutbound: null`), and a per-call CPU limit, as a facet of the Session DO with its
+  own SQLite database. just-bash has no Python, JavaScript, network commands, or host filesystem
+  adapters there. Paths are interpreted only in the sandbox; the Session DO relays them over RPC. It
+  is for inspecting untrusted content: it never checks out a project and declares no credentials, so
+  the Session DO reads no Workspace secrets or GitHub token for it. Its extract-only `tar` enforces
+  just-bash's archive limits before buffering entries. The boundary is a V8 isolate in the gateway
+  process, not a VM, and celld makes no V8 escape claim, so a V8 escape compromises the gateway.
+  Work that needs secrets or a full toolchain belongs on a runner.
 - Pi Durable runs in one gateway Session Durable Object per Session with an explicit registry and
   in-memory credentials, never on the runner host. It discovers no gateway, runner, project, or
   global Pi resources. The Session DO reads passive repository skill metadata (YAML frontmatter

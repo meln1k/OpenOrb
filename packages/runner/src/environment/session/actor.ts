@@ -91,11 +91,13 @@ export const makeEnvironmentActor = Effect.fn("makeEnvironmentActor")(function* 
           rootDiskPath,
           sessionLabel: `openorb session ${sessionId}`,
           sessionId,
-          github: {
-            repositoryUrl: record.definition.repositoryUrl,
-            gitAuthor: record.definition.gitAuthor,
-            ...(githubToken === undefined ? {} : { token: githubToken }),
-          },
+          ...(record.definition.repository === undefined ? {} : {
+            github: {
+              repositoryUrl: record.definition.repository.url,
+              gitAuthor: record.definition.repository.gitAuthor,
+              ...(githubToken === undefined ? {} : { token: githubToken }),
+            },
+          }),
           ...(environmentSecrets === undefined ? {} : { environmentSecrets }),
           cpuCount: resources.cpuCount,
           memoryMiB: resources.memoryMiB,

@@ -52,7 +52,7 @@ export function createAppRouter(
   const appRouter = createRouter({
     middleware: [
       rewriteTrailingSlash(),
-      publicFiles(services),
+      staticFiles(services),
       formData(),
       session(sessionCookie, services.sessionStorage),
       redirectUnauthorizedPages(),
@@ -103,11 +103,16 @@ export function createAppRouter(
   return appRouter;
 }
 
-function publicFiles(services: AppServices): Middleware {
+/**
+ * Root public files and compiled browser assets are public and need no browser session, so they
+ * are served before the session and auth middleware, which each cost a Workspace DO call.
+ */
+function staticFiles(services: AppServices): Middleware {
   return async (context, next) => {
     if (context.request.method !== "GET" && context.request.method !== "HEAD") return next();
 
-    return await services.assets.fetchPublic(context.request) ?? next();
+    return await services.assets.fetchPublic(context.request) ??
+      await services.assets.fetch(context.request) ?? next();
   };
 }
 

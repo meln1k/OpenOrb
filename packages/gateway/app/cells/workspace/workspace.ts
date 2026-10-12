@@ -30,6 +30,7 @@ import {
   type SaveBrowserSession,
   type SaveProjectInput,
   type SessionCatalogEntry,
+  type SessionNavigationEntry,
   type WorkspaceApi,
 } from "./api.ts";
 import {
@@ -95,6 +96,13 @@ type Login =
   | { status: "pending"; login: DeviceLogin }
   | { status: "complete" | "error"; id: string };
 
+/** Catalog rows as SQLite returns them: a Session without a project has NULL project columns. */
+type CatalogRow = Omit<SessionCatalogEntry, "projectId"> & { projectId: string | null };
+type NavigationRow = Omit<SessionNavigationEntry, "projectId" | "projectName"> & {
+  projectId: string | null;
+  projectName: string | null;
+};
+
 /** A record the operation addresses does not exist in this Workspace. */
 export class WorkspaceNotFoundError extends Error {
   constructor(message: string) {
@@ -156,6 +164,18 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   #rows<T>(query: string, ...bindings: unknown[]): T[] {
     // SAFETY: Queries below select the columns of their declared, locally-owned row type.
     return this.#storage.sql.exec(query, ...bindings).toArray() as T[];
+  }
+
+  /** The catalog entry, with the project left out for a Session without one. */
+  #catalogEntry(workspaceId: WorkspaceId, id: string): SessionCatalogEntry | undefined {
+    const row = this.#rows<CatalogRow>(
+      "SELECT id, projectId, createdAt, initialPromptPreview FROM sessions WHERE workspaceId = ? AND id = ?",
+      workspaceId,
+      id,
+    )[0];
+    if (row === undefined) return undefined;
+    const { projectId, ...entry } = row;
+    return { ...entry, ...(projectId === null ? {} : { projectId }) };
   }
 
   #requireWorkspace(workspaceId: WorkspaceId): void {
@@ -1003,14 +1023,17 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   ): ReturnType<WorkspaceApi["listSessionNavigationEntries"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("listSessionNavigationEntries", [workspaceId]);
-      return this.#rows<Awaited<ReturnType<WorkspaceApi["listSessionNavigationEntries"]>>[number]>(
+      return this.#rows<NavigationRow>(
         `
         SELECT s.id, s.projectId, p.name AS projectName, s.initialPromptPreview
-        FROM sessions s JOIN projects p ON p.workspaceId = s.workspaceId AND p.id = s.projectId
+        FROM sessions s LEFT JOIN projects p ON p.workspaceId = s.workspaceId AND p.id = s.projectId
         WHERE s.workspaceId = ? ORDER BY s.createdAt DESC
       `,
         workspaceId,
-      );
+      ).map(({ projectId, projectName, ...entry }) => ({
+        ...entry,
+        ...(projectId === null || projectName === null ? {} : { projectId, projectName }),
+      }));
     });
   }
 
@@ -1020,13 +1043,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   ): ReturnType<WorkspaceApi["getSessionCatalogEntry"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("getSessionCatalogEntry", [workspaceId, id]);
-      return this.#rows<SessionCatalogEntry>(
-        `
-        SELECT id, projectId, createdAt, initialPromptPreview FROM sessions WHERE workspaceId = ? AND id = ?
-      `,
-        workspaceId,
-        id,
-      )[0] ?? null;
+      return this.#catalogEntry(workspaceId, id) ?? null;
     });
   }
 
@@ -1079,13 +1096,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
           result.tombstonedSessionIds.push(entry.id);
           continue;
         }
-        const existing = this.#rows<SessionCatalogEntry>(
-          `
-          SELECT id, projectId, createdAt, initialPromptPreview FROM sessions WHERE workspaceId = ? AND id = ?
-        `,
-          workspaceId,
-          entry.id,
-        )[0] ?? pending.get(entry.id);
+        const existing = this.#catalogEntry(workspaceId, entry.id) ?? pending.get(entry.id);
         if (
           existing &&
           (existing.projectId !== entry.projectId || existing.createdAt !== entry.createdAt ||
@@ -1093,6 +1104,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
         ) {
           result.rejected.push({ sessionId: entry.id, reason: "catalog-conflict" });
         } else if (
+          entry.projectId !== undefined &&
           !this.#rows(
             "SELECT id FROM projects WHERE workspaceId = ? AND id = ?",
             workspaceId,
@@ -1104,7 +1116,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
           result.acceptedSessionIds.push(entry.id);
           pending.set(entry.id, {
             id: entry.id,
-            projectId: entry.projectId,
+            ...(entry.projectId === undefined ? {} : { projectId: entry.projectId }),
             createdAt: entry.createdAt,
             initialPromptPreview: entry.initialPromptPreview,
           });
@@ -1118,7 +1130,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
             VALUES (?, ?, ?, ?, ?) ON CONFLICT (workspaceId, id) DO NOTHING`,
             workspaceId,
             entry.id,
-            entry.projectId,
+            entry.projectId ?? null,
             entry.createdAt,
             entry.initialPromptPreview,
           );

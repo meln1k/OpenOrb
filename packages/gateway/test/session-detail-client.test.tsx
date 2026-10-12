@@ -6,6 +6,7 @@ import { SessionDetailClient } from "@/app/actions/sessions/public/session-detai
 Deno.test("session detail defaults mobile navigation to the agent view", async () => {
   const html = await renderToString(
     <SessionDetailClient
+      changes
       contextWindow={1_000}
       csrfToken="csrf-token"
       error={undefined}
@@ -45,6 +46,7 @@ Deno.test("session detail defaults mobile navigation to the agent view", async (
 Deno.test("session composer replaces send with stop during an active turn", async () => {
   const html = await renderToString(
     <SessionDetailClient
+      changes
       contextWindow={1_000}
       csrfToken="csrf-token"
       error={undefined}
@@ -64,4 +66,28 @@ Deno.test("session composer replaces send with stop during an active turn", asyn
   assertStringIncludes(html, 'aria-label="Stop Session"');
   assertMatch(html, /data-slot="stop-icon"/);
   assertNotMatch(html, /aria-label="Send prompt"/);
+});
+
+Deno.test("a session without Git integration shows no changes panel or view tabs", async () => {
+  const html = await renderToString(
+    <SessionDetailClient
+      changes={false}
+      contextWindow={1_000}
+      csrfToken="csrf-token"
+      error={undefined}
+      initialState="ready"
+      initialAgentState="idle"
+      initialEnvironmentState="running"
+      initialIssues={[]}
+      initialThinkingLevel="high"
+      sessionId="session-id"
+      sessionName="Sandbox session"
+      thinkingLevels={["off", "low", "high"]}
+    />,
+  );
+
+  assertNotMatch(html, /data-slot="changes-panel"/);
+  assertNotMatch(html, /role="tablist"/);
+  assertStringIncludes(html, 'aria-label="Agent"');
+  assertStringIncludes(html, 'aria-label="Delete session"');
 });

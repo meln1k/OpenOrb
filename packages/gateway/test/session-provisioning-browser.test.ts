@@ -23,7 +23,6 @@ import type {
   SessionApi,
   SessionDirectory,
   SessionMedia,
-  SessionView,
 } from "@/app/cells/session/api.ts";
 import {
   createAppServices,
@@ -96,7 +95,7 @@ class BrowserTestSessions {
   readonly addressed: string[] = [];
   /** Every SessionApi invocation, including those rejected while unreachable. */
   readonly calls: SessionCall[] = [];
-  readonly views = new Map<string, SessionView>();
+  readonly views = new Map<string, RunnerSessionSnapshot>();
   readonly mediaItems = new Map<string, SessionMedia>();
   readonly objects = new Map<string, Uint8Array>();
   readonly mediaReads: { key: string; range: { offset: number; length: number } }[] = [];
@@ -154,7 +153,7 @@ class BrowserTestSessions {
   snapshot(sessionId: string): RunnerSessionSnapshot {
     const view = this.views.get(sessionId);
     assert(view, `expected a Session view for ${sessionId}`);
-    return view.snapshot;
+    return view;
   }
 
   update(
@@ -165,7 +164,7 @@ class BrowserTestSessions {
   ): void {
     const view = this.views.get(sessionId);
     assert(view, `expected a Session view for ${sessionId}`);
-    this.views.set(sessionId, { ...view, snapshot: { ...view.snapshot, ...patch } });
+    this.views.set(sessionId, new RunnerSessionSnapshot({ ...view, ...patch }));
   }
 
   publish(sessionId: string, artifactId: string, bytes: Uint8Array): void {
@@ -191,7 +190,7 @@ class BrowserTestSessions {
     return Promise.resolve().then(run);
   }
 
-  #existing(sessionId: string): SessionView {
+  #existing(sessionId: string): RunnerSessionSnapshot {
     const view = this.views.get(sessionId);
     if (view === undefined) throw new Error("Session not found.");
     return view;
@@ -203,11 +202,11 @@ class BrowserTestSessions {
         this.#invoke(sessionId, "create", input, async () => {
           await this.beforeCreate?.(input);
           if (this.createError !== undefined) throw new Error(this.createError);
-          this.views.set(sessionId, {
-            runnerId: input.runnerId,
-            snapshot: Schema.decodeUnknownSync(RunnerSessionSnapshot)({
+          this.views.set(
+            sessionId,
+            Schema.decodeUnknownSync(RunnerSessionSnapshot)({
               id: input.sessionId,
-              projectId: input.projectId,
+              ...(input.project === undefined ? {} : { projectId: input.project.id }),
               createdAt: input.createdAt,
               initialPromptPreview: initialPromptPreview(input.initialPrompt),
               model: input.model,
@@ -218,7 +217,7 @@ class BrowserTestSessions {
               environmentState: "starting",
               issues: [],
             }),
-          });
+          );
           return { created: true };
         }),
       view: () =>
@@ -365,6 +364,7 @@ Deno.test("session composer creates a new server-assigned session on each submis
     assert(body.get("_csrf"), "expected the rendered CSRF token");
     body.set("projectId", project.project.id);
     body.set("model", MODEL);
+    body.set("environment", "runner");
     body.set("orbSize", "medium");
     body.set("initialPrompt", INITIAL_PROMPT);
 
@@ -407,6 +407,107 @@ Deno.test("session composer creates a new server-assigned session on each submis
     );
     assert(await store.getSessionCatalogEntry(client.workspaceId, firstSessionId));
     assert(await store.getSessionCatalogEntry(client.workspaceId, sessionId));
+  } finally {
+    await server.close();
+  }
+});
+
+Deno.test("sessions start in the built-in sandbox without a runner, and by choice with one", async () => {
+  const { workspace: store } = activate();
+  const { sessions, router } = createSessionServer(store);
+  const server = await createTestServer((request) => router.fetch(request));
+
+  try {
+    const client = await authenticate(server.baseUrl, store);
+    sessions.workspaceId = client.workspaceId;
+    // Only a model provider: no project, no Git author, and no runner are needed to try OpenOrb.
+    await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
+
+    const composerFields = async () => {
+      const page = await fetch(new URL(routes.app.index.href(), server.baseUrl), {
+        headers: { Cookie: client.cookie },
+      });
+      const html = await page.text();
+      const composer = html.match(/<dialog[^>]*id="openorb-new-session"[^>]*>([\s\S]*?)<\/dialog>/);
+      assert(composer, "expected the session creation modal");
+      const form = composer[1]!.match(/<form[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/);
+      assert(form, "expected the session creation form");
+      const body = new URLSearchParams();
+      for (
+        const field of form[2]!.matchAll(
+          /<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g,
+        )
+      ) {
+        body.set(field[1]!, field[2]!);
+      }
+      body.set("model", MODEL);
+      body.set("initialPrompt", INITIAL_PROMPT);
+      return { html: form[2]!, body };
+    };
+    const submit = async (body: URLSearchParams) => {
+      const response = await fetch(new URL(routes.app.sessions.create.href(), server.baseUrl), {
+        method: "POST",
+        redirect: "manual",
+        headers: { Cookie: client.cookie },
+        body,
+      });
+      await response.text();
+      assertEquals(response.status, 303);
+      return createInputs(sessions).at(-1);
+    };
+
+    // Without a runner the environment selector offers only the Sandbox.
+    const withoutRunner = await composerFields();
+    assertMatch(withoutRunner.html, /aria-label="Environment"/);
+    assertMatch(
+      withoutRunner.html,
+      /<input[^>]*name="environment"[^>]*type="hidden"[^>]*value="sandbox"/,
+    );
+    assertStringIncludes(withoutRunner.html, "Sandbox · built-in just-bash");
+    assertNotMatch(withoutRunner.html, /Runner · full Linux VM/);
+    assertMatch(withoutRunner.html, /data-submit-enabled="true"/);
+    withoutRunner.body.set("environment", "sandbox");
+    withoutRunner.body.set("projectId", "");
+    withoutRunner.body.set("orbSize", "medium");
+    const sandboxed = await submit(withoutRunner.body);
+    assertEquals(sandboxed?.placement, { provider: "sandbox" });
+    assertEquals(sandboxed?.project, undefined);
+    const catalogued = await store.getSessionCatalogEntry(client.workspaceId, sandboxed!.sessionId);
+    assertEquals(catalogued !== null && "projectId" in catalogued, false);
+
+    const project = await store.saveProject(client.workspaceId, {
+      name: "OpenOrb",
+      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
+    });
+    assert(project.status === "saved");
+    await store.saveGitAuthorConfiguration(client.userId, GIT_AUTHOR);
+
+    // With a runner the composer offers both and starts on the runner.
+    sessions.runnerId = (await enrollRunner(store, client.workspaceId)).runnerId;
+    const withRunner = await composerFields();
+    assertStringIncludes(withRunner.html, "Runner · full Linux VM");
+    assertMatch(
+      withRunner.html,
+      /<input[^>]*name="environment"[^>]*type="hidden"[^>]*value="runner"/,
+    );
+    assertStringIncludes(withRunner.html, "No project");
+    withRunner.body.set("environment", "runner");
+    withRunner.body.set("orbSize", "medium");
+    withRunner.body.set("projectId", project.project.id);
+    const onRunner = await submit(withRunner.body);
+    assertEquals(onRunner?.placement, { provider: "runner", runnerId: sessions.runnerId });
+    assertEquals(onRunner?.project?.id, project.project.id);
+    // Runners may also go without a project; then no Git integration is loaded.
+    withRunner.body.set("projectId", "");
+    const bare = await submit(withRunner.body);
+    assertEquals(bare?.placement, { provider: "runner", runnerId: sessions.runnerId });
+    assertEquals(bare?.project, undefined);
+    // The Sandbox never checks out a project, even one still selected in the hidden control.
+    withRunner.body.set("environment", "sandbox");
+    withRunner.body.set("projectId", project.project.id);
+    const chosen = await submit(withRunner.body);
+    assertEquals(chosen?.placement, { provider: "sandbox" });
+    assertEquals(chosen?.project, undefined);
   } finally {
     await server.close();
   }
@@ -522,6 +623,7 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
         projectId: projectResult.project.id,
         model: MODEL,
         ref: "main",
+        environment: "runner",
         runnerId: "",
         orbSize: "small",
         thinkingLevel: "max",
@@ -554,14 +656,16 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
     assertEquals(create, {
       workspaceId: client.workspaceId,
       sessionId,
-      projectId: projectResult.project.id,
+      project: {
+        id: projectResult.project.id,
+        repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
+        ref: "main",
+        branchName: "openorb/browser-test",
+        gitAuthor: { name: GIT_AUTHOR.authorName, email: GIT_AUTHOR.authorEmail },
+      },
       createdAt: create.createdAt,
-      runnerId: sessions.runnerId,
+      placement: { provider: "runner", runnerId: sessions.runnerId },
       orbSize: "small",
-      repositoryUrl: "https://github.com/meln1k/openorb-test-repo.git",
-      ref: "main",
-      branchName: "openorb/browser-test",
-      gitAuthor: { name: GIT_AUTHOR.authorName, email: GIT_AUTHOR.authorEmail },
       model: MODEL,
       thinkingLevel: "max",
       initialPrompt: INITIAL_PROMPT,
@@ -1574,9 +1678,9 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     );
     assertEquals(alternateCreate.model, OPENAI_MODEL);
     assertEquals(alternateCreate.thinkingLevel, "high");
-    assertEquals(alternateCreate.runnerId, sessions.runnerId);
+    assertEquals(alternateCreate.placement, { provider: "runner", runnerId: sessions.runnerId });
     assertEquals(alternateCreate.workspaceId, client.workspaceId);
-    assertEquals(alternateCreate.projectId, project.project.id);
+    assertEquals(alternateCreate.project?.id, project.project.id);
     assertEquals(JSON.stringify(alternateCreate).includes(OPENAI_PROVIDER_KEY), false);
 
     assertEquals(await store.deleteModelProviderCredential(client.workspaceId, PROVIDER_ID), {
@@ -1628,7 +1732,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     ]);
     assert(onlineReconciled);
     assertEquals(onlineReconciled.acceptedSessionIds, [onlineSession.id]);
-    sessions.views.set(onlineSession.id, { runnerId: enrolled.runnerId, snapshot: onlineSession });
+    sessions.views.set(onlineSession.id, onlineSession);
 
     const detailUrl = new URL(
       routes.app.sessions.detail.href({ sessionId: onlineSession.id }),
@@ -1721,10 +1825,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     );
     assert(foreignReconciled);
     // A Session of another Workspace is never addressed, even when it exists and is healthy.
-    sessions.views.set(foreignSession.id, {
-      runnerId: enrolled.runnerId,
-      snapshot: foreignSession,
-    });
+    sessions.views.set(foreignSession.id, foreignSession);
     const foreignDelete = await submitDeletion(
       server.baseUrl,
       client.cookie,
@@ -1898,7 +1999,7 @@ function submitSession(
     method: "POST",
     redirect: "manual",
     headers: { Cookie: cookie },
-    body: new URLSearchParams({ orbSize: "medium", ...body }),
+    body: new URLSearchParams({ environment: "runner", orbSize: "medium", ...body }),
   });
 }
 

@@ -14,27 +14,35 @@ import {
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Schema } from "effect";
-import type { EnvironmentProviderKind } from "./environment/provider.ts";
+import type { SessionPlacement } from "./environment/provider.ts";
 import type { DurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
+
+/**
+ * The project a Session works on: the repository its Project Checkout is cloned from and the
+ * session branch. Only a Session with a project loads Git integration (ADR 0007).
+ */
+export interface SessionProject {
+  readonly id: string;
+  readonly repositoryUrl: string;
+  readonly ref: string;
+  readonly branchName: string;
+  /** The Git identity of the user who started the Session, for its commits. */
+  readonly gitAuthor: GitAuthor;
+}
 
 /** Project, environment, and lifecycle facts the Session Durable Object owns (ADR 0006). */
 export interface SessionRecord {
   readonly workspaceId: WorkspaceId;
   readonly sessionId: string;
-  readonly projectId: string;
+  /** Absent for a Session without a project: /workspace starts empty and Git is not loaded. */
+  readonly project?: SessionProject;
   readonly createdAt: string;
   readonly initialPromptPreview: string;
-  /** Resolved once at creation; the Session keeps its provider for its lifetime. */
-  readonly environmentProvider: EnvironmentProviderKind;
+  /** Chosen at creation; the Session keeps its provider and placement for its lifetime. */
+  readonly placement: SessionPlacement;
   /** The Project's Guest Credential Opt-in at creation; only unmediated providers consult it. */
   readonly guestCredentialOptIn: boolean;
-  /** The provider placement: the runner that owns this Session's root disk. */
-  readonly runnerId: string;
   readonly orbSize: OrbSize;
-  readonly repositoryUrl: string;
-  readonly ref: string;
-  readonly branchName: string;
-  readonly gitAuthor: GitAuthor;
   readonly model: string;
   readonly initialThinkingLevel: ThinkingLevel;
   readonly environmentState: EnvironmentState;
@@ -56,11 +64,36 @@ export interface SessionRecord {
 export function readRecord(storage: DurableObjectSqliteStorage): SessionRecord | undefined {
   const row = storage.sql.exec("SELECT record FROM openorb_session WHERE id = 1").toArray()[0];
   if (row === undefined) return undefined;
-  const parsed = JSON.parse(String(row.record));
+  const {
+    environmentProvider: _provider,
+    runnerId,
+    projectId,
+    repositoryUrl,
+    ref,
+    branchName,
+    gitAuthor,
+    ...parsed
+  } = JSON.parse(String(row.record));
   return {
     ...parsed,
+    // Records written before placements were runner Sessions with a separate `runnerId`, and
+    // before optional projects every Session had flat project fields.
+    placement: parsed.placement ??
+      { provider: "runner", runnerId: Schema.decodeUnknownSync(Schema.String)(runnerId) },
+    ...(parsed.project !== undefined
+      ? { project: { ...parsed.project, gitAuthor: new GitAuthor(parsed.project.gitAuthor) } }
+      : projectId !== undefined
+      ? {
+        project: {
+          id: projectId,
+          repositoryUrl,
+          ref,
+          branchName,
+          gitAuthor: new GitAuthor(gitAuthor),
+        },
+      }
+      : {}),
     workspaceId: Schema.decodeUnknownSync(WorkspaceId)(parsed.workspaceId),
-    gitAuthor: new GitAuthor(parsed.gitAuthor),
   };
 }
 
@@ -107,7 +140,11 @@ export function publicState(record: SessionRecord, busy: boolean): RunnerSession
 export function sessionSnapshot(record: SessionRecord, busy: boolean): RunnerSessionSnapshot {
   return new RunnerSessionSnapshot({
     id: Schema.decodeUnknownSync(RunnerSessionSnapshot.fields.id)(record.sessionId),
-    projectId: Schema.decodeUnknownSync(RunnerSessionSnapshot.fields.projectId)(record.projectId),
+    ...(record.project === undefined ? {} : {
+      projectId: Schema.decodeUnknownSync(RunnerSessionSnapshot.fields.projectId)(
+        record.project.id,
+      ),
+    }),
     createdAt: record.createdAt,
     initialPromptPreview: record.initialPromptPreview,
     model: record.model,

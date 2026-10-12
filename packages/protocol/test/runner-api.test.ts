@@ -89,22 +89,29 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
     sessionId: SESSION_ID,
     workspaceId: WORKSPACE_ID,
     orbSize: "medium",
-    repositoryUrl: "https://github.com/openorb/example.git",
-    gitAuthor: { name: "OpenOrb User", email: "user@example.com" },
+    repository: {
+      url: "https://github.com/openorb/example.git",
+      gitAuthor: { name: "OpenOrb User", email: "user@example.com" },
+    },
   });
   assertEquals(created.workspaceId, WORKSPACE_ID);
-  assertThrows(() =>
-    Schema.decodeUnknownSync(CreateEnvironmentPayload)({
-      ...created,
-      repositoryUrl: "https://example.com/openorb/example.git",
-    })
+  const { repository: _repository, ...withoutProject } = created;
+  // A Session without a project sends no repository at all, never half of one.
+  assertEquals(
+    Schema.decodeUnknownSync(CreateEnvironmentPayload)(withoutProject).repository,
+    undefined,
   );
-  assertThrows(() =>
-    Schema.decodeUnknownSync(CreateEnvironmentPayload)({
-      ...created,
-      gitAuthor: { name: "OpenOrb User", email: "not-an-email" },
-    })
-  );
+  for (
+    const repository of [
+      { ...created.repository, url: "https://example.com/openorb/example.git" },
+      { ...created.repository, gitAuthor: { name: "OpenOrb User", email: "not-an-email" } },
+      { url: "https://github.com/openorb/example.git" },
+    ]
+  ) {
+    assertThrows(() =>
+      Schema.decodeUnknownSync(CreateEnvironmentPayload)({ ...created, repository })
+    );
+  }
 
   const started = Schema.decodeUnknownSync(ControlEnvironmentPayload)({
     sessionId: SESSION_ID,
@@ -144,7 +151,7 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
   assertThrows(() =>
     Schema.decodeUnknownSync(ControlEnvironmentPayload)({ ...started, action: "suspend" })
   );
-  assertEquals(RUNNER_PROTOCOL_VERSION, 27);
+  assertEquals(RUNNER_PROTOCOL_VERSION, 28);
 });
 
 Deno.test("session model runtime accepts only explicit credential transports", () => {
@@ -519,8 +526,10 @@ Deno.test("RunnerApi exposes only runner and environment procedures through RpcT
     sessionId: SESSION_ID,
     workspaceId: WORKSPACE_ID,
     orbSize: "small",
-    repositoryUrl: "https://github.com/acme/repo.git",
-    gitAuthor: new GitAuthor({ name: "Ada", email: "ada@example.com" }),
+    repository: {
+      url: "https://github.com/acme/repo.git",
+      gitAuthor: new GitAuthor({ name: "Ada", email: "ada@example.com" }),
+    },
   });
   const controlPayload = new ControlEnvironmentPayload({
     sessionId: SESSION_ID,

@@ -1,12 +1,14 @@
 import {
   DEFAULT_SESSION_THINKING_LEVEL,
   modelReferenceSchema,
+  type OrbSize,
   orbSizeSchema,
 } from "@openorb/protocol";
 import {
   initialPromptPreview,
   isSafeGitReference,
   MAX_RPC_INITIAL_PROMPT_BYTES,
+  type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { tryAsync } from "@openorb/result";
 import { validate as validateUuid } from "@std/uuid";
@@ -24,6 +26,8 @@ import type { Administrator } from "@/app/cells/workspace/api.ts";
 import { csrf } from "@/app/middleware/csrf.ts";
 import type { AppContext } from "@/app/router.ts";
 import { selectRunnerForWorkspace } from "@/app/cells/runners/runner-selection.ts";
+import type { SessionPlacement } from "@/app/cells/session/environment/provider.ts";
+import type { AppServices } from "@/app/middleware/services.ts";
 import { routes } from "@/app/routes.ts";
 import { loadSessionComposerData } from "@/app/session-composer-data.ts";
 import { isModelReference } from "@/app/model-provider-catalog.ts";
@@ -33,8 +37,9 @@ import { SessionWorkspaceLoadError } from "@/app/ui/public/shell.tsx";
 import { currentSessionRecovery } from "@/app/utils/session-recovery.ts";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
+/** Empty for a Session without a project. */
 const projectIdSchema = s.string().refine(
-  (value) => s.parseSafe(sessionIdSchema, value).success,
+  (value) => value === "" || s.parseSafe(sessionIdSchema, value).success,
   "The project identifier is invalid.",
 );
 const sessionGitRefSchema = s.string().refine(
@@ -61,10 +66,12 @@ const thinkingLevelSchema = s.union([
   s.literal("max" as const),
 ]);
 
+const environmentSchema = s.union([s.literal("sandbox" as const), s.literal("runner" as const)]);
 const createSessionSchema = f.object({
   projectId: f.field(projectIdSchema),
   model: f.field(modelReferenceSchema),
   ref: f.field(sessionGitRefSchema),
+  environment: f.field(environmentSchema),
   runnerId: f.field(s.string()),
   orbSize: f.field(orbSizeSchema),
   branchName: f.field(sessionBranchNameSchema),
@@ -112,8 +119,13 @@ export default createController(routes.app.sessions, {
 
       const { workspace } = context.services;
       const workspaceId = context.auth.identity.workspaceId;
-      const project = await workspace.getProject(workspaceId, parsed.value.projectId);
-      if (!project) {
+      // The Sandbox inspects untrusted content and never checks out a project (ADR 0007).
+      const projectId = parsed.value.environment === "sandbox" ? "" : parsed.value.projectId;
+      const project = projectId === "" ? undefined : await workspace.getProject(
+        workspaceId,
+        projectId,
+      );
+      if (project === null) {
         return await renderCreateError(
           context,
           "Project is unavailable or does not exist.",
@@ -129,16 +141,9 @@ export default createController(routes.app.sessions, {
           submitted,
         );
       }
-      const runnerId = parsed.value.runnerId.trim() || undefined;
-      const selected = await selectRunnerForWorkspace(
-        workspaceId,
-        runnerId,
-        parsed.value.orbSize,
-        workspace,
-        context.services.runnerConnections,
-      );
-      if (selected.status === "rejected") {
-        return await renderCreateError(context, selected.message, 409, submitted);
+      const placement = await placeSession(parsed.value, workspaceId, context.services);
+      if ("rejected" in placement) {
+        return await renderCreateError(context, placement.rejected, 409, submitted);
       }
 
       const [[modelRuntime, modelCredentialError], gitAuthor] = await Promise.all([
@@ -161,10 +166,10 @@ export default createController(routes.app.sessions, {
           submitted,
         );
       }
-      if (gitAuthor === null) {
+      if (project !== undefined && gitAuthor === null) {
         return await renderCreateError(
           context,
-          "Configure your Git author name and email before starting a session.",
+          "Configure your Git author name and email before starting a session with a project.",
           409,
           submitted,
         );
@@ -176,7 +181,7 @@ export default createController(routes.app.sessions, {
       const [catalog, catalogError] = await workspace.reconcileSessionManifestEntries(workspaceId, [
         {
           id: sessionId,
-          projectId: project.id,
+          ...(project === undefined ? {} : { projectId: project.id }),
           createdAt,
           initialPromptPreview: initialPromptPreview(parsed.value.initialPrompt),
         },
@@ -201,14 +206,18 @@ export default createController(routes.app.sessions, {
         context.services.sessions(sessionId).create({
           workspaceId,
           sessionId,
-          projectId: project.id,
+          ...(project === undefined || gitAuthor === null ? {} : {
+            project: {
+              id: project.id,
+              repositoryUrl: project.repositoryUrl,
+              ref: parsed.value.ref,
+              branchName: parsed.value.branchName,
+              gitAuthor: { name: gitAuthor.authorName, email: gitAuthor.authorEmail },
+            },
+          }),
           createdAt,
-          runnerId: selected.runner.id,
+          placement,
           orbSize: parsed.value.orbSize,
-          repositoryUrl: project.repositoryUrl,
-          ref: parsed.value.ref,
-          branchName: parsed.value.branchName,
-          gitAuthor: { name: gitAuthor.authorName, email: gitAuthor.authorEmail },
           model: parsed.value.model,
           thinkingLevel: parsed.value.thinkingLevel ?? DEFAULT_SESSION_THINKING_LEVEL,
           initialPrompt: parsed.value.initialPrompt,
@@ -248,12 +257,12 @@ export default createController(routes.app.sessions, {
       );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const sessionApi = context.services.sessions(sessionId);
-      const [view, viewError] = await sessionCall(sessionApi.view());
+      const [snapshot, viewError] = await sessionCall(sessionApi.view());
       if (viewError !== undefined) {
         return await sessionCommandError(context, "The session is unavailable.", 503);
       }
-      if (view === null) return await sessionCommandError(context, "Session not found.", 404);
-      if (view.snapshot.agentState === "error") {
+      if (snapshot === null) return await sessionCommandError(context, "Session not found.", 404);
+      if (snapshot.agentState === "error") {
         return await sessionCommandError(
           context,
           "The session cannot accept a prompt right now.",
@@ -262,7 +271,7 @@ export default createController(routes.app.sessions, {
       }
       const [modelRuntime, modelCredentialError] = await resolveSessionModelRuntime(
         workspaceId,
-        view.snapshot.model,
+        snapshot.model,
         context.services.workspace,
       );
       if (modelCredentialError !== undefined) {
@@ -322,8 +331,8 @@ export default createController(routes.app.sessions, {
       );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const sessionApi = context.services.sessions(sessionId);
-      const [view] = await sessionCall(sessionApi.view());
-      if (view?.snapshot.agentState !== "running") {
+      const [snapshot] = await sessionCall(sessionApi.view());
+      if (snapshot?.agentState !== "running") {
         return await sessionCommandError(context, "There is no active Pi run to abort.", 409);
       }
       const [, abortError] = await sessionCall(sessionApi.abort());
@@ -341,10 +350,10 @@ export default createController(routes.app.sessions, {
       );
       if (!session) return await sessionCommandError(context, "Session not found.", 404);
       const sessionApi = context.services.sessions(sessionId);
-      const [view] = await sessionCall(sessionApi.view());
+      const [snapshot] = await sessionCall(sessionApi.view());
       if (
-        view === undefined || view === null ||
-        view.snapshot.agentState === "paused" && view.snapshot.environmentState === "stopped"
+        snapshot === undefined || snapshot === null ||
+        snapshot.agentState === "paused" && snapshot.environmentState === "stopped"
       ) {
         return await sessionCommandError(
           context,
@@ -399,8 +408,7 @@ export default createController(routes.app.sessions, {
       }
 
       const sessionApi = context.services.sessions(sessionId);
-      const [view] = await sessionCall(sessionApi.view());
-      const snapshot = view?.snapshot;
+      const [snapshot] = await sessionCall(sessionApi.view());
       if (!snapshot || snapshot.state !== "error") {
         return await renderDetailPage(
           context,
@@ -516,13 +524,11 @@ async function renderDetailFrame(context: SessionDetailContext) {
   if (!session) return renderMissingSessionFrame(context);
   const error = new URL(context.request.url).searchParams.get("error") || undefined;
   const [view] = await sessionCall(context.services.sessions(sessionId).view());
-  const runnerId = view?.runnerId ?? null;
-  const snapshot = view?.snapshot ?? null;
+  const snapshot = view ?? null; // Unavailable and deleted Sessions both render offline.
   return context.render(
     <SessionDetailFrame
       csrfToken={getCsrfToken(context)}
       error={error}
-      runnerId={runnerId}
       session={session}
       snapshot={snapshot}
     />,
@@ -548,12 +554,36 @@ function parseSessionId(value: string): string | null {
   return s.parseSafe(sessionIdSchema, value).success ? value : null;
 }
 
+/** Where a new Session runs: the built-in Sandbox, or an available runner (ADR 0007). */
+async function placeSession(
+  input: {
+    readonly environment: "sandbox" | "runner";
+    readonly runnerId: string;
+    readonly orbSize: OrbSize;
+  },
+  workspaceId: WorkspaceId,
+  services: Pick<AppServices, "workspace" | "runnerConnections">,
+): Promise<SessionPlacement | { readonly rejected: string }> {
+  if (input.environment === "sandbox") return { provider: "sandbox" };
+  const selected = await selectRunnerForWorkspace(
+    workspaceId,
+    input.runnerId.trim() || undefined,
+    input.orbSize,
+    services.workspace,
+    services.runnerConnections,
+  );
+  return selected.status === "rejected"
+    ? { rejected: selected.message }
+    : { provider: "runner", runnerId: selected.runner.id };
+}
+
 function submittedValues(formData: FormData): SessionComposerValues {
   return {
     projectId: stringField(formData, "projectId"),
     model: stringField(formData, "model"),
     ref: stringField(formData, "ref"),
     orbSize: stringField(formData, "orbSize"),
+    environment: stringField(formData, "environment"),
     branchName: stringField(formData, "branchName"),
     thinkingLevel: stringField(formData, "thinkingLevel"),
     initialPrompt: stringField(formData, "initialPrompt"),

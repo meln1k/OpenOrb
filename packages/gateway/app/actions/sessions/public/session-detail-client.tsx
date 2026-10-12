@@ -36,6 +36,8 @@ type SessionIssueData = {
 };
 
 export type SessionDetailClientProps = {
+  /** Git integration is loaded, so the Changes panel shows the Session's Git Snapshot. */
+  readonly changes: boolean;
   readonly contextWindow: number;
   readonly csrfToken: string;
   readonly error: string | undefined;
@@ -96,37 +98,25 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
         });
       }
 
-      const sessionPage = (
-        <SessionPageScope
-          key={handle.props.sessionId}
-          csrfToken={handle.props.csrfToken}
-          initialState={handle.props.initialState}
-          initialAgentState={handle.props.initialAgentState ?? null}
-          initialEnvironmentState={handle.props.initialEnvironmentState ?? null}
-          initialIssues={handle.props.initialIssues}
-          sessionId={handle.props.sessionId}
-        >
-          <SessionChangesScope
+      const topBarAccessory = (
+        <div mix={topBarActionsStyle}>
+          <SessionVmControl csrfToken={handle.props.csrfToken} sessionId={handle.props.sessionId} />
+          <SessionDeletionControl
             csrfToken={handle.props.csrfToken}
             sessionId={handle.props.sessionId}
-          >
-            <AppWorkspaceLayout
-              topBarAccessory={
-                <div mix={topBarActionsStyle}>
-                  <SessionVmControl
-                    csrfToken={handle.props.csrfToken}
-                    sessionId={handle.props.sessionId}
-                  />
-                  <SessionDeletionControl
-                    csrfToken={handle.props.csrfToken}
-                    sessionId={handle.props.sessionId}
-                  />
-                </div>
-              }
-              topBarTitle={handle.props.sessionName}
-              rightSidebar={<SessionChangesPanel sessionId={handle.props.sessionId} />}
-            >
-              <div data-session-mobile-layout mix={mobileLayoutStyle}>
+          />
+        </div>
+      );
+      const { changes } = handle.props;
+      const layout = (
+        <AppWorkspaceLayout
+          topBarAccessory={topBarAccessory}
+          topBarTitle={handle.props.sessionName}
+          rightSidebar={changes ? <SessionChangesPanel sessionId={handle.props.sessionId} /> : null}
+        >
+          <div data-session-mobile-layout mix={mobileLayoutStyle}>
+            {changes
+              ? (
                 <nav aria-label="Session views" mix={mobileTabsStyle}>
                   <div role="tablist" aria-label="Session views" mix={mobileTabListStyle}>
                     <button
@@ -163,24 +153,32 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
                     </button>
                   </div>
                 </nav>
-                <section
-                  id={agentPanelId}
-                  role="tabpanel"
-                  aria-labelledby={agentTabId}
-                  data-active={mobileView === "agent" ? "true" : "false"}
-                  mix={mobileAgentPanelStyle}
-                >
-                  {handle.props.error
-                    ? <p role="alert" mix={errorStyle}>{handle.props.error}</p>
-                    : null}
-                  <SessionTranscript
-                    contextWindow={handle.props.contextWindow}
-                    csrfToken={handle.props.csrfToken}
-                    initialThinkingLevel={handle.props.initialThinkingLevel}
-                    sessionId={handle.props.sessionId}
-                    thinkingLevels={handle.props.thinkingLevels}
-                  />
-                </section>
+              )
+              : null}
+            <section
+              id={agentPanelId}
+              {
+                // Without Git there is only the agent: no tabs, no Changes panel.
+                ...(changes
+                  ? { role: "tabpanel", "aria-labelledby": agentTabId }
+                  : { "aria-label": "Agent" })
+              }
+              data-active={!changes || mobileView === "agent" ? "true" : "false"}
+              mix={mobileAgentPanelStyle}
+            >
+              {handle.props.error
+                ? <p role="alert" mix={errorStyle}>{handle.props.error}</p>
+                : null}
+              <SessionTranscript
+                contextWindow={handle.props.contextWindow}
+                csrfToken={handle.props.csrfToken}
+                initialThinkingLevel={handle.props.initialThinkingLevel}
+                sessionId={handle.props.sessionId}
+                thinkingLevels={handle.props.thinkingLevels}
+              />
+            </section>
+            {changes
+              ? (
                 <section
                   id={changesPanelId}
                   role="tabpanel"
@@ -189,17 +187,34 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
                   mix={mobileChangesPanelStyle}
                 >
                   {mobileView === "changes"
-                    ? (
-                      <SessionChangesPanel
-                        sessionId={handle.props.sessionId}
-                        variant="content"
-                      />
-                    )
+                    ? <SessionChangesPanel sessionId={handle.props.sessionId} variant="content" />
                     : null}
                 </section>
-              </div>
-            </AppWorkspaceLayout>
-          </SessionChangesScope>
+              )
+              : null}
+          </div>
+        </AppWorkspaceLayout>
+      );
+      const sessionPage = (
+        <SessionPageScope
+          key={handle.props.sessionId}
+          csrfToken={handle.props.csrfToken}
+          initialState={handle.props.initialState}
+          initialAgentState={handle.props.initialAgentState ?? null}
+          initialEnvironmentState={handle.props.initialEnvironmentState ?? null}
+          initialIssues={handle.props.initialIssues}
+          sessionId={handle.props.sessionId}
+        >
+          {changes
+            ? (
+              <SessionChangesScope
+                csrfToken={handle.props.csrfToken}
+                sessionId={handle.props.sessionId}
+              >
+                {layout}
+              </SessionChangesScope>
+            )
+            : layout}
         </SessionPageScope>
       );
       return <>{sessionPage}</>;

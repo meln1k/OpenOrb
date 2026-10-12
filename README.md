@@ -78,8 +78,14 @@ Start the gateway (outside an Amp orb):
 deno task dev:gateway
 ```
 
-Open the gateway origin, create the administrator, and configure a model provider,
-GitHub, and a project. Then open **Settings → Runners** and copy the enrollment command.
+Open the gateway origin, create the administrator, and configure a model provider. You can start
+sessions right away: without a runner they run in the built-in **Sandbox**, an isolated
+[just-bash](https://github.com/vercel-labs/just-bash) scratch environment inside the gateway for
+inspecting untrusted content, with no project, Git, network, or package managers; see
+[ADR 0007](docs/adr/0007-built-in-sandbox-provider.md).
+
+To work on a repository in a full Linux VM, configure GitHub, a Git author, and a project, then open
+**Settings → Runners** and copy the enrollment command.
 
 Run that command from the checkout on the runner host. It will look like:
 

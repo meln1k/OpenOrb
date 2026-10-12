@@ -30,19 +30,22 @@ export const SessionComposerBehavior = clientEntry<{ dialogId: string }>(
         );
         if (submitter && !submitter.disabled) event.target.form?.requestSubmit(submitter);
       };
-      const updateThinkingLevelColor = (event: Event) => {
-        if (
-          event.type !== "rmx:select-change" || !(event.target instanceof HTMLButtonElement) ||
-          event.target.getAttribute("aria-label") !== "Thinking level"
-        ) return;
-        const thinkingLevel = event.target.form?.elements.namedItem("thinkingLevel");
-        if (!(thinkingLevel instanceof HTMLInputElement)) return;
-        dialog.dataset.thinkingLevel = thinkingLevel.value;
+      // The dialog's styles follow these selections: the thinking-level border color, and the
+      // Sandbox hides runner orb sizes.
+      const reflectedSelections = new Map<string, "thinkingLevel" | "environment">([
+        ["Thinking level", "thinkingLevel"],
+        ["Environment", "environment"],
+      ]);
+      const reflectSelection = (event: Event) => {
+        if (!(event.target instanceof HTMLButtonElement)) return;
+        const name = reflectedSelections.get(event.target.getAttribute("aria-label") ?? "");
+        if (name === undefined) return;
+        const input = event.target.form?.elements.namedItem(name);
+        if (!(input instanceof HTMLInputElement)) return;
+        dialog.dataset[name] = input.value;
       };
       dialog.addEventListener("keydown", handleComposerKeydown, { signal: handle.signal });
-      dialog.addEventListener("rmx:select-change", updateThinkingLevelColor, {
-        signal: handle.signal,
-      });
+      dialog.addEventListener("rmx:select-change", reflectSelection, { signal: handle.signal });
     });
     return () => null;
   },

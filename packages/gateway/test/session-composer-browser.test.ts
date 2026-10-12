@@ -37,11 +37,11 @@ Deno.test({
         import { SessionComposer } from "/assets/app/ui/public/session-composer.tsx";
         import { designSystemStyle } from "/assets/app/ui/public/components/theme.ts";
         const root = createRoot(document.getElementById("app"));
-        globalThis.renderComposer = (autoOpen = false) => root.render(jsx("main", {
+        globalThis.renderComposer = (autoOpen = false, runners = true) => root.render(jsx("main", {
           mix: designSystemStyle,
           children: jsx(SessionComposer, {
             dialogId: "composer", csrfToken: "test-csrf", autoOpen,
-            hasConnectedRunner: false, hasConfiguredRunner: false,
+            hasConnectedRunner: runners, hasConfiguredRunner: runners,
             projects: [
               { id: "first", name: "First", defaultRef: "main" },
               { id: "second", name: "Second", defaultRef: "main" }
@@ -58,7 +58,8 @@ Deno.test({
             ]
           })
         }));
-        globalThis.renderComposer(new URL(location.href).searchParams.has("autoOpen"));
+        const search = new URL(location.href).searchParams;
+        globalThis.renderComposer(search.has("autoOpen"), !search.has("noRunner"));
       </script></body></html>`;
     const server = await createTestServer(async (request) => {
       if (new URL(request.url).pathname.startsWith("/assets/")) {
@@ -309,7 +310,46 @@ Deno.test({
       assertEquals((await orbSize.textContent())?.trim(), "large");
       assertEquals(await thinkingLevelInput.inputValue(), "minimal");
       assertEquals((await thinkingLevel.textContent())?.trim(), "Minimal");
-      assertEquals(await page.getByRole("button", { name: "Start session" }).isDisabled(), true);
+      // With a runner both environments are offered; the Sandbox has no orb size.
+      assertEquals(await page.getByRole("button", { name: "Start session" }).isDisabled(), false);
+      const environment = page.getByRole("button", { name: "Environment" });
+      const environmentInput = page.locator('input[name="environment"]');
+      assertEquals((await environment.textContent())?.trim(), "Runner");
+      await environment.locator("svg").first().click();
+      assertEquals(
+        await page.getByRole("listbox").getByRole("option").allTextContents(),
+        ["Runner · full Linux VM with Git", "Sandbox · built-in just-bash, no Git or network"],
+      );
+      await page.getByRole("option", { name: "Sandbox · built-in just-bash" }).click();
+      assertEquals(await environmentInput.inputValue(), "sandbox");
+      // The Sandbox has neither orb sizes nor a project to check out.
+      await orbSize.waitFor({ state: "hidden" });
+      await project.waitFor({ state: "hidden" });
+      await environment.locator("svg").first().click();
+      await page.getByRole("option", { name: "Runner · full Linux VM" }).click();
+      await orbSize.waitFor({ state: "visible" });
+      await project.waitFor({ state: "visible" });
+      assertEquals(await environmentInput.inputValue(), "runner");
+      await project.locator("svg").first().click();
+      assertEquals(
+        await page.getByRole("listbox").getByRole("option").allTextContents(),
+        ["No project", "First", "Second"],
+      );
+      await page.keyboard.press("Escape");
+      // Without a runner the Sandbox is the only environment, with no project or orb size.
+      await page.goto(new URL("?noRunner", server.baseUrl).href);
+      await page.getByRole("button", { name: "New session", exact: true }).click();
+      await environment.waitFor({ state: "visible" });
+      assertEquals((await environment.textContent())?.trim(), "Sandbox");
+      assertEquals(await environmentInput.inputValue(), "sandbox");
+      await project.waitFor({ state: "hidden" });
+      await orbSize.waitFor({ state: "hidden" });
+      await environment.locator("svg").first().click();
+      assertEquals(
+        await page.getByRole("listbox").getByRole("option").allTextContents(),
+        ["Sandbox · built-in just-bash, no Git or network"],
+      );
+      await page.keyboard.press("Escape");
       await page.setViewportSize({ width: 390, height: 844 });
       await page.goto(new URL("?autoOpen", server.baseUrl).href);
       await prompt.waitFor({ state: "visible" });

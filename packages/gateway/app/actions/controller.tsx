@@ -5,12 +5,6 @@ import { routes } from "@/app/routes.ts";
 
 export default createController(routes, {
   actions: {
-    async assets(context) {
-      return (
-        (await context.services.assets.fetch(context.request)) ??
-          new Response("Not Found", { status: 404 })
-      );
-    },
     health() {
       return Response.json({ service: "openorb-gateway", status: "ok" });
     },

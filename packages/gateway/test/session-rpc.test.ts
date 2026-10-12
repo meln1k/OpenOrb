@@ -32,13 +32,13 @@ Deno.test("Session views and Git Snapshots survive native RPC's structured clone
   const git = staleGitSnapshot();
   // SAFETY: only the two encoded results are exercised; other methods are never called.
   const rpc = {
-    view: () => Promise.resolve(structuredClone(encodeSessionView({ runnerId: "r", snapshot }))),
+    view: () => Promise.resolve(structuredClone(encodeSessionView(snapshot))),
     gitSnapshot: () => Promise.resolve(structuredClone(encodeGitSnapshot(git))),
   } as SessionRpc;
   const api = decodeSessionRpc(rpc, () => Promise.reject(new Error("unused")));
   const view = await api.view();
-  assertInstanceOf(view?.snapshot, RunnerSessionSnapshot);
-  assertEquals(view.snapshot, snapshot);
+  assertInstanceOf(view, RunnerSessionSnapshot);
+  assertEquals(view, snapshot);
   const decoded = await api.gitSnapshot();
   assertInstanceOf(decoded, SessionGitSnapshot);
   assertEquals(decoded, git);

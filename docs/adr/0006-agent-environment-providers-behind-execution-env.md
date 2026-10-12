@@ -1,8 +1,9 @@
 # Put Agent Environment Providers behind Pi's ExecutionEnv
 
-**Status:** Accepted; implemented with the OpenOrb runner as the only provider. The Session records
-its provider kind and the Project's Guest Credential Opt-in; Workspace defaults, Project overrides,
-and their storage and UI are deferred until a second provider exists.
+**Status:** Accepted; implemented with the OpenOrb runner and, since
+[ADR 0007](0007-built-in-sandbox-provider.md), the built-in Sandbox. The Session records its
+provider kind and the Project's Guest Credential Opt-in; Workspace defaults, Project overrides, and
+their storage and UI are deferred. Providers also declare whether the guest has Git.
 
 The Agent Harness sees only Pi's `ExecutionEnv` interface, unchanged. Everything that supplies it
 sits behind an OpenOrb Agent Environment Provider. That includes the OpenOrb runner, which becomes
@@ -20,8 +21,12 @@ others. The Session Durable Object decides when to refresh a Git Snapshot.
 Providers declare capabilities rather than promising the runner's guarantees:
 
 - **Persistence:** a durable root disk, a vendor snapshot, or ephemeral storage.
-- **Egress secret mediation:** whether real credentials stay outside the guest.
+- **Credentials:** `mediated` substitutes real credentials outside the guest (Egress Secret
+  Mediation), `opt-in` places them in it only with the Project's opt-in, and `none` never gives them
+  to the provider. Workspace credentials are read only for providers that receive them.
 - **Hibernatable link:** whether the Durable Object can sleep while the link stays open.
+- **Git:** whether the guest runs Git. Only a Session with a project on such a provider loads Git
+  integration ([ADR 0007](0007-built-in-sandbox-provider.md)).
 
 The runner keeps a Persistent Root Disk and Gondolin egress substitution. On a provider without
 egress mediation, the GitHub token and Workspace secrets enter the guest only through an explicit

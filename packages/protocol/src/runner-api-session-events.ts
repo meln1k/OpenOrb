@@ -40,7 +40,9 @@ export const SessionIssueCategory = Schema.Literals([
   "report",
   "operation-uncertain",
   "actor-crash",
+  /** Superseded by `environment-storage`; kept so stored issues still decode. */
   "runner-storage",
+  "environment-storage",
 ]);
 export type SessionIssueCategory = typeof SessionIssueCategory.Type;
 export const SessionRecoveryAction = Schema.Literals([

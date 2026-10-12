@@ -80,6 +80,14 @@ export default {
         await session.submit({ prompt: input.prompt, requestId: input.requestId }),
       );
     }
+    if (url.pathname === "/__workspace-credential-reads") {
+      // SAFETY: the fixture's Workspace subclass adds this disposable probe.
+      // deno-lint-ignore openorb/no-chained-type-assertions
+      const workspace = env.WORKSPACE.getByName("workspace") as unknown as {
+        credentialReads(): Promise<number>;
+      };
+      return Response.json(await workspace.credentialReads());
+    }
     if (url.pathname === "/__session/view") {
       const session = env.SESSIONS.getByName(url.searchParams.get("sessionId")!);
       return Response.json(await session.view());

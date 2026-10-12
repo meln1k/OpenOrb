@@ -14,10 +14,12 @@ export const SCRIPTED_PNG_BASE64 =
 /**
  * Runs in the checkout: proves the clone and session branch, writes a change for the Git
  * Snapshot, creates media to publish, and adds a skill that the fixed catalog must not pick up.
+ * Guests without Git or uname, such as the sandbox, report that instead.
  */
 export const SCRIPTED_GUEST_COMMAND = [
-  "git rev-parse --abbrev-ref HEAD",
-  "uname -s",
+  "(git rev-parse --abbrev-ref HEAD || echo no-git)",
+  "(uname -s || echo no-uname)",
+  "cat README.md | head -n 1",
   'printf "guest=%s\\n" "$OPENORB_GUEST"',
   "echo e2e > e2e.txt",
   "mkdir -p .openorb/artifacts .agents/skills/e2e-skill",

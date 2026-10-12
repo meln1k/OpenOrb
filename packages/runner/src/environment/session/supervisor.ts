@@ -155,8 +155,7 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
         runnerId: options.runnerId,
         createdAt: new Date().toISOString(),
         orbSize: payload.orbSize,
-        repositoryUrl: payload.repositoryUrl,
-        gitAuthor: payload.gitAuthor,
+        ...(payload.repository === undefined ? {} : { repository: payload.repository }),
       });
       yield* store.append(sessionId, 0, { type: "environment.created", definition }).pipe(
         Effect.flatMap(() => store.replay(sessionId)),

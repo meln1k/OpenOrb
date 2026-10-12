@@ -35,15 +35,24 @@ export type EnvironmentAttachNonce = typeof EnvironmentAttachNonce.Type;
 export const EnvironmentAction = Schema.Literals(["start", "stop", "restart"]);
 export type EnvironmentAction = typeof EnvironmentAction.Type;
 
+/**
+ * A project's repository as a runner sees it: it scopes GitHub credential mediation and sets the
+ * guest's Git identity. The Session Durable Object performs the clone.
+ */
+export const SessionRepository = Schema.Struct({
+  url: SessionRepositoryUrl,
+  gitAuthor: GitAuthor,
+});
+export type SessionRepository = typeof SessionRepository.Type;
+
 export class CreateEnvironmentPayload extends Schema.Class<CreateEnvironmentPayload>(
   "CreateEnvironmentPayload",
 )({
   sessionId: SessionId,
   workspaceId: WorkspaceId,
   orbSize: OrbSize,
-  /** Scopes GitHub credential mediation; the Session Durable Object performs the clone. */
-  repositoryUrl: SessionRepositoryUrl,
-  gitAuthor: GitAuthor,
+  /** Absent for a Session without a project, whose guest gets no GitHub mediation. */
+  repository: Schema.optionalKey(SessionRepository),
 }) {}
 
 export class ControlEnvironmentPayload extends Schema.Class<ControlEnvironmentPayload>(

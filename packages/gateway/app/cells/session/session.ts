@@ -10,7 +10,6 @@ import {
   GitAuthor,
   initialPromptPreview,
   type OrbSize,
-  type RunnerSessionSnapshot,
   type SessionEnvironmentRecoveryMode,
   type SessionEvent,
   type SessionGitFileAction,
@@ -36,28 +35,25 @@ import {
   openAgent,
   SessionError,
 } from "./agent.ts";
-import { type EncodedSessionView, encodeGitSnapshot, encodeSessionView } from "./api.ts";
+import { encodeGitSnapshot, encodeSessionView } from "./api.ts";
 import { WorkspaceCredentialStore } from "./credentials.ts";
 import {
+  type AgentEnvironmentCapabilities,
   type AgentEnvironmentProvider,
   type EnvironmentControlResult,
-  type EnvironmentProviderKind,
-  permittedCredentials,
-  resolveEnvironmentProvider,
+  type EnvironmentCredentials,
+  receivesCredentials,
   type SessionEnvironment,
+  type SessionPlacement,
 } from "./environment/provider.ts";
 import { type RunnerEnvironmentApi, runnerProvider } from "./environment/runner-provider.ts";
+import { sandboxHost, sandboxProvider } from "./environment/sandbox-provider.ts";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { SessionArtifactMediaType as SessionArtifactMediaTypeSchema } from "@openorb/protocol/runner-bulk-api";
 import { gatedExecutionEnv } from "./gate.ts";
 import { migrateDurableObjectDatabase } from "../migrations.ts";
 import { sessionMigrations } from "./migrations.ts";
-import {
-  discoverRepositorySkills,
-  repositorySkillsPrompt,
-  shownRepositorySkills,
-  SKILLS_PENDING_PROMPT,
-} from "./skills.ts";
+import { shownRepositorySkills } from "./skills.ts";
 import {
   asJson,
   ConversationProjection,
@@ -71,29 +67,24 @@ import { EnvironmentLinks, type SessionWebSocket } from "./link.ts";
 import {
   appendIssues,
   clearFailures,
-  provisionCheckout,
+  createWorkspace,
   ProvisioningFailure,
   type ProvisioningReporter,
-  resumeCheckout,
+  redactedValues,
   sessionIssue,
 } from "./provisioning.ts";
 import {
   gitMutationRevision,
   readGitSnapshot,
   readRecord,
+  type SessionProject,
   type SessionRecord,
   sessionSnapshot,
   sessionStage,
-  writeGitSnapshot,
   writeRecord,
 } from "./record.ts";
-import {
-  generateGitSnapshot,
-  type GitPatchChunk,
-  readGitPatchChunk,
-  staleGitSnapshot,
-  updateGitFile,
-} from "./git-snapshot.ts";
+import { type GitPatchChunk, staleGitSnapshot } from "./git-snapshot.ts";
+import { GIT_REFRESH_DEBOUNCE_MS, ProjectIntegration } from "./project.ts";
 
 export type { SessionWebSocket } from "./link.ts";
 
@@ -101,10 +92,6 @@ const context = BACKGROUND_CONTEXT;
 /** Deadman alarm: a crash during startup or an alarm leaves another wake behind. */
 const RECOVERY_MS = 30_000;
 const IDLE_STOP_MS = 15 * 60_000;
-/** Git Snapshot refreshes: debounce tool boundaries, and refresh periodically during a run. */
-const GIT_REFRESH_DEBOUNCE_MS = 1_000;
-const GIT_REFRESH_INTERVAL_MS = 15_000;
-const SKILL_DISCOVERY_TIMEOUT_MS = 10_000;
 
 export interface SessionStorage extends DurableObjectSqliteStorage {
   setAlarm(time: number): Promise<void>;
@@ -117,6 +104,8 @@ export interface SessionContext {
   readonly storage: SessionStorage;
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
   acceptWebSocket(socket: SessionWebSocket, tags?: string[]): void;
+  /** Child Durable Objects with their own storage, such as the sandbox environment. */
+  readonly facets: DurableObjectFacets;
   getWebSockets(tag?: string): SessionWebSocket[];
   waitUntil(promise: Promise<unknown>): void;
   setWebSocketAutoResponse?(pair: InstanceType<typeof WebSocketRequestResponsePair>): void;
@@ -125,31 +114,20 @@ export interface SessionContext {
 export interface CreateSessionInput {
   readonly workspaceId: string;
   readonly sessionId: string;
-  readonly projectId: string;
+  /** Absent for a Session without a project; the Sandbox never has one (ADR 0007). */
+  readonly project?: Omit<SessionProject, "gitAuthor"> & {
+    readonly gitAuthor: { readonly name: string; readonly email: string };
+  };
   /** The catalog entry's creation time, so both records agree. */
   readonly createdAt: string;
-  /** Provider choices by level; the most specific wins. Absent: the default provider. */
-  readonly environmentProvider?: {
-    readonly session?: EnvironmentProviderKind;
-    readonly project?: EnvironmentProviderKind;
-    readonly workspace?: EnvironmentProviderKind;
-  };
+  /** Where the Agent Environment runs (ADRs 0006 and 0007). */
+  readonly placement: SessionPlacement;
   /** The Project's Guest Credential Opt-in (ADR 0006). Absent: not opted in. */
   readonly guestCredentialOptIn?: boolean;
-  readonly runnerId: string;
   readonly orbSize: OrbSize;
-  readonly repositoryUrl: string;
-  readonly ref: string;
-  readonly branchName: string;
-  readonly gitAuthor: { readonly name: string; readonly email: string };
   readonly model: string;
   readonly thinkingLevel: ThinkingLevel;
   readonly initialPrompt: string;
-}
-
-export interface SessionView {
-  readonly runnerId: string;
-  readonly snapshot: RunnerSessionSnapshot;
 }
 
 /** Where one transcript media item's bytes are: R2 for published media, Harness State inline. */
@@ -167,17 +145,12 @@ export type SessionMedia =
     readonly bytes: Uint8Array;
   };
 
-interface GitRefreshState {
-  /** The refresh loop, kept alive by waitUntil while it runs. */
-  loop: Promise<void> | undefined;
-  /** When the next refresh is due, in epoch milliseconds; absent when none is requested. */
-  dueAt: number | undefined;
-  /** Ends the loop's wait early when a sooner refresh is requested. */
-  wake: (() => void) | undefined;
-}
-
 interface Runtime {
   readonly environment: SessionEnvironment;
+  /** What the Session's provider guarantees; fixed for the Session's lifetime. */
+  readonly capabilities: AgentEnvironmentCapabilities;
+  /** The project's checkout, hooks, skills, and Git Snapshots; absent without a project. */
+  readonly project: ProjectIntegration | undefined;
   readonly agent: Agent;
 }
 
@@ -201,11 +174,6 @@ export class Session extends DurableObject<Env> {
   #wakeTail: Promise<void> = Promise.resolve();
   #idle: Promise<void> | undefined;
   #admitting = 0;
-  readonly #gitRefresh: GitRefreshState = { loop: undefined, dueAt: undefined, wake: undefined };
-  /** Discovered after setup or resume; the agent sees it only while the environment runs. */
-  /** Loaded once from the first checkout, then fixed for the Session; see `#loadSkills`. */
-  #skills: string | undefined;
-  #skillsScan: Promise<void> | undefined;
 
   constructor(ctx: SessionContext, env: Env) {
     super(ctx, env);
@@ -238,20 +206,21 @@ export class Session extends DurableObject<Env> {
    */
   async create(input: CreateSessionInput): Promise<{ readonly created: boolean }> {
     if (await this.#runtime !== undefined) return { created: false };
+    if (
+      input.project !== undefined &&
+      !this.#provider(input.placement, input.sessionId).capabilities.git
+    ) throw new SessionError("This environment has no Git, so its Sessions cannot have a project.");
     this.#write({
       workspaceId: Schema.decodeUnknownSync(WorkspaceId)(input.workspaceId),
       sessionId: input.sessionId,
-      projectId: input.projectId,
+      ...(input.project === undefined
+        ? {}
+        : { project: { ...input.project, gitAuthor: new GitAuthor(input.project.gitAuthor) } }),
       createdAt: input.createdAt,
       initialPromptPreview: initialPromptPreview(input.initialPrompt),
-      environmentProvider: resolveEnvironmentProvider(input.environmentProvider ?? {}),
+      placement: input.placement,
       guestCredentialOptIn: input.guestCredentialOptIn ?? false,
-      runnerId: input.runnerId,
       orbSize: input.orbSize,
-      repositoryUrl: input.repositoryUrl,
-      ref: input.ref,
-      branchName: input.branchName,
-      gitAuthor: new GitAuthor(input.gitAuthor),
       model: input.model,
       initialThinkingLevel: input.thinkingLevel,
       environmentState: "stopped",
@@ -272,13 +241,10 @@ export class Session extends DurableObject<Env> {
     return { created: true };
   }
 
-  view(): EncodedSessionView | null {
+  view(): ReturnType<typeof encodeSessionView> | null {
     const record = this.#record;
     if (record === undefined || record.deleting) return null;
-    return encodeSessionView({
-      runnerId: record.runnerId,
-      snapshot: sessionSnapshot(record, this.#busy),
-    });
+    return encodeSessionView(sessionSnapshot(record, this.#busy));
   }
 
   async submit(
@@ -349,7 +315,7 @@ export class Session extends DurableObject<Env> {
       await this.#pause(runtime);
       const current = (await this.#runtime)!;
       // The final Git Snapshot is taken before compute stops; failure keeps the previous one.
-      await this.#refreshGit(current);
+      await current.project?.refresh();
       return await current.environment.control("stop");
     });
   }
@@ -380,10 +346,10 @@ export class Session extends DurableObject<Env> {
     sessionId: string,
     notice: EnvironmentNotice,
   ): Promise<void> {
-    const record = this.#record;
+    const placement = this.#record?.placement;
     if (
-      record === undefined || record.workspaceId !== workspaceId ||
-      record.sessionId !== sessionId || record.runnerId !== notice.runnerId
+      placement?.provider !== "runner" || placement.runnerId !== notice.runnerId ||
+      this.#record?.workspaceId !== workspaceId || this.#record.sessionId !== sessionId
     ) return;
     if (notice.type === "updated") {
       this.#update({ environmentState: notice.environment.state, environmentReachable: true });
@@ -428,38 +394,13 @@ export class Session extends DurableObject<Env> {
   async gitPatchChunk(
     input: { snapshotId: string; section: SessionGitPatchSection; offset: number },
   ): Promise<GitPatchChunk> {
-    const runtime = await this.#required();
-    const snapshot = readGitSnapshot(this.#ctx.storage);
-    if (snapshot?.snapshotId !== input.snapshotId) {
-      throw new SessionError("This Git Snapshot was replaced; refresh the changes view.");
-    }
-    if (this.#record?.environmentState !== "running" || !this.#record.environmentReachable) {
-      throw new SessionError("Start the environment to load the full diff.");
-    }
-    return await readGitPatchChunk(
-      runtime.environment.env,
-      input.snapshotId,
-      input.section,
-      input.offset,
-      snapshot.sections[input.section].fullPatchBytes ?? 0,
-      context,
-    );
+    return await (await this.#project()).patchChunk(input);
   }
 
   async updateGitFile(
     input: { action: SessionGitFileAction; path: string; previousPath?: string },
   ): Promise<{ mutationRevision: number }> {
-    const runtime = await this.#required();
-    const record = this.#record!;
-    const result = await updateGitFile(runtime.environment.env, record, input, context);
-    if (!result.ok) {
-      this.#scheduleGitRefresh(runtime, 0);
-      throw new SessionError(result.message);
-    }
-    const mutationRevision = record.gitMutationRevision + 1;
-    this.#update({ gitMutationRevision: mutationRevision });
-    this.#scheduleGitRefresh(runtime, 0);
-    return { mutationRevision };
+    return { mutationRevision: await (await this.#project()).updateFile(input) };
   }
 
   /** Published media in R2, or an inline image's bytes from Harness State. */
@@ -513,11 +454,12 @@ export class Session extends DurableObject<Env> {
 
   async webSocketMessage(socket: SessionWebSocket, message: string | ArrayBuffer): Promise<void> {
     const record = this.#record;
+    // Only a runner placement has a runner that may attach an Environment Link.
     await this.#links.message(
       socket,
       message,
-      record === undefined ? undefined : {
-        runnerId: record.runnerId,
+      record?.placement.provider !== "runner" ? undefined : {
+        runnerId: record.placement.runnerId,
         workspaceId: record.workspaceId,
         authenticate: (token) => this.#workspace.authenticateRunner(token),
       },
@@ -543,7 +485,7 @@ export class Session extends DurableObject<Env> {
       await this.#finishDeletion(runtime);
       return;
     }
-    if (this.#busy) this.#scheduleGitRefresh(runtime, 0);
+    if (this.#busy) runtime.project?.scheduleRefresh(0);
     await this.#stopIfIdle(runtime);
     await this.#wake(runtime);
   }
@@ -559,19 +501,22 @@ export class Session extends DurableObject<Env> {
     const record = this.#record;
     if (record === undefined) return undefined;
     await this.#ctx.storage.setAlarm(Date.now() + RECOVERY_MS);
-    const environment = this.#provider(record.environmentProvider).bind({
+    const provider = this.#provider(record.placement, record.sessionId);
+    const environment = provider.bind({
       workspaceId: record.workspaceId,
       sessionId: Schema.decodeUnknownSync(SessionId)(record.sessionId),
-      placement: record.runnerId,
-      repository: { url: record.repositoryUrl, gitAuthor: record.gitAuthor },
+      ...(record.project === undefined ? {} : {
+        repository: { url: record.project.repositoryUrl, gitAuthor: record.project.gitAuthor },
+      }),
     });
     const gated = gatedExecutionEnv(environment.env, () => this.#readiness);
+    let project: ProjectIntegration | undefined;
     const agent = await openAgent(this.#ctx.storage, {
       sessionId: record.sessionId,
       model: record.model,
       thinkingLevel: record.initialThinkingLevel,
-      repositoryUrl: record.repositoryUrl,
-      branchName: record.branchName,
+      project: record.project,
+      guestPrompt: provider.guestPrompt,
       models: this.agentModels(new WorkspaceCredentialStore(this.#workspace, record.workspaceId)),
       env: gated,
       controlEnvironment: async (action) => {
@@ -580,14 +525,28 @@ export class Session extends DurableObject<Env> {
         return await this.#control(runtime, action);
       },
       publishMedia: (path, description) => this.#publishMedia(gated, path, description),
-      repositorySkills: () => this.#skills ?? SKILLS_PENDING_PROMPT,
+      // Without a project there is no repository to discover skills in.
+      repositorySkills: () => project?.skillsPrompt() ?? "",
     }, context);
-    const runtime: Runtime = { environment, agent };
-    // The transcript records the catalog the model was shown; reopening restores it unchanged.
-    this.#skills ??= shownRepositorySkills((await agent.conversation.context(context)).messages);
+    if (record.project !== undefined && provider.capabilities.git) {
+      project = new ProjectIntegration(
+        record.project,
+        {
+          env: environment.env,
+          storage: this.#ctx.storage,
+          record: () => this.#record,
+          update: (update) => this.#update(update),
+          publish: (event) => this.#publish(event),
+          background: (work) => this.#background(work),
+          busy: () => this.#busy,
+        }, // The transcript records the catalog the model was shown; reopening restores it unchanged.
+        shownRepositorySkills((await agent.conversation.context(context)).messages),
+      );
+    }
+    const runtime: Runtime = { environment, capabilities: provider.capabilities, project, agent };
     await this.#watchActivity(agent);
     if (record.operation === undefined && record.environmentState === "running") {
-      this.#background(this.#loadSkills(runtime));
+      this.#background(project?.loadSkills());
     }
     if (record.operation !== undefined) {
       // An eviction interrupted setup; finish it from the start, which is idempotent.
@@ -620,7 +579,7 @@ export class Session extends DurableObject<Env> {
       if (before !== this.#busy) this.#publishState();
       if (boundary) {
         void this.#runtime.then((runtime) =>
-          runtime && this.#scheduleGitRefresh(runtime, GIT_REFRESH_DEBOUNCE_MS)
+          runtime?.project?.scheduleRefresh(GIT_REFRESH_DEBOUNCE_MS)
         );
       }
       return Promise.resolve();
@@ -635,9 +594,16 @@ export class Session extends DurableObject<Env> {
     return runtime;
   }
 
-  /** Environment creation, start, clone, branch, and setup; then the agent's tools proceed. */
+  /** The project integration for Git operations; a Session without a project has no Git. */
+  async #project(): Promise<ProjectIntegration> {
+    const { project } = await this.#required();
+    if (project === undefined) throw new SessionError("This Session has no project.");
+    return project;
+  }
+
+  /** Environment creation and start; then, with a project, its clone, branch, and setup. */
   async #provision(runtime: Runtime): Promise<void> {
-    await this.#operation("provisioning", async (reporter, secrets) => {
+    await this.#operation(runtime, "provisioning", async (reporter, credentials) => {
       const record = this.#record!;
       reporter.stage("starting-vm");
       await this.#guard(
@@ -648,20 +614,17 @@ export class Session extends DurableObject<Env> {
       await this.#guard(
         "vm-start",
         "The environment could not be started.",
-        () => this.#control(runtime, "start"),
+        () => this.#control(runtime, "start", undefined, credentials),
       );
-      const checkout = await provisionCheckout(
-        runtime.environment.env,
-        { repositoryUrl: record.repositoryUrl, ref: record.ref, branchName: record.branchName },
-        {
-          ...reporter,
-          // Skills are repository content; load them before setup, which may take minutes.
-          checkedOut: (baseCommit) => {
-            this.#update({ checkoutState: "available", baseCommit });
-            this.#background(this.#loadSkills(runtime));
-          },
-        },
-        secrets,
+      if (runtime.project === undefined) {
+        // Without a project /workspace starts empty and no project behaviour runs.
+        await createWorkspace(runtime.environment.env, context);
+        this.#update({ checkoutState: "available" });
+        return;
+      }
+      const checkout = await runtime.project.provision(
+        reporter,
+        redactedValues(credentials),
         context,
       );
       this.#update({
@@ -670,10 +633,10 @@ export class Session extends DurableObject<Env> {
         issues: appendIssues(this.#record!.issues, checkout.issues),
       });
     });
-    this.#scheduleGitRefresh(runtime, 0);
+    runtime.project?.scheduleRefresh(0);
   }
 
-  /** Starts compute and runs `.agents/resume` on an available checkout. */
+  /** Starts compute and, with a project, runs `.agents/resume` on an available checkout. */
   async #startEnvironment(
     runtime: Runtime,
     recovery?: SessionEnvironmentRecoveryMode,
@@ -685,51 +648,30 @@ export class Session extends DurableObject<Env> {
       return;
     }
     if (record.environmentState === "running" && recovery === undefined) return;
-    await this.#operation("resuming", async (reporter, secrets) => {
+    await this.#operation(runtime, "resuming", async (reporter, credentials) => {
       reporter.stage("starting-vm");
       await this.#guard(
         "vm-start",
         "The environment could not be started.",
-        () => this.#control(runtime, recovery === undefined ? "start" : "restart", recovery),
+        () =>
+          this.#control(
+            runtime,
+            recovery === undefined ? "start" : "restart",
+            recovery,
+            credentials,
+          ),
       );
-      if (this.#record!.checkoutState !== "available") return;
-      const issues = await resumeCheckout(runtime.environment.env, reporter, secrets, context);
+      if (runtime.project === undefined || this.#record!.checkoutState !== "available") return;
+      const issues = await runtime.project.resume(reporter, redactedValues(credentials), context);
       this.#update({ issues: appendIssues(this.#record!.issues, issues) });
     });
   }
 
-  /**
-   * Loads repository skills once, from the first checkout. The catalog then stays fixed for the
-   * Session: a changed system prompt section would rewrite the model's cached prompt prefix. It is
-   * kept only in the transcript, so a load the model has not yet been shown is redone after an
-   * eviction; a failed load is retried at the next start or reopen. Never blocks the agent.
-   */
-  #loadSkills(runtime: Runtime): Promise<void> {
-    const record = this.#record;
-    if (
-      this.#skills !== undefined || this.#skillsScan !== undefined ||
-      record?.checkoutState !== "available" || record.environmentState !== "running"
-    ) return this.#skillsScan ?? Promise.resolve();
-    this.#skillsScan = (async () => {
-      const [skills, failure] = await tryAsync(
-        discoverRepositorySkills(
-          runtime.environment.env,
-          withAbortSignal(AbortSignal.timeout(SKILL_DISCOVERY_TIMEOUT_MS), context),
-        ),
-        () => new SessionError("Repository skill discovery failed or timed out."),
-      );
-      if (failure !== undefined) return;
-      this.#skills ??= repositorySkillsPrompt(skills);
-    })().finally(() => {
-      this.#skillsScan = undefined;
-    });
-    return this.#skillsScan;
-  }
-
   /** Runs one setup operation with its stages and logs published, and the readiness gate held. */
   async #operation(
+    runtime: Runtime,
     operation: "provisioning" | "resuming",
-    work: (reporter: ProvisioningReporter, secrets: readonly string[]) => Promise<void>,
+    work: (reporter: ProvisioningReporter, credentials: EnvironmentCredentials) => Promise<void>,
   ): Promise<void> {
     const { promise, resolve } = Promise.withResolvers<void>();
     this.#readiness = promise;
@@ -746,7 +688,8 @@ export class Session extends DurableObject<Env> {
       log: (stream, text) => this.#publish({ type: "provisioning.log", stream, text }),
     };
     const [, failure] = await tryAsync(
-      (async () => await work(reporter, await this.#secretValues()))(),
+      // Fetched once per operation, and only for a provider that receives them.
+      (async () => await work(reporter, await this.#credentials(runtime)))(),
       (cause) => cause,
     );
     if (failure !== undefined) {
@@ -787,16 +730,23 @@ export class Session extends DurableObject<Env> {
     await this.#runtime;
   }
 
-  #provider(kind: EnvironmentProviderKind): AgentEnvironmentProvider {
-    switch (kind) {
+  #provider(placement: SessionPlacement, sessionId: string): AgentEnvironmentProvider {
+    switch (placement.provider) {
       case "runner":
         return runnerProvider({
+          runnerId: placement.runnerId,
           runners: this.#runners,
           links: this.#links.host(),
           state: () => ({
             state: this.#record?.environmentState ?? "stopped",
             reachable: this.#record?.environmentReachable ?? false,
           }),
+          recordState: (environmentState) => this.#update({ environmentState }),
+        });
+      case "sandbox":
+        return sandboxProvider({
+          host: sandboxHost(this.#ctx.facets, this.env.LOADER, sessionId),
+          state: () => this.#record?.environmentState ?? "stopped",
           recordState: (environmentState) => this.#update({ environmentState }),
         });
     }
@@ -806,43 +756,36 @@ export class Session extends DurableObject<Env> {
     runtime: Runtime,
     action: "start" | "restart",
     recovery?: SessionEnvironmentRecoveryMode,
+    credentials?: EnvironmentCredentials,
   ): Promise<EnvironmentControlResult> {
+    const permitted = credentials ?? await this.#credentials(runtime);
+    this.#touch();
+    const result = await runtime.environment.control(action, {
+      credentials: permitted,
+      ...(recovery === undefined ? {} : { recovery }),
+    });
+    // Retries a first load that failed or was interrupted; a loaded catalog is never rescanned.
+    if (result.state === "running") this.#background(runtime.project?.loadSkills());
+    return result;
+  }
+
+  /**
+   * The Workspace credentials the provider receives (ADR 0006). Providers that receive none, such
+   * as the Sandbox, cause no credential to be read or decrypted at all.
+   */
+  async #credentials(runtime: Runtime): Promise<EnvironmentCredentials> {
     const record = this.#record!;
+    if (!receivesCredentials(runtime.capabilities, record.guestCredentialOptIn)) return {};
     const [githubToken, githubError] = await this.#workspace.getGitHubToken(record.workspaceId);
     if (githubError !== undefined) throw githubError;
     const [secrets, secretsError] = await this.#workspace.getEnvironmentSecrets(
       record.workspaceId,
     );
     if (secretsError !== undefined) throw secretsError;
-    this.#touch();
-    const provider = this.#provider(record.environmentProvider);
-    const result = await runtime.environment.control(action, {
-      credentials: permittedCredentials(
-        provider.capabilities,
-        record.guestCredentialOptIn,
-        {
-          ...(githubToken === null ? {} : { githubToken }),
-          ...(secrets.length === 0 ? {} : { environmentSecrets: secrets }),
-        },
-      ),
-      ...(recovery === undefined ? {} : { recovery }),
-    });
-    // Retries a first load that failed or was interrupted; a loaded catalog is never rescanned.
-    if (result.state === "running") this.#background(this.#loadSkills(runtime));
-    return result;
-  }
-
-  /** Values redacted from setup output shown to Session viewers. */
-  async #secretValues(): Promise<readonly string[]> {
-    const record = this.#record!;
-    const [[githubToken], [secrets]] = await Promise.all([
-      this.#workspace.getGitHubToken(record.workspaceId),
-      this.#workspace.getEnvironmentSecrets(record.workspaceId),
-    ]);
-    return [
-      ...(githubToken ? [githubToken] : []),
-      ...(secrets ?? []).map((secret) => secret.value),
-    ];
+    return {
+      ...(githubToken === null ? {} : { githubToken }),
+      ...(secrets.length === 0 ? {} : { environmentSecrets: secrets }),
+    };
   }
 
   /** pi-celld's recovery loop: alarms renew bounded host waits until the durable work settles. */
@@ -948,74 +891,6 @@ export class Session extends DurableObject<Env> {
     await this.#ctx.storage.deleteAll();
     this.#record = undefined;
     this.#runtime = Promise.resolve(undefined);
-  }
-
-  // --- Git Snapshots ----------------------------------------------------------------------------
-
-  /** Requests a refresh within `delayMs`; a sooner request wins and none is postponed. */
-  #scheduleGitRefresh(runtime: Runtime, delayMs: number): void {
-    const state = this.#gitRefresh;
-    const dueAt = Date.now() + delayMs;
-    if (state.dueAt === undefined || dueAt < state.dueAt) {
-      state.dueAt = dueAt;
-      state.wake?.();
-    }
-    if (state.loop !== undefined) return;
-    state.loop = this.#gitRefreshLoop(runtime).finally(() => {
-      state.loop = undefined;
-    });
-    this.#ctx.waitUntil(state.loop);
-  }
-
-  /**
-   * Refreshes never overlap: a request during one runs once more after it, and a busy agent's
-   * changes refresh periodically. Waits stay inside this waitUntil promise, because a timer set
-   * after its request context has ended may never fire.
-   */
-  async #gitRefreshLoop(runtime: Runtime): Promise<void> {
-    const state = this.#gitRefresh;
-    while (state.dueAt !== undefined) {
-      const wait = state.dueAt - Date.now();
-      if (wait > 0) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        state.wake = resolve;
-        const timer = setTimeout(resolve, wait);
-        await promise;
-        clearTimeout(timer);
-        state.wake = undefined;
-        continue;
-      }
-      state.dueAt = undefined;
-      await this.#refreshGit(runtime);
-      if (this.#busy && state.dueAt === undefined) {
-        state.dueAt = Date.now() + GIT_REFRESH_INTERVAL_MS;
-      }
-    }
-  }
-
-  async #refreshGit(runtime: Runtime): Promise<void> {
-    const record = this.#record;
-    if (
-      record === undefined || record.checkoutState !== "available" ||
-      record.environmentState !== "running" || !record.environmentReachable ||
-      record.operation !== undefined
-    ) return;
-    const previous = readGitSnapshot(this.#ctx.storage);
-    const [snapshot, failure] = await tryAsync(
-      generateGitSnapshot(runtime.environment.env, record, context),
-      (cause) => new SessionError("The Git Snapshot could not be refreshed.", { cause }),
-    );
-    if (failure !== undefined) {
-      this.#storeGitSnapshot(previous, staleGitSnapshot(previous));
-      return;
-    }
-    this.#storeGitSnapshot(previous, snapshot);
-  }
-
-  #storeGitSnapshot(previous: SessionGitSnapshot | undefined, next: SessionGitSnapshot): void {
-    if (previous !== undefined && JSON.stringify(previous) === JSON.stringify(next)) return;
-    writeGitSnapshot(this.#ctx.storage, next);
-    this.#publish({ type: "git.snapshot.updated" });
   }
 
   // --- Events -----------------------------------------------------------------------------------
@@ -1139,8 +1014,8 @@ export class Session extends DurableObject<Env> {
     return result;
   }
 
-  #background(work: Promise<unknown>): void {
-    this.#ctx.waitUntil(work.then(() => {}, () => {}));
+  #background(work: Promise<unknown> | undefined): void {
+    if (work !== undefined) this.#ctx.waitUntil(work.then(() => {}, () => {}));
   }
 
   #touch(): void {

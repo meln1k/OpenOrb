@@ -155,15 +155,17 @@ Deno.test({
       const created = await json("/__session/create", {
         workspaceId,
         sessionId,
-        projectId: project.project.id,
+        project: {
+          id: project.project.id,
+          repositoryUrl: REPOSITORY_URL,
+          ref: "main",
+          branchName: "openorb/session-e2e",
+          gitAuthor: { name: "OpenOrb E2E", email: "e2e@example.com" },
+        },
         createdAt: new Date().toISOString(),
-        runnerId: runner.runnerId,
+        placement: { provider: "runner", runnerId: runner.runnerId },
         // The orb's 2 CPUs and 4 GiB host fit the smallest size under software emulation.
         orbSize: "tiny",
-        repositoryUrl: REPOSITORY_URL,
-        ref: "main",
-        branchName: "openorb/session-e2e",
-        gitAuthor: { name: "OpenOrb E2E", email: "e2e@example.com" },
         model: "faux/demo",
         thinkingLevel: "high",
         initialPrompt: "Run the guest command.",
@@ -253,8 +255,7 @@ Deno.test({
       const view = await (await fetch(
         new URL(`/__session/view?sessionId=${sessionId}`, gatewayUrl),
       )).json();
-      assertEquals(view.snapshot.issues, []);
-      assertEquals(view.runnerId, runner.runnerId);
+      assertEquals(view.issues, []);
     } finally {
       await Effect.runPromise(Scope.close(scope, Exit.void));
       await workspace.revokeRunner(workspaceId, runner.runnerId).catch(() => {});

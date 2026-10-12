@@ -72,15 +72,14 @@ export default createController(routes.api.sessions, {
       );
       if (!session) return apiError("Session not found.", 404);
       const sessionApi = context.services.sessions(sessionId);
-      const [view] = await sessionSpan(
+      const [snapshot] = await sessionSpan(
         "session.view",
         () => tryAsync(sessionApi.view(), () => "unavailable"),
       );
-      if (!view) return apiError("The session is unavailable.", 503);
+      if (!snapshot) return apiError("The session is unavailable.", 503);
       const [modelRuntime, modelCredentialError] = await sessionSpan(
         "credentials.read",
-        () =>
-          resolveSessionModelRuntime(workspaceId, view.snapshot.model, context.services.workspace),
+        () => resolveSessionModelRuntime(workspaceId, snapshot.model, context.services.workspace),
       );
       if (modelCredentialError !== undefined) {
         return apiError("The saved model provider credential could not be read.", 500);
