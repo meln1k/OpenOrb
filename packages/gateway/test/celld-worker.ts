@@ -4,6 +4,7 @@ import type { Env } from "../app/env.ts";
 import { Schema } from "effect";
 import { EnvironmentAction, WorkspaceId } from "@openorb/protocol/runner-api";
 import type { Request as WorkerRequest } from "@cloudflare/workers-types";
+import { createAgentModels } from "../app/cells/session/agent.ts";
 
 export { Workspace } from "./workspace/celld-worker.ts";
 export { Runners } from "../app/cells/runners/runner-registry-do.ts";
@@ -19,6 +20,21 @@ const environmentInput = Schema.Struct({
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/__codex-auth") {
+      const models = createAgentModels({
+        read: () =>
+          Promise.resolve({
+            type: "oauth",
+            access: "fixture-access-token",
+            refresh: "",
+            expires: Date.now() + 6 * 60_000,
+          }),
+        list: () => Promise.resolve([]),
+        modify: () => Promise.reject(new Error("Workspace owns refresh")),
+        delete: () => Promise.resolve(),
+      });
+      return Response.json(await models.getAuth("openai-codex"));
+    }
     if (url.pathname.startsWith("/__https/")) {
       url.protocol = "https:";
       url.pathname = url.pathname.slice("/__https".length);

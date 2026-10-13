@@ -34,6 +34,7 @@
     "npm:@earendil-works/chord@1.2.0": "1.2.0",
     "npm:@earendil-works/gondolin@0.12.0": "0.12.0",
     "npm:@earendil-works/pi-ai@1.2.0": "1.2.0",
+    "npm:@earendil-works/pi-codemode@1.2.0": "1.2.0",
     "npm:@earendil-works/pi-durable@1.2.0": "1.2.0",
     "npm:@earendil-works/pi-env@1.2.0": "1.2.0",
     "npm:@effect/language-service@*": "0.87.2",
@@ -54,6 +55,7 @@
     "npm:marked@18.0.5": "18.0.5",
     "npm:modern-tar@0.7.7": "0.7.7",
     "npm:playwright@1.55.0": "1.55.0",
+    "npm:quickjs-wasi@3.6.2": "3.6.2",
     "npm:remix@3.0.0": "3.0.0_pg@8.16.3_playwright@1.55.0",
     "npm:typescript@^6.0.3": "6.0.3",
     "npm:wrangler@4.148.0": "4.148.0_@cloudflare+workers-types@5.20261005.1"
@@ -3668,10 +3670,12 @@
         "npm:@cloudflare/workers-types@5.20261005.1",
         "npm:@earendil-works/chord@1.2.0",
         "npm:@earendil-works/pi-ai@1.2.0",
+        "npm:@earendil-works/pi-codemode@1.2.0",
         "npm:@earendil-works/pi-durable@1.2.0",
         "npm:@earendil-works/pi-env@1.2.0",
         "npm:@effect/language-service@~0.87.2",
         "npm:playwright@1.55.0",
+        "npm:quickjs-wasi@3.6.2",
         "npm:typescript@^6.0.3",
         "npm:wrangler@4.148.0"
       ]

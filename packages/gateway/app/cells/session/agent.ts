@@ -12,6 +12,9 @@ import {
   type DurableObjectSqliteStorage,
   openDurableObjectSqliteStorage,
 } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { InlineCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
+import { loadCodemodeWasm } from "./codemode-wasm.ts";
 import {
   createBashTool,
   createEditTool,
@@ -61,13 +64,26 @@ export interface Agent {
 
 export function createAgentModels(credentials: CredentialStore): Models {
   // Neither ambient environment variables nor host files may supply credentials.
-  return builtinModels({
+  const models = builtinModels({
     credentials,
     authContext: {
       env: () => Promise.resolve(undefined),
       fileExists: () => Promise.resolve(false),
     },
   });
+  // Workspace already refreshes Codex tokens. Derivation must not load Pi's Node OAuth flow
+  // through its opaque dynamic import (import.meta.url is unavailable in the celld bundle).
+  const codex = models.getProvider("openai-codex")!;
+  models.setProvider({
+    ...codex,
+    auth: {
+      oauth: {
+        ...codex.auth.oauth!,
+        toAuth: (credential) => Promise.resolve({ apiKey: credential.access }),
+      },
+    },
+  });
+  return models;
 }
 
 export function modelRef(model: string) {
@@ -184,6 +200,15 @@ export async function openAgent(
 ): Promise<Agent> {
   const models = options.models;
   const registry = createRegistry();
+  registry.install(createCodemodeExtension({
+    sandbox: new InlineCodemodeSandbox({
+      wasm: await loadCodemodeWasm(),
+      memoryLimitBytes: 32 * 1024 * 1024,
+      // Inline computation blocks the Session thread; bound it even when timers cannot run.
+      interruptBudget: 1_000,
+    }),
+    models: false,
+  }));
   registry.install({
     name: "openorb",
     tools: agentTools(options),

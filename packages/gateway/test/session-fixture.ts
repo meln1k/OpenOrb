@@ -96,9 +96,22 @@ export class ScriptedSession extends Session {
       fauxAssistantMessage("The guest answered."),
       // Later prompts report the repository skills section the model was given.
       ...Array.from(
-        { length: 8 },
+        { length: 24 },
         () => (context: TranscriptContext) => {
           const prompt = context.messages.findLast((message) => message.role === "user");
+          const content = prompt?.content ?? "";
+          // Pi permits user content as either a string or content blocks.
+          // deno-lint-ignore openorb/no-runtime-typeof
+          const text = typeof content === "string" ? content : content
+            .filter((part) => part.type === "text").map((part) => part.text).join("");
+          if (text.startsWith("Codemode: ")) {
+            return context.messages.at(-1)?.role === "toolResult"
+              ? fauxAssistantMessage(`Codemode finished: ${text}`)
+              : fauxAssistantMessage(
+                fauxToolCall("codemode", { code: text.slice("Codemode: ".length) }),
+                { stopReason: "toolUse" },
+              );
+          }
           if (JSON.stringify(prompt).includes("Check idle sandbox")) {
             return context.messages.at(-1)?.role === "toolResult"
               ? fauxAssistantMessage("Idle sandbox checked.")

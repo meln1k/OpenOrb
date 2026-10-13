@@ -11,6 +11,7 @@ const gatewayUrl = Deno.env.get("OPENORB_TEST_GATEWAY_URL");
 interface Message {
   readonly role: string;
   readonly content?: unknown;
+  readonly isError?: boolean;
 }
 
 async function json(path: string, body: unknown, timeoutMs = 60_000) {
@@ -78,6 +79,9 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
+    // The faux model below bypasses auth; separately exercise real Pi auth in the celld bundle.
+    const auth = await json("/__codex-auth", {});
+    assertEquals(auth.auth.apiKey, "fixture-access-token");
     const workspace = createRpcClient(new URL("/__workspace", gatewayUrl).href);
     await workspace.createAdministrator("sandbox-e2e-fixture-password");
     const identity = await workspace.verifyAdministratorPassword("sandbox-e2e-fixture-password");
@@ -174,6 +178,49 @@ Deno.test({
     );
     const skills = JSON.stringify(answered.findLast((message) => message.role === "assistant"));
     assert(!skills.includes("e2e-skill"), `the catalog changed after checkout: ${skills}`);
+
+    // Exercise the production codemode registration inside the real Session DO, not a mock VM.
+    for (
+      const [code, expected] of [
+        [
+          'text([typeof fetch, typeof process, typeof Deno, typeof WebAssembly].join(","));',
+          "undefined,undefined,undefined,undefined",
+        ],
+        ["while (true) {}", "interrupt budget"],
+        ["while (true) { await Promise.resolve(); }", "interrupt budget"],
+        ["const huge = new Array(8_000_000).fill(1); text(huge.length);", "out of memory"],
+        [
+          'await tools.write({path:"/workspace/codemode.txt",content:"persisted-37"}); store("check",37); text(await tools.read({path:"/workspace/codemode.txt"}));',
+          "persisted-37",
+        ],
+        ['text(load("check") + 5);', "42"],
+      ] as const
+    ) {
+      const prompt = `Codemode: ${code}`;
+      const started = performance.now();
+      await json("/__session/submit", { sessionId, prompt, requestId: crypto.randomUUID() });
+      const result = await waitForConversation(
+        sessionId,
+        (current) =>
+          current.some((message) =>
+            message.role === "assistant" && JSON.stringify(message.content).includes(
+              JSON.stringify(`Codemode finished: ${prompt}`).slice(1, -1),
+            )
+          ),
+        10_000,
+      );
+      const toolResult = result.findLast((message) => message.role === "toolResult");
+      assertEquals(
+        toolResult?.isError,
+        expected === "interrupt budget" || expected === "out of memory",
+      );
+      const output = JSON.stringify(toolResult?.content);
+      assertStringIncludes(output.toLowerCase(), expected);
+      const elapsed = Math.round(performance.now() - started);
+      console.log(`[codemode] ${expected}: ${elapsed} ms; ${output}`);
+      // A runaway must fail as a tool result and leave the same Session responsive.
+      await get("/__session/view", { sessionId });
+    }
 
     const view = await (await get("/__session/view", { sessionId })).json();
     assertEquals(view.environmentState, "running");

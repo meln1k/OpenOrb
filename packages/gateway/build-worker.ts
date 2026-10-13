@@ -59,6 +59,10 @@ async function preserveSources(directory: URL) {
   }
 }
 await preserveSources(new URL("app/", gateway));
+await Deno.writeTextFile(
+  new URL("app/cells/session/codemode-wasm.ts", output),
+  'import wasm from "quickjs-wasi/quickjs.wasm";\nexport const loadCodemodeWasm = () => Promise.resolve(wasm);\n',
+);
 // Bare @/ imports resolve only once; route them to the same generated graph as relative imports.
 scopes[gateway.href]!["@/app/"] = new URL("app/", output).href;
 const map = new URL("dist/worker-imports.json", gateway);
@@ -84,8 +88,21 @@ const bundleOptions = [
   // Remix infers client-entry export names from function.name during SSR.
   "--keep-names",
   "--external=cloudflare:workers",
+  "--external=quickjs-wasi/quickjs.wasm",
   `--import-map=${map.pathname}`,
 ];
+// celld compiles sibling WASM modules; Deno only bundles the JavaScript wrapper.
+async function packageQuickJS(bundle: URL) {
+  const code = await Deno.readTextFile(bundle);
+  await Deno.writeTextFile(
+    bundle,
+    code.replaceAll('"quickjs-wasi/quickjs.wasm"', '"./quickjs.wasm"'),
+  );
+  await Deno.copyFile(
+    new URL(import.meta.resolve("quickjs-wasi/quickjs.wasm")),
+    new URL("quickjs.wasm", bundle),
+  );
+}
 // The sandbox runs in its own Worker Loader isolate; the gateway carries its bundle as a string.
 const sandboxEntry = "app/cells/session/environment/sandbox/worker.ts";
 const sandbox = await new Deno.Command(Deno.execPath(), {
@@ -116,6 +133,7 @@ const command = new Deno.Command(Deno.execPath(), {
 });
 const result = await command.spawn().status;
 if (!result.success) Deno.exit(result.code);
+await packageQuickJS(new URL("dist/worker.js", gateway));
 await Deno.writeTextFile(
   new URL("dist/worker.d.ts", gateway),
   'export * from "../server.ts"; export { default } from "../server.ts";\n',
@@ -142,5 +160,6 @@ if (Deno.args.includes("--test")) {
   const target = new URL("test/dist/", gateway);
   await Deno.mkdir(target, { recursive: true });
   await Deno.copyFile(new URL("dist/test-worker.js", gateway), new URL("worker.js", target));
+  await packageQuickJS(new URL("worker.js", target));
   await copyTree(new URL("dist/assets/", gateway), new URL("assets/", target));
 }
