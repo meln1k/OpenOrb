@@ -41,9 +41,9 @@ const COREPACK_VERSION = "0.20.0";
 const COREPACK_SHA256 = "3fa310217f641e51dc8d7f707ded3c75261d2745e9601b190d7c16901e11624b";
 const NODE_VERSION = "26.5.1";
 const PI_ENV_LICENSE_SHA256 = "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48";
-const PI_ENV_SHA256 = "c0746be56adee00499633bb9a18f7e27a3734ceba50d50fb5b011bbd3d4d154b";
-// Must match the vendored client in packages/pi-env.
-const PI_ENV_VERSION = "1.1.0";
+const PI_ENV_SHA256 = "2f937488e93cb80486eda4cde582659fb0a5b914bd76b853b58d65b3374425a4";
+// Must remain protocol-compatible with the vendored client in packages/pi-env.
+const PI_ENV_VERSION = "1.2.0";
 const PNPM_VERSION = "11.1.3";
 const PNPM_SHA256 = "740302fe768aaf1ba680c5213bd08983f219e0bcf0c96c0c6d7be393b8620c98";
 const WEBSOCAT_VERSION = "1.14.1";

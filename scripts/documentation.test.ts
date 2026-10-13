@@ -116,7 +116,7 @@ Deno.test("operations documentation records the recovery contract and release pi
   assert(release.includes('id: "release-2"'));
   assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_2"));
   assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 28"));
-  for (const pin of ["2.9.5", "0.12.0", "1.1.0", "3.0.0"]) {
+  for (const pin of ["2.9.5", "0.12.0", "1.2.0", "3.0.0"]) {
     assert(
       operations.includes(pin) &&
         (pin === "2.9.5" || rootConfiguration.includes(pin) || runnerConfiguration.includes(pin) ||

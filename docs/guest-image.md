@@ -10,12 +10,13 @@ pnpm, Yarn, and Bun; Perl; FFmpeg and ImageMagick; Vim, tmux, and fzf; archive, 
 kernel-module utilities from `kmod`; ext4 resizing utilities from `e2fsprogs`; and text-processing
 utilities; plus agent-browser 0.35.0. From `release-2` it also contains the static pi-env 1.1.0
 Environment Daemon at `/usr/local/libexec/openorb/pi-env`, which serves the Agent Harness's file and
-shell operations over the Environment Link (ADR 0005). Its version must match the vendored client in
-`packages/pi-env`. Versions supplied by Debian come from one immutable snapshot. Standalone tools
-and npm packages are versioned and verified by SHA-256. The image intentionally excludes Amp/E2B
-internals, Deno, Go, Rust, Java, database CLIs, container and VM tooling, GUI desktop components,
-systemd, the SSH daemon, and other services. `/etc/openorb-image-release` contains the OpenOrb
-release ID.
+shell operations over the Environment Link (ADR 0005). The next image build pins pi-env 1.2.0;
+publishing it requires a new image release, not replacing `release-2`. The daemon must remain
+protocol-compatible with the vendored 1.1.0 client in `packages/pi-env`. Versions supplied by Debian
+come from one immutable snapshot. Standalone tools and npm packages are versioned and verified by
+SHA-256. The image intentionally excludes Amp/E2B internals, Deno, Go, Rust, Java, database CLIs,
+container and VM tooling, GUI desktop components, systemd, the SSH daemon, and other services.
+`/etc/openorb-image-release` contains the OpenOrb release ID.
 
 The image contains the native agent-browser CLI and browser runtime libraries, but no Chromium or
 Chrome executable. OpenOrb's `/usr/local/bin/agent-browser` wrapper downloads a browser before the

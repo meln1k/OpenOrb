@@ -106,7 +106,7 @@ export function agentTools(
       }),
       async execute({ action }) {
         const result = await options.controlEnvironment(action);
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        return { output: [{ type: "text", text: JSON.stringify(result) }] };
       },
     }),
     defineTool({
@@ -127,7 +127,7 @@ export function agentTools(
           throw new SessionError("readImage requires a PNG, JPEG, GIF, or WebP image");
         }
         return {
-          content: [
+          output: [
             { type: "text", text: `Read image file [${mimeType}]` },
             { type: "image", mimeType, data: bytes.value.toBase64() },
           ],
@@ -141,7 +141,7 @@ export function agentTools(
       parameters: Type.Object({ path: Type.String(), description: Type.String() }),
       async execute({ path, description }) {
         return {
-          content: [{ type: "text", text: await options.publishMedia(path, description) }],
+          output: [{ type: "text", text: await options.publishMedia(path, description) }],
         };
       },
     }),

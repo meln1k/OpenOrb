@@ -137,7 +137,7 @@ export function guestTools(env: RemoteExecutionEnv) {
         JSON.stringify(diagnostics),
       );
       const text =
-        result.content?.filter((part) => part.type === "text").map((part) => part.text).join("") ??
+        result.output?.filter((part) => part.type === "text").map((part) => part.text).join("") ??
           "";
       return { result, output, text, diagnostics };
     },
