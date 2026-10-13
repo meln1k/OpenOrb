@@ -128,6 +128,28 @@ Deno.test({
       Uint8Array.fromBase64(SCRIPTED_PNG_BASE64),
     );
 
+    // No explicit Stop: completion releases RAM, and the next turn restores SQLite files.
+    await json("/__session/submit", {
+      sessionId,
+      prompt: "Check idle sandbox",
+      requestId: "check-idle-sandbox",
+    });
+    const resumed = await waitForConversation(
+      sessionId,
+      (current) =>
+        current.some((message) =>
+          message.role === "assistant" && JSON.stringify(message).includes("Idle sandbox checked.")
+        ),
+      60_000,
+    );
+    const restored = JSON.stringify(resumed.findLast((message) => message.role === "toolResult"));
+    assertStringIncludes(restored, "e2e\\nreleased");
+    assert(!restored.includes("still-live"), restored);
+    assertEquals(
+      (await (await get("/__session/view", { sessionId })).json()).environmentState,
+      "running",
+    );
+
     // Stop and start again; without a project no skills catalog is ever loaded.
     assertEquals(
       (await json("/__session/control", { sessionId, action: "stop" })).state,
@@ -160,5 +182,16 @@ Deno.test({
     assertEquals(await credentialReads(), readsBefore);
     // No project means no clone and no project hooks, so nothing can fail.
     assertEquals(view.issues, []);
+  },
+});
+
+Deno.test({
+  name: "idle sandboxes reload beyond loader capacity while original WorkerStubs stay reachable",
+  ignore: gatewayUrl === undefined,
+  async fn() {
+    assertEquals(await json("/__sandbox-reload-probe", {}, 5 * 60_000), {
+      cycles: 260,
+      retained: 260,
+    });
   },
 });

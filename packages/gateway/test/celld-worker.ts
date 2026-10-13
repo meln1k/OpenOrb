@@ -68,6 +68,14 @@ export default {
       const session = env.SESSIONS.getByName(String(input.sessionId));
       return Response.json(await session.create(input));
     }
+    if (url.pathname === "/__sandbox-reload-probe" && request.method === "POST") {
+      // SAFETY: only the disposable ScriptedSession fixture exposes this probe.
+      // deno-lint-ignore openorb/no-chained-type-assertions
+      const session = env.SESSIONS.getByName(crypto.randomUUID()) as unknown as {
+        sandboxReloadProbe(): Promise<{ cycles: number; retained: number }>;
+      };
+      return Response.json(await session.sandboxReloadProbe());
+    }
     if (url.pathname === "/__session/control" && request.method === "POST") {
       const input = await request.json();
       const session = env.SESSIONS.getByName(String(input.sessionId));

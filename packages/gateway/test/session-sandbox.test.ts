@@ -1,21 +1,32 @@
 import { assert, assertEquals, assertObjectMatch, assertStringIncludes } from "@std/assert";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createEnvConformance } from "@earendil-works/pi-durable/testing";
+import { Harness } from "@earendil-works/pi-durable";
+import { createModels, type Models } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { DatabaseSync } from "node:sqlite";
 import { packTar } from "modern-tar";
 import { assertions } from "../../pi-env/test/fixtures.ts";
 import {
   sandboxExecutionEnv,
-  type SandboxHost,
   sandboxProvider,
+  type SandboxProviderOptions,
 } from "../app/cells/session/environment/sandbox-provider.ts";
+import { SANDBOX_WORKER } from "../app/cells/session/environment/sandbox/code.ts";
 import type { SandboxSql } from "../app/cells/session/environment/sandbox/persistent-fs.ts";
 import type { SandboxRpc } from "../app/cells/session/environment/sandbox/rpc.ts";
 import { Sandbox } from "../app/cells/session/environment/sandbox/worker.ts";
 import type { EnvironmentState } from "@openorb/protocol/runner-api";
 import { SessionId, WorkspaceId } from "@openorb/protocol/runner-api";
 import { GitAuthor } from "@openorb/protocol/runner-api";
+import { Session } from "../app/cells/session/session.ts";
+import type { Env } from "../app/env.ts";
+import { MemoryStorage } from "./workspace/storage.ts";
+import { migrateDurableObjectDatabase } from "../app/cells/migrations.ts";
+import { sessionMigrations } from "../app/cells/session/migrations.ts";
+import { readRecord, writeRecord } from "../app/cells/session/record.ts";
+import type { RunnerEnvironmentApi } from "../app/cells/session/environment/runner-provider.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -62,7 +73,7 @@ function openSandbox(sql: SandboxSql): SandboxRpc {
 
 function sandboxEnv(sql = memorySql(), cwd = "/workspace"): ExecutionEnv {
   const sandbox = openSandbox(sql);
-  return sandboxExecutionEnv("openorb-sandbox:test", cwd, () => sandbox);
+  return sandboxExecutionEnv("openorb-sandbox:test", cwd, (work) => work(sandbox));
 }
 
 async function gzipTar(entries: Parameters<typeof packTar>[0]): Promise<Uint8Array> {
@@ -181,23 +192,8 @@ Deno.test("sandbox commands accept login shells and argv words unparsed", async 
 });
 
 Deno.test("a stopped sandbox fails guest operations immediately and keeps its files", async () => {
-  const sql = memorySql();
-  let state: EnvironmentState = "stopped";
-  let facet: SandboxRpc | undefined;
-  const calls: string[] = [];
-  const host: SandboxHost = {
-    facet: () => facet ??= openSandbox(sql),
-    stop: () => {
-      calls.push("stop");
-      facet = undefined;
-    },
-    delete: () => calls.push("delete"),
-  };
-  const provider = sandboxProvider({
-    host,
-    state: () => state,
-    recordState: (next) => state = next,
-  });
+  using fixture = providerFixture();
+  const { provider } = fixture;
   assertObjectMatch(provider.capabilities, {
     git: false,
     credentials: "none",
@@ -222,9 +218,424 @@ Deno.test("a stopped sandbox fails guest operations immediately and keeps its fi
   const read = await environment.env.readTextFile("/workspace/a", context);
   assert(read.ok);
   assertEquals(read.value, "kept");
+  assert((await environment.env.writeFile("/tmp/transient", "gone", context)).ok);
+  environment.close();
+  assertEquals(environment.state(), "running");
+  assertEquals(await environment.env.readTextFile("/workspace/a", context), {
+    ok: true,
+    value: "kept",
+  });
+  assertEquals(await environment.env.exists("/tmp/transient", context), { ok: true, value: false });
   await environment.delete();
-  assertEquals(calls, ["stop", "delete"]);
-  assertEquals(state, "stopped");
+  assertEquals(environment.state(), "stopped");
+});
+
+/** Real provider and sandbox RPC over SQLite, with the runtime's lazy facet factory. */
+function providerFixture(wrap: (rpc: SandboxRpc) => SandboxRpc = (rpc) => rpc) {
+  const previousCode = SANDBOX_WORKER.code;
+  SANDBOX_WORKER.code = "fixture";
+  let sql = memorySql();
+  let state: EnvironmentState = "stopped";
+  let facet: SandboxRpc | undefined;
+  let reconcile = () => {};
+  const options: SandboxProviderOptions = {
+    sessionId: "test",
+    state: () => state,
+    recordState: (next) => state = next,
+    onIdle: () => reconcile(),
+    // SAFETY: fixture supplies the facet and loader methods used by the production provider.
+    // deno-lint-ignore openorb/no-chained-type-assertions
+    facets: {
+      get: (_name: string, factory: Parameters<DurableObjectFacets["get"]>[1]) => {
+        const dispatch = () => {
+          if (facet === undefined) {
+            factory();
+            facet = wrap(openSandbox(sql));
+          }
+          return facet;
+        };
+        return {
+          file: (...args: Parameters<SandboxRpc["file"]>) => dispatch().file(...args),
+          exec: (...args: Parameters<SandboxRpc["exec"]>) => dispatch().exec(...args),
+          cancel: (id: string) => dispatch().cancel(id),
+        };
+      },
+      abort: () => facet = undefined,
+      delete: () => sql = memorySql(),
+    } as unknown as DurableObjectFacets,
+    // SAFETY: the fake WorkerStub supplies only class acquisition and celld's disposal extension.
+    // deno-lint-ignore openorb/no-chained-type-assertions
+    loader: {
+      get: () => ({ getDurableObjectClass: () => ({}), dispose: () => {} }),
+    } as unknown as WorkerLoader,
+  };
+  const provider = sandboxProvider(options);
+  const binding = {
+    workspaceId: WorkspaceId.make(crypto.randomUUID()),
+    sessionId: SessionId.make(crypto.randomUUID()),
+  };
+  return {
+    provider,
+    facets: options.facets,
+    loader: options.loader,
+    bind: () => provider.bind(binding),
+    reconcile: (callback: () => void) => reconcile = callback,
+    [Symbol.dispose]: () => SANDBOX_WORKER.code = previousCode,
+  };
+}
+
+Deno.test("sandbox lifecycle is ordered across bindings and deletion cannot be undone", async () => {
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  using fixture = providerFixture((rpc) => ({
+    ...rpc,
+    exec: async (...args) => {
+      entered.resolve();
+      await finish.promise;
+      return await rpc.exec(...args);
+    },
+  }));
+  const first = fixture.bind();
+  const second = fixture.bind();
+  await first.control("start");
+  const execution = first.env.exec("echo kept > durable.txt", {}, context);
+  await entered.promise;
+  const stopped = first.control("stop");
+  const started = second.control("start");
+  assert(!(await second.env.exists("durable.txt", context)).ok);
+  finish.resolve();
+  assert((await execution).ok);
+  await stopped;
+  await started;
+  assertEquals(first.state(), "running");
+  assertEquals(await second.env.readTextFile("durable.txt", context), {
+    ok: true,
+    value: "kept\n",
+  });
+
+  const restarted = first.control("restart");
+  const deleted = second.delete();
+  await restarted;
+  await deleted;
+  await first.control("start");
+  assertEquals(second.state(), "stopped");
+  assert(!(await first.env.exists("durable.txt", context)).ok);
+});
+
+Deno.test("idle release waits for cancellation and rechecks activity before retirement", async () => {
+  const entered = Promise.withResolvers<void>();
+  const cancelled = Promise.withResolvers<void>();
+  const execSettled = Promise.withResolvers<void>();
+  const finishCancel = Promise.withResolvers<void>();
+  using fixture = providerFixture((rpc) => ({
+    ...rpc,
+    exec: async (...args) => {
+      await rpc.file("/workspace", "writeFile", ["/tmp/marker", "live"]);
+      entered.resolve();
+      await cancelled.promise;
+      const result = await rpc.exec(...args);
+      execSettled.resolve();
+      return result;
+    },
+    cancel: async () => {
+      cancelled.resolve();
+      await finishCancel.promise;
+    },
+  }));
+  const environment = fixture.bind();
+  await environment.control("start");
+  const abort = new AbortController();
+  const execution = environment.env.exec("echo done", {}, {
+    ...context,
+    abortSignal: abort.signal,
+  });
+  await entered.promise;
+  environment.close();
+  abort.abort();
+  await execSettled.promise;
+  assertEquals(await environment.env.readTextFile("/tmp/marker", context), {
+    ok: true,
+    value: "live",
+  });
+  const reconciled = Promise.withResolvers<void>();
+  fixture.reconcile(() => reconciled.resolve());
+  finishCancel.resolve();
+  await execution;
+  await reconciled.promise;
+  // A stale idle observation requests a recheck, not automatic retirement.
+  assertEquals(await environment.env.exists("/tmp/marker", context), { ok: true, value: true });
+  environment.close();
+  assertEquals(await environment.env.exists("/tmp/marker", context), { ok: true, value: false });
+});
+
+/** A model-only turn can finish even while provisioning holds the guest readiness gate. */
+class ModelOnlySession extends Session {
+  protected override agentModels(): Models {
+    const faux = fauxProvider({ models: [{ id: "demo" }], tokensPerSecond: 1_000_000 });
+    faux.setResponses(Array.from({ length: 4 }, () => fauxAssistantMessage("Answered.")));
+    const models = createModels();
+    models.setProvider(faux.provider);
+    return models;
+  }
+}
+
+function sessionFixture(
+  fixture: ReturnType<typeof providerFixture>,
+  storage = Object.assign(new MemoryStorage(), { deleteAll: () => Promise.resolve() }),
+  runners: Partial<RunnerEnvironmentApi> = {},
+) {
+  const open = Harness.open;
+  const opened = Promise.withResolvers<Harness>();
+  Harness.open = async (storage, options, context) => {
+    try {
+      const harness = await open(storage, options, context);
+      opened.resolve(harness);
+      return harness;
+    } finally {
+      Harness.open = open;
+    }
+  };
+  const pending = new Set<Promise<unknown>>();
+  const session = new ModelOnlySession({
+    storage,
+    facets: fixture.facets,
+    blockConcurrencyWhile: (callback) => callback(),
+    acceptWebSocket: () => {},
+    getWebSockets: () => [],
+    waitUntil: (promise) => {
+      pending.add(promise);
+      void promise.finally(() => pending.delete(promise));
+    },
+    // SAFETY: model-only Sessions need only these empty credentials and the supplied runner RPCs.
+    // deno-lint-ignore openorb/no-chained-type-assertions
+  }, {
+    WORKSPACE: {
+      getByName: () => ({
+        getGitHubToken: () => Promise.resolve([null, undefined]),
+        getEnvironmentSecrets: () => Promise.resolve([[], undefined]),
+      }),
+    },
+    RUNNERS: { getByName: () => runners },
+    MEDIA: {},
+    LOADER: fixture.loader,
+  } as unknown as Env);
+  return {
+    session,
+    harness: opened.promise,
+    storage,
+    create: () =>
+      session.create({
+        workspaceId: crypto.randomUUID(),
+        sessionId: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        placement: { provider: "sandbox" },
+        orbSize: "tiny",
+        model: "faux/demo",
+        thinkingLevel: "off",
+        initialPrompt: "Answer without guest tools.",
+      }),
+    drain: async () => {
+      while (pending.size !== 0) await Promise.all([...pending]);
+    },
+  };
+}
+
+Deno.test("concurrent admission persists recovery despite a held idle inspection", async () => {
+  using fixture = providerFixture();
+  const { session, storage, create, drain, harness: opened } = sessionFixture(fixture);
+  await create();
+  await drain();
+  const harness = await opened;
+  const inspect = harness.inspect.bind(harness);
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  let held = false;
+  harness.inspect = async (context) => {
+    const snapshot = await inspect(context);
+    if (!held) {
+      held = true;
+      entered.resolve();
+      await finish.promise;
+    }
+    return snapshot;
+  };
+  using _restore = {
+    [Symbol.dispose]: () => {
+      harness.inspect = inspect;
+      finish.resolve();
+    },
+  };
+  // Alarm delivery consumes the old alarm; every newly accepted input needs another one.
+  storage.alarm = null;
+  const exec = storage.sql.exec;
+  storage.sql.exec = (query, ...bindings) => {
+    if (query.includes("INSERT INTO submissions")) {
+      assert(storage.alarm !== null, "input accepted without a persisted recovery alarm");
+    }
+    return exec(query, ...bindings);
+  };
+  const first = session.submit({ prompt: "First", requestId: "first" });
+  await entered.promise;
+  const second = session.submit({ prompt: "Second", requestId: "second" });
+  // Let the second RPC reach admission while the earlier inspection is still held.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  finish.resolve();
+  const admitted = await Promise.all([first, second]);
+  assert(admitted[0]!.submissionId !== admitted[1]!.submissionId);
+  await drain();
+  assertEquals(storage.rows("SELECT COUNT(*) AS count FROM submissions"), [{ count: 3 }]);
+  await session.stop();
+  await drain();
+});
+
+Deno.test("admission during a runner idle stop resumes only after its acknowledgement", async () => {
+  using fixture = providerFixture();
+  const initial = sessionFixture(fixture);
+  await initial.create();
+  await initial.drain();
+  await initial.session.stop();
+  await initial.drain();
+  const storage = Object.assign(new MemoryStorage(), { deleteAll: () => Promise.resolve() });
+  await migrateDurableObjectDatabase(storage, sessionMigrations);
+  writeRecord(storage, {
+    ...readRecord(initial.storage)!,
+    placement: { provider: "runner", runnerId: crypto.randomUUID() },
+    environmentState: "running",
+    agentPaused: false,
+    lastActivityAt: Date.now() - 16 * 60_000,
+  });
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const actions: string[] = [];
+  const runner = sessionFixture(fixture, storage, {
+    controlEnvironment: async ({ payload }) => {
+      actions.push(payload.action);
+      if (payload.action === "stop") {
+        entered.resolve();
+        await finish.promise;
+      } else {
+        assertEquals(
+          storage.rows(
+            "SELECT json_extract(record, '$.environmentState') AS state FROM openorb_session",
+          ),
+          [{ state: "stopped" }],
+        );
+      }
+      return {
+        status: "accepted",
+        acknowledgement: {
+          state: payload.action === "stop" ? "stopped" : "running",
+          forced: false,
+        },
+      };
+    },
+  });
+  const alarm = runner.session.alarm();
+  await entered.promise;
+  await runner.session.submit({ prompt: "Resume", requestId: "resume-during-stop" });
+  assertEquals(actions, ["stop"]);
+  finish.resolve();
+  await alarm;
+  await runner.drain();
+  assertEquals(actions, ["stop", "start"]);
+  assertEquals(runner.session.view()?.environmentState, "running");
+  await runner.session.stop();
+  await runner.drain();
+});
+
+Deno.test("idle stop rechecks provisioning that starts during inspection", async () => {
+  let holdProvisioning = false;
+  const provisioning = Promise.withResolvers<void>();
+  const finishProvisioning = Promise.withResolvers<void>();
+  using fixture = providerFixture((rpc) => ({
+    ...rpc,
+    file: async (...args) => {
+      if (holdProvisioning && args[1] === "createDir") {
+        provisioning.resolve();
+        await finishProvisioning.promise;
+      }
+      return await rpc.file(...args);
+    },
+  }));
+  const test = sessionFixture(fixture);
+  await test.create();
+  await test.drain();
+  const harness = await test.harness;
+  const inspect = harness.inspect.bind(harness);
+  const inspected = Promise.withResolvers<void>();
+  const finishInspection = Promise.withResolvers<void>();
+  harness.inspect = async (context) => {
+    const snapshot = await inspect(context);
+    inspected.resolve();
+    await finishInspection.promise;
+    return snapshot;
+  };
+  const now = Date.now;
+  Date.now = () => now() + 16 * 60_000;
+  using _restore = {
+    [Symbol.dispose]: () => {
+      Date.now = now;
+      harness.inspect = inspect;
+      finishInspection.resolve();
+      finishProvisioning.resolve();
+    },
+  };
+  const alarm = test.session.alarm();
+  await inspected.promise;
+  holdProvisioning = true;
+  await test.session.retry("retry-provisioning");
+  await provisioning.promise;
+  finishInspection.resolve();
+  // Alarm must finish without starting a stop that waits on the held provisioning RPC.
+  await Promise.race([
+    alarm,
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("idle stop drained active provisioning")),
+        5_000,
+      );
+      void alarm.finally(() => clearTimeout(timer));
+    }),
+  ]);
+  assertEquals(test.session.view()?.environmentState, "running");
+  finishProvisioning.resolve();
+  await test.drain();
+  await test.session.stop();
+  await test.drain();
+});
+
+Deno.test("provisioning completion releases sandbox after a model-only turn", async () => {
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  using fixture = providerFixture((rpc) => ({
+    ...rpc,
+    file: async (...args) => {
+      if (args[1] === "createDir") {
+        await rpc.file("/workspace", "writeFile", ["/tmp/provisioning-marker", "live"]);
+        entered.resolve();
+        await finish.promise;
+      }
+      return await rpc.file(...args);
+    },
+  }));
+  const { session, storage, create, drain } = sessionFixture(fixture);
+  await create();
+  await entered.promise;
+  // Wait on observable durable completion, not on the blocked infrastructure operation.
+  while (storage.rows("SELECT id FROM submissions WHERE status = 'done'").length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  finish.resolve();
+  await drain();
+  const guest = fixture.bind();
+  await guest.control("start");
+  assertEquals(await guest.env.exists("/tmp/provisioning-marker", context), {
+    ok: true,
+    value: false,
+  });
+  assertEquals(session.view()?.environmentState, "running");
+  await session.stop();
+  await drain();
 });
 
 Deno.test("files larger than one SQLite value survive a restart, appends included", async () => {
@@ -294,7 +705,7 @@ Deno.test("appends store only their new bytes and survive compaction", async () 
 Deno.test("a reader from before a sandbox restart cannot read another file", async () => {
   const sql = memorySql();
   let sandbox = openSandbox(sql);
-  const env = sandboxExecutionEnv("openorb-sandbox:test", "/workspace", () => sandbox);
+  const env = sandboxExecutionEnv("openorb-sandbox:test", "/workspace", (work) => work(sandbox));
   assert((await env.writeFile("public.txt", "public", context)).ok);
   assert((await env.writeFile("secret.txt", "secret", context)).ok);
   const before = await env.openBinaryReader("public.txt", undefined, context);

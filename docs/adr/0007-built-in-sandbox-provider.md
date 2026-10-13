@@ -31,6 +31,13 @@ reading their paths; readers stay in the facet behind random handles that a rest
 recognize. File watching is not supported. Abort and timeouts are cooperative: just-bash stops at
 its next statement, and a command busy inside one built-in runs until the call's CPU limit.
 
+When the agent becomes idle after a run and its queued follow-ups, the Session releases the sandbox
+facet and explicitly disposes its loaded Worker, freeing its loader admission slot without waiting
+for garbage collection. Outstanding RPC and cancellation work must settle before disposal. The
+environment remains logically running: the next guest operation lazily loads a fresh isolated Worker
+and restores the filesystem from SQLite. Readers, shell memory, and `/tmp` do not survive this
+release; persisted files do. The no-bindings, no-network, and CPU-limit settings are unchanged.
+
 | Capability        | Sandbox                                                         |
 | ----------------- | --------------------------------------------------------------- |
 | Persistence       | `virtual-disk`: files survive Stop Session; processes never run |

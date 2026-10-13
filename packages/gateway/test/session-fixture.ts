@@ -5,7 +5,10 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Session } from "../app/cells/session/session.ts";
+import { Session, type SessionContext } from "../app/cells/session/session.ts";
+import { sandboxProvider } from "../app/cells/session/environment/sandbox-provider.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { type EnvironmentState, SessionId, WorkspaceId } from "@openorb/protocol/runner-api";
 
 /** A 1×1 PNG the scripted model publishes as Session media. */
 export const SCRIPTED_PNG_BASE64 =
@@ -25,6 +28,7 @@ export const SCRIPTED_GUEST_COMMAND = [
   "mkdir -p .openorb/artifacts .agents/skills/e2e-skill",
   `printf '%s\\n' '---' 'name: e2e-skill' 'description: Proves skill discovery.' '---' > .agents/skills/e2e-skill/SKILL.md`,
   `printf '%s' '${SCRIPTED_PNG_BASE64}' | base64 -d > .openorb/artifacts/dot.png`,
+  "echo temporary > /tmp/openorb-idle-marker",
   "echo e2e-done",
 ].join(" && ");
 
@@ -34,6 +38,51 @@ export const SCRIPTED_GUEST_COMMAND = [
  * credentials.
  */
 export class ScriptedSession extends Session {
+  /** Disposable runtime probe: retained original handles prevent GC from hiding a loader leak. */
+  async sandboxReloadProbe(): Promise<{ cycles: number; retained: number }> {
+    const retained: ReturnType<WorkerLoader["get"]>[] = [];
+    let state: EnvironmentState = "stopped";
+    const sessionId = SessionId.make(crypto.randomUUID());
+    const provider = sandboxProvider({
+      // SAFETY: Session's constructor receives this context; the Deno runtime shim types it unknown.
+      facets: (this.ctx as SessionContext).facets,
+      sessionId,
+      state: () => state,
+      recordState: (next) => state = next,
+      onIdle: () => {},
+      loader: {
+        get: (...args) => {
+          const worker = this.env.LOADER.get(...args);
+          retained.push(worker);
+          return worker;
+        },
+        load: (code) => this.env.LOADER.load(code),
+      },
+    });
+    const environment = provider.bind({
+      workspaceId: WorkspaceId.make(crypto.randomUUID()),
+      sessionId,
+    });
+    await environment.control("start");
+    for (let cycle = 0; cycle < 260; cycle++) {
+      const previous = await environment.env.readTextFile("/workspace/cycle", BACKGROUND_CONTEXT);
+      if (cycle > 0 && (!previous.ok || previous.value !== String(cycle - 1))) {
+        throw new Error(`Persistent state lost at cycle ${cycle}`);
+      }
+      const temporary = await environment.env.exists("/tmp/marker", BACKGROUND_CONTEXT);
+      if (!temporary.ok || temporary.value) {
+        throw new Error(`Idle release failed at cycle ${cycle}`);
+      }
+      for (const path of ["/workspace/cycle", "/tmp/marker"]) {
+        const result = await environment.env.writeFile(path, String(cycle), BACKGROUND_CONTEXT);
+        if (!result.ok) throw result.error;
+      }
+      environment.close();
+    }
+    await environment.delete();
+    return { cycles: 260, retained: retained.length };
+  }
+
   protected override agentModels(_credentials: CredentialStore): Models {
     const faux = fauxProvider({ models: [{ id: "demo" }], tokensPerSecond: 1_000_000 });
     faux.setResponses([
@@ -48,8 +97,21 @@ export class ScriptedSession extends Session {
       // Later prompts report the repository skills section the model was given.
       ...Array.from(
         { length: 8 },
-        () => (context: TranscriptContext) =>
-          fauxAssistantMessage(`Skills: ${repositorySkillsSection(context)}`),
+        () => (context: TranscriptContext) => {
+          const prompt = context.messages.findLast((message) => message.role === "user");
+          if (JSON.stringify(prompt).includes("Check idle sandbox")) {
+            return context.messages.at(-1)?.role === "toolResult"
+              ? fauxAssistantMessage("Idle sandbox checked.")
+              : fauxAssistantMessage(
+                fauxToolCall("bash", {
+                  command:
+                    "cat e2e.txt && (test -e /tmp/openorb-idle-marker && echo still-live || echo released)",
+                }),
+                { stopReason: "toolUse" },
+              );
+          }
+          return fauxAssistantMessage(`Skills: ${repositorySkillsSection(context)}`);
+        },
       ),
     ]);
     const models = createModels();

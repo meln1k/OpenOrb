@@ -78,7 +78,7 @@ export interface SessionEnvironment {
     options?: EnvironmentControlOptions,
   ) => Promise<EnvironmentControlResult>;
   readonly delete: () => Promise<void>;
-  /** Releases in-memory resources such as an open Environment Link; compute is unaffected. */
+  /** Releases in-memory resources; persistent state and logical availability are unaffected. */
   readonly close: () => void;
 }
 

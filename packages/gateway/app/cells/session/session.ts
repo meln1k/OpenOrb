@@ -47,7 +47,7 @@ import {
   type SessionPlacement,
 } from "./environment/provider.ts";
 import { type RunnerEnvironmentApi, runnerProvider } from "./environment/runner-provider.ts";
-import { sandboxHost, sandboxProvider } from "./environment/sandbox-provider.ts";
+import { sandboxProvider } from "./environment/sandbox-provider.ts";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { SessionArtifactMediaType as SessionArtifactMediaTypeSchema } from "@openorb/protocol/runner-bulk-api";
 import { gatedExecutionEnv } from "./gate.ts";
@@ -173,7 +173,8 @@ export class Session extends DurableObject<Env> {
   #operations: Promise<unknown> = Promise.resolve();
   #wakeTail: Promise<void> = Promise.resolve();
   #idle: Promise<void> | undefined;
-  #admitting = 0;
+  #idleStop: Promise<void> | undefined;
+  #sandbox: AgentEnvironmentProvider | undefined;
 
   constructor(ctx: SessionContext, env: Env) {
     super(ctx, env);
@@ -255,34 +256,34 @@ export class Session extends DurableObject<Env> {
     if (!/^[A-Za-z0-9-]{1,100}$/.test(input.requestId) || !input.prompt.trim()) {
       throw new SessionError("A prompt and a request ID are required.");
     }
-    // A retried request only observes its admission; even a duplicate submit resumes scheduling.
-    const existing = await agent.storage.submissionByRequest(
-      agent.conversation.id,
-      input.requestId,
-      context,
-    );
-    if (existing !== undefined) return { submissionId: existing.id };
     if (input.thinkingLevel !== undefined) await this.setThinkingLevel(input.thinkingLevel);
-    // A prompt resumes a paused agent and wakes stopped compute, as the runner did.
-    if (this.#record?.agentPaused) this.#update({ agentPaused: false });
-    if (this.#record?.environmentState === "stopped" && this.#record.operation === undefined) {
-      this.#background(this.#serialized(() => this.#startEnvironment(runtime)));
-    }
-    await using admission = new AsyncDisposableStack();
-    this.#admitting++;
-    admission.defer(async () => {
-      this.#admitting--;
-      await this.#wake(runtime);
+    const submission = await this.#schedule(async () => {
+      // Admission and idle alarm decisions are ordered, but never wait for model execution.
+      await this.#ctx.storage.setAlarm(Date.now() + RECOVERY_MS);
+      // A retried request observes its original admission and still resumes scheduling.
+      const existing = await agent.storage.submissionByRequest(
+        agent.conversation.id,
+        input.requestId,
+        context,
+      );
+      if (existing !== undefined) return existing;
+      // A prompt resumes a paused agent and wakes stopped compute, as the runner did.
+      if (this.#record?.agentPaused) this.#update({ agentPaused: false });
+      if (
+        this.#record?.operation === undefined &&
+        (this.#record?.environmentState === "stopped" || this.#idleStop !== undefined)
+      ) {
+        this.#background(this.#serialized(() => this.#startEnvironment(runtime)));
+      }
+      this.#touch();
+      return await agent.conversation.submit({
+        type: "input",
+        content: input.prompt,
+        requestId: input.requestId,
+        whenBusy: "followUp",
+      }, context);
     });
-    // Persist recovery before Pi can accept this input.
     await this.#wake(runtime);
-    this.#touch();
-    const submission = await agent.conversation.submit({
-      type: "input",
-      content: input.prompt,
-      requestId: input.requestId,
-      whenBusy: "followUp",
-    }, context);
     return { submissionId: submission.id };
   }
 
@@ -577,6 +578,9 @@ export class Session extends DurableObject<Env> {
           event.type === "run_end";
       }
       if (before !== this.#busy) this.#publishState();
+      if (before && !this.#busy) {
+        this.#background(this.#runtime.then((runtime) => runtime && this.#wake(runtime)));
+      }
       if (boundary) {
         void this.#runtime.then((runtime) =>
           runtime?.project?.scheduleRefresh(GIT_REFRESH_DEBOUNCE_MS)
@@ -647,7 +651,10 @@ export class Session extends DurableObject<Env> {
       await this.#provision(runtime);
       return;
     }
-    if (record.environmentState === "running" && recovery === undefined) return;
+    if (
+      record.environmentState === "running" && recovery === undefined &&
+      this.#idleStop === undefined
+    ) return;
     await this.#operation(runtime, "resuming", async (reporter, credentials) => {
       reporter.stage("starting-vm");
       await this.#guard(
@@ -682,6 +689,7 @@ export class Session extends DurableObject<Env> {
       resolve();
       const { operation: _operation, operationStage: _stage, ...settled } = this.#record!;
       this.#write(settled);
+      this.#background(this.#wake(runtime));
     });
     const reporter: ProvisioningReporter = {
       stage: (stage) => this.#update({ operationStage: stage }),
@@ -689,7 +697,11 @@ export class Session extends DurableObject<Env> {
     };
     const [, failure] = await tryAsync(
       // Fetched once per operation, and only for a provider that receives them.
-      (async () => await work(reporter, await this.#credentials(runtime)))(),
+      (async () => {
+        // Admission can request resume before the runner acknowledges the preceding idle stop.
+        await this.#idleStop;
+        await work(reporter, await this.#credentials(runtime));
+      })(),
       (cause) => cause,
     );
     if (failure !== undefined) {
@@ -744,8 +756,15 @@ export class Session extends DurableObject<Env> {
           recordState: (environmentState) => this.#update({ environmentState }),
         });
       case "sandbox":
-        return sandboxProvider({
-          host: sandboxHost(this.#ctx.facets, this.env.LOADER, sessionId),
+        return this.#sandbox ??= sandboxProvider({
+          facets: this.#ctx.facets,
+          loader: this.env.LOADER,
+          sessionId,
+          onIdle: () => {
+            // Transport work can outlive durable task completion. Recheck current activity
+            // rather than releasing from an earlier idle observation.
+            this.#background(this.#runtime.then((current) => current && this.#wake(current)));
+          },
           state: () => this.#record?.environmentState ?? "stopped",
           recordState: (environmentState) => this.#update({ environmentState }),
         });
@@ -788,21 +807,39 @@ export class Session extends DurableObject<Env> {
     };
   }
 
+  /** Orders durable admission and scheduling decisions, never the agent run or transport drain. */
+  #schedule<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.#wakeTail.then(work);
+    this.#wakeTail = next.then(() => {}, () => {});
+    return next;
+  }
+
   /** pi-celld's recovery loop: alarms renew bounded host waits until the durable work settles. */
   #wake(runtime: Runtime): Promise<void> {
-    const wake = this.#wakeTail.then(async () => {
+    return this.#schedule(async () => {
       const { harness, conversation } = runtime.agent;
+      const runtimePromise = this.#runtime;
       const { tasks, scheduling } = await harness.inspect(context);
       if (scheduling === "closing") return;
+      // A replaced harness cannot make idle decisions for the new runtime.
+      if (runtimePromise !== this.#runtime) return;
       const record = this.#record;
-      if (record === undefined || record.agentPaused) {
+      if (record === undefined) {
         await this.#ctx.storage.deleteAlarm();
         return;
       }
-      if (tasks.length > 0) this.#touch();
-      if (!tasks.length && !this.#admitting) {
+      if (!tasks.length) {
+        if (
+          record.placement.provider === "sandbox" && !this.#busy && !record.deleting &&
+          record.operation === undefined
+        ) {
+          runtime.environment.close();
+        }
         // Idle: wake only to stop compute once the idle period has passed.
-        if (record.environmentState === "running" || record.operation !== undefined) {
+        if (
+          !record.agentPaused &&
+          (record.environmentState === "running" || record.operation !== undefined)
+        ) {
           await this.#ctx.storage.setAlarm(
             Math.max(record.lastActivityAt + IDLE_STOP_MS, Date.now() + RECOVERY_MS),
           );
@@ -811,12 +848,16 @@ export class Session extends DurableObject<Env> {
         }
         return;
       }
+      if (record.agentPaused) {
+        await this.#ctx.storage.deleteAlarm();
+        return;
+      }
+      this.#touch();
       const live = await harness.snapshot(LiveDoc, conversation.id, context);
       const at = live?.generation?.deferred?.pollAt ?? live?.generation?.retry?.at;
-      const sleeping = !this.#idle && !this.#admitting && at !== undefined &&
+      const sleeping = !this.#idle && at !== undefined &&
         at - Date.now() > 60_000;
       await this.#ctx.storage.setAlarm(sleeping ? at : Date.now() + RECOVERY_MS);
-      if (!tasks.length) return;
       harness.resume();
       if (sleeping || this.#idle || tasks.every((task) => task.record.background)) return;
       // Bound the host wait, not the durable turn; an alarm renews it if needed.
@@ -832,17 +873,26 @@ export class Session extends DurableObject<Env> {
         });
       this.#ctx.waitUntil(this.#idle);
     });
-    this.#wakeTail = wake.then(() => {}, () => {});
-    return wake;
   }
 
   async #stopIfIdle(runtime: Runtime): Promise<void> {
-    const record = this.#record;
-    if (record?.environmentState !== "running" || record.operation !== undefined) return;
-    if (this.#idle || this.#admitting || Date.now() - record.lastActivityAt < IDLE_STOP_MS) return;
-    const { tasks } = await runtime.agent.harness.inspect(context);
-    if (tasks.some((task) => !task.record.background)) return;
-    await tryAsync(runtime.environment.control("stop"), () => {});
+    let stopping: Promise<void> | undefined;
+    await this.#schedule(async () => {
+      const runtimePromise = this.#runtime;
+      const { tasks } = await runtime.agent.harness.inspect(context);
+      if (runtimePromise !== this.#runtime || tasks.some((task) => !task.record.background)) return;
+      // Setup and explicit control can change eligibility while the inspection is in flight.
+      const record = this.#record;
+      if (record?.environmentState !== "running" || record.operation !== undefined) return;
+      if (this.#idle || this.#idleStop || Date.now() - record.lastActivityAt < IDLE_STOP_MS) return;
+      // Begin stopping while admission is ordered; the potentially long drain is outside it.
+      stopping = tryAsync(runtime.environment.control("stop"), () => {}).then(() => {});
+      this.#idleStop = stopping;
+    });
+    if (stopping !== undefined) {
+      await stopping;
+      if (this.#idleStop === stopping) this.#idleStop = undefined;
+    }
   }
 
   async #publishMedia(env: ExecutionEnv, path: string, description: string): Promise<string> {
