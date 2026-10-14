@@ -6,17 +6,17 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/app/ui/public/components/alert-dialog.tsx";
-import { Button } from "@/app/ui/public/components/button.tsx";
+} from "../../../ui/public/components/alert-dialog.tsx";
+import { Button } from "../../../ui/public/components/button.tsx";
 import {
   Card,
   CardAction,
   CardDescription,
   CardFooter,
   CardHeader,
-} from "@/app/ui/public/components/card.tsx";
-import { Item, ItemActions, ItemContent, ItemTitle } from "@/app/ui/public/components/item.tsx";
-import { media } from "@/app/ui/public/responsive.ts";
+} from "../../../ui/public/components/card.tsx";
+import { Item, ItemActions, ItemContent, ItemTitle } from "../../../ui/public/components/item.tsx";
+import { media } from "../../../ui/public/responsive.ts";
 import {
   listStyle,
   sectionCopyStyle,
@@ -31,20 +31,20 @@ import type {
 } from "../settings-navigation.tsx";
 
 export function RunnersSection(
-  handle: Handle<
-    {
-      actionHref: string;
-      csrfToken: string;
-      enrollmentCommand: SettingsEnrollmentCommand;
-      runners: SettingsRunner[];
-    }
-  >,
+  handle: Handle<{
+    actionHref: string;
+    csrfToken: string;
+    enrollmentCommand: SettingsEnrollmentCommand;
+    runners: SettingsRunner[];
+  }>,
 ) {
   const { actionHref, csrfToken, enrollmentCommand, runners } = handle.props;
   return () => (
     <section aria-labelledby="runners-heading" mix={settingsSectionStyle}>
       <header mix={sectionHeaderStyle}>
-        <h2 id="runners-heading" mix={sectionHeadingStyle}>Runner enrollment</h2>
+        <h2 id="runners-heading" mix={sectionHeadingStyle}>
+          Runner enrollment
+        </h2>
         <p mix={sectionCopyStyle}>Run from your OpenOrb checkout to enroll a runner.</p>
       </header>
       <section aria-label="Runner enrollment command">
@@ -58,20 +58,20 @@ export function RunnersSection(
         <header mix={runnerListHeaderStyle}>
           <h3 mix={tableTitleStyle}>Enrolled runners</h3>
         </header>
-        {runners.length === 0
-          ? <p mix={runnerEmptyStyle}>No runners enrolled.</p>
-          : (
-            <div mix={runnerCardsStyle}>
-              {runners.map((runner) => (
-                <RunnerCard
-                  key={runner.id}
-                  actionHref={actionHref}
-                  csrfToken={csrfToken}
-                  runner={runner}
-                />
-              ))}
-            </div>
-          )}
+        {runners.length === 0 ? (
+          <p mix={runnerEmptyStyle}>No runners enrolled.</p>
+        ) : (
+          <div mix={runnerCardsStyle}>
+            {runners.map((runner) => (
+              <RunnerCard
+                key={runner.id}
+                actionHref={actionHref}
+                csrfToken={csrfToken}
+                runner={runner}
+              />
+            ))}
+          </div>
+        )}
       </section>
     </section>
   );
@@ -89,9 +89,7 @@ function RunnerCard(
       <CardHeader mix={runnerCardHeaderStyle}>
         <div mix={runnerIdentityStyle}>
           <h4 mix={runnerNameStyle}>{runner.name}</h4>
-          <CardDescription mix={runnerSpecsStyle}>
-            {formatRunnerSpecs(runner)}
-          </CardDescription>
+          <CardDescription mix={runnerSpecsStyle}>{formatRunnerSpecs(runner)}</CardDescription>
         </div>
         <CardAction mix={runnerCardActionStyle}>
           <span data-status={runner.status} mix={runnerStatusStyle}>
@@ -109,47 +107,43 @@ function RunnerCard(
         <span mix={runnerSessionsStyle}>
           {runner.capacity ? formatRunnerSessions(runner.capacity) : "No live session data"}
         </span>
-        {runner.status === "revoked"
-          ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="destructive"
-              commandFor={deleteDialogId}
-              command="show-modal"
-            >
-              Delete
-            </Button>
-          )
-          : (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              commandFor={revokeDialogId}
-              command="show-modal"
-            >
-              Revoke
-            </Button>
-          )}
-      </CardFooter>
-      {runner.status === "revoked"
-        ? (
-          <DeleteRunnerDialog
-            actionHref={actionHref}
-            csrfToken={csrfToken}
-            dialogId={deleteDialogId}
-            runner={runner}
-          />
-        )
-        : (
-          <RevokeRunnerDialog
-            actionHref={actionHref}
-            csrfToken={csrfToken}
-            dialogId={revokeDialogId}
-            runner={runner}
-          />
+        {runner.status === "revoked" ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="destructive"
+            commandFor={deleteDialogId}
+            command="show-modal"
+          >
+            Delete
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            commandFor={revokeDialogId}
+            command="show-modal"
+          >
+            Revoke
+          </Button>
         )}
+      </CardFooter>
+      {runner.status === "revoked" ? (
+        <DeleteRunnerDialog
+          actionHref={actionHref}
+          csrfToken={csrfToken}
+          dialogId={deleteDialogId}
+          runner={runner}
+        />
+      ) : (
+        <RevokeRunnerDialog
+          actionHref={actionHref}
+          csrfToken={csrfToken}
+          dialogId={revokeDialogId}
+          runner={runner}
+        />
+      )}
     </Card>
   );
 }
@@ -187,7 +181,9 @@ function RevokeRunnerDialog(
           <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
-          <Button type="submit" variant="destructive">Revoke runner</Button>
+          <Button type="submit" variant="destructive">
+            Revoke runner
+          </Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>
@@ -227,7 +223,9 @@ function DeleteRunnerDialog(
           <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
-          <Button type="submit" variant="destructive">Delete runner</Button>
+          <Button type="submit" variant="destructive">
+            Delete runner
+          </Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>
@@ -240,9 +238,9 @@ function formatRunnerStatus(status: SettingsRunner["status"]): string {
 
 function formatRunnerSpecs(runner: SettingsRunner): string {
   if (!runner.capacity) return `${runner.architecture} · Capacity unavailable`;
-  return `${runner.architecture} · ${runner.capacity.vmCpuCount} CPU · ${
-    formatMiB(runner.capacity.vmMemoryMiB)
-  } memory · ${formatMiB(runner.capacity.diskFreeMiB)} disk free`;
+  return `${runner.architecture} · ${runner.capacity.vmCpuCount} CPU · ${formatMiB(
+    runner.capacity.vmMemoryMiB,
+  )} memory · ${formatMiB(runner.capacity.diskFreeMiB)} disk free`;
 }
 
 function formatRunnerSessions(capacity: SettingsRunnerCapacity): string {
@@ -267,7 +265,9 @@ function EnrollmentCommand(
       <ItemContent mix={enrollmentCommandContentStyle}>
         <ItemTitle mix={commandTitleStyle}>
           <code mix={commandValueStyle}>
-            <span aria-hidden="true" mix={commandPromptStyle}>$</span>
+            <span aria-hidden="true" mix={commandPromptStyle}>
+              $
+            </span>
             {handle.props.enrollmentCommand}
           </code>
         </ItemTitle>

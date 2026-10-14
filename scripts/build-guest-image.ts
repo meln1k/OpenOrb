@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { lstat, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,14 +13,14 @@ import {
   parseBuildConfig,
   verifyAssets,
 } from "@earendil-works/gondolin";
-import { TarStream, type TarStreamInput } from "@std/tar";
+import { TarStream, type TarStreamInput } from "@jsr/std__tar";
 import { err, ok, type Result, tryAsync } from "@openorb/result";
 
 import {
   type GuestImageManifest,
   parseGuestImageManifest,
-} from "@/packages/runner/src/environment/gondolin/guest-image/manifest.ts";
-import { pruneInitramfsRoot, repackInitramfs } from "@/scripts/prune-initramfs.ts";
+} from "../packages/runner/src/environment/gondolin/guest-image/manifest.ts";
+import { pruneInitramfsRoot, repackInitramfs } from "./prune-initramfs.ts";
 
 export const GUEST_IMAGE_RELEASE_ID = "release-2";
 export const GUEST_IMAGE_FILES = [
@@ -101,14 +105,17 @@ const DEBIAN_ROOTFS_BUILDS = {
 >;
 
 class GuestImageBuildError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
+  override readonly cause: unknown;
+
+  constructor(message: string, cause: unknown) {
     super(message, { cause });
+    this.cause = cause;
     this.name = "GuestImageBuildError";
   }
 }
 
 if (import.meta.main) {
-  const architecture = parseArchitecture(Deno.args[0]);
+  const architecture = parseArchitecture(process.argv[2]);
   const outputDirectory = join(
     repositoryRoot,
     "dist",
@@ -117,7 +124,7 @@ if (import.meta.main) {
     architecture,
   );
   const configPath = join(repositoryRoot, "images", "guest", `${architecture}.json`);
-  const config = parseBuildConfig(await Deno.readTextFile(configPath));
+  const config = parseBuildConfig(await readFile(configPath, "utf8"));
   if (config.arch !== architecture) {
     throw new Error(
       `Guest image config ${configPath} targets ${config.arch}, expected ${architecture}.`,
@@ -126,27 +133,26 @@ if (import.meta.main) {
   await buildGuestRootfsImage(architecture, config.oci);
 
   const buildDirectory = join(repositoryRoot, "dist", "guest-image");
-  await Deno.mkdir(buildDirectory, { recursive: true });
-  const workDirectory = await Deno.makeTempDir({
-    dir: buildDirectory,
-    prefix: `.openorb-${GUEST_IMAGE_RELEASE_ID}-${architecture}-`,
-  });
+  await mkdir(buildDirectory, { recursive: true });
+  const workDirectory = await mkdtemp(
+    join(buildDirectory, `.openorb-${GUEST_IMAGE_RELEASE_ID}-${architecture}-`),
+  );
   await using cleanup = new AsyncDisposableStack();
   cleanup.defer(async () => {
-    await Deno.remove(workDirectory, { recursive: true }).catch((cause) => {
-      if (!(cause instanceof Deno.errors.NotFound)) throw cause;
+    await rm(workDirectory, { recursive: true }).catch((cause) => {
+      if (!isNotFound(cause)) throw cause;
     });
   });
 
   const [, removeError] = await tryAsync(
-    Deno.remove(outputDirectory, { recursive: true }),
+    rm(outputDirectory, { recursive: true }),
     (cause) =>
       new GuestImageBuildError(
         `The previous guest image output could not be removed: ${outputDirectory}.`,
         cause,
       ),
   );
-  if (removeError && !(removeError.cause instanceof Deno.errors.NotFound)) throw removeError;
+  if (removeError && !isNotFound(removeError.cause)) throw removeError;
   const result = await buildAssets(config, {
     outputDir: outputDirectory,
     configDir: dirname(configPath),
@@ -160,9 +166,9 @@ if (import.meta.main) {
   console.error(
     `Pruned initramfs modules from ${pruneResult.moduleFilesBefore} files ` +
       `(${formatBytes(pruneResult.moduleBytesBefore)}) to ${pruneResult.moduleFilesAfter} files ` +
-      `(${formatBytes(pruneResult.moduleBytesAfter)}); removed ${
-        formatBytes(pruneResult.removedBootBytes)
-      } ` +
+      `(${formatBytes(pruneResult.moduleBytesAfter)}); removed ${formatBytes(
+        pruneResult.removedBootBytes,
+      )} ` +
       `from /boot.`,
   );
 
@@ -186,7 +192,7 @@ if (import.meta.main) {
     sizeBytes: archive.sizeBytes,
     sha256: archive.sha256,
   };
-  await Deno.writeTextFile(`${archivePath}.json`, `${JSON.stringify(metadata, null, 2)}\n`);
+  await writeFile(`${archivePath}.json`, `${JSON.stringify(metadata, null, 2)}\n`);
   console.log(JSON.stringify(metadata));
 }
 
@@ -196,7 +202,7 @@ export function guestImageArchiveName(architecture: Architecture): string {
 
 function parseArchitecture(input: string | undefined): Architecture {
   if (input === "aarch64" || input === "x86_64") return input;
-  throw new Error("Usage: deno task build:image <aarch64|x86_64>");
+  throw new Error("Usage: node scripts/build-guest-image.ts <aarch64|x86_64>");
 }
 
 async function buildGuestRootfsImage(
@@ -205,7 +211,9 @@ async function buildGuestRootfsImage(
 ): Promise<void> {
   const build = DEBIAN_ROOTFS_BUILDS[architecture];
   if (
-    oci?.image !== build.image || oci.platform !== build.platform || oci.runtime !== "podman" ||
+    oci?.image !== build.image ||
+    oci.platform !== build.platform ||
+    oci.runtime !== "podman" ||
     oci.pullPolicy !== "never"
   ) {
     throw new Error(
@@ -213,14 +221,10 @@ async function buildGuestRootfsImage(
     );
   }
 
-  const containerfile = join(
-    repositoryRoot,
-    "images",
-    "guest",
-    "debian-rootfs.Containerfile",
-  );
-  const status = await new Deno.Command("podman", {
-    args: [
+  const containerfile = join(repositoryRoot, "images", "guest", "debian-rootfs.Containerfile");
+  const child = spawn(
+    "podman",
+    [
       "--cgroup-manager=cgroupfs",
       "--events-backend=file",
       "build",
@@ -261,24 +265,19 @@ async function buildGuestRootfsImage(
       `--file=${containerfile}`,
       dirname(containerfile),
     ],
-    stdin: "null",
-    stdout: "inherit",
-    stderr: "inherit",
-  }).spawn().status;
-  if (!status.success) {
-    throw new Error(
-      `The Debian OCI rootfs build failed for ${architecture} with status ${status.code}.`,
-    );
+    { stdio: ["ignore", "inherit", "inherit"] },
+  );
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  if (code !== 0) {
+    throw new Error(`The Debian OCI rootfs build failed for ${architecture} with status ${code}.`);
   }
 }
 
-async function normalizeManifest(
-  path: string,
-  initramfsPath: string,
-): Promise<GuestImageManifest> {
-  const manifest = parseGuestImageManifest(
-    JSON.parse(await Deno.readTextFile(path)),
-  );
+async function normalizeManifest(path: string, initramfsPath: string): Promise<GuestImageManifest> {
+  const manifest = parseGuestImageManifest(JSON.parse(await readFile(path, "utf8")));
   const originalBuildId = requiredBuildId(manifest);
   const derivedBuildId = computeGondolinBuildId(manifest);
   if (originalBuildId !== derivedBuildId) {
@@ -289,7 +288,7 @@ async function normalizeManifest(
   manifest.checksums.initramfs = (await inspectFile(initramfsPath)).sha256;
   manifest.buildId = computeGondolinBuildId(manifest);
   manifest.buildTime = REPRODUCIBLE_BUILD_TIME;
-  await Deno.writeTextFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }
 
@@ -317,9 +316,9 @@ function uuidV5(name: string, namespace: string): string {
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = bytes.toHex();
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${
-    hex.slice(20)
-  }`;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(
+    20,
+  )}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -337,18 +336,17 @@ async function createArchive(
 ): Promise<Result<void, GuestImageBuildError>> {
   const [, archiveError] = await tryAsync(
     (async () => {
-      await Deno.mkdir(dirname(destination), { recursive: true });
-      const output = await Deno.open(destination, {
-        create: true,
-        truncate: true,
-        write: true,
-        mode: 0o600,
-      });
-      const entries = ReadableStream.from<TarStreamInput>(archiveEntries(sourceDirectory));
-      await entries
+      await mkdir(dirname(destination), { recursive: true });
+      await using output = await open(destination, "w", 0o600);
+      // SAFETY: Node implements the same Web stream; its BYOB declarations differ from lib.dom.
+      const entries = NodeReadableStream.from(
+        archiveEntries(sourceDirectory),
+      ) as ReadableStream<TarStreamInput>;
+      const archive = entries
         .pipeThrough(new TarStream())
-        .pipeThrough(new CompressionStream("gzip"))
-        .pipeTo(output.writable);
+        .pipeThrough(new CompressionStream("gzip"));
+      await pipeline(archive, output.createWriteStream({ autoClose: false }));
+      await output.sync();
     })(),
     (cause) =>
       new GuestImageBuildError(
@@ -357,22 +355,33 @@ async function createArchive(
       ),
   );
   if (!archiveError) return ok(undefined);
-  await tryAsync(Deno.remove(destination), () => undefined);
+  await tryAsync(rm(destination), () => undefined);
   return err(archiveError);
 }
 
 async function* archiveEntries(sourceDirectory: string): AsyncGenerator<TarStreamInput> {
   for (const name of GUEST_IMAGE_FILES) {
     const path = join(sourceDirectory, name);
-    const info = await Deno.lstat(path);
-    if (!info.isFile || info.isSymlink) {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) {
       throw new Error(`Guest image asset must be a regular file: ${path}.`);
     }
+    await using file = await open(path, "r");
     yield {
       type: "file",
       path: name,
       size: info.size,
-      readable: (await Deno.open(path, { read: true })).readable,
+      readable: new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            const buffer = new Uint8Array(64 * 1024);
+            const { bytesRead } = await file.read(buffer);
+            if (bytesRead === 0) controller.close();
+            else controller.enqueue(buffer.subarray(0, bytesRead));
+          },
+        },
+        { highWaterMark: 0 },
+      ),
       options: { mode: 0o644, uid: 0, gid: 0, mtime: 0 },
     };
   }
@@ -380,14 +389,18 @@ async function* archiveEntries(sourceDirectory: string): AsyncGenerator<TarStrea
 
 async function inspectFile(path: string): Promise<{ sizeBytes: number; sha256: string }> {
   const hash = createHash("sha256");
-  using file = await Deno.open(path, { read: true });
+  await using file = await open(path, "r");
   const buffer = new Uint8Array(1024 * 1024);
   let sizeBytes = 0;
   while (true) {
-    const bytesRead = await file.read(buffer);
-    if (bytesRead === null) break;
+    const { bytesRead } = await file.read(buffer);
+    if (bytesRead === 0) break;
     sizeBytes += bytesRead;
     hash.update(buffer.subarray(0, bytesRead));
   }
   return { sizeBytes, sha256: hash.digest("hex") };
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

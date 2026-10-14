@@ -1,7 +1,7 @@
 import { css, type Handle, on, type Props, ref } from "remix/component";
 
-import { Button, type ButtonProps } from "@/app/ui/public/components/button.tsx";
-import { Icon } from "@/app/ui/public/components/icons.tsx";
+import { Button, type ButtonProps } from "../../../ui/public/components/button.tsx";
+import { Icon } from "../../../ui/public/components/icons.tsx";
 
 type ScrollPosition = "start" | "end" | "last-anchor";
 type ScrollMode = "following-bottom" | "free-scrolling" | "anchored-to-message";
@@ -23,15 +23,7 @@ const EDGE_THRESHOLD = 8;
 const POSITION_EPSILON = 0.5;
 const AUTOSCROLL_DURATION_MS = 180;
 const CONTENT_GAP_PX = 32;
-const SCROLL_KEYS = new Set([
-  "ArrowUp",
-  "ArrowDown",
-  "Home",
-  "End",
-  "PageUp",
-  "PageDown",
-  " ",
-]);
+const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", " "]);
 
 class MessageScrollerController {
   autoScroll = true;
@@ -53,11 +45,7 @@ class MessageScrollerController {
   #resizeObserver: ResizeObserver | null = null;
   #resizeFrame: number | undefined;
 
-  configure(
-    autoScroll: boolean,
-    defaultScrollPosition: ScrollPosition,
-    previousItemPeek: number,
-  ) {
+  configure(autoScroll: boolean, defaultScrollPosition: ScrollPosition, previousItemPeek: number) {
     this.autoScroll = autoScroll;
     this.defaultScrollPosition = defaultScrollPosition;
     this.previousItemPeek = previousItemPeek;
@@ -65,38 +53,54 @@ class MessageScrollerController {
 
   attachRoot(node: HTMLElement, signal: AbortSignal) {
     this.#root = node;
-    signal.addEventListener("abort", () => {
-      if (this.#root === node) this.#root = null;
-    }, { once: true });
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (this.#root === node) this.#root = null;
+      },
+      { once: true },
+    );
   }
 
   attachViewport(node: HTMLElement, signal: AbortSignal) {
     this.#viewport = node;
     this.#previousScrollTop = node.scrollTop;
     this.#connectResizeObserver();
-    signal.addEventListener("abort", () => {
-      if (this.#viewport !== node) return;
-      this.#viewport = null;
-      this.#disconnectResizeObserver();
-    }, { once: true });
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (this.#viewport !== node) return;
+        this.#viewport = null;
+        this.#disconnectResizeObserver();
+      },
+      { once: true },
+    );
   }
 
   attachContent(node: HTMLElement, signal: AbortSignal) {
     this.#content = node;
     this.#connectResizeObserver();
-    signal.addEventListener("abort", () => {
-      if (this.#content !== node) return;
-      this.#content = null;
-      this.#disconnectResizeObserver();
-    }, { once: true });
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (this.#content !== node) return;
+        this.#content = null;
+        this.#disconnectResizeObserver();
+      },
+      { once: true },
+    );
   }
 
   attachButton(node: HTMLButtonElement, signal: AbortSignal) {
     this.#button = node;
     this.#updateScrollState();
-    signal.addEventListener("abort", () => {
-      if (this.#button === node) this.#button = null;
-    }, { once: true });
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (this.#button === node) this.#button = null;
+      },
+      { once: true },
+    );
   }
 
   reconcile() {
@@ -124,11 +128,7 @@ class MessageScrollerController {
     const addedAnchors = addedItems.filter((item) => item.dataset.scrollAnchor === "true");
     if (addedAnchors.length > 0) {
       const anchor = addedAnchors[0];
-      if (
-        this.autoScroll &&
-        this.#mode === "following-bottom" &&
-        addedAnchors.length > 1
-      ) {
+      if (this.autoScroll && this.#mode === "following-bottom" && addedAnchors.length > 1) {
         this.scrollToEnd("auto");
       } else if (anchor) {
         this.#anchorTo(anchor);
@@ -202,7 +202,7 @@ class MessageScrollerController {
 
     this.#initialized = true;
     this.#seenItems = new Set(
-      items.flatMap((item) => item.dataset.messageId ? [item.dataset.messageId] : []),
+      items.flatMap((item) => (item.dataset.messageId ? [item.dataset.messageId] : [])),
     );
 
     if (this.defaultScrollPosition === "start") {
@@ -253,10 +253,7 @@ class MessageScrollerController {
     const desiredScrollTop = this.#anchorScrollTop(anchor);
     const previousSpacerHeight = this.#spacerHeight();
     const nextSpacerHeight = this.#resizeSpacerFor(desiredScrollTop);
-    if (
-      previousSpacerHeight > POSITION_EPSILON &&
-      nextSpacerHeight <= POSITION_EPSILON
-    ) {
+    if (previousSpacerHeight > POSITION_EPSILON && nextSpacerHeight <= POSITION_EPSILON) {
       this.scrollToEnd("auto");
       return;
     }
@@ -288,8 +285,9 @@ class MessageScrollerController {
   #itemTop(item: HTMLElement): number {
     const viewport = this.#viewport;
     if (!viewport) return 0;
-    return viewport.scrollTop + item.getBoundingClientRect().top -
-      viewport.getBoundingClientRect().top;
+    return (
+      viewport.scrollTop + item.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+    );
   }
 
   #realContentBottom(): number {
@@ -298,8 +296,12 @@ class MessageScrollerController {
     const lastItem = this.#items().at(-1);
     if (!viewport || !content || !lastItem) return 0;
     const paddingBottom = Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
-    return viewport.scrollTop + lastItem.getBoundingClientRect().bottom -
-      viewport.getBoundingClientRect().top + paddingBottom;
+    return (
+      viewport.scrollTop +
+      lastItem.getBoundingClientRect().bottom -
+      viewport.getBoundingClientRect().top +
+      paddingBottom
+    );
   }
 
   #resizeSpacerFor(desiredScrollTop: number): number {
@@ -408,9 +410,7 @@ class MessageScrollerController {
   }
 }
 
-export function MessageScroller(
-  handle: Handle<MessageScrollerProps, MessageScrollerController>,
-) {
+export function MessageScroller(handle: Handle<MessageScrollerProps, MessageScrollerController>) {
   const controller = new MessageScrollerController();
   handle.context.set(controller);
 
@@ -481,11 +481,7 @@ export function MessageScrollerContent(handle: Handle<Props<"div">>) {
         ]}
       >
         {children}
-        <div
-          aria-hidden="true"
-          data-message-scroller-spacer
-          mix={messageScrollerSpacerStyle}
-        />
+        <div aria-hidden="true" data-message-scroller-spacer mix={messageScrollerSpacerStyle} />
       </div>
     );
   };

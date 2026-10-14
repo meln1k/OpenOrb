@@ -1,26 +1,29 @@
-import { assert, assertEquals, assertMatch, assertNotMatch } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertMatch, assertNotMatch } from "@jsr/std__assert";
 
 import {
   type CheckPrerequisitesOptions,
   checkRunnerPrerequisites,
-} from "@/src/runtime/prerequisites.ts";
+} from "../../src/runtime/prerequisites.ts";
 
 const GIB = 1024 * 1024 * 1024;
 
-Deno.test("reports a passing Linux host and probes the complete QEMU suite", async () => {
+test("reports a passing Linux host and probes the complete QEMU suite", async () => {
   const probes: Array<{ executable: string; args: string[] }> = [];
   let kvmExecutable = "";
-  const report = await checkRunnerPrerequisites(linuxHost({
-    gatewayUrl: "https://openorb.example.com",
-    probeExecutable(executable, args) {
-      probes.push({ executable, args });
-      return Promise.resolve(`${executable} version 10.0.0\n`);
-    },
-    probeKvm(executable) {
-      kvmExecutable = executable;
-      return Promise.resolve();
-    },
-  }));
+  const report = await checkRunnerPrerequisites(
+    linuxHost({
+      gatewayUrl: "https://openorb.example.com",
+      probeExecutable(executable, args) {
+        probes.push({ executable, args });
+        return Promise.resolve(`${executable} version 10.0.0\n`);
+      },
+      probeKvm(executable) {
+        kvmExecutable = executable;
+        return Promise.resolve();
+      },
+    }),
+  );
 
   assertEquals(report.ok, true);
   assertEquals(probes, [
@@ -46,18 +49,20 @@ Deno.test("reports a passing Linux host and probes the complete QEMU suite", asy
   });
 });
 
-Deno.test("checks QEMU without KVM on the temporary macOS harness", async () => {
+test("checks QEMU without KVM on the temporary macOS harness", async () => {
   const probes: Array<{ executable: string; args: string[] }> = [];
-  const report = await checkRunnerPrerequisites(linuxHost({
-    platform: "darwin",
-    architecture: "arm64",
-    libc: undefined,
-    glibcVersion: undefined,
-    probeExecutable(executable, args) {
-      probes.push({ executable, args });
-      return Promise.resolve("QEMU emulator version 10.0.0\n");
-    },
-  }));
+  const report = await checkRunnerPrerequisites(
+    linuxHost({
+      platform: "darwin",
+      architecture: "arm64",
+      libc: undefined,
+      glibcVersion: undefined,
+      probeExecutable(executable, args) {
+        probes.push({ executable, args });
+        return Promise.resolve("QEMU emulator version 10.0.0\n");
+      },
+    }),
+  );
 
   assertEquals(report.ok, true);
   assertEquals(probes, [
@@ -68,15 +73,18 @@ Deno.test("checks QEMU without KVM on the temporary macOS harness", async () => 
   assertMatch(report.warnings[0] ?? "", /temporary macOS development harness/);
 });
 
-Deno.test("keeps missing QEMU fatal while reporting KVM fallback as a warning", async () => {
-  const report = await checkRunnerPrerequisites(linuxHost({
-    probeExecutable(executable) {
-      return executable === "qemu-system-x86_64"
-        ? Promise.reject(new Deno.errors.NotFound("not found"))
-        : Promise.resolve("qemu-img version 10.0.0\n");
-    },
-    probeKvm: () => Promise.reject(new Deno.errors.PermissionDenied("permission denied")),
-  }));
+test("keeps missing QEMU fatal while reporting KVM fallback as a warning", async () => {
+  const report = await checkRunnerPrerequisites(
+    linuxHost({
+      probeExecutable(executable) {
+        return executable === "qemu-system-x86_64"
+          ? Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+          : Promise.resolve("qemu-img version 10.0.0\n");
+      },
+      probeKvm: () =>
+        Promise.reject(Object.assign(new Error("permission denied"), { code: "EACCES" })),
+    }),
+  );
 
   assertEquals(report.ok, false);
   assertMatch(report.errors.join("\n"), /apt install qemu-system-x86/);
@@ -85,10 +93,13 @@ Deno.test("keeps missing QEMU fatal while reporting KVM fallback as a warning", 
   assertMatch(report.warnings.join("\n"), /QEMU TCG software emulation/);
 });
 
-Deno.test("accepts Linux without KVM and warns that software emulation is slower", async () => {
-  const report = await checkRunnerPrerequisites(linuxHost({
-    probeKvm: () => Promise.reject(new Deno.errors.NotFound("missing /dev/kvm")),
-  }));
+test("accepts Linux without KVM and warns that software emulation is slower", async () => {
+  const report = await checkRunnerPrerequisites(
+    linuxHost({
+      probeKvm: () =>
+        Promise.reject(Object.assign(new Error("missing /dev/kvm"), { code: "ENOENT" })),
+    }),
+  );
 
   assertEquals(report.ok, true);
   assertEquals(report.kvm, undefined);
@@ -97,74 +108,75 @@ Deno.test("accepts Linux without KVM and warns that software emulation is slower
   assertMatch(report.warnings.join("\n"), /missing \/dev\/kvm/);
 });
 
-Deno.test("accepts stable Deno releases at or above the minimum", async () => {
-  for (const denoVersion of ["2.9.5", "2.9.6", "2.9.10", "2.10.0", "3.0.0"]) {
-    const report = await checkRunnerPrerequisites(linuxHost({ denoVersion }));
-    assertEquals(report.ok, true, denoVersion);
+test("accepts stable Node releases at or above the minimum", async () => {
+  for (const nodeVersion of ["26.11.1", "26.11.2", "26.12.0", "27.0.0"]) {
+    const report = await checkRunnerPrerequisites(linuxHost({ nodeVersion }));
+    assertEquals(report.ok, true, nodeVersion);
   }
 });
 
-Deno.test("rejects older, prerelease, and malformed Deno versions", async () => {
-  for (
-    const denoVersion of [
-      "1.99.0",
-      "2.8.99",
-      "2.9.4",
-      "2.9.5-rc.1",
-      "2.10.0-rc.1",
-      "",
-      "2.9",
-      "invalid",
-    ]
-  ) {
-    const report = await checkRunnerPrerequisites(linuxHost({ denoVersion }));
-    assertEquals(report.ok, false, denoVersion);
-    assertMatch(report.errors.join("\n"), /requires stable Deno 2\.9\.5 or newer/);
+test("rejects older, prerelease, and malformed Node versions", async () => {
+  for (const nodeVersion of [
+    "25.99.0",
+    "26.10.99",
+    "26.11.0",
+    "26.11.1-rc.1",
+    "26.12.0-rc.1",
+    "",
+    "26.11",
+    "invalid",
+  ]) {
+    const report = await checkRunnerPrerequisites(linuxHost({ nodeVersion }));
+    assertEquals(report.ok, false, nodeVersion);
+    assertMatch(report.errors.join("\n"), /requires stable Node 26\.11\.1 or newer/);
   }
 });
 
-Deno.test("requires the minimum Deno release and glibc baseline", async () => {
-  const report = await checkRunnerPrerequisites(linuxHost({
-    denoVersion: "2.9.4",
-    glibcVersion: "2.26",
-  }));
+test("requires the minimum Node release and glibc baseline", async () => {
+  const report = await checkRunnerPrerequisites(
+    linuxHost({
+      nodeVersion: "26.11.0",
+      glibcVersion: "2.27",
+    }),
+  );
 
   assertEquals(report.ok, false);
-  assertMatch(report.errors.join("\n"), /Deno 2\.9\.5 or newer/);
-  assertMatch(report.errors.join("\n"), /Unsupported glibc 2\.26/);
-  assertMatch(report.errors.join("\n"), /2\.27 or newer/);
+  assertMatch(report.errors.join("\n"), /Node 26\.11\.1 or newer/);
+  assertMatch(report.errors.join("\n"), /Unsupported glibc 2\.27/);
+  assertMatch(report.errors.join("\n"), /2\.28 or newer/);
 });
 
-Deno.test({
-  name: "reports the glibc version provided by the host library",
-  ignore: Deno.build.os !== "linux" || Deno.build.env !== "gnu",
-  async fn() {
-    const glibc = Deno.dlopen("libc.so.6", {
-      gnu_get_libc_version: { parameters: [], result: "pointer" },
-    });
-    try {
-      const pointer = glibc.symbols.gnu_get_libc_version();
-      assert(pointer);
-      const hostVersion = new Deno.UnsafePointerView(pointer).getCString();
-      const report = await checkRunnerPrerequisites(linuxHost({
+test.skipIf(process.platform !== "linux")(
+  "reports the glibc version provided by Node's host report",
+  async () => {
+    const host = process.report.getReport();
+    if (
+      !("header" in host) ||
+      // oxlint-disable-next-line openorb/no-runtime-typeof -- Validate the host diagnostic report before comparing its optional libc field.
+      typeof host.header !== "object" ||
+      host.header === null ||
+      !("glibcVersionRuntime" in host.header)
+    )
+      return;
+    const report = await checkRunnerPrerequisites(
+      linuxHost({
         libc: undefined,
         glibcVersion: undefined,
-      }));
-
-      assertEquals(report.libc, "glibc");
-      assertEquals(report.glibcVersion, hostVersion);
-    } finally {
-      glibc.close();
-    }
+      }),
+    );
+    assertEquals(report.libc, "glibc");
+    assertEquals(report.glibcVersion, host.header.glibcVersionRuntime);
   },
-});
+);
 
-Deno.test("rejects musl Linux hosts with an actionable error", async () => {
-  const report = await checkRunnerPrerequisites(linuxHost({
-    architecture: "aarch64",
-    libc: "musl",
-    glibcVersion: undefined,
-  }));
+test("rejects musl Linux hosts with an actionable error", async () => {
+  const report = await checkRunnerPrerequisites(
+    linuxHost({
+      architecture: "aarch64",
+      libc: "musl",
+      glibcVersion: undefined,
+    }),
+  );
 
   assertEquals(report.ok, false);
   assertMatch(report.errors.join("\n"), /musl/);
@@ -172,14 +184,17 @@ Deno.test("rejects musl Linux hosts with an actionable error", async () => {
   assertMatch(report.errors.join("\n"), /Alpine Linux is not supported/);
 });
 
-Deno.test("checks host resources, data-directory writes, and gateway health", async () => {
-  const report = await checkRunnerPrerequisites(linuxHost({
-    gatewayUrl: "https://wrong.example.com",
-    getHardwareConcurrency: () => 0,
-    getSystemMemoryInfo: () => ({ total: GIB, available: GIB / 2 }),
-    probeDataDirectory: () => Promise.reject(new Deno.errors.PermissionDenied("read only")),
-    fetch: () => Promise.resolve(Response.json({ service: "other", status: "ok" })),
-  }));
+test("checks host resources, data-directory writes, and gateway health", async () => {
+  const report = await checkRunnerPrerequisites(
+    linuxHost({
+      gatewayUrl: "https://wrong.example.com",
+      getHardwareConcurrency: () => 0,
+      getSystemMemoryInfo: () => ({ total: GIB, available: GIB / 2 }),
+      probeDataDirectory: () =>
+        Promise.reject(Object.assign(new Error("read only"), { code: "EACCES" })),
+      fetch: () => Promise.resolve(Response.json({ service: "other", status: "ok" })),
+    }),
+  );
 
   assertEquals(report.ok, false);
   assertEquals(report.dataDirectory.writable, false);
@@ -194,7 +209,7 @@ function linuxHost(overrides: CheckPrerequisitesOptions = {}): CheckPrerequisite
     platform: "linux",
     architecture: "x86_64",
     kernelRelease: "6.1.0",
-    denoVersion: "2.9.5",
+    nodeVersion: "26.11.1",
     libc: "glibc",
     glibcVersion: "2.38",
     workingDirectory: "/runner",

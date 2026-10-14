@@ -1,0 +1,16 @@
+{
+  "name": "@openorb/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@jsr/std__uuid": "1.1.1",
+    "@remix-run/data-schema": "1.0.0",
+    "effect": "4.0.0"
+  }
+}

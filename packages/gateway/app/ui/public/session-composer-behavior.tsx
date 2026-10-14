@@ -8,8 +8,12 @@ export const SessionComposerBehavior = clientEntry<{ dialogId: string }>(
       if (!(dialog instanceof HTMLDialogElement)) return;
       const handleComposerKeydown = (event: KeyboardEvent) => {
         if (
-          event.key === "Tab" && event.shiftKey && !event.altKey && !event.ctrlKey &&
-          !event.metaKey && !event.isComposing
+          event.key === "Tab" &&
+          event.shiftKey &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.isComposing
         ) {
           const thinkingLevel = dialog.querySelector<HTMLButtonElement>(
             'button[aria-label="Thinking level"]',
@@ -19,15 +23,12 @@ export const SessionComposerBehavior = clientEntry<{ dialogId: string }>(
           thinkingLevel.dispatchEvent(new Event("openorb:cycle-thinking-level"));
           return;
         }
-        if (
-          !(event.target instanceof HTMLTextAreaElement) ||
-          event.target.name !== "initialPrompt"
-        ) return;
+        if (!(event.target instanceof HTMLTextAreaElement) || event.target.name !== "initialPrompt")
+          return;
         if (event.key !== "Enter" || event.isComposing || event.shiftKey) return;
         event.preventDefault();
-        const submitter = event.target.form?.querySelector<HTMLButtonElement>(
-          'button[type="submit"]',
-        );
+        const submitter =
+          event.target.form?.querySelector<HTMLButtonElement>('button[type="submit"]');
         if (submitter && !submitter.disabled) event.target.form?.requestSubmit(submitter);
       };
       // The dialog's styles follow these selections: the thinking-level border color, and the

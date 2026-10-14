@@ -159,9 +159,9 @@ export class EnvironmentLinks {
   }
 
   #attached(): SessionWebSocket | undefined {
-    return this.#sockets.getWebSockets(LINK_TAG).find((candidate) =>
-      candidate.deserializeAttachment()?.phase === "attached"
-    );
+    return this.#sockets
+      .getWebSockets(LINK_TAG)
+      .find((candidate) => candidate.deserializeAttachment()?.phase === "attached");
   }
 }
 

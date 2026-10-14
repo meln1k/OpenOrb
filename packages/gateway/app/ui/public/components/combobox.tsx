@@ -55,17 +55,17 @@ export function Combobox(handle: Handle<ComboboxProps>) {
 
     return (
       <combobox.Context
-        {...defaultValue !== undefined ? { defaultValue } : {}}
-        {...disabled !== undefined ? { disabled } : {}}
-        {...name !== undefined ? { name } : {}}
+        {...(defaultValue !== undefined ? { defaultValue } : {})}
+        {...(disabled !== undefined ? { disabled } : {})}
+        {...(name !== undefined ? { name } : {})}
       >
         <div {...rootProps} data-slot="combobox" mix={[rootStyle, mix]}>
           <div data-slot="combobox-input" mix={inputGroupStyle}>
             <input
               {...nativeInputProps}
-              {...defaultValue !== undefined && defaultValue !== null ? { defaultValue } : {}}
-              {...inputId !== undefined ? { id: inputId } : {}}
-              {...placeholder !== undefined ? { placeholder } : {}}
+              {...(defaultValue !== undefined && defaultValue !== null ? { defaultValue } : {})}
+              {...(inputId !== undefined ? { id: inputId } : {})}
+              {...(placeholder !== undefined ? { placeholder } : {})}
               list={undefined}
               role="combobox"
               type="text"
@@ -102,9 +102,9 @@ export function ComboboxOption(handle: Handle<ComboboxOptionProps>) {
         mix={[
           optionStyle,
           combobox.option({
-            ...disabled !== undefined ? { disabled } : {},
+            ...(disabled !== undefined ? { disabled } : {}),
             label,
-            ...searchValue !== undefined ? { searchValue } : {},
+            ...(searchValue !== undefined ? { searchValue } : {}),
             value,
           }),
           mix,

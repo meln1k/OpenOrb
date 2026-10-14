@@ -1,6 +1,6 @@
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { afterEach, test, vi } from "vite-plus/test";
+import { assert, assertEquals, assertRejects, assertThrows } from "@jsr/std__assert";
 import { posix } from "node:path";
-import { FakeTime } from "@std/testing/time";
 import {
   Connection,
   DaemonOutput,
@@ -15,6 +15,8 @@ import {
 import * as paths from "../src/path.ts";
 
 const encoder = new TextEncoder();
+
+afterEach(() => vi.useRealTimers());
 
 type JsonValue = string | number | boolean | readonly string[];
 type JsonFields = Readonly<Record<string, JsonValue>>;
@@ -60,7 +62,7 @@ function scriptedLink() {
             queueMicrotask(() => handlers?.frame(encodeFrame(2, parsed.id, HELLO)));
           }
         },
-        close: () => closed = true,
+        close: () => (closed = true),
       });
     },
   });
@@ -75,37 +77,37 @@ function scriptedLink() {
   };
 }
 
-Deno.test("an idle connection sends no pings; requests in flight are pinged", async () => {
-  using time = new FakeTime();
+test("an idle connection sends no pings; requests in flight are pinged", async () => {
+  vi.useFakeTimers();
   const link = scriptedLink();
   await link.connection.info();
-  await time.tickAsync(60_000);
+  await vi.advanceTimersByTimeAsync(60_000);
   assertEquals(link.sent.filter((frame) => frame?.type === 6).length, 0);
 
   const pending = link.connection.request("lstat", { path: "/" });
-  await time.tickAsync(5_000);
+  await vi.advanceTimersByTimeAsync(5_000);
   assertEquals(link.sent.filter((frame) => frame?.type === 6).length, 1);
   const request = link.sent.find((frame) => frame?.json.op === "lstat")!;
   link.reply(request.id, { kind: "directory" });
   assertEquals((await pending).json, { kind: "directory" });
 
-  await time.tickAsync(60_000);
+  await vi.advanceTimersByTimeAsync(60_000);
   assertEquals(link.sent.filter((frame) => frame?.type === 6).length, 1);
 });
 
-Deno.test("a silent link fails requests in flight as lost", async () => {
-  using time = new FakeTime();
+test("a silent link fails requests in flight as lost", async () => {
+  vi.useFakeTimers();
   const link = scriptedLink();
   await link.connection.info();
   const pending = link.connection.request("exec", { argv: ["/bin/sleep", "600"] });
   const rejected = assertRejects(() => pending);
-  await time.tickAsync(36_000);
+  await vi.advanceTimersByTimeAsync(36_000);
   const error = await rejected;
   assert(isConnectionLost(error));
   assert(link.closed);
 });
 
-Deno.test("replies that match no request of this connection are ignored", async () => {
+test("replies that match no request of this connection are ignored", async () => {
   const link = scriptedLink();
   await link.connection.info();
   const pending = link.connection.request("lstat", { path: "/" });
@@ -116,7 +118,7 @@ Deno.test("replies that match no request of this connection are ignored", async 
   assertEquals((await pending).json, { kind: "file" });
 });
 
-Deno.test("request ids start at a random value so a rehydrated connection skips stale replies", async () => {
+test("request ids start at a random value so a rehydrated connection skips stale replies", async () => {
   const first = scriptedLink();
   const second = scriptedLink();
   await first.connection.info();
@@ -124,7 +126,7 @@ Deno.test("request ids start at a random value so a rehydrated connection skips 
   assert(first.sent[0]!.id !== second.sent[0]!.id);
 });
 
-Deno.test("a closed link fails requests in flight and reconnects on the next request", async () => {
+test("a closed link fails requests in flight and reconnects on the next request", async () => {
   const link = scriptedLink();
   await link.connection.info();
   const pending = link.connection.request("lstat", { path: "/" });
@@ -134,16 +136,12 @@ Deno.test("a closed link fails requests in flight and reconnects on the next req
   assertEquals(link.sent.filter((frame) => frame?.json.op === "hello").length, 2);
 });
 
-Deno.test("daemon output skips noise before the sync line and splits frames across chunks", () => {
+test("daemon output skips noise before the sync line and splits frames across chunks", () => {
   const noise: string[] = [];
   const output = new DaemonOutput("abc", (text) => noise.push(text));
   const first = encodeFrame(2, 7, { ok: true }, new Uint8Array([1, 2, 3]));
   const second = encodeFrame(4, 7, { kind: "output" });
-  const stream = new Uint8Array([
-    ...encoder.encode("motd\nPI-ENV abc\n"),
-    ...first,
-    ...second,
-  ]);
+  const stream = new Uint8Array([...encoder.encode("motd\nPI-ENV abc\n"), ...first, ...second]);
   const frames = [
     ...output.push(stream.subarray(0, 8)),
     ...output.push(stream.subarray(8, 30)),
@@ -153,7 +151,7 @@ Deno.test("daemon output skips noise before the sync line and splits frames acro
   assertEquals(frames, [first, second]);
 });
 
-Deno.test("daemon output rejects frames with impossible lengths", () => {
+test("daemon output rejects frames with impossible lengths", () => {
   const output = new DaemonOutput("abc");
   assertThrows(
     () => output.push(new Uint8Array([...encoder.encode("PI-ENV abc\n"), 0, 0, 0, 1, 0])),
@@ -161,7 +159,7 @@ Deno.test("daemon output rejects frames with impossible lengths", () => {
   );
 });
 
-Deno.test("the relay answers pings locally and forwards everything else", () => {
+test("the relay answers pings locally and forwards everything else", () => {
   const toDaemon: Uint8Array[] = [];
   const toLink: Uint8Array[] = [];
   const relay = new DaemonRelay("abc", {
@@ -179,14 +177,14 @@ Deno.test("the relay answers pings locally and forwards everything else", () => 
   assertEquals(toLink, [PING_FRAME, result]);
 });
 
-Deno.test("the relay refuses link messages that are not exactly one frame", () => {
+test("the relay refuses link messages that are not exactly one frame", () => {
   const relay = new DaemonRelay("abc", { toDaemon: () => {}, toLink: () => {} });
   const frame = encodeFrame(1, 1, { op: "lstat" });
   assertThrows(() => relay.fromLink(new Uint8Array([...frame, ...frame])), RelayError);
   assertThrows(() => relay.fromLink(frame.subarray(0, 12)), RelayError);
 });
 
-Deno.test("the relay keeps the daemon alive and notices when it goes silent", () => {
+test("the relay keeps the daemon alive and notices when it goes silent", () => {
   const toDaemon: Uint8Array[] = [];
   const relay = new DaemonRelay("abc", {
     toDaemon: (bytes) => toDaemon.push(bytes),
@@ -197,7 +195,7 @@ Deno.test("the relay keeps the daemon alive and notices when it goes silent", ()
   assertThrows(() => relay.pingDaemon(Date.now() + 31_000), RelayError);
 });
 
-Deno.test("guest paths follow node:path posix rules", () => {
+test("guest paths follow node:path posix rules", () => {
   const samples = [
     "",
     ".",

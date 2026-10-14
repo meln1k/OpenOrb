@@ -1,9 +1,10 @@
-import { assertMatch, assertNotMatch, assertStringIncludes } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertMatch, assertNotMatch, assertStringIncludes } from "@jsr/std__assert";
 import { renderToString } from "remix/component/server";
 
-import { SessionDetailClient } from "@/app/actions/sessions/public/session-detail-client.tsx";
+import { SessionDetailClient } from "../app/actions/sessions/public/session-detail-client.tsx";
 
-Deno.test("session detail defaults mobile navigation to the agent view", async () => {
+test("session detail defaults mobile navigation to the agent view", async () => {
   const html = await renderToString(
     <SessionDetailClient
       changes
@@ -43,7 +44,7 @@ Deno.test("session detail defaults mobile navigation to the agent view", async (
   assertStringIncludes(html, 'data-thinking-level="max"');
 });
 
-Deno.test("session composer replaces send with stop during an active turn", async () => {
+test("session composer replaces send with stop during an active turn", async () => {
   const html = await renderToString(
     <SessionDetailClient
       changes
@@ -68,7 +69,7 @@ Deno.test("session composer replaces send with stop during an active turn", asyn
   assertNotMatch(html, /aria-label="Send prompt"/);
 });
 
-Deno.test("a session without Git integration shows no changes panel or view tabs", async () => {
+test("a session without Git integration shows no changes panel or view tabs", async () => {
   const html = await renderToString(
     <SessionDetailClient
       changes={false}

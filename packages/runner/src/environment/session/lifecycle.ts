@@ -51,11 +51,12 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
     );
   const bounded = <A, E>(effect: Effect.Effect<A, E>) =>
     withDeadline(effect, shutdownMs).pipe(
-      Effect.mapError(() =>
-        new AgentEnvironmentError(
-          "Environment durability operation failed or timed out.",
-          undefined,
-        )
+      Effect.mapError(
+        () =>
+          new AgentEnvironmentError(
+            "Environment durability operation failed or timed out.",
+            undefined,
+          ),
       ),
     );
 
@@ -76,33 +77,31 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
     };
     instance = next;
     yield* change("starting");
-    next.boot = yield* options.boot((environment) =>
-      Effect.sync(() => {
-        next.environment = environment;
-      })
-    ).pipe(
-      Effect.provideService(Scope.Scope, next.scope),
-      Effect.timeout(readinessMs),
-      Effect.mapError(() =>
-        new AgentEnvironmentError(
-          "The guest environment did not become ready before its deadline.",
-          undefined,
-        )
-      ),
-      Effect.flatMap((environment) =>
-        change("running").pipe(
-          Effect.andThen(Deferred.succeed(next.ready, environment)),
-        )
-      ),
-      Effect.catch((error) =>
-        Deferred.fail(next.ready, error).pipe(
-          Effect.andThen(change("error")),
-          Effect.ignore,
-        )
-      ),
-      Effect.asVoid,
-      Effect.forkIn(owner),
-    );
+    next.boot = yield* options
+      .boot((environment) =>
+        Effect.sync(() => {
+          next.environment = environment;
+        }),
+      )
+      .pipe(
+        Effect.provideService(Scope.Scope, next.scope),
+        Effect.timeout(readinessMs),
+        Effect.mapError(
+          () =>
+            new AgentEnvironmentError(
+              "The guest environment did not become ready before its deadline.",
+              undefined,
+            ),
+        ),
+        Effect.flatMap((environment) =>
+          change("running").pipe(Effect.andThen(Deferred.succeed(next.ready, environment))),
+        ),
+        Effect.catch((error) =>
+          Deferred.fail(next.ready, error).pipe(Effect.andThen(change("error")), Effect.ignore),
+        ),
+        Effect.asVoid,
+        Effect.forkIn(owner),
+      );
     return next;
   });
 
@@ -117,13 +116,17 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
       let forced = current.forced ?? false;
       if (current.environment && !current.detaching) {
         const environment = current.environment;
-        const sync = yield* Effect.result(bounded(
-          environment.run(["/bin/sync"]).pipe(
-            Effect.flatMap((result) =>
-              result.exitCode === 0 ? Effect.void : Effect.fail(stopped())
-            ),
+        const sync = yield* Effect.result(
+          bounded(
+            environment
+              .run(["/bin/sync"])
+              .pipe(
+                Effect.flatMap((result) =>
+                  result.exitCode === 0 ? Effect.void : Effect.fail(stopped()),
+                ),
+              ),
           ),
-        ));
+        );
         if (sync._tag === "Failure") {
           if (!allowForce) return yield* sync.failure;
           forced = true;
@@ -142,7 +145,7 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
             Effect.tapError(() =>
               Effect.sync(() => {
                 delete current.detaching;
-              })
+              }),
             ),
           ),
         );
@@ -158,8 +161,8 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
   const wait = (current: Instance) =>
     Deferred.await(current.ready).pipe(
       Effect.timeout(readinessMs),
-      Effect.mapError(() =>
-        new AgentEnvironmentError("Guest readiness failed or timed out.", undefined)
+      Effect.mapError(
+        () => new AgentEnvironmentError("Guest readiness failed or timed out.", undefined),
       ),
     );
   const use = <A>(
@@ -169,7 +172,9 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
     Effect.suspend(() => {
       const current = instance;
       if (
-        !current || state.value === "stopped" || state.value === "stopping" ||
+        !current ||
+        state.value === "stopped" ||
+        state.value === "stopping" ||
         state.value === "error"
       ) {
         return Effect.fail(stopped());
@@ -190,18 +195,31 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
     });
 
   const control = (action: "start" | "stop" | "restart") =>
-    lock.withPermit(Effect.gen(function* () {
-      const forced = action === "start" ? false : yield* stop(action === "restart");
-      const current = action === "stop" ? undefined : yield* start;
-      return { current, forced };
-    })).pipe(Effect.flatMap(({ current, forced }): Effect.Effect<{
-      state: "running" | "stopped";
-      forced: boolean;
-    }, AgentEnvironmentError> =>
-      current === undefined
-        ? Effect.succeed({ state: "stopped" as const, forced })
-        : wait(current).pipe(Effect.as({ state: "running" as const, forced }))
-    ));
+    lock
+      .withPermit(
+        Effect.gen(function* () {
+          const forced = action === "start" ? false : yield* stop(action === "restart");
+          const current = action === "stop" ? undefined : yield* start;
+          return { current, forced };
+        }),
+      )
+      .pipe(
+        Effect.flatMap(
+          ({
+            current,
+            forced,
+          }): Effect.Effect<
+            {
+              state: "running" | "stopped";
+              forced: boolean;
+            },
+            AgentEnvironmentError
+          > =>
+            current === undefined
+              ? Effect.succeed({ state: "stopped" as const, forced })
+              : wait(current).pipe(Effect.as({ state: "running" as const, forced })),
+        ),
+      );
 
   const proxy: AgentEnvironment = {
     run: (command, args) => use((environment) => environment.run(command, args), args?.signal),
@@ -214,7 +232,7 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
     states: SubscriptionRef.changes(state),
     begin: lock.withPermit(start).pipe(Effect.asVoid),
     cancelGuests: Effect.suspend(() =>
-      instance ? Deferred.fail(instance.cancelled, stopped()).pipe(Effect.asVoid) : Effect.void
+      instance ? Deferred.fail(instance.cancelled, stopped()).pipe(Effect.asVoid) : Effect.void,
     ),
     stop: lock.withPermit(stop(false)),
     forceStop: lock.withPermit(stop(true)),

@@ -78,21 +78,23 @@ export function readRecord(storage: DurableObjectSqliteStorage): SessionRecord |
     ...parsed,
     // Records written before placements were runner Sessions with a separate `runnerId`, and
     // before optional projects every Session had flat project fields.
-    placement: parsed.placement ??
-      { provider: "runner", runnerId: Schema.decodeUnknownSync(Schema.String)(runnerId) },
+    placement: parsed.placement ?? {
+      provider: "runner",
+      runnerId: Schema.decodeUnknownSync(Schema.String)(runnerId),
+    },
     ...(parsed.project !== undefined
       ? { project: { ...parsed.project, gitAuthor: new GitAuthor(parsed.project.gitAuthor) } }
       : projectId !== undefined
-      ? {
-        project: {
-          id: projectId,
-          repositoryUrl,
-          ref,
-          branchName,
-          gitAuthor: new GitAuthor(gitAuthor),
-        },
-      }
-      : {}),
+        ? {
+            project: {
+              id: projectId,
+              repositoryUrl,
+              ref,
+              branchName,
+              gitAuthor: new GitAuthor(gitAuthor),
+            },
+          }
+        : {}),
     workspaceId: Schema.decodeUnknownSync(WorkspaceId)(parsed.workspaceId),
   };
 }
@@ -140,11 +142,13 @@ export function publicState(record: SessionRecord, busy: boolean): RunnerSession
 export function sessionSnapshot(record: SessionRecord, busy: boolean): RunnerSessionSnapshot {
   return new RunnerSessionSnapshot({
     id: Schema.decodeUnknownSync(RunnerSessionSnapshot.fields.id)(record.sessionId),
-    ...(record.project === undefined ? {} : {
-      projectId: Schema.decodeUnknownSync(RunnerSessionSnapshot.fields.projectId)(
-        record.project.id,
-      ),
-    }),
+    ...(record.project === undefined
+      ? {}
+      : {
+          projectId: Schema.decodeUnknownSync(RunnerSessionSnapshot.fields.projectId)(
+            record.project.id,
+          ),
+        }),
     createdAt: record.createdAt,
     initialPromptPreview: record.initialPromptPreview,
     model: record.model,
@@ -161,7 +165,8 @@ export function sessionSnapshot(record: SessionRecord, busy: boolean): RunnerSes
 export function readGitSnapshot(
   storage: DurableObjectSqliteStorage,
 ): SessionGitSnapshot | undefined {
-  const row = storage.sql.exec("SELECT snapshot FROM openorb_git_snapshot WHERE id = 1")
+  const row = storage.sql
+    .exec("SELECT snapshot FROM openorb_git_snapshot WHERE id = 1")
     .toArray()[0];
   return row === undefined
     ? undefined

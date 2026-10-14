@@ -1,4 +1,5 @@
-import { assertMatch } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertMatch } from "@jsr/std__assert";
 import {
   type Context,
   type FrameContent,
@@ -12,9 +13,9 @@ import { renderToString } from "remix/component/server";
 import {
   RemixCodeView,
   type RemixCodeViewProps,
-} from "@/app/actions/sessions/public/remix-code-view.tsx";
+} from "../app/actions/sessions/public/remix-code-view.tsx";
 
-Deno.test("RemixCodeView gives Pierre ownership of the host contents", async () => {
+test("RemixCodeView gives Pierre ownership of the host contents", async () => {
   const controller = new AbortController();
   const frame = createFrameHandle();
   const handle: Handle<RemixCodeViewProps> = {

@@ -1,4 +1,6 @@
 import { runnerEnrollmentResponseSchema } from "@openorb/protocol";
+import * as fs from "node:fs/promises";
+import { hasErrorCode } from "./errors.ts";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 import { object, parse, string } from "@remix-run/data-schema";
 
@@ -48,7 +50,7 @@ export async function readRunnerIdentity(
   }
 
   const [tokenInfo, tokenInspectionError] = await tryAsync(
-    Deno.lstat(tokenPath),
+    fs.lstat(tokenPath),
     (cause) =>
       new RunnerIdentityReadError(
         `Runner identity could not be read: ${errorMessage(cause)}`,
@@ -56,13 +58,10 @@ export async function readRunnerIdentity(
       ),
   );
   if (tokenInspectionError !== undefined) return err(tokenInspectionError);
-  if (!tokenInfo.isFile || tokenInfo.isSymlink) {
+  if (!tokenInfo.isFile() || tokenInfo.isSymbolicLink()) {
     return err(new RunnerIdentityReadError("Runner token must be a regular file.", undefined));
   }
-  if (
-    Deno.build.os !== "windows" && tokenInfo.mode !== null &&
-    (tokenInfo.mode & 0o777) !== 0o600
-  ) {
+  if (process.platform !== "win32" && (tokenInfo.mode & 0o777) !== 0o600) {
     return err(new RunnerIdentityReadError("Runner token permissions must be 0600.", undefined));
   }
 
@@ -70,9 +69,9 @@ export async function readRunnerIdentity(
     (async () => {
       const metadata = parse(
         runnerMetadataSchema,
-        JSON.parse(await Deno.readTextFile(metadataPath)),
+        JSON.parse(await fs.readFile(metadataPath, "utf8")),
       );
-      const runnerToken = await Deno.readTextFile(tokenPath);
+      const runnerToken = await fs.readFile(tokenPath, "utf8");
       parse(runnerEnrollmentResponseSchema, { runnerId: metadata.runnerId, runnerToken });
 
       return {
@@ -123,14 +122,14 @@ async function writePrivateFile(
   const temporaryPath = `${path}.${crypto.randomUUID()}.tmp`;
   const [value, writeError] = await tryAsync(
     (async () => {
-      await Deno.writeTextFile(temporaryPath, contents, { createNew: true, mode: 0o600 });
-      if (Deno.build.os !== "windows") await Deno.chmod(temporaryPath, 0o600);
-      await Deno.rename(temporaryPath, path);
+      await fs.writeFile(temporaryPath, contents, { flag: "wx", mode: 0o600 });
+      if (process.platform !== "win32") await fs.chmod(temporaryPath, 0o600);
+      await fs.rename(temporaryPath, path);
     })(),
     (cause) => new RunnerIdentityWriteError("Runner identity could not be persisted.", cause),
   );
   if (writeError !== undefined) {
-    const [, cleanupError] = await tryAsync(Deno.remove(temporaryPath), () => false);
+    const [, cleanupError] = await tryAsync(fs.rm(temporaryPath), () => false);
     if (cleanupError !== undefined) return err(writeError);
     return err(writeError);
   }
@@ -139,25 +138,25 @@ async function writePrivateFile(
 
 async function exists(path: string): Promise<Result<boolean, RunnerIdentityReadError>> {
   const [, inspectionError] = await tryAsync(
-    Deno.lstat(path),
+    fs.lstat(path),
     (cause) => new RunnerIdentityReadError("Runner identity files could not be inspected.", cause),
   );
   if (inspectionError !== undefined) {
-    if (inspectionError.cause instanceof Deno.errors.NotFound) return ok(false);
+    if (hasErrorCode(inspectionError.cause, "ENOENT")) return ok(false);
     return err(inspectionError);
   }
   return ok(true);
 }
 
 export class RunnerIdentityReadError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
+  constructor(message: string, cause: unknown) {
     super(message, { cause });
     this.name = "RunnerIdentityReadError";
   }
 }
 
 export class RunnerIdentityWriteError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
+  constructor(message: string, cause: unknown) {
     super(message, { cause });
     this.name = "RunnerIdentityWriteError";
   }

@@ -27,15 +27,16 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v4
         with:
-          deno-version: 2.9.5
-          cache: true
+          node-version: 26.11.1
+          cache: npm
+      - run: npm ci
       - name: Compile native runner
-        run: deno task ${{ matrix.task }}
+        run: npm run ${{ matrix.task }}
       - name: Verify ELF architecture and glibc baseline
         run: >-
-          deno run --allow-read=dist --allow-write=dist
+          node
           scripts/runner-artifact-metadata.ts ${{ matrix.artifact }}
       - name: Run without an installed Node.js or Deno runtime
         shell: bash

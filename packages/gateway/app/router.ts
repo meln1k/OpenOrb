@@ -5,30 +5,30 @@ import { render } from "remix/middleware/render";
 import { session } from "remix/middleware/session";
 import { createRouter, type Middleware, type RouterContext } from "remix/router";
 
-import authController from "@/app/actions/auth/controller.tsx";
-import loginController from "@/app/actions/auth/login/controller.tsx";
-import setupController from "@/app/actions/auth/setup/controller.tsx";
-import appController from "@/app/actions/app/controller.tsx";
-import controller from "@/app/actions/controller.tsx";
-import projectsController from "@/app/actions/projects/controller.tsx";
-import sessionsController from "@/app/actions/sessions/controller.tsx";
-import settingsController from "@/app/actions/settings/controller.tsx";
-import settingsGitAuthorController from "@/app/actions/settings/git-author/controller.tsx";
-import settingsGitHubController from "@/app/actions/settings/github/controller.tsx";
-import settingsProvidersController from "@/app/actions/settings/providers/controller.tsx";
-import settingsRunnersController from "@/app/actions/settings/runners/controller.tsx";
-import settingsSecretsController from "@/app/actions/settings/secrets/controller.tsx";
-import apiRunnersController from "@/app/actions/api/runners/controller.ts";
-import apiSessionsController from "@/app/actions/api/sessions/controller.ts";
-import type { Administrator } from "@/app/cells/workspace/api.ts";
-import { type AppServices, AppServicesKey, provideAppServices } from "@/app/middleware/services.ts";
-import { rewriteTrailingSlash } from "@/app/middleware/trailing-slash.ts";
-import { redirectUnauthorizedPages } from "@/app/middleware/unauthorized-page.ts";
-import { routes } from "@/app/routes.ts";
+import authController from "./actions/auth/controller.tsx";
+import loginController from "./actions/auth/login/controller.tsx";
+import setupController from "./actions/auth/setup/controller.tsx";
+import appController from "./actions/app/controller.tsx";
+import controller from "./actions/controller.tsx";
+import projectsController from "./actions/projects/controller.tsx";
+import sessionsController from "./actions/sessions/controller.tsx";
+import settingsController from "./actions/settings/controller.tsx";
+import settingsGitAuthorController from "./actions/settings/git-author/controller.tsx";
+import settingsGitHubController from "./actions/settings/github/controller.tsx";
+import settingsProvidersController from "./actions/settings/providers/controller.tsx";
+import settingsRunnersController from "./actions/settings/runners/controller.tsx";
+import settingsSecretsController from "./actions/settings/secrets/controller.tsx";
+import apiRunnersController from "./actions/api/runners/controller.ts";
+import apiSessionsController from "./actions/api/sessions/controller.ts";
+import type { Administrator } from "./cells/workspace/api.ts";
+import { type AppServices, AppServicesKey, provideAppServices } from "./middleware/services.ts";
+import { rewriteTrailingSlash } from "./middleware/trailing-slash.ts";
+import { redirectUnauthorizedPages } from "./middleware/unauthorized-page.ts";
+import { routes } from "./routes.ts";
 import {
   BROWSER_SESSION_MAX_AGE_SECONDS,
   parseBrowserSessionAuth,
-} from "@/app/utils/session-policy.ts";
+} from "./utils/session-policy.ts";
 
 export function createSessionCookie(options: { secure?: boolean; secret: string }): Cookie {
   if (!options.secret) throw new TypeError("SESSION_SECRET is required");
@@ -45,10 +45,7 @@ export function createSessionCookie(options: { secure?: boolean; secret: string 
   });
 }
 
-export function createAppRouter(
-  services: AppServices,
-  sessionCookie: Cookie,
-) {
+export function createAppRouter(services: AppServices, sessionCookie: Cookie) {
   const appRouter = createRouter({
     middleware: [
       rewriteTrailingSlash(),
@@ -69,9 +66,7 @@ export function createAppRouter(
               if (!currentServices) {
                 throw new TypeError("App services middleware is missing.");
               }
-              const identity = await currentServices.workspace.getAdministrator(
-                value.userId,
-              );
+              const identity = await currentServices.workspace.getAdministrator(value.userId);
               return identity?.workspaceId === value.workspaceId ? identity : null;
             },
             invalidate(currentSession) {
@@ -111,8 +106,11 @@ function staticFiles(services: AppServices): Middleware {
   return async (context, next) => {
     if (context.request.method !== "GET" && context.request.method !== "HEAD") return next();
 
-    return await services.assets.fetchPublic(context.request) ??
-      await services.assets.fetch(context.request) ?? next();
+    return (
+      (await services.assets.fetchPublic(context.request)) ??
+      (await services.assets.fetch(context.request)) ??
+      next()
+    );
   };
 }
 

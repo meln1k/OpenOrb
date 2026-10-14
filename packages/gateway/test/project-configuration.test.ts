@@ -1,4 +1,11 @@
-import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
+import { test } from "vite-plus/test";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertNotEquals,
+  assertNotMatch,
+} from "@jsr/std__assert";
 import type { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
 
 import {
@@ -6,9 +13,9 @@ import {
   createAppRouter,
   createAppServices,
   type MemoryStorage,
-} from "@/test/workspace-test.ts";
-import { routes } from "@/app/routes.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
+} from "./workspace-test.ts";
+import { routes } from "../app/routes.ts";
+import { createTestServer } from "./http-test-server.ts";
 
 const DEFAULT_PROJECT_REF = "main";
 const DEFAULT_PROJECT_BRANCH_PATTERN = "openorb/{session-name}-{short-session-id}";
@@ -116,9 +123,7 @@ interface CredentialStorageRow {
   keyVersion: number;
 }
 
-function readCredentialStorage(
-  client: AuthenticatedClient,
-): CredentialStorageRow {
+function readCredentialStorage(client: AuthenticatedClient): CredentialStorageRow {
   const record = client.storage.rows<CredentialStorageRow>(
     `
     SELECT g.id, s.key, s.ciphertext, s.keyVersion FROM git_credentials g
@@ -132,7 +137,7 @@ function readCredentialStorage(
   return record;
 }
 
-Deno.test("configures GitHub, Git author, and project CRUD through protected browser forms", async () => {
+test("configures GitHub, Git author, and project CRUD through protected browser forms", async () => {
   const client = await createAuthenticatedClient();
   const gitAuthorSettingsPath = routes.app.settings.gitAuthor.index.href();
   const githubSettingsPath = routes.app.settings.github.index.href();
@@ -159,10 +164,7 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
       authorEmail: "  developer@example.com  ",
     });
     assertEquals(authorResponse.status, 303);
-    assertEquals(
-      authorResponse.headers.get("location"),
-      gitAuthorSettingsPath,
-    );
+    assertEquals(authorResponse.headers.get("location"), gitAuthorSettingsPath);
     const author = await client.store.getGitAuthorConfiguration(client.userId);
     assert(author);
     assertEquals(author.authorName, "OpenOrb Developer");
@@ -255,10 +257,12 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     assertEquals((await client.store.listProjects(client.workspaceId)).length, 1);
 
     assertEquals(
-      (await submitForm(client, githubSettingsPath, {
-        intent: "save-github-credential",
-        token: SECOND_TOKEN,
-      })).status,
+      (
+        await submitForm(client, githubSettingsPath, {
+          intent: "save-github-credential",
+          token: SECOND_TOKEN,
+        })
+      ).status,
       303,
     );
     assert(await client.store.getGitHubCredential(client.workspaceId));
@@ -297,12 +301,14 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
 
     const sessionId = crypto.randomUUID();
     assertEquals(
-      await client.store.reconcileSessionManifestEntries(client.workspaceId, [{
-        id: sessionId,
-        projectId: project.id,
-        createdAt: new Date().toISOString(),
-        initialPromptPreview: "Project deletion reference",
-      }]),
+      await client.store.reconcileSessionManifestEntries(client.workspaceId, [
+        {
+          id: sessionId,
+          projectId: project.id,
+          createdAt: new Date().toISOString(),
+          initialPromptPreview: "Project deletion reference",
+        },
+      ]),
       [{ acceptedSessionIds: [sessionId], tombstonedSessionIds: [], rejected: [] }, undefined],
     );
     const inUseDeletion = await submitForm(client, projectsPath, {
@@ -322,10 +328,12 @@ Deno.test("configures GitHub, Git author, and project CRUD through protected bro
     );
 
     assertEquals(
-      (await submitForm(client, projectsPath, {
-        intent: "delete-project",
-        projectId: project.id,
-      })).status,
+      (
+        await submitForm(client, projectsPath, {
+          intent: "delete-project",
+          projectId: project.id,
+        })
+      ).status,
       303,
     );
     assertEquals(await client.store.listProjects(client.workspaceId), []);

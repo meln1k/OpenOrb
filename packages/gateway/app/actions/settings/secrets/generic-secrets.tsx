@@ -6,18 +6,18 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/app/ui/public/components/alert-dialog.tsx";
-import { Button } from "@/app/ui/public/components/button.tsx";
+} from "../../../ui/public/components/alert-dialog.tsx";
+import { Button } from "../../../ui/public/components/button.tsx";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/app/ui/public/components/dropdown-menu.tsx";
-import { Field, FieldDescription, FieldLabel } from "@/app/ui/public/components/field.tsx";
-import { Icon } from "@/app/ui/public/components/icons.tsx";
-import { Input } from "@/app/ui/public/components/input.tsx";
+} from "../../../ui/public/components/dropdown-menu.tsx";
+import { Field, FieldDescription, FieldLabel } from "../../../ui/public/components/field.tsx";
+import { Icon } from "../../../ui/public/components/icons.tsx";
+import { Input } from "../../../ui/public/components/input.tsx";
 import {
   Table,
   TableBody,
@@ -25,7 +25,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/app/ui/public/components/table.tsx";
+} from "../../../ui/public/components/table.tsx";
 import {
   dialogFormStyle,
   formatSettingsDate,
@@ -38,15 +38,20 @@ import {
 import type { SettingsSecret } from "../settings-navigation.tsx";
 
 export function GenericSecrets(
-  handle: Handle<
-    { actionHref: string; csrfToken: string; dialogId: string; secrets: SettingsSecret[] }
-  >,
+  handle: Handle<{
+    actionHref: string;
+    csrfToken: string;
+    dialogId: string;
+    secrets: SettingsSecret[];
+  }>,
 ) {
   const { actionHref, csrfToken, dialogId, secrets } = handle.props;
   return () => (
     <section aria-labelledby="secrets-heading" mix={settingsSectionStyle}>
       <header mix={sectionHeaderStyle}>
-        <h2 id="secrets-heading" mix={sectionHeadingStyle}>Generic secrets</h2>
+        <h2 id="secrets-heading" mix={sectionHeadingStyle}>
+          Generic secrets
+        </h2>
         <p mix={sectionCopyStyle}>
           Secrets become placeholder environment variables in newly started Agent Environments.
           Gondolin substitutes their values only in outbound HTTP headers. Values are encrypted and
@@ -58,7 +63,8 @@ export function GenericSecrets(
           <header mix={tableToolbarStyle}>
             <h3 mix={tableTitleStyle}>Stored secrets</h3>
             <Button size="sm" commandFor={dialogId} command="show-modal">
-              <Icon name="plus" />Add
+              <Icon name="plus" />
+              Add
             </Button>
           </header>
           <div mix={tableScrollStyle}>
@@ -74,22 +80,22 @@ export function GenericSecrets(
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {secrets.length === 0
-                  ? (
-                    <TableRow>
-                      <TableCell colSpan={4} mix={emptyCellStyle}>
-                        No generic secrets configured.
-                      </TableCell>
-                    </TableRow>
-                  )
-                  : secrets.map((secret) => (
+                {secrets.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} mix={emptyCellStyle}>
+                      No generic secrets configured.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  secrets.map((secret) => (
                     <SecretRow
                       key={secret.key}
                       actionHref={actionHref}
                       secret={secret}
                       csrfToken={csrfToken}
                     />
-                  ))}
+                  ))
+                )}
               </TableBody>
             </Table>
           </div>
@@ -126,23 +132,11 @@ function AddSecretDialog(
         <input type="hidden" name="intent" value="save-secret" />
         <Field>
           <FieldLabel for="secret-key">Key</FieldLabel>
-          <Input
-            id="secret-key"
-            type="text"
-            name="key"
-            placeholder="SERVICE_TOKEN"
-            required
-          />
+          <Input id="secret-key" type="text" name="key" placeholder="SERVICE_TOKEN" required />
         </Field>
         <Field>
           <FieldLabel for="secret-value">Secret value</FieldLabel>
-          <Input
-            id="secret-value"
-            type="password"
-            name="value"
-            autoComplete="off"
-            required
-          />
+          <Input id="secret-value" type="password" name="value" autoComplete="off" required />
         </Field>
         <AllowedHostsField id="secret-allowed-hosts" />
         <AlertDialogFooter>
@@ -232,8 +226,8 @@ function EditSecretDialog(
       <AlertDialogHeader>
         <AlertDialogTitle id={titleId}>Edit generic secret</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
-          Replace the stored value for{" "}
-          <strong>{secret.key}</strong>. The new value will be encrypted and cannot be shown again.
+          Replace the stored value for <strong>{secret.key}</strong>. The new value will be
+          encrypted and cannot be shown again.
         </AlertDialogDescription>
       </AlertDialogHeader>
       <form method="post" action={actionHref} mix={dialogFormStyle}>
@@ -312,7 +306,9 @@ function DeleteSecretDialog(
           <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
-          <Button type="submit" variant="destructive">Delete secret</Button>
+          <Button type="submit" variant="destructive">
+            Delete secret
+          </Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>

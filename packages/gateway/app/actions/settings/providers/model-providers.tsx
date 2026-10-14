@@ -6,19 +6,19 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/app/ui/public/components/alert-dialog.tsx";
-import { Button } from "@/app/ui/public/components/button.tsx";
+} from "../../../ui/public/components/alert-dialog.tsx";
+import { Button } from "../../../ui/public/components/button.tsx";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/app/ui/public/components/dropdown-menu.tsx";
-import { Field, FieldLabel } from "@/app/ui/public/components/field.tsx";
-import { Icon } from "@/app/ui/public/components/icons.tsx";
-import { Input } from "@/app/ui/public/components/input.tsx";
-import { media } from "@/app/ui/public/responsive.ts";
+} from "../../../ui/public/components/dropdown-menu.tsx";
+import { Field, FieldLabel } from "../../../ui/public/components/field.tsx";
+import { Icon } from "../../../ui/public/components/icons.tsx";
+import { Input } from "../../../ui/public/components/input.tsx";
+import { media } from "../../../ui/public/responsive.ts";
 import {
   Table,
   TableBody,
@@ -26,7 +26,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/app/ui/public/components/table.tsx";
+} from "../../../ui/public/components/table.tsx";
 import {
   dialogFormStyle,
   formatSettingsDate,
@@ -43,19 +43,17 @@ import type {
 import { ChatGPTAuthorizationPolling } from "./public/chatgpt-authorization-polling.tsx";
 
 export function ModelProviders(
-  handle: Handle<
-    {
-      actionHref: string;
-      chatGPTAuthorization:
-        | { userCode: string; verificationUri: string; intervalSeconds: number }
-        | undefined;
-      chatGPTCredential: { updatedAt: string } | null;
-      csrfToken: string;
-      dialogId: string;
-      providers: SettingsModelProvider[];
-      providerOptions: SettingsModelProviderOption[];
-    }
-  >,
+  handle: Handle<{
+    actionHref: string;
+    chatGPTAuthorization:
+      | { userCode: string; verificationUri: string; intervalSeconds: number }
+      | undefined;
+    chatGPTCredential: { updatedAt: string } | null;
+    csrfToken: string;
+    dialogId: string;
+    providers: SettingsModelProvider[];
+    providerOptions: SettingsModelProviderOption[];
+  }>,
 ) {
   const {
     actionHref,
@@ -69,7 +67,9 @@ export function ModelProviders(
   return () => (
     <section aria-labelledby="providers-heading" mix={settingsSectionStyle}>
       <header mix={sectionHeaderStyle}>
-        <h2 id="providers-heading" mix={sectionHeadingStyle}>Model providers</h2>
+        <h2 id="providers-heading" mix={sectionHeadingStyle}>
+          Model providers
+        </h2>
         <p mix={sectionCopyStyle}>
           Provider credentials are encrypted with the gateway master key and are never shown after
           they are saved.
@@ -88,7 +88,8 @@ export function ModelProviders(
           <header mix={tableToolbarStyle}>
             <h3 mix={tableTitleStyle}>API key providers</h3>
             <Button size="sm" commandFor={dialogId} command="show-modal">
-              <Icon name="plus" />Add
+              <Icon name="plus" />
+              Add
             </Button>
           </header>
           <Table>
@@ -102,22 +103,22 @@ export function ModelProviders(
               </TableRow>
             </TableHeader>
             <TableBody>
-              {providers.length === 0
-                ? (
-                  <TableRow>
-                    <TableCell colSpan={3} mix={emptyCellStyle}>
-                      No model providers configured.
-                    </TableCell>
-                  </TableRow>
-                )
-                : providers.map((provider) => (
+              {providers.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={3} mix={emptyCellStyle}>
+                    No model providers configured.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                providers.map((provider) => (
                   <ProviderRow
                     key={provider.providerId}
                     actionHref={actionHref}
                     provider={provider}
                     csrfToken={csrfToken}
                   />
-                ))}
+                ))
+              )}
             </TableBody>
           </Table>
         </div>
@@ -144,14 +145,8 @@ function ChatGPTSubscriptionCard(
     pollingStatusId: string;
   }>,
 ) {
-  const {
-    actionHref,
-    authorization,
-    credential,
-    csrfToken,
-    disconnectDialogId,
-    pollingStatusId,
-  } = handle.props;
+  const { actionHref, authorization, credential, csrfToken, disconnectDialogId, pollingStatusId } =
+    handle.props;
   return () => (
     <div mix={chatGPTCardStyle}>
       <div mix={chatGPTHeaderStyle}>
@@ -159,10 +154,12 @@ function ChatGPTSubscriptionCard(
           <strong>ChatGPT subscription</strong>
           <span mix={configurationStatusStyle}>
             {authorization
-              ? credential ? "Connected · reconnecting" : "Waiting for authorization"
+              ? credential
+                ? "Connected · reconnecting"
+                : "Waiting for authorization"
               : credential
-              ? `Connected · updated ${formatSettingsDate(credential.updatedAt)}`
-              : "Not connected"}
+                ? `Connected · updated ${formatSettingsDate(credential.updatedAt)}`
+                : "Not connected"}
           </span>
         </div>
         {authorization ? null : (
@@ -174,18 +171,16 @@ function ChatGPTSubscriptionCard(
                 {credential ? "Reconnect" : "Sign in with ChatGPT"}
               </Button>
             </form>
-            {credential
-              ? (
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  commandFor={disconnectDialogId}
-                  command="show-modal"
-                >
-                  Disconnect
-                </Button>
-              )
-              : null}
+            {credential ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                commandFor={disconnectDialogId}
+                command="show-modal"
+              >
+                Disconnect
+              </Button>
+            ) : null}
           </div>
         )}
       </div>
@@ -193,55 +188,55 @@ function ChatGPTSubscriptionCard(
         Use an OpenAI Codex model with your ChatGPT Plus or Pro subscription. The connection is
         shared by this Workspace.
       </p>
-      {authorization
-        ? (
-          <div mix={deviceAuthorizationStyle}>
-            <p mix={deviceInstructionStyle}>
-              Open ChatGPT, enter this one-time code, and return here. Continue only if you started
-              this sign-in.
-            </p>
-            <code mix={deviceCodeStyle}>{authorization.userCode}</code>
-            <a
-              href={authorization.verificationUri}
-              target="_blank"
-              rel="noreferrer"
-              mix={deviceLinkStyle}
-            >
-              Continue with ChatGPT
-            </a>
-            <p id={pollingStatusId} role="status" aria-live="polite" mix={pollingStatusStyle}>
-              Waiting for authorization…
-            </p>
-            <div mix={configurationActionsStyle}>
-              <form method="post" action={actionHref}>
-                <input type="hidden" name="_csrf" value={csrfToken} />
-                <input type="hidden" name="intent" value="poll-chatgpt" />
-                <Button type="submit" size="sm" variant="outline">Check connection</Button>
-              </form>
-              <form method="post" action={actionHref}>
-                <input type="hidden" name="_csrf" value={csrfToken} />
-                <input type="hidden" name="intent" value="cancel-chatgpt" />
-                <Button type="submit" size="sm" variant="ghost">Cancel</Button>
-              </form>
-            </div>
-            <ChatGPTAuthorizationPolling
-              actionHref={actionHref}
-              csrfToken={csrfToken}
-              intervalSeconds={authorization.intervalSeconds}
-              statusId={pollingStatusId}
-            />
+      {authorization ? (
+        <div mix={deviceAuthorizationStyle}>
+          <p mix={deviceInstructionStyle}>
+            Open ChatGPT, enter this one-time code, and return here. Continue only if you started
+            this sign-in.
+          </p>
+          <code mix={deviceCodeStyle}>{authorization.userCode}</code>
+          <a
+            href={authorization.verificationUri}
+            target="_blank"
+            rel="noreferrer"
+            mix={deviceLinkStyle}
+          >
+            Continue with ChatGPT
+          </a>
+          <p id={pollingStatusId} role="status" aria-live="polite" mix={pollingStatusStyle}>
+            Waiting for authorization…
+          </p>
+          <div mix={configurationActionsStyle}>
+            <form method="post" action={actionHref}>
+              <input type="hidden" name="_csrf" value={csrfToken} />
+              <input type="hidden" name="intent" value="poll-chatgpt" />
+              <Button type="submit" size="sm" variant="outline">
+                Check connection
+              </Button>
+            </form>
+            <form method="post" action={actionHref}>
+              <input type="hidden" name="_csrf" value={csrfToken} />
+              <input type="hidden" name="intent" value="cancel-chatgpt" />
+              <Button type="submit" size="sm" variant="ghost">
+                Cancel
+              </Button>
+            </form>
           </div>
-        )
-        : null}
-      {credential
-        ? (
-          <DisconnectChatGPTDialog
+          <ChatGPTAuthorizationPolling
             actionHref={actionHref}
             csrfToken={csrfToken}
-            dialogId={disconnectDialogId}
+            intervalSeconds={authorization.intervalSeconds}
+            statusId={pollingStatusId}
           />
-        )
-        : null}
+        </div>
+      ) : null}
+      {credential ? (
+        <DisconnectChatGPTDialog
+          actionHref={actionHref}
+          csrfToken={csrfToken}
+          dialogId={disconnectDialogId}
+        />
+      ) : null}
     </div>
   );
 }
@@ -267,7 +262,9 @@ function DisconnectChatGPTDialog(
           <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
-          <Button type="submit" variant="destructive">Disconnect</Button>
+          <Button type="submit" variant="destructive">
+            Disconnect
+          </Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>
@@ -306,27 +303,18 @@ function AddProviderDialog(
           <FieldLabel for="model-provider">Provider</FieldLabel>
           <select id="model-provider" name="providerId" required mix={providerSelectStyle}>
             {providerOptions.map((provider) => (
-              <option key={provider.id} value={provider.id}>{provider.name}</option>
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
+              </option>
             ))}
           </select>
         </Field>
         <Field>
           <FieldLabel for="provider-api-key">API key</FieldLabel>
-          <Input
-            id="provider-api-key"
-            type="password"
-            name="apiKey"
-            autoComplete="off"
-            required
-          />
+          <Input id="provider-api-key" type="password" name="apiKey" autoComplete="off" required />
         </Field>
         <AlertDialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            commandFor={dialogId}
-            command="close"
-          >
+          <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
           <Button type="submit">Save provider</Button>
@@ -414,9 +402,8 @@ function EditProviderDialog(
       <AlertDialogHeader>
         <AlertDialogTitle id={titleId}>Update provider key</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
-          Replace the stored API key for{" "}
-          <strong>{provider.name}</strong>. The new value will be encrypted and cannot be shown
-          again.
+          Replace the stored API key for <strong>{provider.name}</strong>. The new value will be
+          encrypted and cannot be shown again.
         </AlertDialogDescription>
       </AlertDialogHeader>
       <form method="post" action={actionHref} mix={dialogFormStyle}>
@@ -434,12 +421,7 @@ function EditProviderDialog(
           />
         </Field>
         <AlertDialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            commandFor={dialogId}
-            command="close"
-          >
+          <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
           <Button type="submit">Save changes</Button>
@@ -466,8 +448,8 @@ function DeleteProviderDialog(
       <AlertDialogHeader>
         <AlertDialogTitle id={titleId}>Delete provider credential?</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
-          This will permanently delete the API key for{" "}
-          <strong>{provider.name}</strong>. This action cannot be undone.
+          This will permanently delete the API key for <strong>{provider.name}</strong>. This action
+          cannot be undone.
         </AlertDialogDescription>
       </AlertDialogHeader>
       <form method="post" action={actionHref}>
@@ -475,15 +457,12 @@ function DeleteProviderDialog(
         <input type="hidden" name="intent" value="delete-provider" />
         <input type="hidden" name="providerId" value={provider.providerId} />
         <AlertDialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            commandFor={dialogId}
-            command="close"
-          >
+          <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
-          <Button type="submit" variant="destructive">Delete provider</Button>
+          <Button type="submit" variant="destructive">
+            Delete provider
+          </Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>

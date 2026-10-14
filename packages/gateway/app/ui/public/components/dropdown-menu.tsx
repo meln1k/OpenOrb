@@ -10,13 +10,7 @@ export function DropdownMenu(handle: Handle<Props<"details">>) {
 export function DropdownMenuTrigger(handle: Handle<Props<"summary">>) {
   return () => {
     const { mix, ...props } = handle.props;
-    return (
-      <summary
-        {...props}
-        data-slot="dropdown-menu-trigger"
-        mix={[triggerStyle, mix]}
-      />
-    );
+    return <summary {...props} data-slot="dropdown-menu-trigger" mix={[triggerStyle, mix]} />;
   };
 }
 

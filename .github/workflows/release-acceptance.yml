@@ -21,10 +21,11 @@ jobs:
       OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v4
         with:
-          deno-version: 2.9.5
-          cache: true
+          node-version: 26.11.1
+          cache: npm
+      - run: npm ci
       - name: Require release acceptance secrets
         shell: bash
         run: |
@@ -45,13 +46,12 @@ jobs:
           test -c /dev/kvm
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm -a -w /dev/kvm
-          deno install --frozen
-          deno run --frozen -A npm:playwright@1.55.0 install --with-deps chromium
+          npx --no-install playwright install --with-deps chromium
       - name: Build pinned x64 guest image
-        run: deno task build:image x86_64
+        run: npm run build:image -- x86_64
       - name: Run credential-enabled Gondolin security suite
         env:
           OPENORB_RUN_GITHUB_WRITE_TESTS: "1"
-        run: deno task test:gondolin
+        run: npm run test:gondolin
       - name: Run full browser-to-Pi release lifecycle
-        run: deno task release:acceptance
+        run: npm run release:acceptance

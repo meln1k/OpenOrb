@@ -21,21 +21,22 @@ export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
     runnerVersion: options.runnerVersion,
     protocolVersion: options.protocolVersion,
   });
-  const handlers = RunnerBulkApi.toLayer(RunnerBulkApi.of({
-    "runner.bulk.identify": () => Effect.succeed(identity),
-    "runner.bulk.watch": () =>
-      Stream.fromEffect(Effect.sync(() => ({ observedAt: Date.now() }))).pipe(
-        Stream.repeat(Schedule.spaced("10 seconds")),
-      ),
-  }));
+  const handlers = RunnerBulkApi.toLayer(
+    RunnerBulkApi.of({
+      "runner.bulk.identify": () => Effect.succeed(identity),
+      "runner.bulk.watch": () =>
+        Stream.fromEffect(Effect.sync(() => ({ observedAt: Date.now() }))).pipe(
+          Stream.repeat(Schedule.spaced("10 seconds")),
+        ),
+    }),
+  );
   const socketUrl = new URL("/api/runners/connect/bulk", options.gatewayUrl);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
   const socketLayer = runnerWebSocketLayer(socketUrl.toString());
   const serverLayer = Layer.effect(
     SocketServer.SocketServer,
-    Effect.map(
-      Socket.Socket,
-      (socket) => makeOutboundSocketServer(runnerBulkWebSocket(socket), terminal),
+    Effect.map(Socket.Socket, (socket) =>
+      makeOutboundSocketServer(runnerBulkWebSocket(socket), terminal),
     ),
   ).pipe(Layer.provide(socketLayer));
   const protocol = RpcServer.layerProtocolSocketServer.pipe(
@@ -43,10 +44,7 @@ export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
     Layer.provide(runnerBulkRpcSerializationLayer),
   );
   const launched = Layer.launch(
-    RpcServer.layer(RunnerBulkApi).pipe(
-      Layer.provide(handlers),
-      Layer.provide(protocol),
-    ),
+    RpcServer.layer(RunnerBulkApi).pipe(Layer.provide(handlers), Layer.provide(protocol)),
   );
   // SAFETY: the assembled RPC layer supplies every service required by the launched server.
   const runnable = launched as Effect.Effect<never>;
@@ -59,7 +57,7 @@ export const runRunnerBulkRpc = Effect.fn("runRunnerBulkRpc")(function* (
 export function runnerBulkWebSocket(socket: Socket.Socket): Socket.Socket {
   const fits = (frame: string | Uint8Array) =>
     (Predicate.isString(frame) ? new TextEncoder().encode(frame).byteLength : frame.byteLength) <=
-      MAX_RUNNER_BULK_RPC_FRAME_BYTES;
+    MAX_RUNNER_BULK_RPC_FRAME_BYTES;
   return Socket.make({
     reader: Effect.gen(function* () {
       const reader = yield* socket.reader;
@@ -67,24 +65,26 @@ export function runnerBulkWebSocket(socket: Socket.Socket): Socket.Socket {
       return {
         ...reader,
         pull: reader.pull.pipe(
-          Effect.tap((frames) => frames.every(fits) ? Effect.void : closeOverflow(writer)),
+          Effect.tap((frames) => (frames.every(fits) ? Effect.void : closeOverflow(writer))),
         ),
       };
     }),
     writer: Effect.map(socket.writer, (writer) => ({
       write: (frame) =>
         Socket.isCloseEvent(frame) || fits(frame) ? writer.write(frame) : closeOverflow(writer),
-      writeAll: (frames) => frames.every(fits) ? writer.writeAll(frames) : closeOverflow(writer),
+      writeAll: (frames) => (frames.every(fits) ? writer.writeAll(frames) : closeOverflow(writer)),
     })),
   });
 }
 
 function closeOverflow(writer: Socket.Writer): Effect.Effect<never, Socket.SocketError> {
   return writer.write(new Socket.CloseEvent(4400, "Frame limit exceeded")).pipe(
-    Effect.andThen(Effect.fail(
-      new Socket.SocketError({
-        reason: new Socket.SocketCloseError({ code: 4400, closeReason: "Frame limit exceeded" }),
-      }),
-    )),
+    Effect.andThen(
+      Effect.fail(
+        new Socket.SocketError({
+          reason: new Socket.SocketCloseError({ code: 4400, closeReason: "Frame limit exceeded" }),
+        }),
+      ),
+    ),
   );
 }

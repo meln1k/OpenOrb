@@ -29,9 +29,7 @@ export class MasterKeyError extends Error {
  * Accepts the 256-bit key as 64 hexadecimal characters or base64 encoding 32
  * bytes. Error messages never include the submitted key material.
  */
-export async function loadMasterKey(
-  source: string | undefined,
-): Promise<MasterKey> {
+export async function loadMasterKey(source: string | undefined): Promise<MasterKey> {
   const candidate = source?.trim();
   if (!candidate) {
     throw new MasterKeyError(
@@ -53,13 +51,10 @@ export async function importMasterKey(
       `The ${MASTER_KEY_ENV_VAR} value must decode to exactly ${MASTER_KEY_BYTE_LENGTH} bytes.`,
     );
   }
-  const key = await crypto.subtle.importKey(
-    "raw",
-    bytes,
-    { name: "AES-GCM" },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  const key = await crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
   return { version, key };
 }
 

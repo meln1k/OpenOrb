@@ -38,7 +38,8 @@ export function createOpenOrbNetworkVmOptions(
   }
   const token = github?.token;
   if (
-    token !== undefined && (token.length === 0 || token.length > 4096 || token.trim() !== token)
+    token !== undefined &&
+    (token.length === 0 || token.length > 4096 || token.trim() !== token)
   ) {
     return err(
       new NetworkMediationError(
@@ -52,11 +53,9 @@ export function createOpenOrbNetworkVmOptions(
     ...(token === undefined
       ? []
       : [[GH_TOKEN_ENVIRONMENT_NAME, { hosts: [GITHUB_HOST, GITHUB_API_HOST], value: token }]]),
-    ...(options.environmentSecrets?.map((secret) =>
-      [
-        secret.name,
-        { hosts: secret.allowedHosts ?? ["*"], value: secret.value },
-      ] as const
+    ...(options.environmentSecrets?.map(
+      (secret) =>
+        [secret.name, { hosts: secret.allowedHosts ?? ["*"], value: secret.value }] as const,
     ) ?? []),
   ]);
   const [hooks, hooksError] = trySync(
@@ -72,22 +71,26 @@ export function createOpenOrbNetworkVmOptions(
 
   const env = {
     ...secretEnvironment,
-    ...(github === undefined ? {} : {
-      GH_HOST: GITHUB_HOST,
-      GH_PROMPT_DISABLED: "1",
-      GIT_CONFIG_COUNT: token === undefined ? "2" : "4",
-      GIT_CONFIG_KEY_0: "user.name",
-      GIT_CONFIG_VALUE_0: github.gitAuthor.name,
-      GIT_CONFIG_KEY_1: "user.email",
-      GIT_CONFIG_VALUE_1: github.gitAuthor.email,
-      GIT_TERMINAL_PROMPT: "0",
-    }),
-    ...(token === undefined || github === undefined ? {} : {
-      GIT_CONFIG_KEY_2: `credential.${github.repositoryUrl}.helper`,
-      GIT_CONFIG_VALUE_2: "!gh auth git-credential",
-      GIT_CONFIG_KEY_3: `credential.${github.repositoryUrl}.useHttpPath`,
-      GIT_CONFIG_VALUE_3: "true",
-    }),
+    ...(github === undefined
+      ? {}
+      : {
+          GH_HOST: GITHUB_HOST,
+          GH_PROMPT_DISABLED: "1",
+          GIT_CONFIG_COUNT: token === undefined ? "2" : "4",
+          GIT_CONFIG_KEY_0: "user.name",
+          GIT_CONFIG_VALUE_0: github.gitAuthor.name,
+          GIT_CONFIG_KEY_1: "user.email",
+          GIT_CONFIG_VALUE_1: github.gitAuthor.email,
+          GIT_TERMINAL_PROMPT: "0",
+        }),
+    ...(token === undefined || github === undefined
+      ? {}
+      : {
+          GIT_CONFIG_KEY_2: `credential.${github.repositoryUrl}.helper`,
+          GIT_CONFIG_VALUE_2: "!gh auth git-credential",
+          GIT_CONFIG_KEY_3: `credential.${github.repositoryUrl}.useHttpPath`,
+          GIT_CONFIG_VALUE_3: "true",
+        }),
   } satisfies Record<string, string>;
 
   return ok({
@@ -102,7 +105,9 @@ function validateGitAuthor(
   author: OpenOrbGitHubMediationOptions["gitAuthor"],
 ): NetworkMediationError | undefined {
   if (
-    author.name.trim() !== author.name || author.name.length === 0 || author.name.length > 200 ||
+    author.name.trim() !== author.name ||
+    author.name.length === 0 ||
+    author.name.length > 200 ||
     author.name.includes("\0")
   ) {
     return new NetworkMediationError(
@@ -111,7 +116,8 @@ function validateGitAuthor(
     );
   }
   if (
-    author.email.trim() !== author.email || author.email.length > 254 ||
+    author.email.trim() !== author.email ||
+    author.email.length > 254 ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(author.email)
   ) {
     return new NetworkMediationError("Expected a valid Git author email.", undefined);
@@ -159,7 +165,7 @@ function validateCanonicalGitHubRepository(
 }
 
 export class NetworkMediationError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
+  constructor(message: string, cause: unknown) {
     super(message, { cause });
     this.name = "NetworkMediationError";
   }

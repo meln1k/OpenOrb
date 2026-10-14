@@ -1,14 +1,15 @@
-import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertRejects, assertStrictEquals } from "@jsr/std__assert";
 
-import { importStandaloneRunner } from "@/src/standalone.ts";
+import { importStandaloneRunner } from "../../src/standalone.ts";
 
 const SECRET_CANARY = "INPUT_AZURE_STATIC_WEB_APPS_API_TOKEN";
 
-Deno.test("standalone imports see only the approved environment and restore the host environment", async () => {
+test("standalone imports see only the approved environment and restore the host environment", async () => {
   const process = (await import("node:process")).default;
   const originalEnvironment = process.env;
-  const originalCanary = Deno.env.get(SECRET_CANARY);
-  Deno.env.set(SECRET_CANARY, "must-not-enter-the-module-graph");
+  const originalCanary = process.env[SECRET_CANARY];
+  process.env[SECRET_CANARY] = "must-not-enter-the-module-graph";
 
   try {
     await importStandaloneRunner(() => {
@@ -34,7 +35,7 @@ Deno.test("standalone imports see only the approved environment and restore the 
     );
     assertStrictEquals(process.env, originalEnvironment);
   } finally {
-    if (originalCanary === undefined) Deno.env.delete(SECRET_CANARY);
-    else Deno.env.set(SECRET_CANARY, originalCanary);
+    if (originalCanary === undefined) delete process.env[SECRET_CANARY];
+    else process.env[SECRET_CANARY] = originalCanary;
   }
 });

@@ -1,5 +1,5 @@
 import { createSession, type Session, type SessionStorage } from "remix/session";
-import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
+import type { WorkspaceApi } from "../cells/workspace/api.ts";
 
 /** Updates and rotations never recreate a session removed by a concurrent logout. */
 export class WorkspaceSessionStorage implements SessionStorage {
@@ -24,11 +24,12 @@ export class WorkspaceSessionStorage implements SessionStorage {
       return "";
     }
     const previousId = this.#origins.get(session);
-    const mode = previousId === session.id
-      ? "update"
-      : previousId !== undefined && session.deleteId === previousId
-      ? "rotate"
-      : "insert";
+    const mode =
+      previousId === session.id
+        ? "update"
+        : previousId !== undefined && session.deleteId === previousId
+          ? "rotate"
+          : "insert";
     const saved = await this.workspace.saveBrowserSession({
       id: session.id,
       data: session.data,

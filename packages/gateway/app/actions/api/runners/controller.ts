@@ -1,12 +1,12 @@
 import { type RunnerEnrollmentRequest, runnerEnrollmentRequestSchema } from "@openorb/protocol";
 import { tryAsync, trySync } from "@openorb/result";
-import { LimitedBytesTransformStream } from "@std/streams/limited-bytes-transform-stream";
+import { LimitedBytesTransformStream } from "@jsr/std__streams/limited-bytes-transform-stream";
 import { ContentType } from "remix/headers/content-type";
 import { parse } from "remix/data-schema";
 import { createController } from "remix/router";
 
-import { requestRateLimitKey } from "@/app/middleware/services.ts";
-import { routes } from "@/app/routes.ts";
+import { requestRateLimitKey } from "../../../middleware/services.ts";
+import { routes } from "../../../routes.ts";
 
 const MAX_ENROLLMENT_BODY_BYTES = 16 * 1024;
 
@@ -30,7 +30,7 @@ export default createController(routes.api.runners, {
             context.request.body?.pipeThrough(
               new LimitedBytesTransformStream(MAX_ENROLLMENT_BODY_BYTES, { error: true }),
             ),
-          ).text()
+          ).text(),
         ),
         (cause) => new EnrollmentRequestReadError(cause),
       );

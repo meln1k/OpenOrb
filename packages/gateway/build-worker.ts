@@ -1,165 +1,74 @@
-// Preserve Remix clientEntry source identities while producing a single Worker bundle.
-const root = new URL("../../", import.meta.url);
-const gateway = new URL("./", import.meta.url);
-const output = new URL("dist/ssr/", gateway);
-await Deno.mkdir(output, { recursive: true });
-const absolute = (value: string, base: URL) =>
-  value.startsWith(".") ? new URL(value, base).href : value;
-const imports: Record<string, string> = {};
-const scopes: Record<string, Record<string, string>> = {};
-for (
-  const directory of [
-    "",
-    "packages/gateway/",
-    "packages/pi-env/",
-    "packages/protocol/",
-    "packages/result/",
-  ]
-) {
-  const base = new URL(directory, root);
-  const config = JSON.parse(await Deno.readTextFile(new URL("deno.json", base)));
-  if (config.name) {
-    // Deno config accepts both export forms; this is a checked-in build input.
-    // deno-lint-ignore openorb/no-runtime-typeof
-    const exports = typeof config.exports === "string" ? { ".": config.exports } : config.exports;
-    for (const [key, value] of Object.entries(exports ?? {})) {
-      imports[config.name + (key === "." ? "" : key.slice(1))] = absolute(String(value), base);
-    }
-  }
-  const entries = Object.fromEntries(
-    Object.entries(config.imports ?? {}).map(([key, value]) => [
-      key.startsWith(".") ? new URL(key, base).href : key,
-      absolute(String(value), base),
-    ]),
-  );
-  if (directory) scopes[base.href] = entries;
-  else Object.assign(imports, entries);
-}
-// Generated modules remain in the gateway's import-map scope.
-async function preserveSources(directory: URL) {
-  for await (const entry of Deno.readDir(directory)) {
-    const source = new URL(entry.name + (entry.isDirectory ? "/" : ""), directory);
-    if (entry.isDirectory) {
-      await preserveSources(source);
-      continue;
-    }
-    if (!/\.tsx?$/.test(entry.name) || entry.name.includes(".test.")) continue;
-    let code = await Deno.readTextFile(source);
-    const relative = source.href.slice(gateway.href.length);
-    const target = new URL(relative, output);
-    // Source modules are trusted build inputs, not user-supplied programs.
-    code = code.replaceAll("import.meta.url", JSON.stringify(source.href))
-      .replace(
-        /((?:from\s*|import\s*\()\s*["'])(\.[^"']+)(["'])/g,
-        (_match, start, path, end) => `${start}${new URL(path, source).href}${end}`,
-      );
-    await Deno.mkdir(new URL("./", target), { recursive: true });
-    await Deno.writeTextFile(target, code);
-    imports[source.href] = target.href;
-  }
-}
-await preserveSources(new URL("app/", gateway));
-await Deno.writeTextFile(
-  new URL("app/cells/session/codemode-wasm.ts", output),
-  'import wasm from "quickjs-wasi/quickjs.wasm";\nexport const loadCodemodeWasm = () => Promise.resolve(wasm);\n',
-);
-// Bare @/ imports resolve only once; route them to the same generated graph as relative imports.
-scopes[gateway.href]!["@/app/"] = new URL("app/", output).href;
-const map = new URL("dist/worker-imports.json", gateway);
-await Deno.writeTextFile(map, JSON.stringify({ imports, scopes }));
-const config = new URL("dist/bundle-deno.json", gateway);
-await Deno.writeTextFile(
-  config,
-  JSON.stringify({
-    compilerOptions: { jsx: "react-jsx", jsxImportSource: "remix/component" },
-    nodeModulesDir: "manual",
-  }),
-);
-// The isolated build config prunes workspace metadata; retain the checked-in resolutions and
-// integrity hashes in a disposable copy instead of rewriting the repository lockfile.
-const lock = new URL("dist/bundle.lock", gateway);
-await Deno.copyFile(new URL("deno.lock", root), lock);
-const bundleOptions = [
-  "bundle",
-  "--frozen=false",
-  `--lock=${lock.pathname}`,
-  `--config=${config.pathname}`,
-  "--platform=browser",
-  // Remix infers client-entry export names from function.name during SSR.
-  "--keep-names",
-  "--external=cloudflare:workers",
-  "--external=quickjs-wasi/quickjs.wasm",
-  `--import-map=${map.pathname}`,
-];
-// celld compiles sibling WASM modules; Deno only bundles the JavaScript wrapper.
-async function packageQuickJS(bundle: URL) {
-  const code = await Deno.readTextFile(bundle);
-  await Deno.writeTextFile(
-    bundle,
-    code.replaceAll('"quickjs-wasi/quickjs.wasm"', '"./quickjs.wasm"'),
-  );
-  await Deno.copyFile(
-    new URL(import.meta.resolve("quickjs-wasi/quickjs.wasm")),
-    new URL("quickjs.wasm", bundle),
-  );
-}
-// The sandbox runs in its own Worker Loader isolate; the gateway carries its bundle as a string.
-const sandboxEntry = "app/cells/session/environment/sandbox/worker.ts";
-const sandbox = await new Deno.Command(Deno.execPath(), {
-  args: [...bundleOptions, "--external=node:*", sandboxEntry, "-o", "dist/sandbox.js"],
-  cwd: gateway.pathname,
-  stdin: "null",
-  stdout: "inherit",
-  stderr: "inherit",
-}).spawn().status;
-if (!sandbox.success) Deno.exit(sandbox.code);
-const sandboxCode = await Deno.readTextFile(new URL("dist/sandbox.js", gateway));
-const sandboxHash = Array.from(
-  new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sandboxCode))),
-  (byte) => byte.toString(16).padStart(2, "0"),
-).join("").slice(0, 16);
-await Deno.writeTextFile(
-  new URL("app/cells/session/environment/sandbox/code.ts", output),
-  `export const SANDBOX_WORKER = ${
-    JSON.stringify({ code: sandboxCode, hash: sandboxHash })
-  } as const;\n`,
-);
-const command = new Deno.Command(Deno.execPath(), {
-  args: [...bundleOptions, "server.ts", "-o", "dist/worker.js"],
-  cwd: gateway.pathname,
-  stdin: "null",
-  stdout: "inherit",
-  stderr: "inherit",
-});
-const result = await command.spawn().status;
-if (!result.success) Deno.exit(result.code);
-await packageQuickJS(new URL("dist/worker.js", gateway));
-await Deno.writeTextFile(
-  new URL("dist/worker.d.ts", gateway),
-  'export * from "../server.ts"; export { default } from "../server.ts";\n',
-);
-async function copyTree(source: URL, target: URL): Promise<void> {
-  await Deno.mkdir(target, { recursive: true });
-  for await (const entry of Deno.readDir(source)) {
-    const from = new URL(entry.name + (entry.isDirectory ? "/" : ""), source);
-    const to = new URL(entry.name + (entry.isDirectory ? "/" : ""), target);
-    if (entry.isDirectory) await copyTree(from, to);
-    else await Deno.copyFile(from, to);
-  }
-}
-if (Deno.args.includes("--test")) {
-  const test = new Deno.Command(Deno.execPath(), {
-    args: [...bundleOptions, "test/celld-worker.ts", "-o", "dist/test-worker.js"],
-    cwd: gateway.pathname,
-    stdin: "null",
-    stdout: "inherit",
-    stderr: "inherit",
+import { build } from "rolldown";
+import { createHash } from "node:crypto";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const gateway = fileURLToPath(new URL("./", import.meta.url));
+const output = new URL("dist/", import.meta.url);
+await mkdir(output, { recursive: true });
+let sandboxCode = "";
+let sandboxHash = "";
+
+async function bundle(entry: string, destination: string) {
+  await build({
+    input: `${gateway}${entry}`,
+    platform: "browser",
+    external: [/^cloudflare:workers$/, /^node:/],
+    plugins: [
+      {
+        name: "openorb-worker-inputs",
+        resolveId(source) {
+          // celld compiles the sibling WASM module; Rolldown bundles its JS wrapper only.
+          if (source === "quickjs-wasi/quickjs.wasm") {
+            return { id: "./quickjs.wasm", external: true };
+          }
+        },
+        async load(id) {
+          if (id.endsWith(".sql"))
+            return `export default ${JSON.stringify(await readFile(id, "utf8"))};`;
+          if (id.endsWith("/session/codemode-wasm.ts")) {
+            return 'import wasm from "quickjs-wasi/quickjs.wasm";\nexport const loadCodemodeWasm = () => Promise.resolve(wasm);\n';
+          }
+          if (id.endsWith("/sandbox/code.ts")) {
+            return `export const SANDBOX_WORKER = ${JSON.stringify({ code: sandboxCode, hash: sandboxHash })};`;
+          }
+        },
+        transform(code, id) {
+          // Remix clientEntry identifies browser modules by their original source URL.
+          if (id.startsWith(`${gateway}app/`)) {
+            return code.replaceAll("import.meta.url", JSON.stringify(pathToFileURL(id).href));
+          }
+        },
+      },
+    ],
+    output: {
+      file: `${gateway}${destination}`,
+      format: "esm",
+      keepNames: true,
+      codeSplitting: false,
+    },
   });
-  const result = await test.spawn().status;
-  if (!result.success) Deno.exit(result.code);
-  const target = new URL("test/dist/", gateway);
-  await Deno.mkdir(target, { recursive: true });
-  await Deno.copyFile(new URL("dist/test-worker.js", gateway), new URL("worker.js", target));
-  await packageQuickJS(new URL("worker.js", target));
-  await copyTree(new URL("dist/assets/", gateway), new URL("assets/", target));
+  await cp(
+    new URL(import.meta.resolve("quickjs-wasi/quickjs.wasm")),
+    new URL("quickjs.wasm", pathToFileURL(`${gateway}${destination}`)),
+  );
+}
+
+if (process.argv.includes("--workspace-test")) {
+  await bundle("test/workspace/celld-worker.ts", "test/workspace/dist/worker.js");
+} else {
+  await bundle("app/cells/session/environment/sandbox/worker.ts", "dist/sandbox.js");
+  sandboxCode = await readFile(new URL("sandbox.js", output), "utf8");
+  sandboxHash = createHash("sha256").update(sandboxCode).digest("hex").slice(0, 16);
+  await bundle("server.ts", "dist/worker.js");
+  await writeFile(
+    new URL("worker.d.ts", output),
+    'export * from "../server.ts"; export { default } from "../server.ts";\n',
+  );
+  if (process.argv.includes("--test")) {
+    await bundle("test/celld-worker.ts", "test/dist/worker.js");
+    await cp(new URL("assets/", output), new URL("test/dist/assets/", import.meta.url), {
+      recursive: true,
+    });
+  }
 }

@@ -7,12 +7,12 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import { RunnersSettingsPage, type SettingsRunner } from "@/app/actions/settings/page.tsx";
-import type { Administrator, RunnerRecord } from "@/app/cells/workspace/api.ts";
-import { csrf } from "@/app/middleware/csrf.ts";
-import type { AppContext } from "@/app/router.ts";
-import type { AppServices } from "@/app/middleware/services.ts";
-import { routes } from "@/app/routes.ts";
+import { RunnersSettingsPage, type SettingsRunner } from "../page.tsx";
+import type { Administrator, RunnerRecord } from "../../../cells/workspace/api.ts";
+import { csrf } from "../../../middleware/csrf.ts";
+import type { AppContext } from "../../../router.ts";
+import type { AppServices } from "../../../middleware/services.ts";
+import { routes } from "../../../routes.ts";
 
 const regenerateEnrollmentTokenSchema = f.object({
   intent: f.field(s.literal("regenerate-enrollment-token")),
@@ -122,16 +122,19 @@ async function settingsRunners(
   runners: RunnerRecord[],
   connections: Pick<AppServices["runnerConnections"], "getRunnerLiveState">,
 ): Promise<SettingsRunner[]> {
-  return await Promise.all(runners.map(async (runner) => {
-    const liveState = runner.revokedAt === null
-      ? await connections.getRunnerLiveState(workspaceId, runner.id)
-      : null;
-    return {
-      id: runner.id,
-      name: runner.name,
-      architecture: runner.architecture,
-      status: runner.revokedAt !== null ? "revoked" : liveState ? "online" : "offline",
-      capacity: liveState?.capacity ?? null,
-    };
-  }));
+  return await Promise.all(
+    runners.map(async (runner) => {
+      const liveState =
+        runner.revokedAt === null
+          ? await connections.getRunnerLiveState(workspaceId, runner.id)
+          : null;
+      return {
+        id: runner.id,
+        name: runner.name,
+        architecture: runner.architecture,
+        status: runner.revokedAt !== null ? "revoked" : liveState ? "online" : "offline",
+        capacity: liveState?.capacity ?? null,
+      };
+    }),
+  );
 }

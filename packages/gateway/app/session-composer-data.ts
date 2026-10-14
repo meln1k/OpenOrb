@@ -1,8 +1,8 @@
 import type { SessionThinkingLevel } from "@openorb/protocol";
 import type { WorkspaceId } from "@openorb/protocol/runner-api";
 
-import type { AppServices } from "@/app/middleware/services.ts";
-import { MODEL_OPTIONS } from "@/app/model-provider-catalog.ts";
+import type { AppServices } from "./middleware/services.ts";
+import { MODEL_OPTIONS } from "./model-provider-catalog.ts";
 
 export type SessionComposerData = {
   projects: {
@@ -37,7 +37,7 @@ export async function loadSessionComposerData(
       defaultRef: project.defaultRef,
     })),
     models: MODEL_OPTIONS.filter((model) =>
-      providers.some((provider) => provider.providerId === model.providerId)
+      providers.some((provider) => provider.providerId === model.providerId),
     ).map((model) => ({
       id: model.id,
       name: model.name,
@@ -46,9 +46,13 @@ export async function loadSessionComposerData(
       thinkingLevels: [...model.thinkingLevels],
     })),
     hasConfiguredRunner: runners.some((runner) => runner.revokedAt === null),
-    hasConnectedRunner: (await Promise.all(runners.map(async (runner) => {
-      const live = await services.runnerConnections.getRunnerLiveState(workspaceId, runner.id);
-      return live !== null && runner.revokedAt === null;
-    }))).some(Boolean),
+    hasConnectedRunner: (
+      await Promise.all(
+        runners.map(async (runner) => {
+          const live = await services.runnerConnections.getRunnerLiveState(workspaceId, runner.id);
+          return live !== null && runner.revokedAt === null;
+        }),
+      )
+    ).some(Boolean),
   };
 }

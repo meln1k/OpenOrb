@@ -22,19 +22,16 @@ export async function enrollRunner(
   const fetchImplementation = options.fetch ?? fetch;
   const [response, networkError] = await tryAsync(
     Promise.resolve().then(() =>
-      fetchImplementation(
-        new URL("/api/runners/enroll", options.gatewayUrl),
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            enrollmentPsk: options.enrollmentPsk,
-            name: options.name,
-            architecture: options.architecture,
-          }),
-          signal: AbortSignal.timeout(ENROLLMENT_TIMEOUT_MS),
-        },
-      )
+      fetchImplementation(new URL("/api/runners/enroll", options.gatewayUrl), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          enrollmentPsk: options.enrollmentPsk,
+          name: options.name,
+          architecture: options.architecture,
+        }),
+        signal: AbortSignal.timeout(ENROLLMENT_TIMEOUT_MS),
+      }),
     ),
     (cause) => new RunnerEnrollmentError("Runner enrollment could not reach the gateway.", cause),
   );
@@ -50,18 +47,14 @@ export async function enrollRunner(
 
   const [enrolled, responseError] = await tryAsync(
     response.json().then((value) => parse(runnerEnrollmentResponseSchema, value)),
-    (cause) =>
-      new RunnerEnrollmentError(
-        "Gateway returned an invalid enrollment response.",
-        cause,
-      ),
+    (cause) => new RunnerEnrollmentError("Gateway returned an invalid enrollment response.", cause),
   );
   if (responseError !== undefined) return err(responseError);
   return ok(enrolled);
 }
 
 export class RunnerEnrollmentError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
+  constructor(message: string, cause: unknown) {
     super(message, { cause });
     this.name = "RunnerEnrollmentError";
   }

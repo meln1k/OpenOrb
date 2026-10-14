@@ -140,16 +140,19 @@ export interface WorkspaceApi {
   verifyAdministratorPassword(password: string): Promise<Administrator | null>;
   listProjects(workspaceId: WorkspaceId): Promise<Project[]>;
   getProject(workspaceId: WorkspaceId, id: string): Promise<Project | null>;
-  saveProject(workspaceId: WorkspaceId, input: SaveProjectInput): Promise<
-    | { status: "saved"; project: Project }
-    | { status: "not-found" | "name-conflict" }
-  >;
-  deleteProject(workspaceId: WorkspaceId, id: string): Promise<
-    Result<"deleted" | "not-found" | "in-use", Error>
-  >;
+  saveProject(
+    workspaceId: WorkspaceId,
+    input: SaveProjectInput,
+  ): Promise<{ status: "saved"; project: Project } | { status: "not-found" | "name-conflict" }>;
+  deleteProject(
+    workspaceId: WorkspaceId,
+    id: string,
+  ): Promise<Result<"deleted" | "not-found" | "in-use", Error>>;
   listSecrets(workspaceId: WorkspaceId): Promise<SecretEntry[]>;
   getSecret(workspaceId: WorkspaceId, key: string): Promise<SecretEntry | null>;
-  getEnvironmentSecrets(workspaceId: WorkspaceId): Promise<
+  getEnvironmentSecrets(
+    workspaceId: WorkspaceId,
+  ): Promise<
     Result<readonly Pick<SessionEnvironmentSecret, "name" | "value" | "allowedHosts">[], Error>
   >;
   saveSecret(
@@ -191,9 +194,11 @@ export interface WorkspaceApi {
   deleteGitHubCredential(workspaceId: WorkspaceId): Promise<{ status: "deleted" | "not-found" }>;
   getRunnerEnrollmentToken(workspaceId: WorkspaceId): Promise<RunnerEnrollmentToken>;
   regenerateRunnerEnrollmentToken(workspaceId: WorkspaceId): Promise<RunnerEnrollmentToken>;
-  enrollRunner(
-    input: { enrollmentPsk: string; name: string; architecture: "x64" | "arm64" },
-  ): Promise<{ runnerId: string; runnerToken: string } | null>;
+  enrollRunner(input: {
+    enrollmentPsk: string;
+    name: string;
+    architecture: "x64" | "arm64";
+  }): Promise<{ runnerId: string; runnerToken: string } | null>;
   authenticateRunner(token: string): Promise<AuthenticatedRunner | null>;
   listRunners(workspaceId: WorkspaceId): Promise<RunnerRecord[]>;
   revokeRunner(workspaceId: WorkspaceId, id: string): Promise<"revoked" | "not-found">;
@@ -231,10 +236,12 @@ const Text = Schema.NonEmptyString.check(Schema.isMaxLength(4096));
 const Identifier = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_.-]{1,100}$/));
 const Owner = Schema.Tuple([WorkspaceIdSchema]);
 const OwnedIdentifier = Schema.Tuple([WorkspaceIdSchema, Identifier]);
-const BrowserData = Schema.mutable(Schema.Tuple([
-  Schema.Record(Schema.String, Schema.Unknown),
-  Schema.Record(Schema.String, Schema.Unknown),
-]));
+const BrowserData = Schema.mutable(
+  Schema.Tuple([
+    Schema.Record(Schema.String, Schema.Unknown),
+    Schema.Record(Schema.String, Schema.Unknown),
+  ]),
+);
 
 type WorkspaceArgumentSchemas = {
   [K in WorkspaceOperation]: Schema.Codec<Readonly<Parameters<WorkspaceApi[K]>>, unknown>;
@@ -286,11 +293,13 @@ const WORKSPACE_ARGUMENTS: WorkspaceArgumentSchemas = {
   deleteGitHubCredential: Owner,
   getRunnerEnrollmentToken: Owner,
   regenerateRunnerEnrollmentToken: Owner,
-  enrollRunner: Schema.Tuple([Schema.Struct({
-    enrollmentPsk: Text,
-    name: Schema.NonEmptyString.check(Schema.isMaxLength(100)),
-    architecture: Schema.Literals(["x64", "arm64"]),
-  })]),
+  enrollRunner: Schema.Tuple([
+    Schema.Struct({
+      enrollmentPsk: Text,
+      name: Schema.NonEmptyString.check(Schema.isMaxLength(100)),
+      architecture: Schema.Literals(["x64", "arm64"]),
+    }),
+  ]),
   authenticateRunner: Schema.Tuple([Text]),
   listRunners: Owner,
   revokeRunner: OwnedIdentifier,
@@ -300,12 +309,14 @@ const WORKSPACE_ARGUMENTS: WorkspaceArgumentSchemas = {
   deleteSessionCatalogEntry: Schema.Tuple([WorkspaceIdSchema, Identifier, Text]),
   reconcileSessionManifestEntries: Schema.Tuple([
     WorkspaceIdSchema,
-    Schema.Array(Schema.Struct({
-      id: RunnerSessionSnapshot.fields.id,
-      projectId: RunnerSessionSnapshot.fields.projectId,
-      createdAt: RunnerSessionSnapshot.fields.createdAt,
-      initialPromptPreview: RunnerSessionSnapshot.fields.initialPromptPreview,
-    })).check(Schema.isMaxLength(10000)),
+    Schema.Array(
+      Schema.Struct({
+        id: RunnerSessionSnapshot.fields.id,
+        projectId: RunnerSessionSnapshot.fields.projectId,
+        createdAt: RunnerSessionSnapshot.fields.createdAt,
+        initialPromptPreview: RunnerSessionSnapshot.fields.initialPromptPreview,
+      }),
+    ).check(Schema.isMaxLength(10000)),
   ]),
   startProviderLogin: Owner,
   getProviderLoginStatus: OwnedIdentifier,
@@ -313,12 +324,14 @@ const WORKSPACE_ARGUMENTS: WorkspaceArgumentSchemas = {
   disconnectProvider: Owner,
   resolveProviderAccessToken: Owner,
   readBrowserSession: Schema.Tuple([Identifier]),
-  saveBrowserSession: Schema.Tuple([Schema.Struct({
-    id: Identifier,
-    previousId: Schema.optionalKey(Identifier),
-    mode: Schema.Literals(["insert", "update", "rotate"]),
-    data: BrowserData,
-  })]),
+  saveBrowserSession: Schema.Tuple([
+    Schema.Struct({
+      id: Identifier,
+      previousId: Schema.optionalKey(Identifier),
+      mode: Schema.Literals(["insert", "update", "rotate"]),
+      data: BrowserData,
+    }),
+  ]),
   deleteBrowserSessions: Schema.Tuple([
     Schema.mutable(Schema.Array(Identifier)).check(Schema.isMaxLength(2)),
   ]),

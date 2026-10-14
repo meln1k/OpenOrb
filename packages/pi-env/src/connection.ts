@@ -1,6 +1,6 @@
 // Vendored from @earendil-works/pi-env 1.1.0 (MIT, see ../LICENSE); OpenOrb changes are in README.md.
 // Upstream protocol code keeps its own idioms instead of OpenOrb boundary-parsing conventions.
-// deno-lint-ignore-file openorb/no-chained-type-assertions openorb/no-runtime-typeof openorb/no-unknown-returns openorb/no-unsafe-dictionary-type openorb/prefer-disposable-stack
+// oxlint-disable openorb/no-chained-type-assertions, openorb/no-runtime-typeof, openorb/no-unknown-returns, openorb/no-unsafe-dictionary-type, openorb/prefer-disposable-stack
 
 /** Frame types (pi-env docs/protocol.md). */
 const REQUEST = 1;
@@ -315,10 +315,13 @@ export class Connection {
     failed.catch(() => {});
     try {
       const link = await Promise.race([
-        this.#options.open({
-          frame: (bytes) => this.#onFrame(session, bytes),
-          closed: (reason) => this.#teardown(session, lost(`pi-env link closed: ${reason}`)),
-        }, controller.signal),
+        this.#options.open(
+          {
+            frame: (bytes) => this.#onFrame(session, bytes),
+            closed: (reason) => this.#teardown(session, lost(`pi-env link closed: ${reason}`)),
+          },
+          controller.signal,
+        ),
         failed,
       ]);
       if (!session.live) {
@@ -335,9 +338,10 @@ export class Connection {
       // SAFETY: protocol 1 `hello` replies carry every RemoteInfo field (pi-env docs/protocol.md).
       return { info: json as unknown as RemoteInfo, session };
     } catch (error) {
-      const cause = error instanceof RemoteError
-        ? error
-        : lost(error instanceof Error ? error.message : String(error));
+      const cause =
+        error instanceof RemoteError
+          ? error
+          : lost(error instanceof Error ? error.message : String(error));
       this.#teardown(session, cause);
       throw cause;
     } finally {

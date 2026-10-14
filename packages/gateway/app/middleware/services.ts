@@ -1,13 +1,13 @@
 import { createContextKey, type Middleware } from "remix/router";
 
-import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
-import { WorkspaceSessionStorage } from "@/app/data/workspace-session-storage.ts";
+import type { WorkspaceApi } from "../cells/workspace/api.ts";
+import { WorkspaceSessionStorage } from "../data/workspace-session-storage.ts";
 import type { SessionStorage } from "remix/session";
 import type { DurableObjectStub } from "@cloudflare/workers-types";
-import type { Runners } from "@/app/cells/runners/runner-registry-do.ts";
-import type { MediaReader, SessionDirectory } from "@/app/cells/session/api.ts";
-import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
-import { assetServer, type GatewayAssets } from "@/app/assets.ts";
+import type { Runners } from "../cells/runners/runner-registry-do.ts";
+import type { MediaReader, SessionDirectory } from "../cells/session/api.ts";
+import { TokenBucketRateLimiter } from "../utils/token-bucket-rate-limiter.ts";
+import { assetServer, type GatewayAssets } from "../assets.ts";
 
 export interface LoginRateLimiter {
   allow(key: string): boolean;
@@ -45,9 +45,8 @@ export function createAppServices(
   workspace: WorkspaceApi,
   runnerConnections: AppServices["runnerConnections"],
   sessionStorage: SessionStorage | undefined,
-  options:
-    & Pick<AppServices, "sessions" | "media">
-    & Pick<Partial<AppServices>, "assets" | "publicUrl">,
+  options: Pick<AppServices, "sessions" | "media"> &
+    Pick<Partial<AppServices>, "assets" | "publicUrl">,
 ): AppServices {
   return {
     workspace,

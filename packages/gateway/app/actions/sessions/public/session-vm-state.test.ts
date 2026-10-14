@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 import {
   isSessionVmTransitioning,
   sessionVmPhase,
@@ -6,7 +7,7 @@ import {
 } from "./session-vm-state.ts";
 import { actionForState } from "./session-vm-control.tsx";
 
-Deno.test("environment presentation uses its own lifecycle", () => {
+test("environment presentation uses its own lifecycle", () => {
   assertEquals(sessionVmPhase("starting"), "starting");
   assertEquals(sessionVmPhase("running"), "active");
   assertEquals(sessionVmPhase("stopped"), "sleeping");
@@ -17,7 +18,7 @@ Deno.test("environment presentation uses its own lifecycle", () => {
   assertEquals(sessionVmPhaseLabel("sleeping"), "Sleeping");
 });
 
-Deno.test("Stop Session pauses a running agent even when its environment is stopped", () => {
+test("Stop Session pauses a running agent even when its environment is stopped", () => {
   assertEquals(actionForState({ agentState: "running", environmentState: "stopped" }), "stop");
   assertEquals(actionForState({ agentState: "paused", environmentState: "stopping" }), undefined);
   assertEquals(actionForState({ agentState: "paused", environmentState: "stopped" }), "start");

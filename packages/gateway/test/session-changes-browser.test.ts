@@ -1,16 +1,17 @@
-import { assertEquals } from "@std/assert";
-import { encodeBase64 } from "@std/encoding/base64";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
+import { Buffer } from "node:buffer";
 
 import { createBuildAssetServer } from "../build-assets.ts";
 import { MAX_RUNNER_BULK_CHUNK_BYTES } from "../../protocol/src/runner-api-limits.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
+import { createTestServer } from "./http-test-server.ts";
 
-const browserEndpoint = Deno.env.get("OPENORB_BROWSER_TEST_CDP");
+const browserEndpoint = process.env["OPENORB_BROWSER_TEST_CDP"];
 
-Deno.test({
-  name: "browser hydrates and renders a multi-chunk Git patch sequentially",
-  ignore: browserEndpoint === undefined,
-  async fn() {
+test(
+  "browser hydrates and renders a multi-chunk Git patch sequentially",
+  { skip: browserEndpoint === undefined, timeout: 120_000 },
+  async () => {
     await using cleanup = new AsyncDisposableStack();
     const assetServer = createBuildAssetServer();
     cleanup.defer(() => assetServer.close());
@@ -50,8 +51,7 @@ Deno.test({
       "packages/gateway/app/actions/sessions/public/session-changes-resource.tsx",
     ]);
     const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
-    const html =
-      `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body style="margin:0">
+    const html = `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body style="margin:0">
       <div id="app" style="display:flex;width:100%;height:720px"></div>
       <script type="module">
         import { createRoot, Fragment } from ${JSON.stringify(uiHref)};
@@ -107,18 +107,20 @@ Deno.test({
     const server = await createTestServer(async (request) => {
       const url = new URL(request.url);
       if (url.pathname.startsWith("/assets/")) {
-        return await assetServer.fetch(request) ?? new Response(null, { status: 404 });
+        return (await assetServer.fetch(request)) ?? new Response(null, { status: 404 });
       }
       if (url.pathname.endsWith("/events")) {
         return new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
-              controller.enqueue(new TextEncoder().encode(`event: session\ndata: ${
-                JSON.stringify({
-                  type: "conversation.snapshot",
-                  view: { conversation: { id: 0 }, entries: [], docs: {} },
-                })
-              }\n\n`));
+              controller.enqueue(
+                new TextEncoder().encode(
+                  `event: session\ndata: ${JSON.stringify({
+                    type: "conversation.snapshot",
+                    view: { conversation: { id: 0 }, entries: [], docs: {} },
+                  })}\n\n`,
+                ),
+              );
             },
           }),
           { headers: { "Content-Type": "text/event-stream" } },
@@ -143,13 +145,17 @@ Deno.test({
           sections: {
             staged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
             unstaged: {
-              files: empty ? [] : [{
-                kind: "tracked",
-                path: "src/large.ts",
-                displayPath: "src/large.ts",
-                status: "added",
-                diffState: "available",
-              }],
+              files: empty
+                ? []
+                : [
+                    {
+                      kind: "tracked",
+                      path: "src/large.ts",
+                      displayPath: "src/large.ts",
+                      status: "added",
+                      diffState: "available",
+                    },
+                  ],
               patch: "",
               fullPatchBytes: empty ? 0 : patchBytes.byteLength,
               truncated: false,
@@ -169,7 +175,7 @@ Deno.test({
           snapshotId,
           section: "unstaged",
           offset,
-          bytes: encodeBase64(patchBytes.subarray(offset, end)),
+          bytes: Buffer.from(patchBytes.subarray(offset, end)).toString("base64"),
           nextOffset: end,
           done: end === patchBytes.byteLength,
         });
@@ -188,29 +194,23 @@ Deno.test({
       await page.waitForFunction(
         (expectedBytes) =>
           document.querySelector("#hydration-probe")?.getAttribute("data-patch-bytes") ===
-            String(expectedBytes),
+          String(expectedBytes),
         patchBytes.byteLength,
         { timeout: 15_000 },
       );
       assertEquals(await probe.getAttribute("data-has-end-marker"), "true");
-      assertEquals(offsets, [
-        0,
-        MAX_RUNNER_BULK_CHUNK_BYTES,
-        MAX_RUNNER_BULK_CHUNK_BYTES * 2,
-      ]);
+      assertEquals(offsets, [0, MAX_RUNNER_BULK_CHUNK_BYTES, MAX_RUNNER_BULK_CHUNK_BYTES * 2]);
       assertEquals(maxInFlight, 1);
       assertEquals(await page.getByText("openorb/browser-bulk-test").isVisible(), true);
       await page.getByLabel(`${addedLines} additions, 0 deletions`).waitFor({ state: "visible" });
-      assertEquals(
-        await page.getByLabel(`${addedLines} additions, 0 deletions`).isVisible(),
-        true,
-      );
+      assertEquals(await page.getByLabel(`${addedLines} additions, 0 deletions`).isVisible(), true);
       const fileToggle = page.locator('button[data-change-file-command="toggle"]');
-      if (await fileToggle.getAttribute("aria-expanded") === "false") await fileToggle.click();
-      await page.waitForFunction(() =>
-        document.querySelector('button[data-change-file-command="toggle"]')?.getAttribute(
-          "aria-expanded",
-        ) === "true"
+      if ((await fileToggle.getAttribute("aria-expanded")) === "false") await fileToggle.click();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector('button[data-change-file-command="toggle"]')
+            ?.getAttribute("aria-expanded") === "true",
       );
       await page.getByText(/generatedLine0/).waitFor({ state: "visible", timeout: 15_000 });
       assertEquals(await page.getByRole("alert").count(), 0);
@@ -229,14 +229,14 @@ Deno.test({
       assertEquals(mutationRequests, 1);
 
       await page.evaluate(() => globalThis.dispatchEvent(new Event("openorb-test-git-refresh")));
-      await page.waitForFunction(() =>
-        document.querySelector("#hydration-probe")?.getAttribute("data-patch-bytes") === "0"
+      await page.waitForFunction(
+        () => document.querySelector("#hydration-probe")?.getAttribute("data-patch-bytes") === "0",
       );
       assertEquals(await optimisticAction.isVisible(), true);
       assertEquals(await optimisticAction.getAttribute("aria-busy"), "true");
       assertEquals(await optimisticAction.isEnabled(), true);
 
-      const screenshot = Deno.env.get("OPENORB_BROWSER_TEST_SCREENSHOT");
+      const screenshot = process.env["OPENORB_BROWSER_TEST_SCREENSHOT"];
       mutationResponse.resolve(Response.json({ mutationRevision: 1 }));
       await reconciliationRequested.promise;
       await page.waitForFunction(() => document.querySelector("[aria-busy='true']") === null);
@@ -245,34 +245,39 @@ Deno.test({
       assertEquals(await optimisticAction.getAttribute("aria-busy"), null);
       if (screenshot !== undefined) await page.screenshot({ path: screenshot });
 
-      reconciliationResponse.resolve(Response.json({
-        snapshotId,
-        mutationRevision: 1,
-        generatedAt: "browser-bulk-snapshot-3",
-        branch: "openorb/browser-bulk-test",
-        head: "b".repeat(40),
-        completeness: "complete",
-        stale: false,
-        truncated: false,
-        sections: {
-          staged: {
-            files: [{
-              kind: "tracked",
-              path: "src/large.ts",
-              displayPath: "src/large.ts",
-              status: "added",
-              diffState: "available",
-            }],
-            patch: "",
-            fullPatchBytes: 0,
-            truncated: false,
+      reconciliationResponse.resolve(
+        Response.json({
+          snapshotId,
+          mutationRevision: 1,
+          generatedAt: "browser-bulk-snapshot-3",
+          branch: "openorb/browser-bulk-test",
+          head: "b".repeat(40),
+          completeness: "complete",
+          stale: false,
+          truncated: false,
+          sections: {
+            staged: {
+              files: [
+                {
+                  kind: "tracked",
+                  path: "src/large.ts",
+                  displayPath: "src/large.ts",
+                  status: "added",
+                  diffState: "available",
+                },
+              ],
+              patch: "",
+              fullPatchBytes: 0,
+              truncated: false,
+            },
+            unstaged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
           },
-          unstaged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
-        },
-      }));
-      await page.waitForFunction(() =>
-        document.querySelector("#hydration-probe")?.getAttribute("data-generated-at") ===
-          "browser-bulk-snapshot-3"
+        }),
+      );
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#hydration-probe")?.getAttribute("data-generated-at") ===
+          "browser-bulk-snapshot-3",
       );
       assertEquals(await optimisticAction.isVisible(), true);
       assertEquals(await optimisticAction.getAttribute("aria-busy"), null);
@@ -285,7 +290,7 @@ Deno.test({
       if (errors.length > 0) console.error("Browser errors:", errors);
     }
   },
-});
+);
 
 function createPatch(addedLines: number, endMarker: string): string {
   const lines = Array.from(

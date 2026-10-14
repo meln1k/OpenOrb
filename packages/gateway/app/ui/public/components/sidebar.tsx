@@ -108,10 +108,7 @@ export const SidebarMobileSwipeBehavior = clientEntry<{ sidebarId: string }>(
 
       function setSwipePosition(offset: number, progress: number) {
         mobileSidebar.style.setProperty("--openorb-sidebar-swipe-offset", `${offset}px`);
-        mobileSidebar.style.setProperty(
-          "--openorb-sidebar-backdrop-alpha",
-          `${progress * 0.5}`,
-        );
+        mobileSidebar.style.setProperty("--openorb-sidebar-backdrop-alpha", `${progress * 0.5}`);
       }
 
       function clearSwipeStyles() {
@@ -179,7 +176,7 @@ export const SidebarMobileSwipeBehavior = clientEntry<{ sidebarId: string }>(
         const elapsed = (now - current.lastTime) / 1_000;
         const delta = event.clientX - current.lastX;
         if (elapsed > 0 && delta !== 0) {
-          const velocity = delta * current.scale / elapsed;
+          const velocity = (delta * current.scale) / elapsed;
           current.velocity = current.velocity * 0.5 + velocity * 0.5;
           current.lastX = event.clientX;
           current.lastTime = now;
@@ -201,10 +198,7 @@ export const SidebarMobileSwipeBehavior = clientEntry<{ sidebarId: string }>(
         };
       }
 
-      function settleSwipe(
-        current: SidebarPosition,
-        open: boolean,
-      ) {
+      function settleSwipe(current: SidebarPosition, open: boolean) {
         clearSettlement();
         mobileSidebar.dataset.swipe = "dragging";
         revealSwipe(current, current.revealed);
@@ -231,7 +225,7 @@ export const SidebarMobileSwipeBehavior = clientEntry<{ sidebarId: string }>(
           finish();
           return;
         }
-        const duration = mobileSidebarSlideDuration * Math.abs(distance) / current.hiddenDistance;
+        const duration = (mobileSidebarSlideDuration * Math.abs(distance)) / current.hiddenDistance;
         mobileSidebar.style.setProperty("--openorb-sidebar-motion", `${duration}ms linear`);
         void globalThis.getComputedStyle(mobileSidebar).transform;
         mobileSidebar.dataset.swipe = "settling";
@@ -280,79 +274,112 @@ export const SidebarMobileSwipeBehavior = clientEntry<{ sidebarId: string }>(
           if (
             (overflowX === "auto" || overflowX === "scroll") &&
             element.scrollWidth > element.clientWidth + 1
-          ) return true;
+          )
+            return true;
         }
         return false;
       }
 
-      sidebarLayout.addEventListener("pointerdown", (event) => {
-        if (
-          swipe ||
-          !event.isPrimary ||
-          event.pointerType !== "touch" ||
-          !globalThis.matchMedia("(max-width: 767.98px)").matches ||
-          mobileSidebar.matches(":popover-open") ||
-          isInsideHorizontalScroller(event.target)
-        ) {
-          return;
-        }
-        swipe = {
-          pointerId: event.pointerId,
-          x: event.clientX,
-          y: event.clientY,
-          active: false,
-          width: 0,
-          hiddenDistance: 0,
-          revealed: 0,
-          scale: 1,
-          lastX: event.clientX,
-          lastTime: globalThis.performance.now(),
-          velocity: 0,
-        };
-      }, { signal: handle.signal });
-      sidebarLayout.addEventListener("pointermove", (event) => {
-        updateSwipe(event);
-      }, { signal: handle.signal });
-      sidebarLayout.addEventListener("touchmove", (event) => {
-        if (swipe?.active && event.cancelable) event.preventDefault();
-      }, { passive: false, signal: handle.signal });
-      sidebarLayout.addEventListener("pointerup", (event) => {
-        const current = swipe;
-        if (!current || event.pointerId !== current.pointerId) return;
-        swipe = undefined;
-        if (current.active) {
-          releasePointer(current);
-          const idleTime = globalThis.performance.now() - current.lastTime;
-          const velocity = idleTime <= 100 ? current.velocity : 0;
-          settleSwipe(
-            current,
-            velocity === 0 ? current.revealed > current.width / 2 : velocity > 0,
-          );
-        }
-      }, { signal: handle.signal });
+      sidebarLayout.addEventListener(
+        "pointerdown",
+        (event) => {
+          if (
+            swipe ||
+            !event.isPrimary ||
+            event.pointerType !== "touch" ||
+            !globalThis.matchMedia("(max-width: 767.98px)").matches ||
+            mobileSidebar.matches(":popover-open") ||
+            isInsideHorizontalScroller(event.target)
+          ) {
+            return;
+          }
+          swipe = {
+            pointerId: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            active: false,
+            width: 0,
+            hiddenDistance: 0,
+            revealed: 0,
+            scale: 1,
+            lastX: event.clientX,
+            lastTime: globalThis.performance.now(),
+            velocity: 0,
+          };
+        },
+        { signal: handle.signal },
+      );
+      sidebarLayout.addEventListener(
+        "pointermove",
+        (event) => {
+          updateSwipe(event);
+        },
+        { signal: handle.signal },
+      );
+      sidebarLayout.addEventListener(
+        "touchmove",
+        (event) => {
+          if (swipe?.active && event.cancelable) event.preventDefault();
+        },
+        { passive: false, signal: handle.signal },
+      );
+      sidebarLayout.addEventListener(
+        "pointerup",
+        (event) => {
+          const current = swipe;
+          if (!current || event.pointerId !== current.pointerId) return;
+          swipe = undefined;
+          if (current.active) {
+            releasePointer(current);
+            const idleTime = globalThis.performance.now() - current.lastTime;
+            const velocity = idleTime <= 100 ? current.velocity : 0;
+            settleSwipe(
+              current,
+              velocity === 0 ? current.revealed > current.width / 2 : velocity > 0,
+            );
+          }
+        },
+        { signal: handle.signal },
+      );
       sidebarLayout.addEventListener("pointercancel", cancelSwipe, { signal: handle.signal });
-      document.addEventListener("pointerdown", (event) => {
-        if (!mobileSidebar.matches(":popover-open")) return;
-        const target = event.target;
-        if (!(target instanceof Element) || mobileSidebar.contains(target)) return;
-        const trigger = target.closest("[popovertarget]");
-        if (trigger?.getAttribute("popovertarget") === mobileSidebar.id) return;
-        closeSidebar();
-      }, { signal: handle.signal });
-      document.addEventListener("keydown", (event) => {
-        if (event.key !== "Escape" || !mobileSidebar.matches(":popover-open")) return;
-        event.preventDefault();
-        closeSidebar();
-      }, { signal: handle.signal });
-      mobileSidebar.addEventListener("toggle", () => {
-        if (mobileSidebar.matches(":popover-open")) return;
-        swipe = undefined;
-        clearSettlement();
-        clearSwipeStyles();
-      }, { signal: handle.signal });
-      handle.signal.addEventListener("abort", () => {
-        clearSettlement();
-      }, { once: true });
+      document.addEventListener(
+        "pointerdown",
+        (event) => {
+          if (!mobileSidebar.matches(":popover-open")) return;
+          const target = event.target;
+          if (!(target instanceof Element) || mobileSidebar.contains(target)) return;
+          const trigger = target.closest("[popovertarget]");
+          if (trigger?.getAttribute("popovertarget") === mobileSidebar.id) return;
+          closeSidebar();
+        },
+        { signal: handle.signal },
+      );
+      document.addEventListener(
+        "keydown",
+        (event) => {
+          if (event.key !== "Escape" || !mobileSidebar.matches(":popover-open")) return;
+          event.preventDefault();
+          closeSidebar();
+        },
+        { signal: handle.signal },
+      );
+      mobileSidebar.addEventListener(
+        "toggle",
+        () => {
+          if (mobileSidebar.matches(":popover-open")) return;
+          swipe = undefined;
+          clearSettlement();
+          clearSwipeStyles();
+        },
+        { signal: handle.signal },
+      );
+      handle.signal.addEventListener(
+        "abort",
+        () => {
+          clearSettlement();
+        },
+        { once: true },
+      );
     });
 
     return () => null;
@@ -467,56 +494,46 @@ export function SidebarMenuButton(handle: Handle<SidebarMenuButtonProps>) {
         {icon}
         <span mix={menuTextStyle}>{children}</span>
         {badge ? <span mix={menuBadgeStyle}>{badge}</span> : null}
-        {pending || navigation
-          ? (
-            <Spinner
-              aria-hidden="true"
-              hidden={!pending}
-              mix={menuPendingSpinnerStyle}
-            />
-          )
-          : null}
+        {pending || navigation ? (
+          <Spinner aria-hidden="true" hidden={!pending} mix={menuPendingSpinnerStyle} />
+        ) : null}
       </>
     );
 
-    return href && !disabled
-      ? (
-        <a
-          href={href}
-          aria-current={active ? "page" : undefined}
-          aria-busy={pending ? "true" : undefined}
-          data-active={active ? "true" : "false"}
-          data-pending={pending ? "true" : undefined}
-          data-slot="sidebar-menu-button"
-          mix={[menuButtonStyle, link(href, navigation)]}
-        >
-          {content}
-        </a>
-      )
-      : commandFor && !disabled
-      ? (
-        <button
-          type="button"
-          command={command}
-          commandFor={commandFor}
-          aria-pressed={active ? "true" : undefined}
-          data-active={active ? "true" : "false"}
-          data-slot="sidebar-menu-button"
-          mix={menuButtonStyle}
-        >
-          {content}
-        </button>
-      )
-      : (
-        <span
-          aria-disabled={disabled ? "true" : undefined}
-          data-active={active ? "true" : "false"}
-          data-slot="sidebar-menu-button"
-          mix={menuButtonStyle}
-        >
-          {content}
-        </span>
-      );
+    return href && !disabled ? (
+      <a
+        href={href}
+        aria-current={active ? "page" : undefined}
+        aria-busy={pending ? "true" : undefined}
+        data-active={active ? "true" : "false"}
+        data-pending={pending ? "true" : undefined}
+        data-slot="sidebar-menu-button"
+        mix={[menuButtonStyle, link(href, navigation)]}
+      >
+        {content}
+      </a>
+    ) : commandFor && !disabled ? (
+      <button
+        type="button"
+        command={command}
+        commandFor={commandFor}
+        aria-pressed={active ? "true" : undefined}
+        data-active={active ? "true" : "false"}
+        data-slot="sidebar-menu-button"
+        mix={menuButtonStyle}
+      >
+        {content}
+      </button>
+    ) : (
+      <span
+        aria-disabled={disabled ? "true" : undefined}
+        data-active={active ? "true" : "false"}
+        data-slot="sidebar-menu-button"
+        mix={menuButtonStyle}
+      >
+        {content}
+      </span>
+    );
   };
 }
 
@@ -551,9 +568,7 @@ export function SidebarSubMenuItem(handle: Handle<Props<"li">>) {
   };
 }
 
-export function SidebarSubMenuLink(
-  handle: Handle<Props<"a"> & { active?: boolean }>,
-) {
+export function SidebarSubMenuLink(handle: Handle<Props<"a"> & { active?: boolean }>) {
   return () => {
     const { active, mix, ...props } = handle.props;
     return (

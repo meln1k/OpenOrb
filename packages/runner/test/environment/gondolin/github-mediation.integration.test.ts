@@ -1,16 +1,17 @@
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { test } from "vite-plus/test";
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { execute } from "../../../src/runtime/process.ts";
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@jsr/std__assert";
 import { SessionEnvironmentSecret } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Scope } from "effect";
 
-import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
-import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin/layer.ts";
+import type { AgentEnvironment } from "../../../src/environment/agent-environment.ts";
+import { makeGondolinAgentEnvironmentProvider } from "../../../src/environment/gondolin/layer.ts";
 import { guestExecutionEnv, guestTools, writeGuestText } from "./guest-tools.ts";
-import {
-  gondolinTestEnvironmentOptions,
-  installLocalGuestImage,
-} from "@/test/environment/gondolin/local-guest-image.ts";
+import { gondolinTestEnvironmentOptions, installLocalGuestImage } from "./local-guest-image.ts";
 
 const PUBLIC_REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 const WRONG_REPOSITORY_URL = "https://github.com/octocat/Hello-World.git";
@@ -20,20 +21,20 @@ const GIT_AUTHOR = {
   email: "openorb-github-integration@example.invalid",
 };
 const GENERIC_SECRET_VALUE = "gondolin-integration-secret-41cd";
-const RUN_GONDOLIN_TESTS = Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") === "1";
-const PRIVATE_REPOSITORY_URL = Deno.env.get("OPENORB_GITHUB_TEST_REPOSITORY");
-const PRIVATE_TOKEN = Deno.env.get("OPENORB_GITHUB_TEST_TOKEN");
-const RUN_GITHUB_WRITE_TESTS = Deno.env.get("OPENORB_RUN_GITHUB_WRITE_TESTS") === "1";
-const RUN_PRIVATE_TEST = RUN_GONDOLIN_TESTS &&
+const RUN_GONDOLIN_TESTS = process.env.OPENORB_RUN_GONDOLIN_TESTS === "1";
+const PRIVATE_REPOSITORY_URL = process.env.OPENORB_GITHUB_TEST_REPOSITORY;
+const PRIVATE_TOKEN = process.env.OPENORB_GITHUB_TEST_TOKEN;
+const RUN_GITHUB_WRITE_TESTS = process.env.OPENORB_RUN_GITHUB_WRITE_TESTS === "1";
+const RUN_PRIVATE_TEST =
+  RUN_GONDOLIN_TESTS &&
   PRIVATE_REPOSITORY_URL !== undefined &&
   PRIVATE_TOKEN !== undefined &&
   RUN_GITHUB_WRITE_TESTS;
 
-Deno.test({
-  name: "generic secrets are non-plaintext environment placeholders inside Gondolin",
-  ignore: !RUN_GONDOLIN_TESTS,
-  async fn() {
-    const temporaryDirectory = await Deno.makeTempDir();
+test.skipIf(!RUN_GONDOLIN_TESTS)(
+  "generic secrets are non-plaintext environment placeholders inside Gondolin",
+  async () => {
+    const temporaryDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
 
     try {
@@ -51,26 +52,27 @@ Deno.test({
         cpuCount: 2,
         memoryMiB: 2 * 1024,
       });
-      const result = await Effect.runPromise(opened.runtime.run([
-        "/bin/sh",
-        "-c",
-        'test -n "$GONDOLIN_TEST_TOKEN" && test "$GONDOLIN_TEST_TOKEN" != ' +
-        shellQuote(GENERIC_SECRET_VALUE),
-      ]));
+      const result = await Effect.runPromise(
+        opened.runtime.run([
+          "/bin/sh",
+          "-c",
+          'test -n "$GONDOLIN_TEST_TOKEN" && test "$GONDOLIN_TEST_TOKEN" != ' +
+            shellQuote(GENERIC_SECRET_VALUE),
+        ]),
+      );
       assertEquals(result.exitCode, 0);
     } finally {
       if (opened) await opened.close();
-      await Deno.remove(temporaryDirectory, { recursive: true });
+      await fs.rm(temporaryDirectory, { recursive: true });
     }
   },
-});
+  600_000,
+);
 
-Deno.test({
-  name:
-    "public GitHub repository clones inside Gondolin and hostile Git metadata stays in the guest",
-  ignore: !RUN_GONDOLIN_TESTS,
-  async fn() {
-    const temporaryDirectory = await Deno.makeTempDir();
+test.skipIf(!RUN_GONDOLIN_TESTS)(
+  "public GitHub repository clones inside Gondolin and hostile Git metadata stays in the guest",
+  async () => {
+    const temporaryDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const monitor = new LinuxHostGitProcessMonitor(temporaryDirectory);
     let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
@@ -91,12 +93,12 @@ Deno.test({
       const clone = await execute("bash", {
         command: [
           "set -eu",
-          `git clone --quiet --depth=1 --no-recurse-submodules ${
-            shellQuote(PUBLIC_REPOSITORY_URL)
-          } repository`,
+          `git clone --quiet --depth=1 --no-recurse-submodules ${shellQuote(
+            PUBLIC_REPOSITORY_URL,
+          )} repository`,
           "test -s repository/.git/HEAD",
           'test "$(git -C repository remote get-url origin)" = ' +
-          shellQuote(PUBLIC_REPOSITORY_URL),
+            shellQuote(PUBLIC_REPOSITORY_URL),
           "printf public-clone-ok",
         ].join("\n"),
         timeout: 120,
@@ -121,32 +123,20 @@ Deno.test({
       });
       assert(publicEgress.output.endsWith("public-egress-ok"));
 
-      for (
-        const [id, command] of [
-          [
-            "wrong-protocol",
-            "git ls-remote git://github.com/meln1k/openorb-test-repo.git",
-          ],
-          ["private-lan", "curl --fail --silent --show-error --max-time 10 http://192.168.1.1/"],
-          [
-            "cloud-metadata",
-            "curl --fail --silent --show-error --max-time 10 http://169.254.169.254/latest/meta-data/",
-          ],
-        ] as const
-      ) {
-        const blocked = await execute(
-          "bash",
-          { command, timeout: 30 },
-          { expectError: true },
-        );
+      for (const [id, command] of [
+        ["wrong-protocol", "git ls-remote git://github.com/meln1k/openorb-test-repo.git"],
+        ["private-lan", "curl --fail --silent --show-error --max-time 10 http://192.168.1.1/"],
+        [
+          "cloud-metadata",
+          "curl --fail --silent --show-error --max-time 10 http://169.254.169.254/latest/meta-data/",
+        ],
+      ] as const) {
+        const blocked = await execute("bash", { command, timeout: 30 }, { expectError: true });
         assert(blocked.result.isError, `${id} unexpectedly succeeded`);
         assert(!JSON.stringify(blocked).includes("github_pat_"));
       }
 
-      const hostMarkerPath = await installHostileGitMetadata(
-        runtime,
-        temporaryDirectory,
-      );
+      const hostMarkerPath = await installHostileGitMetadata(runtime, temporaryDirectory);
       await execute("bash", {
         command: [
           "git -C repository status >/tmp/openorb-hostile-status 2>&1 || true",
@@ -155,26 +145,26 @@ Deno.test({
         ].join("\n"),
         timeout: 30,
       });
-      await assertRejects(() => Deno.lstat(hostMarkerPath), Deno.errors.NotFound);
+      await assertRejects(() => fs.lstat(hostMarkerPath), Error, "ENOENT");
     } finally {
       if (opened) await opened.close();
       const findings = await monitor.stop();
       assertEquals(findings, [], `native host Git touched the session storage: ${findings}`);
-      await Deno.remove(temporaryDirectory, { recursive: true });
+      await fs.rm(temporaryDirectory, { recursive: true });
     }
   },
-});
+  600_000,
+);
 
-Deno.test({
-  name: RUN_PRIVATE_TEST
+test.skipIf(!RUN_PRIVATE_TEST)(
+  RUN_PRIVATE_TEST
     ? "private GitHub clone, gh metadata read, and controlled push stay token-mediated"
     : "private GitHub clone/push (skipped: set OPENORB_GITHUB_TEST_REPOSITORY, OPENORB_GITHUB_TEST_TOKEN, and OPENORB_RUN_GITHUB_WRITE_TESTS=1)",
-  ignore: !RUN_PRIVATE_TEST,
-  async fn() {
+  async () => {
     const repositoryUrl = PRIVATE_REPOSITORY_URL!;
     const token = PRIVATE_TOKEN!;
     const repository = parseRepositoryIdentity(repositoryUrl);
-    const temporaryDirectory = await Deno.makeTempDir();
+    const temporaryDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const monitor = new LinuxHostGitProcessMonitor(temporaryDirectory);
     let opened: Awaited<ReturnType<typeof openRuntime>> | undefined;
@@ -199,19 +189,19 @@ Deno.test({
       const exercise = await execute("bash", {
         command: [
           "set -eu",
-          `git clone --quiet --depth=1 --no-recurse-submodules ${
-            shellQuote(repositoryUrl)
-          } repository`,
-          `test \"$(gh api ${
-            shellQuote(`repos/${repository.owner}/${repository.name}`)
-          } --jq .full_name)\" = ${shellQuote(`${repository.owner}/${repository.name}`)}`,
+          `git clone --quiet --depth=1 --no-recurse-submodules ${shellQuote(
+            repositoryUrl,
+          )} repository`,
+          `test \"$(gh api ${shellQuote(
+            `repos/${repository.owner}/${repository.name}`,
+          )} --jq .full_name)\" = ${shellQuote(`${repository.owner}/${repository.name}`)}`,
           `git ls-remote --exit-code ${shellQuote(WRONG_REPOSITORY_URL)} HEAD >/dev/null`,
           `printf '%s\n' ${shellQuote(branch)} > repository/.openorb-token-mediation`,
           "git -C repository add .openorb-token-mediation",
           "git -C repository commit -m 'Test OpenOrb GitHub token mediation'",
-          `git -C repository push ${shellQuote(repositoryUrl)} ${
-            shellQuote(`HEAD:refs/heads/${branch}`)
-          }`,
+          `git -C repository push ${shellQuote(repositoryUrl)} ${shellQuote(
+            `HEAD:refs/heads/${branch}`,
+          )}`,
           "printf private-push-ok",
         ].join("\n"),
         timeout: 180,
@@ -222,20 +212,20 @@ Deno.test({
       const modifiedOrigin = await execute("bash", {
         command: [
           "set -eu",
-          `test -z \"$(git config --get-urlmatch credential.helper ${
-            shellQuote(WRONG_REPOSITORY_URL)
-          } || true)\"`,
+          `test -z \"$(git config --get-urlmatch credential.helper ${shellQuote(
+            WRONG_REPOSITORY_URL,
+          )} || true)\"`,
           `git -C repository remote set-url origin ${shellQuote(WRONG_REPOSITORY_URL)}`,
-          `if git -C repository push origin ${
-            shellQuote(`HEAD:refs/heads/${branch}`)
-          } >/tmp/openorb-modified-origin 2>&1; then exit 1; fi`,
-          `test -z \"$(git config --get-urlmatch credential.helper ${
-            shellQuote(WRONG_HOST_REPOSITORY_URL)
-          } || true)\"`,
+          `if git -C repository push origin ${shellQuote(
+            `HEAD:refs/heads/${branch}`,
+          )} >/tmp/openorb-modified-origin 2>&1; then exit 1; fi`,
+          `test -z \"$(git config --get-urlmatch credential.helper ${shellQuote(
+            WRONG_HOST_REPOSITORY_URL,
+          )} || true)\"`,
           `git -C repository remote set-url origin ${shellQuote(WRONG_HOST_REPOSITORY_URL)}`,
-          `if git -C repository push origin ${
-            shellQuote(`HEAD:refs/heads/${branch}`)
-          } >/tmp/openorb-modified-host 2>&1; then exit 1; fi`,
+          `if git -C repository push origin ${shellQuote(
+            `HEAD:refs/heads/${branch}`,
+          )} >/tmp/openorb-modified-host 2>&1; then exit 1; fi`,
           `git -C repository remote set-url origin ${shellQuote(repositoryUrl)}`,
           "printf modified-origin-denied",
         ].join("\n"),
@@ -274,9 +264,9 @@ Deno.test({
       assert(wrongHost.result.isError);
       assert(!JSON.stringify(wrongHost).includes(token), "the real token appeared in an error");
       await execute("bash", {
-        command: `git -C repository push ${shellQuote(repositoryUrl)} ${
-          shellQuote(`:refs/heads/${branch}`)
-        }`,
+        command: `git -C repository push ${shellQuote(repositoryUrl)} ${shellQuote(
+          `:refs/heads/${branch}`,
+        )}`,
         timeout: 120,
       });
       pushed = false;
@@ -284,9 +274,9 @@ Deno.test({
       try {
         if (pushed && tools) {
           await tools.execute("bash", {
-            command: `git -C repository push ${shellQuote(repositoryUrl)} ${
-              shellQuote(`:refs/heads/${branch}`)
-            }`,
+            command: `git -C repository push ${shellQuote(repositoryUrl)} ${shellQuote(
+              `:refs/heads/${branch}`,
+            )}`,
             timeout: 120,
           });
           pushed = false;
@@ -299,14 +289,15 @@ Deno.test({
           try {
             findings = await monitor.stop();
           } finally {
-            await Deno.remove(temporaryDirectory, { recursive: true });
+            await fs.rm(temporaryDirectory, { recursive: true });
           }
           assertEquals(findings, [], `native host Git touched the session storage: ${findings}`);
         }
       }
     }
   },
-});
+  600_000,
+);
 
 async function openRuntime(
   options: Parameters<ReturnType<typeof makeGondolinAgentEnvironmentProvider>["make"]>[0] & {
@@ -350,30 +341,24 @@ async function installHostileGitMetadata(
   await writeGuestText(
     runtime,
     hostileCommandPath,
-    `#!/bin/sh\nmkdir -p ${shellQuote(temporaryDirectory)}\nprintf hostile-host-git > ${
-      shellQuote(markerPath)
-    }\nprintf '{}\\n'\n`,
+    `#!/bin/sh\nmkdir -p ${shellQuote(temporaryDirectory)}\nprintf hostile-host-git > ${shellQuote(
+      markerPath,
+    )}\nprintf '{}\\n'\n`,
   );
-  const configured = await Effect.runPromise(runtime.run(
-    [
+  const configured = await Effect.runPromise(
+    runtime.run([
       "/bin/sh",
       "-lc",
       [
         `chmod 700 ${shellQuote(hostileCommandPath)}`,
-        `printf %s ${
-          shellQuote(
-            `\n[core]\n\tfsmonitor = ${hostileCommandPath}\n[diff "openorb-hostile"]\n\tcommand = ${hostileCommandPath}\n`,
-          )
-        } >> /workspace/repository/.git/config`,
+        `printf %s ${shellQuote(
+          `\n[core]\n\tfsmonitor = ${hostileCommandPath}\n[diff "openorb-hostile"]\n\tcommand = ${hostileCommandPath}\n`,
+        )} >> /workspace/repository/.git/config`,
       ].join("\n"),
-    ],
-  ));
-  assertEquals(configured.exitCode, 0);
-  await writeGuestText(
-    runtime,
-    "/workspace/repository/.gitattributes",
-    "* diff=openorb-hostile\n",
+    ]),
   );
+  assertEquals(configured.exitCode, 0);
+  await writeGuestText(runtime, "/workspace/repository/.gitattributes", "* diff=openorb-hostile\n");
   await writeGuestText(runtime, "/workspace/repository/hostile-diff-target", "changed\n");
   return markerPath;
 }
@@ -390,7 +375,7 @@ class LinuxHostGitProcessMonitor {
   }
 
   start(): void {
-    if (Deno.build.os !== "linux" || this.#running) return;
+    if (process.platform !== "linux" || this.#running) return;
     this.#running = this.#run().catch((error) => {
       this.#error = error;
     });
@@ -412,11 +397,11 @@ class LinuxHostGitProcessMonitor {
   }
 
   async #sample(): Promise<void> {
-    const processList = await new Deno.Command("ps", {
+    const processList = await execute("ps", {
       args: ["-eww", "-o", "pid=,comm=,args="],
       stdout: "piped",
       stderr: "null",
-    }).output();
+    });
     if (!processList.success) throw new Error("Unable to inspect host processes with ps.");
 
     for (const line of new TextDecoder().decode(processList.stdout).split("\n")) {
@@ -427,12 +412,13 @@ class LinuxHostGitProcessMonitor {
 
       let sessionEvidence = argumentsAndEnvironment?.includes(this.#sessionPath) ?? false;
       if (!sessionEvidence) {
-        const workingDirectory = await new Deno.Command("pwdx", {
+        const workingDirectory = await execute("pwdx", {
           args: [pid],
           stdout: "piped",
           stderr: "null",
-        }).output();
-        sessionEvidence = workingDirectory.success &&
+        });
+        sessionEvidence =
+          workingDirectory.success &&
           new TextDecoder().decode(workingDirectory.stdout).includes(this.#sessionPath);
       }
       if (sessionEvidence) this.#findings.add(`pid ${pid}`);

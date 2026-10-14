@@ -1,18 +1,17 @@
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertThrows } from "@jsr/std__assert";
 import { Effect, Schema, Stream } from "effect";
 import * as SchemaBinary from "effect/encoding/SchemaBinary";
 import * as RpcMessage from "effect/rpc/RpcMessage";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 
-import { RunnerBulkApi, runnerBulkRpcSerializationLayer } from "@/src/runner-bulk-api.ts";
-import { RUNNER_PROTOCOL_VERSION, RunnerId, RunnerIdentity } from "@/src/runner-api-schemas.ts";
-import { MAX_RUNNER_BULK_RPC_FRAME_BYTES } from "@/src/runner-api-limits.ts";
+import { RunnerBulkApi, runnerBulkRpcSerializationLayer } from "../src/runner-bulk-api.ts";
+import { RUNNER_PROTOCOL_VERSION, RunnerId, RunnerIdentity } from "../src/runner-api-schemas.ts";
+import { MAX_RUNNER_BULK_RPC_FRAME_BYTES } from "../src/runner-api-limits.ts";
 
-const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)(
-  "018f47f2-39b1-7b30-8000-000000000001",
-);
-Deno.test("bulk serialization preserves native bytes across traced RPC frames", async () => {
+const RUNNER_ID = Schema.decodeUnknownSync(RunnerId)("018f47f2-39b1-7b30-8000-000000000001");
+test("bulk serialization preserves native bytes across traced RPC frames", async () => {
   const program = Effect.gen(function* () {
     const serialization = yield* RpcSerialization.RpcSerialization;
     const payload = new Uint8Array([0, 1, 2, 255]);
@@ -46,7 +45,7 @@ Deno.test("bulk serialization preserves native bytes across traced RPC frames", 
   await Effect.runPromise(program as Effect.Effect<void>);
 });
 
-Deno.test("RunnerBulkApi carries only identification and the heartbeat", async () => {
+test("RunnerBulkApi carries only identification and the heartbeat", async () => {
   const identity = new RunnerIdentity({
     token: "openorb_runner_test-token",
     runnerId: RUNNER_ID,
@@ -61,14 +60,16 @@ Deno.test("RunnerBulkApi carries only identification and the heartbeat", async (
     "runner.bulk.identify": () => Effect.succeed(identity),
     "runner.bulk.watch": () => Stream.make({ observedAt: 1 }),
   });
-  const program = Effect.scoped(Effect.gen(function* () {
-    const client = yield* RpcTest.makeClient(RunnerBulkApi).pipe(Effect.provide(handlers));
-    assertEquals((yield* client["runner.bulk.identify"]()).runnerId, RUNNER_ID);
-    assertEquals(
-      Array.from(yield* client["runner.bulk.watch"]().pipe(Stream.runCollect))[0]?.observedAt,
-      1,
-    );
-  }));
+  const program = Effect.scoped(
+    Effect.gen(function* () {
+      const client = yield* RpcTest.makeClient(RunnerBulkApi).pipe(Effect.provide(handlers));
+      assertEquals((yield* client["runner.bulk.identify"]()).runnerId, RUNNER_ID);
+      assertEquals(
+        Array.from(yield* client["runner.bulk.watch"]().pipe(Stream.runCollect))[0]?.observedAt,
+        1,
+      );
+    }),
+  );
   // SAFETY: RpcTest supplies the complete in-memory client protocol and all handlers above.
   await Effect.runPromise(program as Effect.Effect<void>);
 });

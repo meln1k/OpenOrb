@@ -1,7 +1,7 @@
 import { clientEntry, css, type Handle, navigate, type RemixNode } from "remix/component";
 
-import type { SessionNavigationEntry } from "@/app/cells/workspace/api.ts";
-import { routes } from "@/app/routes.ts";
+import type { SessionNavigationEntry } from "../../cells/workspace/api.ts";
+import { routes } from "../../routes.ts";
 import {
   Avatar,
   AvatarFallback,
@@ -138,73 +138,67 @@ export function AppShellNavigation(handle: Handle<AppShellNavigationProps>) {
 
 export const AppShellNavigationBehavior = clientEntry<
   Pick<AppShellNavigationProps, "activeSessionId" | "sessions">
->(
-  import.meta.url,
-  function AppShellNavigationBehavior(handle) {
-    let selectedSessionId = handle.props.activeSessionId;
-    let navigationGeneration = 0;
-    let activeSessionNavigation: { generation: number; sessionId: string } | undefined;
-    let restoring = false;
+>(import.meta.url, function AppShellNavigationBehavior(handle) {
+  let selectedSessionId = handle.props.activeSessionId;
+  let navigationGeneration = 0;
+  let activeSessionNavigation: { generation: number; sessionId: string } | undefined;
+  let restoring = false;
 
-    function sessionForUrl(url: string) {
-      const destination = new URL(url);
-      return handle.props.sessions.find((session) => {
-        const href = new URL(
-          routes.app.sessions.detail.href({ sessionId: session.id }),
-          destination,
-        );
-        return href.pathname === destination.pathname && href.search === destination.search;
-      });
-    }
+  function sessionForUrl(url: string) {
+    const destination = new URL(url);
+    return handle.props.sessions.find((session) => {
+      const href = new URL(routes.app.sessions.detail.href({ sessionId: session.id }), destination);
+      return href.pathname === destination.pathname && href.search === destination.search;
+    });
+  }
 
-    function updateSessionButtons(pendingSessionId?: string) {
-      for (
-        const button of document.querySelectorAll<HTMLAnchorElement>(
-          `[data-rmx-target="${SESSION_WORKSPACE_FRAME}"]`,
-        )
-      ) {
-        const session = sessionForUrl(button.href);
-        if (!session) continue;
-        const active = session.id === (pendingSessionId ?? selectedSessionId);
-        const pending = session.id === pendingSessionId;
-        button.setAttribute("data-active", String(active));
-        if (active) button.setAttribute("aria-current", "page");
-        else button.removeAttribute("aria-current");
-        if (pending) {
-          button.setAttribute("data-pending", "true");
-          button.setAttribute("aria-busy", "true");
-        } else {
-          button.removeAttribute("data-pending");
-          button.removeAttribute("aria-busy");
-        }
-        button.querySelector<HTMLElement>(`[data-slot="spinner"]`)?.toggleAttribute(
-          "hidden",
-          !pending,
-        );
+  function updateSessionButtons(pendingSessionId?: string) {
+    for (const button of document.querySelectorAll<HTMLAnchorElement>(
+      `[data-rmx-target="${SESSION_WORKSPACE_FRAME}"]`,
+    )) {
+      const session = sessionForUrl(button.href);
+      if (!session) continue;
+      const active = session.id === (pendingSessionId ?? selectedSessionId);
+      const pending = session.id === pendingSessionId;
+      button.setAttribute("data-active", String(active));
+      if (active) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+      if (pending) {
+        button.setAttribute("data-pending", "true");
+        button.setAttribute("aria-busy", "true");
+      } else {
+        button.removeAttribute("data-pending");
+        button.removeAttribute("aria-busy");
       }
+      button
+        .querySelector<HTMLElement>(`[data-slot="spinner"]`)
+        ?.toggleAttribute("hidden", !pending);
     }
+  }
 
-    function replaceWorkspace(content: RemixNode) {
-      const frame = handle.frames.get(SESSION_WORKSPACE_FRAME);
-      if (frame) void frame.replace(content);
-    }
+  function replaceWorkspace(content: RemixNode) {
+    const frame = handle.frames.get(SESSION_WORKSPACE_FRAME);
+    if (frame) void frame.replace(content);
+  }
 
-    function updateCurrentEntry(session: SessionNavigationEntry) {
-      globalThis.navigation.updateCurrentEntry({
-        state: {
-          target: SESSION_WORKSPACE_FRAME,
-          src: routes.app.sessions.frame.href({ sessionId: session.id }),
-          resetScroll: true,
-          $rmx: true,
-        },
-      });
-    }
+  function updateCurrentEntry(session: SessionNavigationEntry) {
+    globalThis.navigation.updateCurrentEntry({
+      state: {
+        target: SESSION_WORKSPACE_FRAME,
+        src: routes.app.sessions.frame.href({ sessionId: session.id }),
+        resetScroll: true,
+        $rmx: true,
+      },
+    });
+  }
 
-    handle.queueTask(() => {
-      if (!("navigation" in globalThis)) return;
-      const navigation = globalThis.navigation;
+  handle.queueTask(() => {
+    if (!("navigation" in globalThis)) return;
+    const navigation = globalThis.navigation;
 
-      navigation.addEventListener("navigate", (event) => {
+    navigation.addEventListener(
+      "navigate",
+      (event) => {
         const generation = ++navigationGeneration;
         const session = sessionForUrl(event.destination.url);
         if (!session || !handle.frames.get(SESSION_WORKSPACE_FRAME)) {
@@ -220,16 +214,24 @@ export const AppShellNavigationBehavior = clientEntry<
         if (mobileSidebar?.matches(":popover-open")) mobileSidebar.hidePopover();
         updateSessionButtons(session.id);
         replaceWorkspace(<SessionWorkspaceLoading title={sessionName(session)} />);
-      }, { signal: handle.signal });
-      navigation.addEventListener("navigatesuccess", () => {
+      },
+      { signal: handle.signal },
+    );
+    navigation.addEventListener(
+      "navigatesuccess",
+      () => {
         const completed = activeSessionNavigation;
         if (!completed || completed.generation !== navigationGeneration) return;
         activeSessionNavigation = undefined;
         selectedSessionId = completed.sessionId;
         restoring = false;
         updateSessionButtons();
-      }, { signal: handle.signal });
-      navigation.addEventListener("navigateerror", () => {
+      },
+      { signal: handle.signal },
+    );
+    navigation.addEventListener(
+      "navigateerror",
+      () => {
         const failed = activeSessionNavigation;
         if (!failed) return;
 
@@ -240,11 +242,12 @@ export const AppShellNavigationBehavior = clientEntry<
             handle.signal.aborted ||
             navigationGeneration !== failed.generation ||
             activeSessionNavigation?.generation !== failed.generation
-          ) return;
+          )
+            return;
 
           activeSessionNavigation = undefined;
-          const committed = handle.props.sessions.find((session) =>
-            session.id === selectedSessionId
+          const committed = handle.props.sessions.find(
+            (session) => session.id === selectedSessionId,
           );
           if (!committed || restoring) {
             restoring = false;
@@ -264,29 +267,28 @@ export const AppShellNavigationBehavior = clientEntry<
             // rejection so the same handled navigation failure is not reported as unhandled.
           });
         }, 0);
-      }, { signal: handle.signal });
+      },
+      { signal: handle.signal },
+    );
+  });
+
+  return () => {
+    const activeSessionId = handle.props.activeSessionId;
+    handle.queueTask((signal) => {
+      if (signal.aborted || activeSessionNavigation) return;
+      const activeSession = handle.props.sessions.find((session) => session.id === activeSessionId);
+      if (!activeSession || sessionForUrl(globalThis.location.href)?.id !== activeSession.id) {
+        return;
+      }
+
+      selectedSessionId = activeSession.id;
+      restoring = false;
+      updateSessionButtons();
+      updateCurrentEntry(activeSession);
     });
-
-    return () => {
-      const activeSessionId = handle.props.activeSessionId;
-      handle.queueTask((signal) => {
-        if (signal.aborted || activeSessionNavigation) return;
-        const activeSession = handle.props.sessions.find((session) =>
-          session.id === activeSessionId
-        );
-        if (!activeSession || sessionForUrl(globalThis.location.href)?.id !== activeSession.id) {
-          return;
-        }
-
-        selectedSessionId = activeSession.id;
-        restoring = false;
-        updateSessionButtons();
-        updateCurrentEntry(activeSession);
-      });
-      return null;
-    };
-  },
-);
+    return null;
+  };
+});
 
 export interface AppWorkspaceLayoutProps {
   children?: RemixNode;
@@ -315,72 +317,62 @@ export function AppWorkspaceLayout(handle: Handle<AppWorkspaceLayoutProps>) {
           <header mix={topBarStyle}>
             <div mix={topBarContentStyle}>
               <SidebarTrigger target={MOBILE_SIDEBAR_ID} />
-              {handle.props.topBarTitle
-                ? (
-                  <>
-                    <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-                    <h1 data-top-bar-title mix={topBarTitleStyle}>
-                      {handle.props.topBarTitle}
-                    </h1>
-                  </>
-                )
-                : handle.props.eyebrow
-                ? (
-                  <>
-                    <Separator orientation="vertical" mix={topBarSeparatorStyle} />
-                    <Breadcrumb>
-                      <BreadcrumbList>
-                        <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
-                          <BreadcrumbLink href={routes.app.index.href()}>
-                            Gateway
-                          </BreadcrumbLink>
-                        </BreadcrumbItem>
-                        <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
-                        <BreadcrumbItem>
-                          <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
-                        </BreadcrumbItem>
-                      </BreadcrumbList>
-                    </Breadcrumb>
-                  </>
-                )
-                : null}
+              {handle.props.topBarTitle ? (
+                <>
+                  <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                  <h1 data-top-bar-title mix={topBarTitleStyle}>
+                    {handle.props.topBarTitle}
+                  </h1>
+                </>
+              ) : handle.props.eyebrow ? (
+                <>
+                  <Separator orientation="vertical" mix={topBarSeparatorStyle} />
+                  <Breadcrumb>
+                    <BreadcrumbList>
+                      <BreadcrumbItem mix={desktopBreadcrumbItemStyle}>
+                        <BreadcrumbLink href={routes.app.index.href()}>Gateway</BreadcrumbLink>
+                      </BreadcrumbItem>
+                      <BreadcrumbSeparator mix={desktopBreadcrumbSeparatorStyle} />
+                      <BreadcrumbItem>
+                        <BreadcrumbPage>{handle.props.eyebrow}</BreadcrumbPage>
+                      </BreadcrumbItem>
+                    </BreadcrumbList>
+                  </Breadcrumb>
+                </>
+              ) : null}
               {handle.props.topBarAccessory}
             </div>
           </header>
           <div mix={contentStyle}>
-            {handle.props.heading
-              ? (
-                <header mix={pageHeaderStyle}>
-                  <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
-                  {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
-                </header>
-              )
-              : null}
+            {handle.props.heading ? (
+              <header mix={pageHeaderStyle}>
+                <h1 mix={pageHeadingStyle}>{handle.props.heading}</h1>
+                {handle.props.copy ? <p mix={pageCopyStyle}>{handle.props.copy}</p> : null}
+              </header>
+            ) : null}
             {handle.props.children}
           </div>
         </SidebarInset>
       </ResizablePanel>
-      {handle.props.rightSidebar
-        ? (
-          <>
-            <ResizableHandle
-              aria-label="Resize session changes"
-              data-side="right"
-              withHandle
-              mix={desktopSidebarHandleStyle}
-            />
-            <ResizablePanel
-              data-side="right"
-              defaultSize="clamp(400px, 38vw, 560px)"
-              minSize="320px"
-              maxSize="720px"
-              mix={desktopSidebarPanelStyle}
-            >
-              <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
-            </ResizablePanel>
-          </>
-        )
-        : null}
+      {handle.props.rightSidebar ? (
+        <>
+          <ResizableHandle
+            aria-label="Resize session changes"
+            data-side="right"
+            withHandle
+            mix={desktopSidebarHandleStyle}
+          />
+          <ResizablePanel
+            data-side="right"
+            defaultSize="clamp(400px, 38vw, 560px)"
+            minSize="320px"
+            maxSize="720px"
+            mix={desktopSidebarPanelStyle}
+          >
+            <SidebarDesktop side="right">{handle.props.rightSidebar}</SidebarDesktop>
+          </ResizablePanel>
+        </>
+      ) : null}
     </>
   );
 }
@@ -397,11 +389,7 @@ function AppNavigation(handle: Handle<AppNavigationProps>) {
   return () => (
     <>
       <SidebarHeader>
-        <a
-          href={routes.app.index.href()}
-          aria-label="OpenOrb gateway"
-          mix={sidebarBrandStyle}
-        >
+        <a href={routes.app.index.href()} aria-label="OpenOrb gateway" mix={sidebarBrandStyle}>
           <span mix={sidebarBrandMarkStyle}>
             <img src="/favicon.svg" alt="" width="20" height="20" />
           </span>
@@ -424,9 +412,9 @@ function AppNavigation(handle: Handle<AppNavigationProps>) {
       <SidebarContent>
         <SidebarGroup aria-label="Session history">
           {renderSessionProjectGroups(handle.props)}
-          {handle.props.sessions.length === 0
-            ? <p mix={emptySessionsStyle}>No sessions yet.</p>
-            : null}
+          {handle.props.sessions.length === 0 ? (
+            <p mix={emptySessionsStyle}>No sessions yet.</p>
+          ) : null}
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
@@ -493,9 +481,7 @@ export function SessionWorkspaceLoading(handle: Handle<{ title: string }>) {
   );
 }
 
-export function SessionWorkspaceLoadError(
-  handle: Handle<{ message?: string; title?: string }>,
-) {
+export function SessionWorkspaceLoadError(handle: Handle<{ message?: string; title?: string }>) {
   return () => (
     <AppWorkspaceLayout topBarTitle={handle.props.title ?? "Session unavailable"}>
       <div role="alert" mix={sessionLoadingStyle}>

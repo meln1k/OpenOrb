@@ -1,7 +1,8 @@
-import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
-import { activate, createAppServices, createWorkspace } from "@/test/workspace-test.ts";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertNotEquals, assertRejects } from "@jsr/std__assert";
+import { activate, createAppServices, createWorkspace } from "./workspace-test.ts";
 
-Deno.test("failed session rotation rolls back deletion of the original", async () => {
+test("failed session rotation rolls back deletion of the original", async () => {
   const { workspace, storage } = activate();
   const sessions = createAppServices(workspace).sessionStorage;
   const original = await sessions.read(null);
@@ -24,7 +25,7 @@ Deno.test("failed session rotation rolls back deletion of the original", async (
   assertEquals(storage.rows("SELECT id FROM browser_sessions"), [{ id: originalId }]);
 });
 
-Deno.test("Workspace sessions rotate identity and never resurrect after logout or expiry", async () => {
+test("Workspace sessions rotate identity and never resurrect after logout or expiry", async () => {
   const { workspace, storage, administrator } = await createWorkspace();
   const sessions = createAppServices(workspace).sessionStorage;
   const original = await sessions.read(null);
@@ -43,10 +44,10 @@ Deno.test("Workspace sessions rotate identity and never resurrect after logout o
   assertNotEquals(loginId, originalId);
   const record = await workspace.readBrowserSession(loginId);
   assert(record);
-  assertEquals([record.userId, record.workspaceId], [
-    administrator.userId,
-    administrator.workspaceId,
-  ]);
+  assertEquals(
+    [record.userId, record.workspaceId],
+    [administrator.userId, administrator.workspaceId],
+  );
   assertEquals((await sessions.read(loginId)).get("auth"), administrator);
   stale.set("state", "stale update");
   assertEquals(await sessions.save(stale), "");
@@ -82,19 +83,17 @@ Deno.test("Workspace sessions rotate identity and never resurrect after logout o
   assertEquals(storage.rows("SELECT id FROM browser_sessions"), []);
 });
 
-Deno.test("Workspace rejects malformed, foreign, and mismatched browser identities without changing stored identity", async () => {
+test("Workspace rejects malformed, foreign, and mismatched browser identities without changing stored identity", async () => {
   const { workspace, storage, administrator } = await createWorkspace();
   const foreign = await createWorkspace();
   const sessions = createAppServices(workspace).sessionStorage;
-  for (
-    const auth of [
-      { userId: administrator.userId },
-      { userId: "not-a-uuid", workspaceId: administrator.workspaceId },
-      foreign.administrator,
-      { ...administrator, workspaceId: foreign.workspaceId },
-      { ...foreign.administrator, workspaceId: administrator.workspaceId },
-    ]
-  ) {
+  for (const auth of [
+    { userId: administrator.userId },
+    { userId: "not-a-uuid", workspaceId: administrator.workspaceId },
+    foreign.administrator,
+    { ...administrator, workspaceId: foreign.workspaceId },
+    { ...foreign.administrator, workspaceId: administrator.workspaceId },
+  ]) {
     const session = await sessions.read(null);
     session.set("auth", auth);
     await assertRejects(() => sessions.save(session));
@@ -114,7 +113,7 @@ Deno.test("Workspace rejects malformed, foreign, and mismatched browser identiti
   assertEquals(storage.rows("SELECT id FROM browser_sessions"), [{ id }]);
 });
 
-Deno.test("Workspace removes abandoned expired browser sessions on the next write", async () => {
+test("Workspace removes abandoned expired browser sessions on the next write", async () => {
   const { workspace, storage } = activate();
   await workspace.health();
   storage.sql.exec(

@@ -1,9 +1,10 @@
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertThrows } from "@jsr/std__assert";
 import { parseSafe } from "@remix-run/data-schema";
 import { Effect, Schema, type Scope, Stream } from "effect";
 import * as RpcTest from "effect/rpc/RpcTest";
 
-import { sessionGitSnapshotSchema } from "@/src/browser-session-git-snapshot.ts";
+import { sessionGitSnapshotSchema } from "../src/browser-session-git-snapshot.ts";
 import {
   AttachEnvironmentPayload,
   type CapacityExceeded,
@@ -42,7 +43,7 @@ import {
   SessionIssues,
   SessionModelRuntime,
   WorkspaceId,
-} from "@/src/runner-api.ts";
+} from "../src/runner-api.ts";
 import {
   MAX_RUNNER_RPC_FRAME_BYTES,
   MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES,
@@ -50,7 +51,7 @@ import {
   MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
-} from "@/src/runner-api-limits.ts";
+} from "../src/runner-api-limits.ts";
 
 type RunnerApiError =
   | CapacityExceeded
@@ -67,7 +68,7 @@ const PROJECT_ID = ProjectId.make("01989d78-65ee-7f6a-a97e-0f16ad134c10");
 const RUNNER_ID = RunnerId.make("01989d78-65ee-7f6a-a97e-0f16ad134c11");
 const RUNNER_TOKEN = `openorb_runner_${"a".repeat(43)}`;
 
-Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () => {
+test("RunnerApi schemas bound identity and stable domain identifiers", () => {
   assertEquals(
     Schema.decodeUnknownSync(RunnerIdentity)({
       token: RUNNER_TOKEN,
@@ -83,7 +84,7 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       runnerId: RUNNER_ID,
       runnerVersion: "0.0.0",
       protocolVersion: RUNNER_PROTOCOL_VERSION,
-    })
+    }),
   );
   const created = Schema.decodeUnknownSync(CreateEnvironmentPayload)({
     sessionId: SESSION_ID,
@@ -101,15 +102,13 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
     Schema.decodeUnknownSync(CreateEnvironmentPayload)(withoutProject).repository,
     undefined,
   );
-  for (
-    const repository of [
-      { ...created.repository, url: "https://example.com/openorb/example.git" },
-      { ...created.repository, gitAuthor: { name: "OpenOrb User", email: "not-an-email" } },
-      { url: "https://github.com/openorb/example.git" },
-    ]
-  ) {
+  for (const repository of [
+    { ...created.repository, url: "https://example.com/openorb/example.git" },
+    { ...created.repository, gitAuthor: { name: "OpenOrb User", email: "not-an-email" } },
+    { url: "https://github.com/openorb/example.git" },
+  ]) {
     assertThrows(() =>
-      Schema.decodeUnknownSync(CreateEnvironmentPayload)({ ...created, repository })
+      Schema.decodeUnknownSync(CreateEnvironmentPayload)({ ...created, repository }),
     );
   }
 
@@ -117,11 +116,13 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
     sessionId: SESSION_ID,
     action: "start",
     githubToken: "github-token",
-    environmentSecrets: [{
-      name: "SERVICE_TOKEN",
-      value: "service-secret",
-      allowedHosts: ["api.example.com", "*.service.example"],
-    }],
+    environmentSecrets: [
+      {
+        name: "SERVICE_TOKEN",
+        value: "service-secret",
+        allowedHosts: ["api.example.com", "*.service.example"],
+      },
+    ],
   });
   assertEquals(started.environmentSecrets, [
     new SessionEnvironmentSecret({
@@ -130,31 +131,25 @@ Deno.test("RunnerApi schemas bound identity and stable domain identifiers", () =
       allowedHosts: ["api.example.com", "*.service.example"],
     }),
   ]);
-  for (
-    const environmentSecrets of [
-      [
-        { name: "GH_TOKEN", value: "collision" },
-      ],
-      [
-        { name: "SERVICE_TOKEN", value: "one" },
-        { name: "SERVICE_TOKEN", value: "two" },
-      ],
-      [
-        { name: "SERVICE_TOKEN", value: "secret", allowedHosts: ["https://api.example.com"] },
-      ],
-    ]
-  ) {
+  for (const environmentSecrets of [
+    [{ name: "GH_TOKEN", value: "collision" }],
+    [
+      { name: "SERVICE_TOKEN", value: "one" },
+      { name: "SERVICE_TOKEN", value: "two" },
+    ],
+    [{ name: "SERVICE_TOKEN", value: "secret", allowedHosts: ["https://api.example.com"] }],
+  ]) {
     assertThrows(() =>
-      Schema.decodeUnknownSync(ControlEnvironmentPayload)({ ...started, environmentSecrets })
+      Schema.decodeUnknownSync(ControlEnvironmentPayload)({ ...started, environmentSecrets }),
     );
   }
   assertThrows(() =>
-    Schema.decodeUnknownSync(ControlEnvironmentPayload)({ ...started, action: "suspend" })
+    Schema.decodeUnknownSync(ControlEnvironmentPayload)({ ...started, action: "suspend" }),
   );
   assertEquals(RUNNER_PROTOCOL_VERSION, 28);
 });
 
-Deno.test("session model runtime accepts only explicit credential transports", () => {
+test("session model runtime accepts only explicit credential transports", () => {
   const accessToken = Schema.decodeUnknownSync(SessionModelRuntime)({
     ...modelRuntime(),
     credential: { type: "access_token", value: "short-lived-access" },
@@ -171,22 +166,21 @@ Deno.test("session model runtime accepts only explicit credential transports", (
         access: "access",
         refresh: "refresh-must-not-cross-the-protocol",
       },
-    })
+    }),
   );
 });
 
-Deno.test("environment secrets reserve enough room for the RPC request envelope", () => {
+test("environment secrets reserve enough room for the RPC request envelope", () => {
   const maximumLengthHost = (index: number) =>
-    `${index.toString(36).padStart(2, "0")}.${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${
-      "d".repeat(58)
-    }`;
+    `${index.toString(36).padStart(2, "0")}.${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(
+      58,
+    )}`;
   const environmentSecrets = (hostCount: number) =>
     Array.from({ length: 64 }, (_, secretIndex) => ({
       name: `SERVICE_TOKEN_${secretIndex}`,
       value: "x".repeat(4_096),
-      allowedHosts: Array.from(
-        { length: hostCount },
-        (_, hostIndex) => maximumLengthHost(hostIndex),
+      allowedHosts: Array.from({ length: hostCount }, (_, hostIndex) =>
+        maximumLengthHost(hostIndex),
       ),
     }));
 
@@ -194,9 +188,7 @@ Deno.test("environment secrets reserve enough room for the RPC request envelope"
   const acceptedSecrets = Schema.decodeUnknownSync(SessionEnvironmentSecrets)(
     environmentSecrets(31),
   );
-  assert(
-    byteLength(JSON.stringify(acceptedSecrets)) < MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES,
-  );
+  assert(byteLength(JSON.stringify(acceptedSecrets)) < MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES);
 
   const payload = Schema.decodeUnknownSync(ControlEnvironmentPayload)({
     sessionId: SESSION_ID,
@@ -224,25 +216,27 @@ Deno.test("environment secrets reserve enough room for the RPC request envelope"
   assertThrows(() => Schema.decodeUnknownSync(SessionEnvironmentSecrets)(oversizedSecrets));
 });
 
-Deno.test("structural frames reject normalized events, host objects and malformed ops", () => {
+test("structural frames reject normalized events, host objects and malformed ops", () => {
   const view = { conversation: { id: 0 }, entries: [], docs: {} };
   assertEquals<unknown>(Schema.decodeUnknownSync(ConversationViewSchema)(view), view);
-  for (
-    const invalid of [
-      { type: "assistant.text.delta", delta: "old" },
-      { type: "conversation.ops", ops: [["s", "compressed-path", 1]] },
-      { type: "conversation.ops", ops: [["s", ["__proto__", "polluted"], true]] },
-      { type: "conversation.ops", ops: [["r", { handle: () => {} }]] },
-      { type: "conversation.snapshot", view: { ...view, docs: { host: new Date() } } },
-      { type: "conversation.snapshot", view: { ...view, entries: [{ id: 1 }] } },
-    ]
-  ) assertThrows(() => Schema.decodeUnknownSync(SessionEvent)(invalid));
+  for (const invalid of [
+    { type: "assistant.text.delta", delta: "old" },
+    { type: "conversation.ops", ops: [["s", "compressed-path", 1]] },
+    { type: "conversation.ops", ops: [["s", ["__proto__", "polluted"], true]] },
+    { type: "conversation.ops", ops: [["r", { handle: () => {} }]] },
+    { type: "conversation.snapshot", view: { ...view, docs: { host: new Date() } } },
+    { type: "conversation.snapshot", view: { ...view, entries: [{ id: 1 }] } },
+  ])
+    assertThrows(() => Schema.decodeUnknownSync(SessionEvent)(invalid));
   assertThrows(() =>
-    Schema.decodeUnknownSync(RunnerSessionSnapshot)({ ...sessionSnapshot(), agentState: undefined })
+    Schema.decodeUnknownSync(RunnerSessionSnapshot)({
+      ...sessionSnapshot(),
+      agentState: undefined,
+    }),
   );
 });
 
-Deno.test("session issues are categorized, bounded, and carry explicit recovery", () => {
+test("session issues are categorized, bounded, and carry explicit recovery", () => {
   const issue = Schema.decodeUnknownSync(SessionIssue)({
     category: "vm-stop",
     severity: "failure",
@@ -256,14 +250,14 @@ Deno.test("session issues are categorized, bounded, and carry explicit recovery"
     MAX_SESSION_ISSUES,
   );
   assertThrows(() =>
-    Schema.decodeUnknownSync(SessionIssues)(Array(MAX_SESSION_ISSUES + 1).fill(issue))
+    Schema.decodeUnknownSync(SessionIssues)(Array(MAX_SESSION_ISSUES + 1).fill(issue)),
   );
   assertThrows(() =>
-    Schema.decodeUnknownSync(SessionIssue)({ ...issue, message: "x".repeat(1_001) })
+    Schema.decodeUnknownSync(SessionIssue)({ ...issue, message: "x".repeat(1_001) }),
   );
 });
 
-Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budgets", () => {
+test("SessionGitSnapshot rejects payloads that would exceed its JSON budgets", () => {
   const largeFiles = Array.from({ length: 5_000 }, (_, index) => {
     const path = `${index}-${"x".repeat(220)}`;
     return {
@@ -275,9 +269,7 @@ Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budget
     };
   });
   assertEquals(largeFiles.length, 5_000);
-  assert(
-    byteLength(JSON.stringify(largeFiles)) > MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
-  );
+  assert(byteLength(JSON.stringify(largeFiles)) > MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES);
   const oversizedFilesSnapshot = gitSnapshot({ unstagedFiles: largeFiles });
   assertThrows(() => Schema.decodeUnknownSync(SessionGitSnapshot)(oversizedFilesSnapshot));
   assertEquals(parseSafe(sessionGitSnapshotSchema, oversizedFilesSnapshot).success, false);
@@ -285,8 +277,7 @@ Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budget
   const escapingPatch = "\u001b".repeat(40_000);
   assert(byteLength(escapingPatch) < MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES);
   assert(
-    byteLength(JSON.stringify(escapingPatch)) >
-      MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
+    byteLength(JSON.stringify(escapingPatch)) > MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
   );
   const oversizedPatchSnapshot = gitSnapshot({
     stagedPatch: escapingPatch,
@@ -300,10 +291,12 @@ Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budget
       MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
   );
   assert(
-    byteLength(JSON.stringify({
-      staged: individuallyValidPatch,
-      unstaged: individuallyValidPatch,
-    })) > MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
+    byteLength(
+      JSON.stringify({
+        staged: individuallyValidPatch,
+        unstaged: individuallyValidPatch,
+      }),
+    ) > MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
   );
   const oversizedCombinedPatches = gitSnapshot({
     stagedPatch: individuallyValidPatch,
@@ -313,34 +306,34 @@ Deno.test("SessionGitSnapshot rejects payloads that would exceed its JSON budget
   assertEquals(parseSafe(sessionGitSnapshotSchema, oversizedCombinedPatches).success, false);
 });
 
-Deno.test("SessionGitSnapshot rejects excess keys at every nesting level despite permissive decoding", () => {
+test("SessionGitSnapshot rejects excess keys at every nesting level despite permissive decoding", () => {
   const snapshot = gitSnapshot();
   const decode = Schema.decodeUnknownSync(SessionGitSnapshot, { onExcessProperty: "ignore" });
   assertEquals<object>(Schema.encodeSync(SessionGitSnapshot)(decode(snapshot)), snapshot);
   const sections = snapshot.sections;
-  for (
-    const candidate of [
-      { ...snapshot, extra: true },
-      { ...snapshot, sections: { ...sections, extra: true } },
-      { ...snapshot, sections: { ...sections, staged: { ...sections.staged, extra: true } } },
-      { ...snapshot, sections: { ...sections, unstaged: { ...sections.unstaged, extra: true } } },
-      gitSnapshot({
-        unstagedFiles: [{
+  for (const candidate of [
+    { ...snapshot, extra: true },
+    { ...snapshot, sections: { ...sections, extra: true } },
+    { ...snapshot, sections: { ...sections, staged: { ...sections.staged, extra: true } } },
+    { ...snapshot, sections: { ...sections, unstaged: { ...sections.unstaged, extra: true } } },
+    gitSnapshot({
+      unstagedFiles: [
+        {
           kind: "tracked",
           path: "src/main.ts",
           displayPath: "src/main.ts",
           status: "modified",
           diffState: "available",
           previousPath: "not-a-rename.ts",
-        }],
-      }),
-    ]
-  ) {
+        },
+      ],
+    }),
+  ]) {
     assertThrows(() => decode(candidate));
   }
 });
 
-Deno.test("SessionGitSnapshot accepts only explicit section-owned file states", () => {
+test("SessionGitSnapshot accepts only explicit section-owned file states", () => {
   const oldFlatSnapshot = {
     generatedAt: "2026-08-23T12:00:00Z",
     completeness: "complete",
@@ -351,72 +344,80 @@ Deno.test("SessionGitSnapshot accepts only explicit section-owned file states", 
     patches: { staged: "", unstaged: "" },
   };
   const contradictoryTrackedFile = gitSnapshot({
-    unstagedFiles: [{
-      kind: "tracked",
-      path: "src/main.ts",
-      displayPath: "src/main.ts",
-      status: "modified",
-      staged: "modified",
-      diffState: "available",
-    }],
+    unstagedFiles: [
+      {
+        kind: "tracked",
+        path: "src/main.ts",
+        displayPath: "src/main.ts",
+        status: "modified",
+        staged: "modified",
+        diffState: "available",
+      },
+    ],
   });
   const invalidUntrackedFile = gitSnapshot({
-    unstagedFiles: [{
-      kind: "untracked",
-      path: "new.txt",
-      displayPath: "new.txt",
-      status: "modified",
-      diffState: "available",
-    }],
+    unstagedFiles: [
+      {
+        kind: "untracked",
+        path: "new.txt",
+        displayPath: "new.txt",
+        status: "modified",
+        diffState: "available",
+      },
+    ],
   });
   const stagedUntrackedFile = gitSnapshot({
-    stagedFiles: [{
-      kind: "untracked",
-      path: "new.txt",
-      displayPath: "new.txt",
-      status: "added",
-      diffState: "available",
-    }],
+    stagedFiles: [
+      {
+        kind: "untracked",
+        path: "new.txt",
+        displayPath: "new.txt",
+        status: "added",
+        diffState: "available",
+      },
+    ],
   });
   const incompleteRename = gitSnapshot({
-    stagedFiles: [{
-      kind: "tracked",
-      path: "new.ts",
-      displayPath: "new.ts",
-      status: "renamed",
-      diffState: "available",
-    }],
+    stagedFiles: [
+      {
+        kind: "tracked",
+        path: "new.ts",
+        displayPath: "new.ts",
+        status: "renamed",
+        diffState: "available",
+      },
+    ],
   });
 
-  for (
-    const candidate of [
-      oldFlatSnapshot,
-      contradictoryTrackedFile,
-      invalidUntrackedFile,
-      stagedUntrackedFile,
-      incompleteRename,
-    ]
-  ) {
+  for (const candidate of [
+    oldFlatSnapshot,
+    contradictoryTrackedFile,
+    invalidUntrackedFile,
+    stagedUntrackedFile,
+    incompleteRename,
+  ]) {
     assertThrows(() => Schema.decodeUnknownSync(SessionGitSnapshot)(candidate));
     assertEquals(parseSafe(sessionGitSnapshotSchema, candidate).success, false);
   }
 });
 
-Deno.test("Git Snapshot paths preserve exact mutation operands separately from display text", () => {
+test("Git Snapshot paths preserve exact mutation operands separately from display text", () => {
   const path = "src/literal*\nname.ts";
   const displayPath = "src/literal*\\u{A}name.ts";
   const previousPath = "src/old?\nname.ts";
   const previousDisplayPath = "src/old?\\u{A}name.ts";
   const candidate = gitSnapshot({
-    stagedFiles: [{
-      kind: "tracked",
-      path,
-      displayPath,
-      previousPath,
-      previousDisplayPath,
-      status: "renamed",
-      diffState: "available",
-    }],
+    stagedFiles: [
+      {
+        kind: "tracked",
+        path,
+        displayPath,
+        previousPath,
+        previousDisplayPath,
+        status: "renamed",
+        diffState: "available",
+      },
+    ],
   });
 
   const runnerSnapshot = Schema.decodeUnknownSync(SessionGitSnapshot)(candidate);
@@ -428,7 +429,7 @@ Deno.test("Git Snapshot paths preserve exact mutation operands separately from d
   assertEquals(browserSnapshot.value.sections.staged.files[0]?.displayPath, displayPath);
 });
 
-Deno.test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse in the browser", () => {
+test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse in the browser", () => {
   const files: Array<{
     kind: "tracked";
     path: string;
@@ -445,14 +446,11 @@ Deno.test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse 
       status: "modified" as const,
       diffState: "available" as const,
     };
-    if (
-      byteLength(JSON.stringify([...files, file])) > MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES
-    ) break;
+    if (byteLength(JSON.stringify([...files, file])) > MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES)
+      break;
     files.push(file);
   }
-  const largestFileBytes = Math.max(
-    ...files.map((file) => byteLength(JSON.stringify(file)) + 1),
-  );
+  const largestFileBytes = Math.max(...files.map((file) => byteLength(JSON.stringify(file)) + 1));
   assert(
     byteLength(JSON.stringify(files)) >
       MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES - largestFileBytes,
@@ -460,10 +458,7 @@ Deno.test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse 
 
   const patchJsonBudget = Math.floor((MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES - 64) / 2);
   const patch = "\n".repeat(Math.floor((patchJsonBudget - 2) / 2));
-  assertEquals(
-    byteLength(JSON.stringify(patch)),
-    patchJsonBudget,
-  );
+  assertEquals(byteLength(JSON.stringify(patch)), patchJsonBudget);
   const candidate = gitSnapshot({
     unstagedFiles: files,
     stagedPatch: patch,
@@ -474,7 +469,7 @@ Deno.test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse 
   assert(byteLength(JSON.stringify(snapshot)) < MAX_RUNNER_RPC_FRAME_BYTES);
 });
 
-Deno.test("RunnerApi exposes only runner and environment procedures through RpcTest", async () => {
+test("RunnerApi exposes only runner and environment procedures through RpcTest", async () => {
   const identity = new RunnerIdentity({
     token: RUNNER_TOKEN,
     runnerId: RUNNER_ID,
@@ -542,34 +537,29 @@ Deno.test("RunnerApi exposes only runner and environment procedures through RpcT
   });
   const deletePayload = new DeleteEnvironmentPayload({ sessionId: SESSION_ID });
 
-  await Effect.runPromise(Effect.scoped(Effect.gen(function* (): Effect.fn.Return<
-    void,
-    RunnerApiError,
-    Scope.Scope
-  > {
-    const client = yield* RpcTest.makeClient(RunnerApi).pipe(Effect.provide(handlers));
-    assertEquals((yield* client["runner.identify"]()).runnerId, RUNNER_ID);
-    assertEquals(
-      Array.from(yield* client["runner.watch"]().pipe(Stream.runCollect)).map((event) =>
-        event.type
-      ),
-      ["snapshot.environment", "snapshot.complete"],
-    );
-    assertEquals(
-      (yield* client["environment.create"](createPayload)).environment.sessionId,
-      SESSION_ID,
-    );
-    assertEquals(
-      (yield* client["environment.control"](controlPayload)).state,
-      "running",
-    );
-    assert(
-      (yield* client["environment.attach"](attachPayload)) instanceof EnvironmentAttachAccepted,
-    );
-    assert(
-      (yield* client["environment.delete"](deletePayload)) instanceof EnvironmentDeleted,
-    );
-  })));
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* (): Effect.fn.Return<void, RunnerApiError, Scope.Scope> {
+        const client = yield* RpcTest.makeClient(RunnerApi).pipe(Effect.provide(handlers));
+        assertEquals((yield* client["runner.identify"]()).runnerId, RUNNER_ID);
+        assertEquals(
+          Array.from(yield* client["runner.watch"]().pipe(Stream.runCollect)).map(
+            (event) => event.type,
+          ),
+          ["snapshot.environment", "snapshot.complete"],
+        );
+        assertEquals(
+          (yield* client["environment.create"](createPayload)).environment.sessionId,
+          SESSION_ID,
+        );
+        assertEquals((yield* client["environment.control"](controlPayload)).state, "running");
+        assert(
+          (yield* client["environment.attach"](attachPayload)) instanceof EnvironmentAttachAccepted,
+        );
+        assert((yield* client["environment.delete"](deletePayload)) instanceof EnvironmentDeleted);
+      }),
+    ),
+  );
 });
 
 function modelRuntime() {
@@ -605,12 +595,14 @@ function sessionSnapshot(): RunnerSessionSnapshot {
   });
 }
 
-function gitSnapshot(overrides: {
-  readonly stagedFiles?: ReadonlyArray<object>;
-  readonly unstagedFiles?: ReadonlyArray<object>;
-  readonly stagedPatch?: string;
-  readonly unstagedPatch?: string;
-} = {}) {
+function gitSnapshot(
+  overrides: {
+    readonly stagedFiles?: ReadonlyArray<object>;
+    readonly unstagedFiles?: ReadonlyArray<object>;
+    readonly stagedPatch?: string;
+    readonly unstagedPatch?: string;
+  } = {},
+) {
   return {
     mutationRevision: GitMutationRevision.make(0),
     generatedAt: "2026-08-23T12:00:00Z",

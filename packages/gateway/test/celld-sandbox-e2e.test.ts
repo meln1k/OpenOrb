@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertStringIncludes } from "@jsr/std__assert";
 import { applyImmutable, type Op } from "@earendil-works/chord/delta";
 import { createRpcClient } from "./workspace/rpc-client.ts";
 import { SCRIPTED_PNG_BASE64 } from "./session-fixture.ts";
@@ -6,7 +7,7 @@ import { SCRIPTED_PNG_BASE64 } from "./session-fixture.ts";
 // ADR 0007 end to end without a runner: a Session Durable Object in celld loads the just-bash
 // sandbox through the Worker Loader as a facet, runs Pi's guest tools in its empty workspace, and
 // publishes media to R2. Only point this at a disposable test/celld.jsonc fixture.
-const gatewayUrl = Deno.env.get("OPENORB_TEST_GATEWAY_URL");
+const gatewayUrl = process.env["OPENORB_TEST_GATEWAY_URL"];
 
 interface Message {
   readonly role: string;
@@ -73,12 +74,10 @@ async function waitForConversation(
   }
 }
 
-Deno.test({
-  name: "a Session without a runner runs guest tools in the built-in sandbox",
-  ignore: gatewayUrl === undefined,
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
+test(
+  "a Session without a runner runs guest tools in the built-in sandbox",
+  { skip: gatewayUrl === undefined, timeout: 120_000 },
+  async () => {
     // The faux model below bypasses auth; separately exercise real Pi auth in the celld bundle.
     const auth = await json("/__codex-auth", {});
     assertEquals(auth.auth.apiKey, "fixture-access-token");
@@ -87,8 +86,9 @@ Deno.test({
     const identity = await workspace.verifyAdministratorPassword("sandbox-e2e-fixture-password");
     assert(identity, "use a fresh disposable celld fixture");
     const workspaceId = identity.workspaceId;
+    // SAFETY: this fixture endpoint serializes the numeric credential-read counter directly.
     const credentialReads = async () =>
-      await (await get("/__workspace-credential-reads", {})).json() as number;
+      (await (await get("/__workspace-credential-reads", {})).json()) as number;
     const readsBefore = await credentialReads();
     const sessionId = crypto.randomUUID();
     // The Sandbox has no project: /workspace starts empty and no Git integration loads.
@@ -107,8 +107,9 @@ Deno.test({
     const messages = await waitForConversation(
       sessionId,
       (current) =>
-        current.some((message) =>
-          message.role === "assistant" && JSON.stringify(message).includes("The guest answered.")
+        current.some(
+          (message) =>
+            message.role === "assistant" && JSON.stringify(message).includes("The guest answered."),
         ),
       5 * 60_000,
     );
@@ -141,8 +142,10 @@ Deno.test({
     const resumed = await waitForConversation(
       sessionId,
       (current) =>
-        current.some((message) =>
-          message.role === "assistant" && JSON.stringify(message).includes("Idle sandbox checked.")
+        current.some(
+          (message) =>
+            message.role === "assistant" &&
+            JSON.stringify(message).includes("Idle sandbox checked."),
         ),
       60_000,
     );
@@ -171,8 +174,8 @@ Deno.test({
     const answered = await waitForConversation(
       sessionId,
       (current) =>
-        current.some((message) =>
-          message.role === "assistant" && JSON.stringify(message).includes("Skills: ")
+        current.some(
+          (message) => message.role === "assistant" && JSON.stringify(message).includes("Skills: "),
         ),
       60_000,
     );
@@ -180,32 +183,32 @@ Deno.test({
     assert(!skills.includes("e2e-skill"), `the catalog changed after checkout: ${skills}`);
 
     // Exercise the production codemode registration inside the real Session DO, not a mock VM.
-    for (
-      const [code, expected] of [
-        [
-          'text([typeof fetch, typeof process, typeof Deno, typeof WebAssembly].join(","));',
-          "undefined,undefined,undefined,undefined",
-        ],
-        ["while (true) {}", "interrupt budget"],
-        ["while (true) { await Promise.resolve(); }", "interrupt budget"],
-        ["const huge = new Array(8_000_000).fill(1); text(huge.length);", "out of memory"],
-        [
-          'await tools.write({path:"/workspace/codemode.txt",content:"persisted-37"}); store("check",37); text(await tools.read({path:"/workspace/codemode.txt"}));',
-          "persisted-37",
-        ],
-        ['text(load("check") + 5);', "42"],
-      ] as const
-    ) {
+    for (const [code, expected] of [
+      [
+        'text([typeof fetch, typeof process, typeof Deno, typeof WebAssembly].join(","));',
+        "undefined,undefined,undefined,undefined",
+      ],
+      ["while (true) {}", "interrupt budget"],
+      ["while (true) { await Promise.resolve(); }", "interrupt budget"],
+      ["const huge = new Array(8_000_000).fill(1); text(huge.length);", "out of memory"],
+      [
+        'await tools.write({path:"/workspace/codemode.txt",content:"persisted-37"}); store("check",37); text(await tools.read({path:"/workspace/codemode.txt"}));',
+        "persisted-37",
+      ],
+      ['text(load("check") + 5);', "42"],
+    ] as const) {
       const prompt = `Codemode: ${code}`;
       const started = performance.now();
       await json("/__session/submit", { sessionId, prompt, requestId: crypto.randomUUID() });
       const result = await waitForConversation(
         sessionId,
         (current) =>
-          current.some((message) =>
-            message.role === "assistant" && JSON.stringify(message.content).includes(
-              JSON.stringify(`Codemode finished: ${prompt}`).slice(1, -1),
-            )
+          current.some(
+            (message) =>
+              message.role === "assistant" &&
+              JSON.stringify(message.content).includes(
+                JSON.stringify(`Codemode finished: ${prompt}`).slice(1, -1),
+              ),
           ),
         10_000,
       );
@@ -230,15 +233,15 @@ Deno.test({
     // No project means no clone and no project hooks, so nothing can fail.
     assertEquals(view.issues, []);
   },
-});
+);
 
-Deno.test({
-  name: "idle sandboxes reload beyond loader capacity while original WorkerStubs stay reachable",
-  ignore: gatewayUrl === undefined,
-  async fn() {
+test(
+  "idle sandboxes reload beyond loader capacity while original WorkerStubs stay reachable",
+  { skip: gatewayUrl === undefined, timeout: 120_000 },
+  async () => {
     assertEquals(await json("/__sandbox-reload-probe", {}, 5 * 60_000), {
       cycles: 260,
       retained: 260,
     });
   },
-});
+);

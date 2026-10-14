@@ -49,15 +49,15 @@ official Debian base, agent-browser, Bun, websocat, pi-env, and npm package inpu
 The ARM64 fallback Chromium version is pinned to that same snapshot. The Gondolin configurations are
 `images/guest/x86_64.json` and `images/guest/aarch64.json`; each allocates a 2.5 GiB writable rootfs
 so the expanded development environment and an on-demand browser fit together. Gondolin is pinned in
-`deno.lock` and the Deno import maps.
+`package-lock.json` and the runner npm workspace manifest.
 
 The repository orb setup installs Podman and the host image-building prerequisites (`cpio`,
 `e2fsprogs`, `lz4`, `tar`, and rootless-user-namespace support). Build and smoke-test each asset on
-a native Linux host matching the target architecture with Deno 2.9.5:
+a native Linux host matching the target architecture with Node.js 26.11.1 and `npm ci`:
 
 ```sh
-deno task build:image x86_64
-deno task build:image aarch64
+npm run build:image -- x86_64
+npm run build:image -- aarch64
 ```
 
 `build:image` first builds a local, architecture-specific Debian OCI image with Podman, then asks
@@ -99,9 +99,9 @@ For any guest-content change:
 3. Run the normal repository checks and the real Gondolin smoke test on each native architecture:
 
    ```sh
-   deno task check
-   deno task test
-   deno task test:gondolin
+   npm run check
+   npm test
+   npm run test:gondolin
    ```
 
    The smoke test verifies Debian identity, the release marker, manifest identity, `apt`, required
@@ -111,6 +111,7 @@ For any guest-content change:
    checks the architecture-specific lazy installation, evaluates JavaScript, reads the resulting DOM
    text, and writes a PNG screenshot. Validate both x86-64 and ARM64 on their native release hosts
    before signing a runner release.
+
 4. Compare each generated `.json` file with
    `packages/runner/src/environment/gondolin/guest-image/release.ts`. Keep the currently published
    release active while the candidate is under test.

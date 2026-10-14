@@ -136,10 +136,10 @@ export interface RoutedEnvironment {
 /** What a Session Durable Object learns about its runner environment (ADR 0006). */
 export type EnvironmentNotice =
   | {
-    readonly type: "updated";
-    readonly runnerId: string;
-    readonly environment: RunnerEnvironmentSnapshot;
-  }
+      readonly type: "updated";
+      readonly runnerId: string;
+      readonly environment: RunnerEnvironmentSnapshot;
+    }
   | { readonly type: "removed"; readonly runnerId: string }
   | { readonly type: "unreachable"; readonly runnerId: string }
   | { readonly type: "revoked"; readonly runnerId: string };
@@ -217,7 +217,7 @@ export function makeRunnerRegistry(
           Effect.map((routed) =>
             routed.status === "routed"
               ? { runnerId: routed.route.runnerId, environment: routed.route.environment }
-              : null
+              : null,
           ),
         ),
       createEnvironment: (input) =>
@@ -237,281 +237,289 @@ export const runnerRegistryLayer = (
   observer?: EnvironmentObserver,
 ) => Layer.effect(RunnerRegistry, makeRunnerRegistry(repository, observer));
 
-const accept = Effect.fn("RunnerRegistry.accept")(
-  function* (registry: RegistryRuntime, socket: Socket.Socket) {
-    const startedAt = yield* Clock.currentTimeMillis;
-    const scope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-    const { write } = yield* socket.writer;
-    const reject = (code: number, reason: string) =>
-      Effect.logWarning("connection.rejected").pipe(
-        Effect.annotateLogs({ component: "openorb-gateway", closeCode: code, reason }),
-        Effect.andThen(write(new Socket.CloseEvent(code, reason))),
-      );
-    const protocol = yield* RpcClientApi.makeProtocolSocket({ retryPolicy: Schedule.recurs(0) })
-      .pipe(
-        Effect.provideService(Socket.Socket, runnerControlWebSocket(socket)),
-        Effect.provide(runnerControlRpcSerializationLayer),
-        Effect.provideService(Scope.Scope, scope),
-      );
-    const client = yield* RpcClientApi.make(RunnerApi).pipe(
-      Effect.provideService(RpcClientApi.Protocol, protocol),
-      Effect.provideService(Scope.Scope, scope),
+const accept = Effect.fn("RunnerRegistry.accept")(function* (
+  registry: RegistryRuntime,
+  socket: Socket.Socket,
+) {
+  const startedAt = yield* Clock.currentTimeMillis;
+  const scope = yield* Scope.make();
+  yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+  const { write } = yield* socket.writer;
+  const reject = (code: number, reason: string) =>
+    Effect.logWarning("connection.rejected").pipe(
+      Effect.annotateLogs({ component: "openorb-gateway", closeCode: code, reason }),
+      Effect.andThen(write(new Socket.CloseEvent(code, reason))),
     );
-    const identity = yield* client["runner.identify"]().pipe(
-      Effect.timeoutOption(AUTHENTICATION_TIMEOUT_MS),
-    );
-    if (Option.isNone(identity)) {
-      yield* reject(BOOTSTRAP_TIMEOUT_CLOSE_CODE, "Runner identification timed out");
-      yield* Scope.close(scope, Exit.void);
-      return;
-    }
-    const authenticated = yield* Effect.tryPromise(() =>
-      registry.repository.authenticateRunner(identity.value.token)
-    );
-    const state = yield* SynchronizedRef.get(registry.state);
-    if (
-      !authenticated || authenticated.id !== identity.value.runnerId ||
-      identity.value.protocolVersion !== RUNNER_PROTOCOL_VERSION ||
-      state.revoked.has(runnerKey(authenticated.workspaceId, authenticated.id))
-    ) {
-      yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
-      yield* Scope.close(scope, Exit.void);
-      return;
-    }
+  const protocol = yield* RpcClientApi.makeProtocolSocket({ retryPolicy: Schedule.recurs(0) }).pipe(
+    Effect.provideService(Socket.Socket, runnerControlWebSocket(socket)),
+    Effect.provide(runnerControlRpcSerializationLayer),
+    Effect.provideService(Scope.Scope, scope),
+  );
+  const client = yield* RpcClientApi.make(RunnerApi).pipe(
+    Effect.provideService(RpcClientApi.Protocol, protocol),
+    Effect.provideService(Scope.Scope, scope),
+  );
+  const identity = yield* client["runner.identify"]().pipe(
+    Effect.timeoutOption(AUTHENTICATION_TIMEOUT_MS),
+  );
+  if (Option.isNone(identity)) {
+    yield* reject(BOOTSTRAP_TIMEOUT_CLOSE_CODE, "Runner identification timed out");
+    yield* Scope.close(scope, Exit.void);
+    return;
+  }
+  const authenticated = yield* Effect.tryPromise(() =>
+    registry.repository.authenticateRunner(identity.value.token),
+  );
+  const state = yield* SynchronizedRef.get(registry.state);
+  if (
+    !authenticated ||
+    authenticated.id !== identity.value.runnerId ||
+    identity.value.protocolVersion !== RUNNER_PROTOCOL_VERSION ||
+    state.revoked.has(runnerKey(authenticated.workspaceId, authenticated.id))
+  ) {
+    yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
+    yield* Scope.close(scope, Exit.void);
+    return;
+  }
 
-    const initialEnvironments: RunnerEnvironmentSnapshot[] = [];
-    let complete: {
-      capacity: RunnerCapacity;
-      revision: number;
-      observedAt: number;
-      environmentCount: number;
-    } | undefined;
-    let ownedConnection: Connection | undefined;
-    const events = client["runner.watch"]().pipe(
-      Stream.timeout(RUNNER_WATCH_INACTIVITY_TIMEOUT_MS),
-    );
-    yield* Stream.runForEach(
-      events,
-      (event) =>
-        Effect.gen(function* () {
-          if (complete) {
-            if (ownedConnection) yield* applyEvent(registry, ownedConnection, event);
-            return;
-          }
-          if (event.type === "snapshot.environment") {
-            initialEnvironments.push(event.environment);
-            return;
-          }
-          if (event.type !== "snapshot.complete") {
-            yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
-            return yield* Effect.fail(new CandidateRejected());
-          }
-          const completed = event;
-          complete = completed;
-          if (
-            complete.environmentCount !== initialEnvironments.length ||
-            new Set(initialEnvironments.map((x) => x.sessionId)).size !==
-              initialEnvironments.length ||
-            // Tenant isolation: a runner reports only its own Workspace's environments.
-            initialEnvironments.some((x) => x.workspaceId !== authenticated.workspaceId)
-          ) {
-            yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
-            return yield* Effect.fail(new CandidateRejected());
-          }
-          const connectionRuntime: ConnectionRuntime = { client, scope };
-          const [connection, old] = yield* SynchronizedRef.modifyEffect(
-            registry.state,
-            (current) => {
-              const key = runnerKey(authenticated.workspaceId, authenticated.id);
-              if (current.revoked.has(key)) return Effect.fail(new CandidateRejected());
-              const connection: Connection = {
-                generation: current.nextGeneration,
-                runner: authenticated,
-                runtime: connectionRuntime,
-                capacity: completed.capacity,
-                revision: completed.revision,
-                observedAt: completed.observedAt,
-              };
-              const previousSlot = current.runners.get(key);
-              const previous = previousSlot?.control;
-              const runners = new Map(current.runners).set(key, {
-                runner: authenticated,
-                control: connection,
-                ...(previousSlot?.bulk === undefined ? {} : { bulk: previousSlot.bulk }),
-              });
-              const environments = new Map(current.environments);
-              for (const [id, route] of environments) {
-                if (route.runnerId === authenticated.id) environments.delete(id);
-              }
-              for (const environment of initialEnvironments) {
-                environments.set(routeKey(authenticated.workspaceId, environment.sessionId), {
-                  runnerId: authenticated.id,
-                  generation: connection.generation,
-                  environment,
-                });
-              }
-              return Effect.succeed(
-                [[connection, previous] as const, {
-                  ...current,
-                  nextGeneration: current.nextGeneration + 1,
-                  runners,
-                  environments,
-                }] as const,
-              );
-            },
-          ).pipe(
-            Effect.catch((error) =>
-              reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON).pipe(
-                Effect.andThen(Effect.fail(error)),
-              )
-            ),
-          );
-          ownedConnection = connection;
-          const now = yield* Clock.currentTimeMillis;
-          yield* Effect.logInfo("snapshot.accepted").pipe(Effect.annotateLogs({
-            component: "openorb-gateway",
+  const initialEnvironments: RunnerEnvironmentSnapshot[] = [];
+  let complete:
+    | {
+        capacity: RunnerCapacity;
+        revision: number;
+        observedAt: number;
+        environmentCount: number;
+      }
+    | undefined;
+  let ownedConnection: Connection | undefined;
+  const events = client["runner.watch"]().pipe(Stream.timeout(RUNNER_WATCH_INACTIVITY_TIMEOUT_MS));
+  yield* Stream.runForEach(events, (event) =>
+    Effect.gen(function* () {
+      if (complete) {
+        if (ownedConnection) yield* applyEvent(registry, ownedConnection, event);
+        return;
+      }
+      if (event.type === "snapshot.environment") {
+        initialEnvironments.push(event.environment);
+        return;
+      }
+      if (event.type !== "snapshot.complete") {
+        yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
+        return yield* Effect.fail(new CandidateRejected());
+      }
+      const completed = event;
+      complete = completed;
+      if (
+        complete.environmentCount !== initialEnvironments.length ||
+        new Set(initialEnvironments.map((x) => x.sessionId)).size !== initialEnvironments.length ||
+        // Tenant isolation: a runner reports only its own Workspace's environments.
+        initialEnvironments.some((x) => x.workspaceId !== authenticated.workspaceId)
+      ) {
+        yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
+        return yield* Effect.fail(new CandidateRejected());
+      }
+      const connectionRuntime: ConnectionRuntime = { client, scope };
+      const [connection, old] = yield* SynchronizedRef.modifyEffect(registry.state, (current) => {
+        const key = runnerKey(authenticated.workspaceId, authenticated.id);
+        if (current.revoked.has(key)) return Effect.fail(new CandidateRejected());
+        const connection: Connection = {
+          generation: current.nextGeneration,
+          runner: authenticated,
+          runtime: connectionRuntime,
+          capacity: completed.capacity,
+          revision: completed.revision,
+          observedAt: completed.observedAt,
+        };
+        const previousSlot = current.runners.get(key);
+        const previous = previousSlot?.control;
+        const runners = new Map(current.runners).set(key, {
+          runner: authenticated,
+          control: connection,
+          ...(previousSlot?.bulk === undefined ? {} : { bulk: previousSlot.bulk }),
+        });
+        const environments = new Map(current.environments);
+        for (const [id, route] of environments) {
+          if (route.runnerId === authenticated.id) environments.delete(id);
+        }
+        for (const environment of initialEnvironments) {
+          environments.set(routeKey(authenticated.workspaceId, environment.sessionId), {
             runnerId: authenticated.id,
             generation: connection.generation,
-            environmentCount: initialEnvironments.length,
-            durationMs: now - startedAt,
-          }));
-          yield* Effect.logInfo("connection.connected").pipe(Effect.annotateLogs({
-            component: "openorb-gateway",
-            runnerId: authenticated.id,
-            generation: connection.generation,
-          }));
-          if (old) {
-            yield* Effect.logInfo("connection.replaced").pipe(Effect.annotateLogs({
-              component: "openorb-gateway",
-              runnerId: authenticated.id,
-              generation: connection.generation,
-              previousGeneration: old.generation,
-            }));
-            yield* Scope.close(old.runtime.scope, Exit.void);
-          }
-          // A reconnect tells each Session Durable Object its environment is reachable again.
-          yield* Effect.forEach(
-            initialEnvironments,
-            (environment) =>
-              notifyEnvironment(registry, authenticated.workspaceId, environment.sessionId, {
-                type: "updated",
-                runnerId: authenticated.id,
-                environment,
-              }),
-            { discard: true },
-          );
+            environment,
+          });
+        }
+        return Effect.succeed([
+          [connection, previous] as const,
+          {
+            ...current,
+            nextGeneration: current.nextGeneration + 1,
+            runners,
+            environments,
+          },
+        ] as const);
+      }).pipe(
+        Effect.catch((error) =>
+          reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON).pipe(
+            Effect.andThen(Effect.fail(error)),
+          ),
+        ),
+      );
+      ownedConnection = connection;
+      const now = yield* Clock.currentTimeMillis;
+      yield* Effect.logInfo("snapshot.accepted").pipe(
+        Effect.annotateLogs({
+          component: "openorb-gateway",
+          runnerId: authenticated.id,
+          generation: connection.generation,
+          environmentCount: initialEnvironments.length,
+          durationMs: now - startedAt,
         }),
-    ).pipe(
-      Effect.tapError(() =>
-        Effect.logWarning("connection.watch-failed").pipe(
+      );
+      yield* Effect.logInfo("connection.connected").pipe(
+        Effect.annotateLogs({
+          component: "openorb-gateway",
+          runnerId: authenticated.id,
+          generation: connection.generation,
+        }),
+      );
+      if (old) {
+        yield* Effect.logInfo("connection.replaced").pipe(
           Effect.annotateLogs({
             component: "openorb-gateway",
             runnerId: authenticated.id,
-            admitted: ownedConnection !== undefined,
+            generation: connection.generation,
+            previousGeneration: old.generation,
           }),
-        )
+        );
+        yield* Scope.close(old.runtime.scope, Exit.void);
+      }
+      // A reconnect tells each Session Durable Object its environment is reachable again.
+      yield* Effect.forEach(
+        initialEnvironments,
+        (environment) =>
+          notifyEnvironment(registry, authenticated.workspaceId, environment.sessionId, {
+            type: "updated",
+            runnerId: authenticated.id,
+            environment,
+          }),
+        { discard: true },
+      );
+    }),
+  ).pipe(
+    Effect.tapError(() =>
+      Effect.logWarning("connection.watch-failed").pipe(
+        Effect.annotateLogs({
+          component: "openorb-gateway",
+          runnerId: authenticated.id,
+          admitted: ownedConnection !== undefined,
+        }),
       ),
-      Effect.ensuring(Effect.suspend(() => {
+    ),
+    Effect.ensuring(
+      Effect.suspend(() => {
         const remove = ownedConnection ? removeConnection(registry, ownedConnection) : Effect.void;
         return remove.pipe(
           Effect.andThen(
             ownedConnection
               ? Effect.logInfo("connection.disconnected").pipe(
-                Effect.annotateLogs({
-                  component: "openorb-gateway",
-                  runnerId: authenticated.id,
-                  generation: ownedConnection.generation,
-                }),
-              )
+                  Effect.annotateLogs({
+                    component: "openorb-gateway",
+                    runnerId: authenticated.id,
+                    generation: ownedConnection.generation,
+                  }),
+                )
               : Effect.void,
           ),
           Effect.andThen(Scope.close(scope, Exit.void)),
         );
-      })),
-      Effect.provideService(Scope.Scope, scope),
-    );
-  },
-);
+      }),
+    ),
+    Effect.provideService(Scope.Scope, scope),
+  );
+});
 
-const acceptBulk = Effect.fn("RunnerRegistry.acceptBulk")(
-  function* (registry: RegistryRuntime, socket: Socket.Socket) {
-    const scope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-    const { write } = yield* socket.writer;
-    const reject = (code: number, reason: string) => write(new Socket.CloseEvent(code, reason));
-    const protocol = yield* RpcClientApi.makeProtocolSocket({ retryPolicy: Schedule.recurs(0) })
-      .pipe(
-        Effect.provideService(Socket.Socket, socket),
-        Effect.provide(runnerBulkRpcSerializationLayer),
-        Effect.provideService(Scope.Scope, scope),
-      );
-    const client = yield* RpcClientApi.make(RunnerBulkApi).pipe(
-      Effect.provideService(RpcClientApi.Protocol, protocol),
-      Effect.provideService(Scope.Scope, scope),
-    );
-    const identity = yield* client["runner.bulk.identify"]().pipe(
-      Effect.timeoutOption(AUTHENTICATION_TIMEOUT_MS),
-    );
-    if (Option.isNone(identity)) {
-      yield* reject(BOOTSTRAP_TIMEOUT_CLOSE_CODE, "Runner identification timed out");
-      return;
-    }
-    const authenticated = yield* Effect.tryPromise(() =>
-      registry.repository.authenticateRunner(identity.value.token)
-    );
-    const state = yield* SynchronizedRef.get(registry.state);
-    if (
-      !authenticated || authenticated.id !== identity.value.runnerId ||
-      identity.value.protocolVersion !== RUNNER_PROTOCOL_VERSION ||
-      state.revoked.has(runnerKey(authenticated.workspaceId, authenticated.id))
-    ) {
-      yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
-      return;
-    }
+const acceptBulk = Effect.fn("RunnerRegistry.acceptBulk")(function* (
+  registry: RegistryRuntime,
+  socket: Socket.Socket,
+) {
+  const scope = yield* Scope.make();
+  yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+  const { write } = yield* socket.writer;
+  const reject = (code: number, reason: string) => write(new Socket.CloseEvent(code, reason));
+  const protocol = yield* RpcClientApi.makeProtocolSocket({ retryPolicy: Schedule.recurs(0) }).pipe(
+    Effect.provideService(Socket.Socket, socket),
+    Effect.provide(runnerBulkRpcSerializationLayer),
+    Effect.provideService(Scope.Scope, scope),
+  );
+  const client = yield* RpcClientApi.make(RunnerBulkApi).pipe(
+    Effect.provideService(RpcClientApi.Protocol, protocol),
+    Effect.provideService(Scope.Scope, scope),
+  );
+  const identity = yield* client["runner.bulk.identify"]().pipe(
+    Effect.timeoutOption(AUTHENTICATION_TIMEOUT_MS),
+  );
+  if (Option.isNone(identity)) {
+    yield* reject(BOOTSTRAP_TIMEOUT_CLOSE_CODE, "Runner identification timed out");
+    return;
+  }
+  const authenticated = yield* Effect.tryPromise(() =>
+    registry.repository.authenticateRunner(identity.value.token),
+  );
+  const state = yield* SynchronizedRef.get(registry.state);
+  if (
+    !authenticated ||
+    authenticated.id !== identity.value.runnerId ||
+    identity.value.protocolVersion !== RUNNER_PROTOCOL_VERSION ||
+    state.revoked.has(runnerKey(authenticated.workspaceId, authenticated.id))
+  ) {
+    yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
+    return;
+  }
 
-    const connection: BulkConnection = { runner: authenticated, client, scope };
-    const key = runnerKey(authenticated.workspaceId, authenticated.id);
-    const admitted = yield* SynchronizedRef.modify(
-      registry.state,
-      (current): readonly [BulkAdmission, RegistryState] => {
-        if (current.revoked.has(key)) {
-          return [{ accepted: false as const }, current] as const;
-        }
-        const previous = current.runners.get(key);
-        const runners = new Map(current.runners).set(key, {
-          runner: authenticated,
-          ...(previous?.control === undefined ? {} : { control: previous.control }),
-          bulk: connection,
-        });
-        return [{
+  const connection: BulkConnection = { runner: authenticated, client, scope };
+  const key = runnerKey(authenticated.workspaceId, authenticated.id);
+  const admitted = yield* SynchronizedRef.modify(
+    registry.state,
+    (current): readonly [BulkAdmission, RegistryState] => {
+      if (current.revoked.has(key)) {
+        return [{ accepted: false as const }, current] as const;
+      }
+      const previous = current.runners.get(key);
+      const runners = new Map(current.runners).set(key, {
+        runner: authenticated,
+        ...(previous?.control === undefined ? {} : { control: previous.control }),
+        bulk: connection,
+      });
+      return [
+        {
           accepted: true as const,
           ...(previous?.bulk === undefined ? {} : { old: previous.bulk }),
-        }, { ...current, runners }] as const;
-      },
-    );
-    if (!admitted.accepted) {
-      yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
-      return;
-    }
-    if (admitted.old !== undefined) yield* Scope.close(admitted.old.scope, Exit.void);
-    yield* client["runner.bulk.watch"]().pipe(
-      Stream.timeout(RUNNER_WATCH_INACTIVITY_TIMEOUT_MS),
-      Stream.runDrain,
-      Effect.ensuring(
-        SynchronizedRef.update(registry.state, (current) => {
-          const slot = current.runners.get(key);
-          if (slot?.bulk !== connection) return current;
-          const runners = new Map(current.runners);
-          if (slot.control === undefined) runners.delete(key);
-          else runners.set(key, { runner: slot.runner, control: slot.control });
-          return { ...current, runners };
-        }),
-      ),
-      Effect.provideService(Scope.Scope, scope),
-    );
-  },
-);
+        },
+        { ...current, runners },
+      ] as const;
+    },
+  );
+  if (!admitted.accepted) {
+    yield* reject(PERMANENT_REJECTION_CLOSE_CODE, REJECTION_REASON);
+    return;
+  }
+  if (admitted.old !== undefined) yield* Scope.close(admitted.old.scope, Exit.void);
+  yield* client["runner.bulk.watch"]().pipe(
+    Stream.timeout(RUNNER_WATCH_INACTIVITY_TIMEOUT_MS),
+    Stream.runDrain,
+    Effect.ensuring(
+      SynchronizedRef.update(registry.state, (current) => {
+        const slot = current.runners.get(key);
+        if (slot?.bulk !== connection) return current;
+        const runners = new Map(current.runners);
+        if (slot.control === undefined) runners.delete(key);
+        else runners.set(key, { runner: slot.runner, control: slot.control });
+        return { ...current, runners };
+      }),
+    ),
+    Effect.provideService(Scope.Scope, scope),
+  );
+});
 
 function applyEvent(
   registry: RegistryRuntime,
@@ -564,81 +572,90 @@ function removeConnection(registry: RegistryRuntime, connection: Connection) {
             runnerId: connection.runner.id,
           }),
         { discard: true },
-      )
+      ),
     ),
   );
 }
 
 function getRunnerLiveState(registry: RegistryRuntime, workspaceId: WorkspaceId, runnerId: string) {
-  return SynchronizedRef.get(registry.state).pipe(Effect.map((state) => {
-    const connection = getControlConnection(state, workspaceId, runnerId);
-    if (!connection) return null;
-    return { capacity: connection.capacity, lastObservedAt: connection.observedAt };
-  }));
+  return SynchronizedRef.get(registry.state).pipe(
+    Effect.map((state) => {
+      const connection = getControlConnection(state, workspaceId, runnerId);
+      if (!connection) return null;
+      return { capacity: connection.capacity, lastObservedAt: connection.observedAt };
+    }),
+  );
 }
 
-const disconnectRunner = Effect.fn("RunnerRegistry.disconnectRunner")(
-  function* (registry: RegistryRuntime, workspaceId: WorkspaceId, runnerId: string) {
-    const key = runnerKey(workspaceId, runnerId);
-    const slot = yield* SynchronizedRef.modify(
-      registry.state,
-      (state) => {
-        const slot = state.runners.get(key);
-        const runners = new Map(state.runners);
-        runners.delete(key);
-        const environments = new Map(state.environments);
-        const revokedSessions: string[] = [];
-        for (const [id, route] of environments) {
-          if (route.runnerId === runnerId && id.startsWith(`${workspaceId}:`)) {
-            environments.delete(id);
-            revokedSessions.push(route.environment.sessionId);
-          }
-        }
-        return [{ slot, revokedSessions }, {
-          ...state,
-          runners,
-          environments,
-          revoked: new Set(state.revoked).add(key),
-        }] as const;
+const disconnectRunner = Effect.fn("RunnerRegistry.disconnectRunner")(function* (
+  registry: RegistryRuntime,
+  workspaceId: WorkspaceId,
+  runnerId: string,
+) {
+  const key = runnerKey(workspaceId, runnerId);
+  const slot = yield* SynchronizedRef.modify(registry.state, (state) => {
+    const slot = state.runners.get(key);
+    const runners = new Map(state.runners);
+    runners.delete(key);
+    const environments = new Map(state.environments);
+    const revokedSessions: string[] = [];
+    for (const [id, route] of environments) {
+      if (route.runnerId === runnerId && id.startsWith(`${workspaceId}:`)) {
+        environments.delete(id);
+        revokedSessions.push(route.environment.sessionId);
+      }
+    }
+    return [
+      { slot, revokedSessions },
+      {
+        ...state,
+        runners,
+        environments,
+        revoked: new Set(state.revoked).add(key),
       },
-    ).pipe(
-      Effect.tap(({ revokedSessions }) =>
-        // Revocation must also close Environment Links the runner dialed directly.
-        Effect.forEach(
-          revokedSessions,
-          (sessionId) =>
-            notifyEnvironment(registry, workspaceId, sessionId, { type: "revoked", runnerId }),
-          { discard: true },
-        )
+    ] as const;
+  }).pipe(
+    Effect.tap(({ revokedSessions }) =>
+      // Revocation must also close Environment Links the runner dialed directly.
+      Effect.forEach(
+        revokedSessions,
+        (sessionId) =>
+          notifyEnvironment(registry, workspaceId, sessionId, { type: "revoked", runnerId }),
+        { discard: true },
       ),
-      Effect.map(({ slot }) => slot),
-    );
-    if (slot === undefined) return false;
-    yield* Effect.logInfo("connection.revoked").pipe(Effect.annotateLogs({
+    ),
+    Effect.map(({ slot }) => slot),
+  );
+  if (slot === undefined) return false;
+  yield* Effect.logInfo("connection.revoked").pipe(
+    Effect.annotateLogs({
       component: "openorb-gateway",
       runnerId,
       ...(slot.control === undefined ? {} : { generation: slot.control.generation }),
-    }));
-    yield* closeRunnerSlot(slot);
-    return true;
-  },
-);
+    }),
+  );
+  yield* closeRunnerSlot(slot);
+  return true;
+});
 
-const closeRegistryConnections = Effect.fn("RunnerRegistry.close")(
-  function* (registry: RegistryRuntime) {
-    const slots = yield* SynchronizedRef.modify(registry.state, (state) => [
-      Array.from(state.runners.values()),
-      { ...state, runners: new Map() },
-    ]);
-    yield* Effect.forEach(slots, closeRunnerSlot, { concurrency: "unbounded", discard: true });
-  },
-);
+const closeRegistryConnections = Effect.fn("RunnerRegistry.close")(function* (
+  registry: RegistryRuntime,
+) {
+  const slots = yield* SynchronizedRef.modify(registry.state, (state) => [
+    Array.from(state.runners.values()),
+    { ...state, runners: new Map() },
+  ]);
+  yield* Effect.forEach(slots, closeRunnerSlot, { concurrency: "unbounded", discard: true });
+});
 
 function closeRunnerSlot(slot: RunnerSlot) {
-  return Effect.all([
-    slot.control === undefined ? Effect.void : Scope.close(slot.control.runtime.scope, Exit.void),
-    slot.bulk === undefined ? Effect.void : Scope.close(slot.bulk.scope, Exit.void),
-  ], { concurrency: "unbounded", discard: true });
+  return Effect.all(
+    [
+      slot.control === undefined ? Effect.void : Scope.close(slot.control.runtime.scope, Exit.void),
+      slot.bulk === undefined ? Effect.void : Scope.close(slot.bulk.scope, Exit.void),
+    ],
+    { concurrency: "unbounded", discard: true },
+  );
 }
 
 function observeOperation<A>(
@@ -651,19 +668,21 @@ function observeOperation<A>(
     yield* Effect.logInfo(`${operation}.requested`);
     const result = yield* effect;
     const now = yield* Clock.currentTimeMillis;
-    yield* (result.status === "accepted"
-      ? Effect.logInfo(`${operation}.accepted`)
-      : Effect.logWarning(`${operation}.${result.status}`)).pipe(
-        Effect.annotateLogs({ durationMs: now - startedAt }),
-      );
+    yield* (
+      result.status === "accepted"
+        ? Effect.logInfo(`${operation}.accepted`)
+        : Effect.logWarning(`${operation}.${result.status}`)
+    ).pipe(Effect.annotateLogs({ durationMs: now - startedAt }));
     return result;
-  }).pipe(Effect.annotateLogs({
-    component: "openorb-gateway",
-    operation,
-    workspaceId: input.workspaceId,
-    sessionId: input.sessionId,
-    ...(input.runnerId === undefined ? {} : { runnerId: input.runnerId }),
-  }));
+  }).pipe(
+    Effect.annotateLogs({
+      component: "openorb-gateway",
+      operation,
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      ...(input.runnerId === undefined ? {} : { runnerId: input.runnerId }),
+    }),
+  );
 }
 
 function unavailable(message: string) {
@@ -696,11 +715,7 @@ function replaceSlotControl(
     ...(slot.bulk === undefined ? {} : { bulk: slot.bulk }),
   });
 }
-function getControlConnection(
-  state: RegistryState,
-  workspaceId: WorkspaceId,
-  runnerId: string,
-) {
+function getControlConnection(state: RegistryState, workspaceId: WorkspaceId, runnerId: string) {
   return state.runners.get(runnerKey(workspaceId, runnerId))?.control;
 }
 function runnerSupportsOrbSize(
@@ -711,7 +726,9 @@ function runnerSupportsOrbSize(
   return resources.cpuCount <= capacity.vmCpuCount && resources.memoryMiB <= capacity.vmMemoryMiB;
 }
 
-class CandidateRejected extends Error {}
+class CandidateRejected extends Error {
+  readonly _tag = "CandidateRejected";
+}
 function runnerKey(workspaceId: WorkspaceId, runnerId: string) {
   return `${workspaceId}:${runnerId}`;
 }
@@ -724,10 +741,10 @@ function routeKey(workspaceId: WorkspaceId, sessionId: string) {
 
 type RoutedEnvironmentResult =
   | {
-    readonly status: "routed";
-    readonly route: EnvironmentRoute;
-    readonly connection: Connection;
-  }
+      readonly status: "routed";
+      readonly route: EnvironmentRoute;
+      readonly connection: Connection;
+    }
   | { readonly status: "unavailable"; readonly message: string };
 
 const ENVIRONMENT_NOTICE_TIMEOUT_MS = 5_000;
@@ -757,12 +774,14 @@ function notifyEnvironment(
   return Effect.tryPromise(() => registry.observer.notify(workspaceId, sessionId, notice)).pipe(
     Effect.timeout(ENVIRONMENT_NOTICE_TIMEOUT_MS),
     Effect.catchCause(() =>
-      Effect.logWarning("environment.notice-failed").pipe(Effect.annotateLogs({
-        component: "openorb-gateway",
-        workspaceId,
-        sessionId,
-        notice: notice.type,
-      }))
+      Effect.logWarning("environment.notice-failed").pipe(
+        Effect.annotateLogs({
+          component: "openorb-gateway",
+          workspaceId,
+          sessionId,
+          notice: notice.type,
+        }),
+      ),
     ),
   );
 }
@@ -776,9 +795,8 @@ function applyEnvironmentEvent(
   >,
 ) {
   const workspaceId = connection.runner.workspaceId;
-  const sessionId = event.type === "environment.updated"
-    ? event.environment.sessionId
-    : event.sessionId;
+  const sessionId =
+    event.type === "environment.updated" ? event.environment.sessionId : event.sessionId;
   return SynchronizedRef.modify(registry.state, (state) => {
     const current = getControlConnection(state, workspaceId, connection.runner.id);
     if (current?.generation !== connection.generation) return [false, state] as const;
@@ -800,14 +818,14 @@ function applyEnvironmentEvent(
     Effect.flatMap((applied) =>
       applied
         ? notifyEnvironment(
-          registry,
-          workspaceId,
-          sessionId,
-          event.type === "environment.updated"
-            ? { type: "updated", runnerId: connection.runner.id, environment: event.environment }
-            : { type: "removed", runnerId: connection.runner.id },
-        )
-        : Effect.void
+            registry,
+            workspaceId,
+            sessionId,
+            event.type === "environment.updated"
+              ? { type: "updated", runnerId: connection.runner.id, environment: event.environment }
+              : { type: "removed", runnerId: connection.runner.id },
+          )
+        : Effect.void,
     ),
   );
 }
@@ -829,45 +847,43 @@ function routeEnvironment(
   );
 }
 
-const createEnvironment = Effect.fn("RunnerRegistry.createEnvironment")(
-  function* (registry: RegistryRuntime, input: CreateEnvironmentInput) {
-    const state = yield* SynchronizedRef.get(registry.state);
-    const connection = getControlConnection(state, input.workspaceId, input.runnerId);
-    if (!connection) return unavailable("The selected runner is offline.");
-    if (!runnerSupportsOrbSize(connection.capacity, input.payload.orbSize)) {
-      return { status: "rejected" as const, message: "The runner cannot host this orb size." };
-    }
-    const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
-    const result = yield* connection.runtime.client["environment.create"]({
-      ...input.payload,
-      sessionId,
-      workspaceId: input.workspaceId,
-    }).pipe(
-      Effect.timeout(OPERATION_TIMEOUT_MS),
-      Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
-      Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
-    );
-    if (result.status === "accepted") {
-      // The watch stream reports the same environment; recording it here routes it immediately.
-      yield* SynchronizedRef.update(registry.state, (current) => {
-        const live = getControlConnection(current, input.workspaceId, input.runnerId);
-        if (live?.generation !== connection.generation) return current;
-        return {
-          ...current,
-          environments: new Map(current.environments).set(
-            routeKey(input.workspaceId, sessionId),
-            {
-              runnerId: input.runnerId,
-              generation: connection.generation,
-              environment: result.acknowledgement.environment,
-            },
-          ),
-        };
-      });
-    }
-    return result;
-  },
-);
+const createEnvironment = Effect.fn("RunnerRegistry.createEnvironment")(function* (
+  registry: RegistryRuntime,
+  input: CreateEnvironmentInput,
+) {
+  const state = yield* SynchronizedRef.get(registry.state);
+  const connection = getControlConnection(state, input.workspaceId, input.runnerId);
+  if (!connection) return unavailable("The selected runner is offline.");
+  if (!runnerSupportsOrbSize(connection.capacity, input.payload.orbSize)) {
+    return { status: "rejected" as const, message: "The runner cannot host this orb size." };
+  }
+  const sessionId = Schema.decodeUnknownSync(SessionId)(input.sessionId);
+  const result = yield* connection.runtime.client["environment.create"]({
+    ...input.payload,
+    sessionId,
+    workspaceId: input.workspaceId,
+  }).pipe(
+    Effect.timeout(OPERATION_TIMEOUT_MS),
+    Effect.map((acknowledgement) => ({ status: "accepted" as const, acknowledgement })),
+    Effect.catchCause((cause) => Effect.succeed(operationFailure(cause, true))),
+  );
+  if (result.status === "accepted") {
+    // The watch stream reports the same environment; recording it here routes it immediately.
+    yield* SynchronizedRef.update(registry.state, (current) => {
+      const live = getControlConnection(current, input.workspaceId, input.runnerId);
+      if (live?.generation !== connection.generation) return current;
+      return {
+        ...current,
+        environments: new Map(current.environments).set(routeKey(input.workspaceId, sessionId), {
+          runnerId: input.runnerId,
+          generation: connection.generation,
+          environment: result.acknowledgement.environment,
+        }),
+      };
+    });
+  }
+  return result;
+});
 
 function routedEnvironmentCall<A>(
   registry: RegistryRuntime,
@@ -890,42 +906,32 @@ function routedEnvironmentCall<A>(
 
 function controlEnvironment(registry: RegistryRuntime, input: ControlEnvironmentInput) {
   // Starting waits for guest readiness, so it shares the cold continuation budget.
-  return routedEnvironmentCall(
-    registry,
-    input,
-    COLD_CONTINUATION_TIMEOUT_MS,
-    (client, sessionId) => client["environment.control"]({ ...input.payload, sessionId }),
+  return routedEnvironmentCall(registry, input, COLD_CONTINUATION_TIMEOUT_MS, (client, sessionId) =>
+    client["environment.control"]({ ...input.payload, sessionId }),
   );
 }
 
 function attachEnvironment(registry: RegistryRuntime, input: AttachEnvironmentInput) {
-  return routedEnvironmentCall(
-    registry,
-    input,
-    COLD_CONTINUATION_TIMEOUT_MS,
-    (client, sessionId) =>
-      client["environment.attach"]({
-        sessionId,
-        nonce: Schema.decodeUnknownSync(EnvironmentAttachNonce)(input.nonce),
-      }),
+  return routedEnvironmentCall(registry, input, COLD_CONTINUATION_TIMEOUT_MS, (client, sessionId) =>
+    client["environment.attach"]({
+      sessionId,
+      nonce: Schema.decodeUnknownSync(EnvironmentAttachNonce)(input.nonce),
+    }),
   );
 }
 
 function deleteEnvironment(registry: RegistryRuntime, input: EnvironmentInput) {
-  return routedEnvironmentCall(
-    registry,
-    input,
-    COLD_CONTINUATION_TIMEOUT_MS,
-    (client, sessionId) => client["environment.delete"]({ sessionId }),
+  return routedEnvironmentCall(registry, input, COLD_CONTINUATION_TIMEOUT_MS, (client, sessionId) =>
+    client["environment.delete"]({ sessionId }),
   ).pipe(
     Effect.tap((result) =>
       result.status === "accepted"
         ? SynchronizedRef.update(registry.state, (state) => {
-          const environments = new Map(state.environments);
-          environments.delete(routeKey(input.workspaceId, input.sessionId));
-          return { ...state, environments };
-        })
-        : Effect.void
+            const environments = new Map(state.environments);
+            environments.delete(routeKey(input.workspaceId, input.sessionId));
+            return { ...state, environments };
+          })
+        : Effect.void,
     ),
   );
 }

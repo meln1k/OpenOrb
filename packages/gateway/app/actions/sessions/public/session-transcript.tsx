@@ -4,10 +4,10 @@ import { tryAsync, trySync } from "../../../../../result/src/index.ts";
 import { object, parseSafe, string } from "remix/data-schema";
 import { css, type Dispatched, type Handle, on } from "remix/component";
 
-import { routes } from "@/app/routes.ts";
-import { Button } from "@/app/ui/public/components/button.tsx";
-import { Icon } from "@/app/ui/public/components/icons.tsx";
-import { Marker, MarkerContent, MarkerIcon } from "@/app/ui/public/components/marker.tsx";
+import { routes } from "../../../routes.ts";
+import { Button } from "../../../ui/public/components/button.tsx";
+import { Icon } from "../../../ui/public/components/icons.tsx";
+import { Marker, MarkerContent, MarkerIcon } from "../../../ui/public/components/marker.tsx";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -15,7 +15,7 @@ import {
   MessageScrollerItem,
   MessageScrollerViewport,
 } from "./message-scroller.tsx";
-import { media } from "@/app/ui/public/responsive.ts";
+import { media } from "../../../ui/public/responsive.ts";
 import { actionResponseAccepted, actionResponseError } from "./session-action-response.ts";
 import { SessionFailureNotices } from "./session-failure-notices.tsx";
 import { AssistantMarkdown } from "./session-markdown.tsx";
@@ -32,7 +32,7 @@ import {
   usageContextTokens,
 } from "./session-transcript-state.ts";
 import { SessionPageScope } from "./session-page-controller.tsx";
-import { formatThinkingLevel } from "@/app/ui/public/session-thinking-level.ts";
+import { formatThinkingLevel } from "../../../ui/public/session-thinking-level.ts";
 import { createSessionThinkingLevelController } from "./session-thinking-level-controller.ts";
 
 export type SessionTranscriptProps = {
@@ -42,14 +42,8 @@ export type SessionTranscriptProps = {
   sessionId: string;
   thinkingLevels: readonly SessionThinkingLevel[];
 };
-const bashToolArgumentsSchema = object(
-  { command: string() },
-  { unknownKeys: "passthrough" },
-);
-const readToolArgumentsSchema = object(
-  { path: string() },
-  { unknownKeys: "passthrough" },
-);
+const bashToolArgumentsSchema = object({ command: string() }, { unknownKeys: "passthrough" });
+const readToolArgumentsSchema = object({ path: string() }, { unknownKeys: "passthrough" });
 export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   const page = handle.context.get(SessionPageScope);
   const agentControlState = (): SessionState => {
@@ -77,17 +71,20 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   let actionError: string | undefined;
   let updateFrame: number | undefined;
   const abortFormId = `session-${handle.props.sessionId}-abort`;
-  const thinking = createSessionThinkingLevelController({
-    csrfToken: handle.props.csrfToken,
-    sessionId: handle.props.sessionId,
-    supportedLevels: handle.props.thinkingLevels,
-    signal: handle.signal,
-    confirmedLevel: () => transcriptState.thinkingLevel,
-    setError: (error) => actionError = error,
-    update: async () => {
-      await handle.update();
+  const thinking = createSessionThinkingLevelController(
+    {
+      csrfToken: handle.props.csrfToken,
+      sessionId: handle.props.sessionId,
+      supportedLevels: handle.props.thinkingLevels,
+      signal: handle.signal,
+      confirmedLevel: () => transcriptState.thinkingLevel,
+      setError: (error) => (actionError = error),
+      update: async () => {
+        await handle.update();
+      },
     },
-  }, agentControlState());
+    agentControlState(),
+  );
 
   const scheduleUpdate = () => {
     if (updateFrame !== undefined) return;
@@ -99,45 +96,62 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
 
   handle.queueTask(() => {
     page.addEventListener("connection", scheduleUpdate, { signal: handle.signal });
-    page.addEventListener("session", (message) => {
-      const event = message.detail;
-      const [next, frameError] = trySync(
-        () => reduceSessionTranscriptState(transcriptState, event),
-        () => true,
-      );
-      if (frameError !== undefined) {
-        actionError = "Conversation synchronization failed. Reload to obtain a fresh snapshot.";
-        page.invalidateStream();
+    page.addEventListener(
+      "session",
+      (message) => {
+        const event = message.detail;
+        const [next, frameError] = trySync(
+          () => reduceSessionTranscriptState(transcriptState, event),
+          () => true,
+        );
+        if (frameError !== undefined) {
+          actionError = "Conversation synchronization failed. Reload to obtain a fresh snapshot.";
+          page.invalidateStream();
+          scheduleUpdate();
+          return;
+        }
+        if (next === transcriptState) return;
+        transcriptState = next;
+        thinking.observeConfirmed();
         scheduleUpdate();
-        return;
-      }
-      if (next === transcriptState) return;
-      transcriptState = next;
-      thinking.observeConfirmed();
-      scheduleUpdate();
-    }, { signal: handle.signal });
-    document.addEventListener("keydown", (event) => {
-      if (
-        event.key !== "Tab" || !event.shiftKey || event.altKey || event.ctrlKey ||
-        event.metaKey || event.isComposing
-      ) return;
-      if (document.querySelector("dialog[open]")) return;
-      event.preventDefault();
-      if (!page.projection.connectionInterrupted) void thinking.cycle(agentControlState());
-    }, { capture: true, signal: handle.signal });
-    handle.signal.addEventListener("abort", () => {
-      if (updateFrame !== undefined) cancelAnimationFrame(updateFrame);
-    }, { once: true });
+      },
+      { signal: handle.signal },
+    );
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (
+          event.key !== "Tab" ||
+          !event.shiftKey ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.isComposing
+        )
+          return;
+        if (document.querySelector("dialog[open]")) return;
+        event.preventDefault();
+        if (!page.projection.connectionInterrupted) void thinking.cycle(agentControlState());
+      },
+      { capture: true, signal: handle.signal },
+    );
+    handle.signal.addEventListener(
+      "abort",
+      () => {
+        if (updateFrame !== undefined) cancelAnimationFrame(updateFrame);
+      },
+      { once: true },
+    );
   });
 
-  async function submitAbort(
-    event: Dispatched<SubmitEvent, HTMLFormElement>,
-  ) {
+  async function submitAbort(event: Dispatched<SubmitEvent, HTMLFormElement>) {
     event.preventDefault();
     if (
       page.projection.agentState !== "running" ||
-      page.projection.connectionInterrupted || abortPending
-    ) return;
+      page.projection.connectionInterrupted ||
+      abortPending
+    )
+      return;
 
     const form = event.currentTarget;
     abortPending = true;
@@ -194,17 +208,17 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
     const currentActivityId = activeActivityId(transcriptState);
     const busy = page.projection.agentState === "running" && !connectionInterrupted;
     const hasActiveRun = sessionState === "running";
-    const vmCanAcceptPrompt = sessionState === "ready" || sessionState === "stopped" ||
-      sessionState === "running";
-    const canSubmitPrompt = vmCanAcceptPrompt &&
-      !connectionInterrupted && !abortPending && !promptRequestPending;
+    const vmCanAcceptPrompt =
+      sessionState === "ready" || sessionState === "stopped" || sessionState === "running";
+    const canSubmitPrompt =
+      vmCanAcceptPrompt && !connectionInterrupted && !abortPending && !promptRequestPending;
     const canAbort = hasActiveRun && !connectionInterrupted && !abortPending;
     const usage = totalSessionUsage(transcriptState);
     const status = connectionInterrupted
       ? "Connection interrupted"
       : abortPending
-      ? "Aborting…"
-      : transcriptState.status;
+        ? "Aborting…"
+        : transcriptState.status;
 
     return (
       <section
@@ -214,88 +228,82 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
         data-session-state={sessionState}
         mix={sessionFrameStyle}
       >
-        <span role="status" data-session-status mix={screenReaderOnlyStyle}>{status}</span>
-        {hasActiveRun
-          ? (
-            <form
-              id={abortFormId}
-              method="post"
-              action={routes.app.sessions.abort.href({ sessionId: handle.props.sessionId })}
-              mix={abortSubmit}
-            >
-              <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
-            </form>
-          )
-          : null}
+        <span role="status" data-session-status mix={screenReaderOnlyStyle}>
+          {status}
+        </span>
+        {hasActiveRun ? (
+          <form
+            id={abortFormId}
+            method="post"
+            action={routes.app.sessions.abort.href({ sessionId: handle.props.sessionId })}
+            mix={abortSubmit}
+          >
+            <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
+          </form>
+        ) : null}
         <SessionFailureNotices
           connectionInterrupted={connectionInterrupted}
           csrfToken={handle.props.csrfToken}
           issues={page.projection.issues}
-          recoveryAllowed={page.projection.agentState === "error" ||
-            page.projection.environmentState === "error"}
+          recoveryAllowed={
+            page.projection.agentState === "error" || page.projection.environmentState === "error"
+          }
           sessionId={handle.props.sessionId}
         />
-        {actionError ? <p role="alert" mix={actionErrorStyle}>{actionError}</p> : null}
-        <MessageScroller
-          autoScroll
-          defaultScrollPosition="last-anchor"
-          scrollPreviousItemPeek={64}
-        >
+        {actionError ? (
+          <p role="alert" mix={actionErrorStyle}>
+            {actionError}
+          </p>
+        ) : null}
+        <MessageScroller autoScroll defaultScrollPosition="last-anchor" scrollPreviousItemPeek={64}>
           <MessageScrollerViewport>
-            <MessageScrollerContent
-              aria-busy={busy || undefined}
-              data-session-conversation
-            >
-              {transcriptState.warningVisible
-                ? (
-                  <MessageScrollerItem messageId="session:checkout-warning">
-                    <Marker data-session-warning mix={richMarkerStyle}>
-                      <MarkerIcon>
-                        <Icon name="activity" />
-                      </MarkerIcon>
-                      <MarkerContent>
-                        Repository checkout is unavailable. Provisioning completed without branch or
-                        setup steps.
-                      </MarkerContent>
-                    </Marker>
-                  </MessageScrollerItem>
+            <MessageScrollerContent aria-busy={busy || undefined} data-session-conversation>
+              {transcriptState.warningVisible ? (
+                <MessageScrollerItem messageId="session:checkout-warning">
+                  <Marker data-session-warning mix={richMarkerStyle}>
+                    <MarkerIcon>
+                      <Icon name="activity" />
+                    </MarkerIcon>
+                    <MarkerContent>
+                      Repository checkout is unavailable. Provisioning completed without branch or
+                      setup steps.
+                    </MarkerContent>
+                  </Marker>
+                </MessageScrollerItem>
+              ) : null}
+              {transcriptState.followUpQueue.length > 0 ? (
+                <MessageScrollerItem messageId="session:follow-up-queue">
+                  <Marker data-follow-up-queue mix={richMarkerStyle}>
+                    <MarkerIcon>
+                      <Icon name="activity" />
+                    </MarkerIcon>
+                    <MarkerContent mix={queueDetailStyle}>
+                      <strong>
+                        {transcriptState.followUpQueue.length} follow-up
+                        {transcriptState.followUpQueue.length === 1 ? "" : "s"} queued
+                      </strong>
+                      <ol>
+                        {transcriptState.followUpQueue.map((prompt, index) => (
+                          <li key={`${index}:${prompt}`}>{prompt}</li>
+                        ))}
+                      </ol>
+                    </MarkerContent>
+                  </Marker>
+                </MessageScrollerItem>
+              ) : null}
+              {transcriptState.entries.length === 0 ? (
+                <MessageScrollerItem>
+                  <p data-conversation-placeholder mix={emptyConversationStyle}>
+                    {sessionState === "offline"
+                      ? "Conversation history is unavailable while the pinned runner is offline."
+                      : "Connecting to the orb"}
+                  </p>
+                </MessageScrollerItem>
+              ) : (
+                transcriptState.entries.map((entry) =>
+                  renderTranscriptEntry(entry, currentActivityId, handle.props.sessionId),
                 )
-                : null}
-              {transcriptState.followUpQueue.length > 0
-                ? (
-                  <MessageScrollerItem messageId="session:follow-up-queue">
-                    <Marker data-follow-up-queue mix={richMarkerStyle}>
-                      <MarkerIcon>
-                        <Icon name="activity" />
-                      </MarkerIcon>
-                      <MarkerContent mix={queueDetailStyle}>
-                        <strong>
-                          {transcriptState.followUpQueue.length}{" "}
-                          follow-up{transcriptState.followUpQueue.length === 1 ? "" : "s"} queued
-                        </strong>
-                        <ol>
-                          {transcriptState.followUpQueue.map((prompt, index) => (
-                            <li key={`${index}:${prompt}`}>{prompt}</li>
-                          ))}
-                        </ol>
-                      </MarkerContent>
-                    </Marker>
-                  </MessageScrollerItem>
-                )
-                : null}
-              {transcriptState.entries.length === 0
-                ? (
-                  <MessageScrollerItem>
-                    <p data-conversation-placeholder mix={emptyConversationStyle}>
-                      {sessionState === "offline"
-                        ? "Conversation history is unavailable while the pinned runner is offline."
-                        : "Connecting to the orb"}
-                    </p>
-                  </MessageScrollerItem>
-                )
-                : transcriptState.entries.map((entry) =>
-                  renderTranscriptEntry(entry, currentActivityId, handle.props.sessionId)
-                )}
+              )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <MessageScrollerButton mix={scrollButtonStyle} />
@@ -372,10 +380,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
                 await handle.update();
                 return;
               }
-              const deliveryError = await actionResponseError(
-                response,
-                "Message was not accepted",
-              );
+              const deliveryError = await actionResponseError(response, "Message was not accepted");
               if (handle.signal.aborted) return;
 
               promptRequestPending = false;
@@ -391,11 +396,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
         >
           <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
           {promptThinkingLevel === undefined ? null : (
-            <input
-              type="hidden"
-              name="thinkingLevel"
-              value={promptThinkingLevel}
-            />
+            <input type="hidden" name="thinkingLevel" value={promptThinkingLevel} />
           )}
           <textarea
             name="prompt"
@@ -411,42 +412,44 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
               }),
             ]}
           />
-          {hasActiveRun
-            ? (
-              <Button
-                type="submit"
-                form={abortFormId}
-                size="icon-lg"
-                aria-label="Stop active turn"
-                title={canAbort
+          {hasActiveRun ? (
+            <Button
+              type="submit"
+              form={abortFormId}
+              size="icon-lg"
+              aria-label="Stop active turn"
+              title={
+                canAbort
                   ? "Stop active turn"
                   : abortPending
-                  ? "Stopping active turn"
-                  : "Active turn cannot be stopped"}
-                disabled={!canAbort}
-                mix={sendButtonStyle}
-              >
-                <span aria-hidden="true" data-slot="stop-icon" mix={stopIconStyle} />
-              </Button>
-            )
-            : (
-              <Button
-                type="submit"
-                size="icon-lg"
-                aria-label="Send prompt"
-                title={canSubmitPrompt
+                    ? "Stopping active turn"
+                    : "Active turn cannot be stopped"
+              }
+              disabled={!canAbort}
+              mix={sendButtonStyle}
+            >
+              <span aria-hidden="true" data-slot="stop-icon" mix={stopIconStyle} />
+            </Button>
+          ) : (
+            <Button
+              type="submit"
+              size="icon-lg"
+              aria-label="Send prompt"
+              title={
+                canSubmitPrompt
                   ? "Send prompt"
                   : promptRequestPending
-                  ? "Wait for prompt acknowledgement"
-                  : busy || abortPending
-                  ? "The VM is busy"
-                  : "The VM is not available"}
-                disabled={!canSubmitPrompt}
-                mix={sendButtonStyle}
-              >
-                <Icon name="arrow-right" size={16} />
-              </Button>
-            )}
+                    ? "Wait for prompt acknowledgement"
+                    : busy || abortPending
+                      ? "The VM is busy"
+                      : "The VM is not available"
+              }
+              disabled={!canSubmitPrompt}
+              mix={sendButtonStyle}
+            >
+              <Icon name="arrow-right" size={16} />
+            </Button>
+          )}
         </form>
         {renderUsageStatus(
           usage,
@@ -470,26 +473,22 @@ function renderTranscriptEntry(
     const active = entry.id === activeActivityId;
     return (
       <MessageScrollerItem key={`activity:${entry.id}`} messageId={`activity:${entry.id}`}>
-        <Marker
-          role={active ? "status" : undefined}
-          data-session-activity
-          mix={richMarkerStyle}
-        >
+        <Marker role={active ? "status" : undefined} data-session-activity mix={richMarkerStyle}>
           <MarkerIcon>
             {active ? <span data-slot="spinner" mix={spinnerStyle} /> : <Icon name="activity" />}
           </MarkerIcon>
           <MarkerContent mix={markerDetailStyle}>
             <strong>{entry.label}</strong>
-            {entry.detail
-              ? entry.detail.includes("\n") || entry.detail.length > 160
-                ? (
-                  <details>
-                    <summary>Details</summary>
-                    <pre>{entry.detail}</pre>
-                  </details>
-                )
-                : <span data-activity-detail>{entry.detail}</span>
-              : null}
+            {entry.detail ? (
+              entry.detail.includes("\n") || entry.detail.length > 160 ? (
+                <details>
+                  <summary>Details</summary>
+                  <pre>{entry.detail}</pre>
+                </details>
+              ) : (
+                <span data-activity-detail>{entry.detail}</span>
+              )
+            ) : null}
           </MarkerContent>
         </Marker>
       </MessageScrollerItem>
@@ -512,11 +511,15 @@ function renderTranscriptEntry(
             mix={userMessageStyle}
           >
             <p>{entry.text}</p>
-            {entry.delivery === "pending"
-              ? <small role="status" data-prompt-delivery>Sending…</small>
-              : entry.delivery === "failed"
-              ? <small role="alert" data-prompt-delivery>{entry.deliveryError}</small>
-              : null}
+            {entry.delivery === "pending" ? (
+              <small role="status" data-prompt-delivery>
+                Sending…
+              </small>
+            ) : entry.delivery === "failed" ? (
+              <small role="alert" data-prompt-delivery>
+                {entry.deliveryError}
+              </small>
+            ) : null}
           </article>
         </MessageScrollerItem>
       );
@@ -524,45 +527,39 @@ function renderTranscriptEntry(
       const hasText = entry.text.trim().length > 0;
       const hasThinking = entry.thinking.trim().length > 0;
       if (!hasText && !hasThinking) return null;
-      const assistantKey = entry.messageId === undefined
-        ? "assistant:active"
-        : `message:${entry.messageId}`;
+      const assistantKey =
+        entry.messageId === undefined ? "assistant:active" : `message:${entry.messageId}`;
       return (
-        <MessageScrollerItem
-          key={assistantKey}
-          messageId={assistantKey}
-        >
+        <MessageScrollerItem key={assistantKey} messageId={assistantKey}>
           <article data-conversation-entry data-role="assistant" mix={assistantMessageStyle}>
-            {hasThinking
-              ? (
-                <Marker
-                  role={entry.completed ? undefined : "status"}
-                  data-assistant-thinking
-                  mix={richMarkerStyle}
-                >
-                  <MarkerIcon>
-                    {entry.completed
-                      ? <Icon name="brain" />
-                      : <span data-slot="spinner" mix={spinnerStyle} />}
-                  </MarkerIcon>
-                  <MarkerContent mix={markerDetailStyle}>
-                    <details>
-                      <summary>Thinking</summary>
-                      <pre>{entry.thinking}</pre>
-                    </details>
-                  </MarkerContent>
-                </Marker>
-              )
-              : null}
-            {hasText
-              ? (
-                <AssistantMarkdown
-                  text={entry.text}
-                  completed={entry.completed}
-                  sessionId={sessionId}
-                />
-              )
-              : null}
+            {hasThinking ? (
+              <Marker
+                role={entry.completed ? undefined : "status"}
+                data-assistant-thinking
+                mix={richMarkerStyle}
+              >
+                <MarkerIcon>
+                  {entry.completed ? (
+                    <Icon name="brain" />
+                  ) : (
+                    <span data-slot="spinner" mix={spinnerStyle} />
+                  )}
+                </MarkerIcon>
+                <MarkerContent mix={markerDetailStyle}>
+                  <details>
+                    <summary>Thinking</summary>
+                    <pre>{entry.thinking}</pre>
+                  </details>
+                </MarkerContent>
+              </Marker>
+            ) : null}
+            {hasText ? (
+              <AssistantMarkdown
+                text={entry.text}
+                completed={entry.completed}
+                sessionId={sessionId}
+              />
+            ) : null}
           </article>
         </MessageScrollerItem>
       );
@@ -583,29 +580,33 @@ function renderTranscriptEntry(
             mix={richMarkerStyle}
           >
             <MarkerIcon>
-              {entry.active ? <span data-slot="spinner" mix={spinnerStyle} /> : (
+              {entry.active ? (
+                <span data-slot="spinner" mix={spinnerStyle} />
+              ) : (
                 <Icon
-                  name={entry.toolName === "bash"
-                    ? "terminal"
-                    : entry.toolName === "read" || entry.toolName === "readImage"
-                    ? "book-open-text"
-                    : "wrench"}
+                  name={
+                    entry.toolName === "bash"
+                      ? "terminal"
+                      : entry.toolName === "read" || entry.toolName === "readImage"
+                        ? "book-open-text"
+                        : "wrench"
+                  }
                 />
               )}
             </MarkerIcon>
             <MarkerContent mix={markerDetailStyle}>
-              {readPath === undefined
-                ? <ToolDetails key={entry.toolCallId} entry={entry} />
-                : (
-                  <span data-read-path title={readPath}>
-                    <span dir="ltr">{readPath}</span>
-                  </span>
-                )}
+              {readPath === undefined ? (
+                <ToolDetails key={entry.toolCallId} entry={entry} />
+              ) : (
+                <span data-read-path title={readPath}>
+                  <span dir="ltr">{readPath}</span>
+                </span>
+              )}
             </MarkerContent>
           </Marker>
-          {(entry.toolName === "read" || entry.toolName === "readImage") && entry.result
-            ? <AssistantMarkdown text={entry.result} completed sessionId={sessionId} />
-            : null}
+          {(entry.toolName === "read" || entry.toolName === "readImage") && entry.result ? (
+            <AssistantMarkdown text={entry.result} completed sessionId={sessionId} />
+          ) : null}
         </MessageScrollerItem>
       );
     }
@@ -643,19 +644,17 @@ function ToolDetails(handle: Handle<{ entry: ToolEntry }>) {
     return (
       <details open={open} mix={toggle}>
         <summary title={bashCommand}>{bashCommand ?? entry.toolName}</summary>
-        {bashCommand === undefined && entry.arguments
-          ? <pre data-tool-arguments>{entry.arguments}</pre>
-          : null}
-        {entry.result === undefined && entry.partialResult
-          ? <pre data-tool-partial-result>{entry.partialResult}</pre>
-          : null}
-        {entry.result !== undefined
-          ? (
-            <pre data-tool-result data-error={String(entry.isError)}>
-              {entry.result || "No output"}
-            </pre>
-          )
-          : null}
+        {bashCommand === undefined && entry.arguments ? (
+          <pre data-tool-arguments>{entry.arguments}</pre>
+        ) : null}
+        {entry.result === undefined && entry.partialResult ? (
+          <pre data-tool-partial-result>{entry.partialResult}</pre>
+        ) : null}
+        {entry.result !== undefined ? (
+          <pre data-tool-result data-error={String(entry.isError)}>
+            {entry.result || "No output"}
+          </pre>
+        ) : null}
       </details>
     );
   };
@@ -675,9 +674,8 @@ function commandForBashTool(entry: ToolEntry): string | undefined {
 
 function pathForReadTool(entry: ToolEntry): string | undefined {
   const argumentsText = entry.arguments;
-  if (
-    (entry.toolName !== "read" && entry.toolName !== "readImage") || argumentsText === undefined
-  ) return undefined;
+  if ((entry.toolName !== "read" && entry.toolName !== "readImage") || argumentsText === undefined)
+    return undefined;
   const [argumentsValue, parseError] = trySync(
     () => JSON.parse(argumentsText),
     () => true,
@@ -695,16 +693,19 @@ function renderUsageStatus(
   thinkingLevel: SessionThinkingLevel,
   thinkingLevelPending: boolean,
 ) {
-  const latestPromptTokens = latestUsage === undefined
-    ? 0
-    : latestUsage.inputTokens + latestUsage.cacheReadTokens + latestUsage.cacheWriteTokens;
-  const cacheHitRate = latestPromptTokens > 0 && latestUsage !== undefined
-    ? latestUsage.cacheReadTokens / latestPromptTokens * 100
-    : undefined;
+  const latestPromptTokens =
+    latestUsage === undefined
+      ? 0
+      : latestUsage.inputTokens + latestUsage.cacheReadTokens + latestUsage.cacheWriteTokens;
+  const cacheHitRate =
+    latestPromptTokens > 0 && latestUsage !== undefined
+      ? (latestUsage.cacheReadTokens / latestPromptTokens) * 100
+      : undefined;
   const contextTokens = contextUsage === undefined ? 0 : usageContextTokens(contextUsage);
-  const contextPercent = contextUsage !== undefined && contextWindow > 0
-    ? contextTokens / contextWindow * 100
-    : undefined;
+  const contextPercent =
+    contextUsage !== undefined && contextWindow > 0
+      ? (contextTokens / contextWindow) * 100
+      : undefined;
 
   return (
     <div data-session-usage mix={[sessionFooterItemStyle, sessionUsageStyle]}>
@@ -716,68 +717,56 @@ function renderUsageStatus(
         {formatThinkingLevel(thinkingLevel)}
         {thinkingLevelPending ? "…" : ""}
       </span>
-      {usage.inputTokens > 0
-        ? (
-          <span title="Cumulative input tokens">
-            <span mix={screenReaderOnlyStyle}>Input tokens:</span>
-            <span aria-hidden="true">↑</span>
-            {formatTokens(usage.inputTokens)}
+      {usage.inputTokens > 0 ? (
+        <span title="Cumulative input tokens">
+          <span mix={screenReaderOnlyStyle}>Input tokens:</span>
+          <span aria-hidden="true">↑</span>
+          {formatTokens(usage.inputTokens)}
+        </span>
+      ) : null}
+      {usage.outputTokens > 0 ? (
+        <span title="Cumulative output tokens">
+          <span mix={screenReaderOnlyStyle}>Output tokens:</span>
+          <span aria-hidden="true">↓</span>
+          {formatTokens(usage.outputTokens)}
+        </span>
+      ) : null}
+      {usage.cacheWriteTokens > 0 ? (
+        <span title="Cumulative prompt-cache writes">
+          <span mix={screenReaderOnlyStyle}>Prompt-cache write tokens:</span>
+          <span aria-hidden="true">W</span>
+          {formatTokens(usage.cacheWriteTokens)}
+        </span>
+      ) : null}
+      {(usage.cacheReadTokens > 0 || usage.cacheWriteTokens > 0) && cacheHitRate !== undefined ? (
+        <span title="Latest prompt cache hit rate">
+          <span mix={screenReaderOnlyStyle}>Latest prompt cache hit rate:</span>
+          <span aria-hidden="true">CH</span>
+          {cacheHitRate.toFixed(1)}%
+        </span>
+      ) : null}
+      {usage.totalCost > 0 ? (
+        <span title="Cumulative model cost">
+          <span mix={screenReaderOnlyStyle}>Cumulative model cost in US dollars:</span>
+          <span aria-hidden="true">$</span>
+          {formatCost(usage.totalCost)}
+        </span>
+      ) : null}
+      {contextWindow > 0 ? (
+        <span title="Context window use">
+          <span aria-hidden="true">
+            {contextPercent === undefined ? "?" : `${contextPercent.toFixed(1)}%`}/
+            {formatTokens(contextWindow)}
           </span>
-        )
-        : null}
-      {usage.outputTokens > 0
-        ? (
-          <span title="Cumulative output tokens">
-            <span mix={screenReaderOnlyStyle}>Output tokens:</span>
-            <span aria-hidden="true">↓</span>
-            {formatTokens(usage.outputTokens)}
+          <span mix={screenReaderOnlyStyle}>
+            {contextPercent === undefined
+              ? ` Context use unknown; ${contextWindow.toLocaleString("en")} token window`
+              : ` ${contextPercent.toFixed(1)} percent of ${contextWindow.toLocaleString(
+                  "en",
+                )} token context window used`}
           </span>
-        )
-        : null}
-      {usage.cacheWriteTokens > 0
-        ? (
-          <span title="Cumulative prompt-cache writes">
-            <span mix={screenReaderOnlyStyle}>Prompt-cache write tokens:</span>
-            <span aria-hidden="true">W</span>
-            {formatTokens(usage.cacheWriteTokens)}
-          </span>
-        )
-        : null}
-      {(usage.cacheReadTokens > 0 || usage.cacheWriteTokens > 0) && cacheHitRate !== undefined
-        ? (
-          <span title="Latest prompt cache hit rate">
-            <span mix={screenReaderOnlyStyle}>Latest prompt cache hit rate:</span>
-            <span aria-hidden="true">CH</span>
-            {cacheHitRate.toFixed(1)}%
-          </span>
-        )
-        : null}
-      {usage.totalCost > 0
-        ? (
-          <span title="Cumulative model cost">
-            <span mix={screenReaderOnlyStyle}>Cumulative model cost in US dollars:</span>
-            <span aria-hidden="true">$</span>
-            {formatCost(usage.totalCost)}
-          </span>
-        )
-        : null}
-      {contextWindow > 0
-        ? (
-          <span title="Context window use">
-            <span aria-hidden="true">
-              {contextPercent === undefined ? "?" : `${contextPercent.toFixed(1)}%`}/
-              {formatTokens(contextWindow)}
-            </span>
-            <span mix={screenReaderOnlyStyle}>
-              {contextPercent === undefined
-                ? ` Context use unknown; ${contextWindow.toLocaleString("en")} token window`
-                : ` ${contextPercent.toFixed(1)} percent of ${
-                  contextWindow.toLocaleString("en")
-                } token context window used`}
-            </span>
-          </span>
-        )
-        : null}
+        </span>
+      ) : null}
     </div>
   );
 }

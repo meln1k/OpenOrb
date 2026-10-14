@@ -27,9 +27,8 @@ export interface Journal {
   ) => Effect.Effect<JournalEntry<Event>, JournalError, never>;
 }
 
-export const Journal: Context.Service<Journal, Journal> = Context.Service(
-  "@openorb/runner/Journal",
-);
+export const Journal: Context.Service<Journal, Journal> =
+  Context.Service("@openorb/runner/Journal");
 
 export class JournalNotFound extends Data.TaggedError("JournalNotFound")<{
   readonly persistenceId: string;

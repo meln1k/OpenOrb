@@ -1,6 +1,6 @@
 // Vendored from @earendil-works/pi-env 1.1.0 (MIT, see ../LICENSE); OpenOrb changes are in README.md.
 // Upstream protocol code keeps its own idioms instead of OpenOrb boundary-parsing conventions.
-// deno-lint-ignore-file openorb/require-safety-comment-for-type-assertion
+// oxlint-disable openorb/require-safety-comment-for-type-assertion
 import type { Context } from "@earendil-works/chord";
 import {
   FileError,

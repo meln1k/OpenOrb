@@ -2,9 +2,9 @@ import type { SessionThinkingLevel } from "@openorb/protocol/browser-session-eve
 import { tryAsync } from "../../../../../result/src/index.ts";
 import { literal, object, parseSafe, union } from "remix/data-schema";
 
-import { routes } from "@/app/routes.ts";
+import { routes } from "../../../routes.ts";
 import { actionResponseError } from "./session-action-response.ts";
-import { nextThinkingLevel } from "@/app/ui/public/session-thinking-level.ts";
+import { nextThinkingLevel } from "../../../ui/public/session-thinking-level.ts";
 import type { SessionState } from "./session-transcript-state.ts";
 
 const responseSchema = object({
@@ -54,17 +54,15 @@ export function createSessionThinkingLevelController(
   };
   const displayedLevel = (state: SessionState) =>
     state === "stopped"
-      ? stoppedDraft ?? options.confirmedLevel()
-      : request?.level ?? options.confirmedLevel();
-  const promptLevel = (state: SessionState) => state === "stopped" ? stoppedDraft : undefined;
+      ? (stoppedDraft ?? options.confirmedLevel())
+      : (request?.level ?? options.confirmedLevel());
+  const promptLevel = (state: SessionState) => (state === "stopped" ? stoppedDraft : undefined);
   const observeConfirmed = () => {
     if (!pending && request?.level === options.confirmedLevel()) request = undefined;
   };
 
   async function cycle(state: SessionState): Promise<void> {
-    if (
-      pending || (state !== "ready" && state !== "running" && state !== "stopped")
-    ) return;
+    if (pending || (state !== "ready" && state !== "running" && state !== "stopped")) return;
     const level = nextThinkingLevel(displayedLevel(state), options.supportedLevels);
     options.setError(undefined);
     if (state === "stopped") {

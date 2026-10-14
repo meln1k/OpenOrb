@@ -1,6 +1,6 @@
 import { WORKSPACE_OPERATIONS, type WorkspaceApi } from "../../app/cells/workspace/api.ts";
 
-/** Test driver across the Deno/celld boundary; the production Worker uses native stubs directly. */
+/** Test driver across the Node/celld boundary; the production Worker uses native stubs directly. */
 export function createRpcClient(url: string): WorkspaceApi {
   // SAFETY: the closed operation list supplies every named WorkspaceApi method below.
   return new Proxy({} as WorkspaceApi, {

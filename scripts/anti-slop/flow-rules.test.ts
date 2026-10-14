@@ -1,17 +1,15 @@
-/// <reference lib="deno.unstable" />
-
-import { assertEquals } from "@std/assert";
+import { deepStrictEqual as assertEquals } from "node:assert";
+import { test } from "vite-plus/test";
+import { lintPlugin } from "../lint-rules/test-lint.ts";
 import { flowAntiSlopRules } from "./flow-rules.ts";
 
-const plugin = { name: "openorb", rules: flowAntiSlopRules } satisfies Deno.lint.Plugin;
+const plugin = { meta: { name: "openorb" }, rules: flowAntiSlopRules };
 
 function diagnostics(code: string, rule: keyof typeof flowAntiSlopRules) {
-  return Deno.lint.runPlugin(plugin, "fixture.ts", code).filter((item) =>
-    item.id === `openorb/${rule}`
-  );
+  return lintPlugin(plugin, "fixture.ts", code).filter((item) => item.id === `openorb/${rule}`);
 }
 
-Deno.test("no-known-value-widening covers explicit flows and aliases", () => {
+test("no-known-value-widening covers explicit flows and aliases", () => {
   const cases = [
     "const value: unknown = {};",
     "const value: object = [];",
@@ -33,7 +31,7 @@ Deno.test("no-known-value-widening covers explicit flows and aliases", () => {
   assertEquals(range, [23, 25]);
 });
 
-Deno.test("no-known-value-widening permits inference, contracts, and empty accumulators", () => {
+test("no-known-value-widening permits inference, contracts, and empty accumulators", () => {
   const cases = [
     "const value = { id: 1 };",
     "interface Value { id: number } const value: Value = { id: 1 };",
@@ -48,7 +46,7 @@ Deno.test("no-known-value-widening permits inference, contracts, and empty accum
   for (const code of cases) assertEquals(diagnostics(code, "no-known-value-widening"), [], code);
 });
 
-Deno.test("no-widen-then-assert requires a certain immutable binding", () => {
+test("no-widen-then-assert requires a certain immutable binding", () => {
   const code =
     "const source = { id: 'second' }; const widened: unknown = source; const parsed = widened as { readonly id: string };";
   const result = diagnostics(code, "no-widen-then-assert");

@@ -1,4 +1,5 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertThrows } from "@jsr/std__assert";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { ConversationViewSchema } from "@openorb/protocol/runner-api";
 import { Schema } from "effect";
@@ -24,7 +25,7 @@ const assistant = {
 };
 const initial = () => createSessionTranscriptState("running", "high");
 
-Deno.test("snapshot replacement and Chord root replacement never append old transcript", () => {
+test("snapshot replacement and Chord root replacement never append old transcript", () => {
   let state = reduceSessionTranscriptState(initial(), {
     type: "conversation.snapshot",
     view: view([user(1, "old")]),
@@ -40,11 +41,11 @@ Deno.test("snapshot replacement and Chord root replacement never append old tran
   });
   assertEquals(state.entries, []);
   assertThrows(() =>
-    reduceSessionTranscriptState(initial(), { type: "conversation.ops", ops: [] })
+    reduceSessionTranscriptState(initial(), { type: "conversation.ops", ops: [] }),
   );
 });
 
-Deno.test("partial removal and final entry in one atomic batch render exactly one answer", () => {
+test("partial removal and final entry in one atomic batch render exactly one answer", () => {
   const before = reduceSessionTranscriptState(initial(), {
     type: "conversation.snapshot",
     view: view([], { "pi.live": { generation: { message: assistant } } }),
@@ -53,46 +54,59 @@ Deno.test("partial removal and final entry in one atomic batch render exactly on
     type: "conversation.ops",
     ops: [
       ["d", ["docs", "pi.live", "generation"]],
-      ["p", ["entries"], 0, 0, [{
-        id: 1,
-        conversationId: 0,
-        kind: "pi.assistant",
-        model: [assistant],
-      }]],
+      [
+        "p",
+        ["entries"],
+        0,
+        0,
+        [
+          {
+            id: 1,
+            conversationId: 0,
+            kind: "pi.assistant",
+            model: [assistant],
+          },
+        ],
+      ],
     ],
   });
-  assertEquals(after.entries, [{
-    role: "assistant",
-    messageId: "1:0",
-    text: "Final answer",
-    thinking: "",
-    completed: true,
-  }]);
+  assertEquals(after.entries, [
+    {
+      role: "assistant",
+      messageId: "1:0",
+      text: "Final answer",
+      thinking: "",
+      completed: true,
+    },
+  ]);
   assertEquals(before.view?.docs["pi.live"]?.generation !== undefined, true);
 });
 
-Deno.test("compaction shrinks active transcript but usage remains the durable ledger", () => {
+test("compaction shrinks active transcript but usage remains the durable ledger", () => {
   let state = reduceSessionTranscriptState(initial(), {
     type: "conversation.snapshot",
     view: view([user(1, "old")]),
   });
   state = reduceSessionTranscriptState(state, {
     type: "conversation.snapshot",
-    view: view([
+    view: view(
+      [
+        {
+          id: 2,
+          conversationId: 0,
+          kind: "pi.compaction",
+          head: 2,
+          model: [{ role: "user", content: "Summary" }],
+        },
+      ],
       {
-        id: 2,
-        conversationId: 0,
-        kind: "pi.compaction",
-        head: 2,
-        model: [{ role: "user", content: "Summary" }],
+        "pi.usage": { models: { "provider/model": assistant.usage }, tools: {} },
+        "pi.agent": { thinkingLevel: "max" },
+        "pi.inbox": {
+          items: [{ id: 3, mode: "followUp", content: [{ type: "text", text: "Next" }] }],
+        },
       },
-    ], {
-      "pi.usage": { models: { "provider/model": assistant.usage }, tools: {} },
-      "pi.agent": { thinkingLevel: "max" },
-      "pi.inbox": {
-        items: [{ id: 3, mode: "followUp", content: [{ type: "text", text: "Next" }] }],
-      },
-    }),
+    ),
   });
   assertEquals(state.entries, [{ id: 2, label: "Context compacted", detail: "Summary" }]);
   assertEquals(state.thinkingLevel, "max");
@@ -101,7 +115,7 @@ Deno.test("compaction shrinks active transcript but usage remains the durable le
   assertEquals(state.contextUsage, undefined);
 });
 
-Deno.test("environment stopping never settles or discards a running agent partial", () => {
+test("environment stopping never settles or discards a running agent partial", () => {
   const before = reduceSessionTranscriptState(initial(), {
     type: "conversation.snapshot",
     view: view([], { "pi.live": { generation: { message: assistant } } }),
@@ -118,7 +132,7 @@ Deno.test("environment stopping never settles or discards a running agent partia
   assertEquals(after.status, "Agent running · Environment stopping");
 });
 
-Deno.test("optimistic prompt survives replacement and only a newly observed matching entry reconciles it", () => {
+test("optimistic prompt survives replacement and only a newly observed matching entry reconciles it", () => {
   let state = reduceSessionTranscriptState(initial(), {
     type: "conversation.snapshot",
     view: view([user(1, "again")]),
@@ -134,99 +148,122 @@ Deno.test("optimistic prompt survives replacement and only a newly observed matc
     view: view([user(1, "again"), user(2, "again")]),
   });
   assertEquals(state.entries.length, 2);
-  assertEquals(state.entries.some((entry) => "delivery" in entry), false);
+  assertEquals(
+    state.entries.some((entry) => "delivery" in entry),
+    false,
+  );
 });
 
-Deno.test("tool projection retains arguments and suppresses read output without rewriting replicated state", () => {
-  const mounted = view([
+test("tool projection retains arguments and suppresses read output without rewriting replicated state", () => {
+  const mounted = view(
+    [
+      {
+        id: 1,
+        conversationId: 0,
+        kind: "pi.assistant",
+        model: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "call-1",
+                name: "read",
+                arguments: { path: "/workspace/a" },
+              },
+            ],
+          },
+        ],
+      },
+    ],
     {
-      id: 1,
-      conversationId: 0,
-      kind: "pi.assistant",
-      model: [{
-        role: "assistant",
-        content: [{
-          type: "toolCall",
-          id: "call-1",
-          name: "read",
-          arguments: { path: "/workspace/a" },
-        }],
-      }],
+      "pi.live": {
+        tools: [{ callId: "call-1", name: "read", status: "running", output: "file contents" }],
+      },
     },
-  ], {
-    "pi.live": {
-      tools: [{ callId: "call-1", name: "read", status: "running", output: "file contents" }],
-    },
-  });
+  );
   const state = reduceSessionTranscriptState(initial(), {
     type: "conversation.snapshot",
     view: mounted,
   });
-  assertEquals(state.entries, [{
-    role: "tool",
-    toolCallId: "call-1",
-    toolName: "read",
-    arguments: '{"path":"/workspace/a"}',
-    active: true,
-  }]);
+  assertEquals(state.entries, [
+    {
+      role: "tool",
+      toolCallId: "call-1",
+      toolName: "read",
+      arguments: '{"path":"/workspace/a"}',
+      active: true,
+    },
+  ]);
   assertEquals(state.view, mounted);
 });
 
 for (const toolName of ["read", "readImage"]) {
-  Deno.test(`${toolName} images use artifact Markdown while text output stays hidden`, () => {
+  test(`${toolName} images use artifact Markdown while text output stays hidden`, () => {
     const artifactId = "01989d78-65ee-8f6a-a97e-0f16ad134c10";
     const state = reduceSessionTranscriptState(initial(), {
       type: "conversation.snapshot",
-      view: view([{
-        id: 1,
-        conversationId: 0,
-        kind: "pi.tool-result",
-        model: [{
-          role: "toolResult",
-          toolCallId: "read-image",
-          toolName,
-          content: [
-            { type: "text", text: "hidden file output" },
-            { type: "image", artifactId },
-            { type: "image", text: "[Image unavailable: unsupported format]" },
+      view: view([
+        {
+          id: 1,
+          conversationId: 0,
+          kind: "pi.tool-result",
+          model: [
+            {
+              role: "toolResult",
+              toolCallId: "read-image",
+              toolName,
+              content: [
+                { type: "text", text: "hidden file output" },
+                { type: "image", artifactId },
+                { type: "image", text: "[Image unavailable: unsupported format]" },
+              ],
+            },
           ],
-        }],
-      }]),
+        },
+      ]),
     });
-    assertEquals(state.entries, [{
-      role: "tool",
-      toolCallId: "read-image",
-      toolName,
-      active: false,
-      isError: false,
-      result:
-        `\n\n![Image](openorb-artifact:image:${artifactId})\n\n[Image unavailable: unsupported format]`,
-    }]);
+    assertEquals(state.entries, [
+      {
+        role: "tool",
+        toolCallId: "read-image",
+        toolName,
+        active: false,
+        isError: false,
+        result: `\n\n![Image](openorb-artifact:image:${artifactId})\n\n[Image unavailable: unsupported format]`,
+      },
+    ]);
   });
 
-  Deno.test(`${toolName} errors retain diagnostic text`, () => {
+  test(`${toolName} errors retain diagnostic text`, () => {
     const state = reduceSessionTranscriptState(initial(), {
       type: "conversation.snapshot",
-      view: view([{
-        id: 1,
-        conversationId: 0,
-        kind: "pi.tool-result",
-        model: [{
-          role: "toolResult",
-          toolCallId: "failed-read",
-          toolName,
-          isError: true,
-          content: [{ type: "text", text: "Guest file could not be read." }],
-        }],
-      }]),
+      view: view([
+        {
+          id: 1,
+          conversationId: 0,
+          kind: "pi.tool-result",
+          model: [
+            {
+              role: "toolResult",
+              toolCallId: "failed-read",
+              toolName,
+              isError: true,
+              content: [{ type: "text", text: "Guest file could not be read." }],
+            },
+          ],
+        },
+      ]),
     });
-    assertEquals(state.entries, [{
-      role: "tool",
-      toolCallId: "failed-read",
-      toolName,
-      active: false,
-      isError: true,
-      result: "Guest file could not be read.",
-    }]);
+    assertEquals(state.entries, [
+      {
+        role: "tool",
+        toolCallId: "failed-read",
+        toolName,
+        active: false,
+        isError: true,
+        result: "Guest file could not be read.",
+      },
+    ]);
   });
 }

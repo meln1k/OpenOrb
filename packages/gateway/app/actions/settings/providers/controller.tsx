@@ -5,20 +5,28 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import { ProvidersSettingsPage } from "@/app/actions/settings/page.tsx";
-import type { Administrator, OpenAICodexAuthorizationStatus } from "@/app/cells/workspace/api.ts";
-import { csrf } from "@/app/middleware/csrf.ts";
-import { MODEL_PROVIDER_OPTIONS, OPENAI_CODEX_PROVIDER_ID } from "@/app/model-provider-catalog.ts";
-import type { AppContext } from "@/app/router.ts";
-import { routes } from "@/app/routes.ts";
+import { ProvidersSettingsPage } from "../page.tsx";
+import type {
+  Administrator,
+  OpenAICodexAuthorizationStatus,
+} from "../../../cells/workspace/api.ts";
+import { csrf } from "../../../middleware/csrf.ts";
+import {
+  MODEL_PROVIDER_OPTIONS,
+  OPENAI_CODEX_PROVIDER_ID,
+} from "../../../model-provider-catalog.ts";
+import type { AppContext } from "../../../router.ts";
+import { routes } from "../../../routes.ts";
 import { tryAsync } from "@openorb/result";
 
 const CHATGPT_AUTHORIZATION_ATTEMPT_SESSION_KEY = "chatgpt-authorization-attempt";
 
-const modelProviderIdSchema = s.string().refine(
-  (value) => MODEL_PROVIDER_OPTIONS.some((provider) => provider.id === value),
-  "Select a model provider from the list.",
-);
+const modelProviderIdSchema = s
+  .string()
+  .refine(
+    (value) => MODEL_PROVIDER_OPTIONS.some((provider) => provider.id === value),
+    "Select a model provider from the list.",
+  );
 
 const saveProviderSchema = f.object({
   intent: f.field(s.literal("save-provider")),
@@ -54,9 +62,7 @@ export default createController(routes.app.settings.providers, {
       switch (context.formData.get("intent")) {
         case "start-chatgpt": {
           const [authorization, startError] = await tryAsync(
-            context.services.workspace.startProviderLogin(
-              context.auth.identity.workspaceId,
-            ),
+            context.services.workspace.startProviderLogin(context.auth.identity.workspaceId),
             () => true,
           );
           if (startError !== undefined) {
@@ -160,9 +166,9 @@ async function renderProviders(
   );
   const authorizationStatus: OpenAICodexAuthorizationStatus = attemptId
     ? await context.services.workspace.getProviderLoginStatus(
-      context.auth.identity.workspaceId,
-      attemptId,
-    )
+        context.auth.identity.workspaceId,
+        attemptId,
+      )
     : { status: "missing" };
   if (attemptId && authorizationStatus.status !== "pending") {
     context.session.unset(CHATGPT_AUTHORIZATION_ATTEMPT_SESSION_KEY);
@@ -170,25 +176,31 @@ async function renderProviders(
   const providers = await context.services.workspace.listModelProviderCredentials(
     context.auth.identity.workspaceId,
   );
-  const chatGPTCredential = providers.find((provider) =>
-    provider.providerId === OPENAI_CODEX_PROVIDER_ID && provider.credentialType === "oauth"
+  const chatGPTCredential = providers.find(
+    (provider) =>
+      provider.providerId === OPENAI_CODEX_PROVIDER_ID && provider.credentialType === "oauth",
   );
-  const chatGPTAuthorization = authorizationStatus.status === "pending"
-    ? authorizationStatus.authorization
-    : undefined;
+  const chatGPTAuthorization =
+    authorizationStatus.status === "pending" ? authorizationStatus.authorization : undefined;
   return context.render(
     <ProvidersSettingsPage
-      chatGPTAuthorization={chatGPTAuthorization === undefined ? undefined : {
-        userCode: chatGPTAuthorization.userCode,
-        verificationUri: chatGPTAuthorization.verificationUri,
-        intervalSeconds: chatGPTAuthorization.intervalSeconds,
-      }}
+      chatGPTAuthorization={
+        chatGPTAuthorization === undefined
+          ? undefined
+          : {
+              userCode: chatGPTAuthorization.userCode,
+              verificationUri: chatGPTAuthorization.verificationUri,
+              intervalSeconds: chatGPTAuthorization.intervalSeconds,
+            }
+      }
       chatGPTCredential={chatGPTCredential}
       csrfToken={getCsrfToken(context)}
-      error={error ??
+      error={
+        error ??
         (authorizationStatus.status === "error"
           ? "ChatGPT sign-in could not be completed. Try again."
-          : undefined)}
+          : undefined)
+      }
       providerOptions={MODEL_PROVIDER_OPTIONS}
       providers={providers.filter((provider) => provider.credentialType === "api_key")}
     />,
@@ -213,10 +225,13 @@ function pollPending(context: ProvidersContext): Response | Promise<Response> {
 
 function pollComplete(context: ProvidersContext): Response {
   return wantsJson(context)
-    ? Response.json({
-      status: "complete",
-      redirect: routes.app.settings.providers.index.href(),
-    }, { headers: { "cache-control": "no-store" } })
+    ? Response.json(
+        {
+          status: "complete",
+          redirect: routes.app.settings.providers.index.href(),
+        },
+        { headers: { "cache-control": "no-store" } },
+      )
     : redirect(routes.app.settings.providers.index.href(), 303);
 }
 
@@ -227,8 +242,8 @@ function pollError(
 ): Response | Promise<Response> {
   return wantsJson(context)
     ? Response.json(
-      { status: "error", message },
-      { status, headers: { "cache-control": "no-store" } },
-    )
+        { status: "error", message },
+        { status, headers: { "cache-control": "no-store" } },
+      )
     : renderProviders(context, message, status);
 }

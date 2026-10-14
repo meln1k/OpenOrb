@@ -1,8 +1,8 @@
 # OpenOrb gateway
 
 The Remix 3 gateway is a native celld Worker exporting `Workspace`, `Runners`, and `Session` Durable
-Objects. Deno 2.9.5 builds the Worker, browser assets, and model metadata; requests use the `ASSETS`
-binding and native DO RPC, not a Deno HTTP server or a request-time compiler. Workspace SQLite owns
+Objects. Node.js 26.11.1 and Rolldown build the Worker, browser assets, and model metadata; requests use the `ASSETS`
+binding and native DO RPC, not a Node HTTP server or a request-time compiler. Workspace SQLite owns
 configuration, authentication, enrollment, and the minimal Session catalog. Runners owns live runner
 connections, capacity, and Environment Control routing. Each Session DO hosts the agent and owns its
 Session's Harness State, project setup, Git Snapshots, and Published Media records (bytes in the
@@ -13,8 +13,9 @@ session-cookie and encryption secrets in the ignored `packages/gateway/.env`. Do
 existing file or generate a replacement master key for existing state:
 
 ```sh
-bash scripts/install-celld.sh
-deno install --frozen
+curl -fsSL https://celld.dev/install.sh | CELLD_VERSION=v0.6.2 sh
+export PATH="$HOME/.local/bin:$PATH"
+npm ci
 test -f packages/gateway/.env || cp packages/gateway/.env.example packages/gateway/.env
 chmod 600 packages/gateway/.env
 # Edit .env; generate each secret independently with openssl rand -hex 32.
@@ -23,7 +24,7 @@ chmod 600 packages/gateway/.env
 In an orb, use `amp orb services ensure` and its gateway portal. Outside an orb:
 
 ```sh
-deno task dev:gateway
+npm run dev:gateway
 ```
 
 The local listener is on loopback port 44100. The dev task prepares mode-0600
@@ -40,8 +41,8 @@ Remix Data definitions in `app/cells/workspace/schema.ts`, plain SQL files in
 clean break: PostgreSQL and legacy Workspace KV records are not read or imported. Recreate
 configuration through setup/settings; do not reset or delete old data as part of this change.
 
-`deno install --frozen` supplies the Deno-managed `node_modules` needed by the build-time Remix
-compiler and pinned native bindings; npm lifecycle scripts remain disabled. Test commands are
+`npm ci` supplies the locked npm workspace dependencies needed by the build-time Remix
+compiler and pinned native bindings. Test commands are
 defined at the repository root. Native celld tests must use disposable config/state directories,
 never the operator's `.dev.vars` or `.celld` directory. See
 [operations](../../docs/operations.md) and [release acceptance](../../docs/release-acceptance.md)

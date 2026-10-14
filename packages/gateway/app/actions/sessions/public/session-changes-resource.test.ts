@@ -1,5 +1,6 @@
-import { assertEquals } from "@std/assert";
-import { encodeBase64 } from "@std/encoding/base64";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
+import { Buffer } from "node:buffer";
 
 import {
   SessionChangesResource,
@@ -14,7 +15,7 @@ class SessionPageController extends LiveSessionPageController {
   }
 }
 
-Deno.test("Git actions use the actual environment, never the catalog summary or agent state", async () => {
+test("Git actions use the actual environment, never the catalog summary or agent state", async () => {
   const lifetime = new AbortController();
   const page = new LiveSessionPageController("running", [], "running", "stopped");
   const changes = new SessionChangesResource("csrf", "session", lifetime.signal);
@@ -42,7 +43,7 @@ Deno.test("Git actions use the actual environment, never the catalog summary or 
   lifetime.abort();
 });
 
-Deno.test("session changes share one lazy refresh pipeline across responsive views", async () => {
+test("session changes share one lazy refresh pipeline across responsive views", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const sidebar: SessionChangesViewOwner = { variant: "sidebar" };
@@ -83,7 +84,7 @@ Deno.test("session changes share one lazy refresh pipeline across responsive vie
   }
 });
 
-Deno.test("POST acknowledgement stops spinning before snapshot reconciliation", async () => {
+test("POST acknowledgement stops spinning before snapshot reconciliation", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -132,7 +133,7 @@ Deno.test("POST acknowledgement stops spinning before snapshot reconciliation", 
   }
 });
 
-Deno.test("newer optimistic file generations survive older snapshot reconciliation", async () => {
+test("newer optimistic file generations survive older snapshot reconciliation", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -143,11 +144,13 @@ Deno.test("newer optimistic file generations survive older snapshot reconciliati
   globalThis.fetch = (input, init) => {
     if (String(input).includes("git-snapshot")) {
       snapshotRequests++;
-      return Promise.resolve(Response.json(
-        snapshotRequests === 1
-          ? fileSnapshot("initial", "unstaged")
-          : fileSnapshot("unstage-confirmed", "unstaged", 2),
-      ));
+      return Promise.resolve(
+        Response.json(
+          snapshotRequests === 1
+            ? fileSnapshot("initial", "unstaged")
+            : fileSnapshot("unstage-confirmed", "unstaged", 2),
+        ),
+      );
     }
     const body = init?.body;
     if (!(body instanceof URLSearchParams)) throw new Error("Missing Git mutation body.");
@@ -185,7 +188,7 @@ Deno.test("newer optimistic file generations survive older snapshot reconciliati
   }
 });
 
-Deno.test("rename identity survives Stage followed immediately by Unstage", async () => {
+test("rename identity survives Stage followed immediately by Unstage", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -233,11 +236,13 @@ Deno.test("rename identity survives Stage followed immediately by Unstage", asyn
       stagedRow.pending.path,
       stagedRow.pending.previousPath,
     );
-    assertEquals(mutations, [{
-      action: "stage",
-      path: "src/new.ts",
-      previousPath: null,
-    }]);
+    assertEquals(mutations, [
+      {
+        action: "stage",
+        path: "src/new.ts",
+        previousPath: null,
+      },
+    ]);
 
     stageResponse.resolve(mutationAccepted(1));
     await unstageStarted.promise;
@@ -255,7 +260,7 @@ Deno.test("rename identity survives Stage followed immediately by Unstage", asyn
   }
 });
 
-Deno.test("stale snapshots cannot retire a confirmed optimistic mutation", async () => {
+test("stale snapshots cannot retire a confirmed optimistic mutation", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -266,11 +271,12 @@ Deno.test("stale snapshots cannot retire a confirmed optimistic mutation", async
       return Promise.resolve(mutationAccepted(1));
     }
     snapshotRequests++;
-    const snapshot = snapshotRequests === 1
-      ? fileSnapshot("initial", "unstaged")
-      : snapshotRequests === 2
-      ? { ...fileSnapshot("stale", "unstaged", 1), stale: true }
-      : fileSnapshot("fresh", "staged", 1);
+    const snapshot =
+      snapshotRequests === 1
+        ? fileSnapshot("initial", "unstaged")
+        : snapshotRequests === 2
+          ? { ...fileSnapshot("stale", "unstaged", 1), stale: true }
+          : fileSnapshot("fresh", "staged", 1);
     return Promise.resolve(Response.json(snapshot));
   };
 
@@ -294,7 +300,7 @@ Deno.test("stale snapshots cannot retire a confirmed optimistic mutation", async
   }
 });
 
-Deno.test("mutation workers skip obsolete same-file work and send other files concurrently", async () => {
+test("mutation workers skip obsolete same-file work and send other files concurrently", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -308,12 +314,16 @@ Deno.test("mutation workers skip obsolete same-file work and send other files co
   globalThis.fetch = (input, init) => {
     if (String(input).includes("git-snapshot")) {
       snapshotRequests++;
-      return Promise.resolve(Response.json(filesSnapshot(
-        `queue-${snapshotRequests}`,
-        ["src/a.ts", "src/b.ts"],
-        snapshotRequests === 1 ? "unstaged" : "staged",
-        snapshotRequests === 1 ? 0 : 3,
-      )));
+      return Promise.resolve(
+        Response.json(
+          filesSnapshot(
+            `queue-${snapshotRequests}`,
+            ["src/a.ts", "src/b.ts"],
+            snapshotRequests === 1 ? "unstaged" : "staged",
+            snapshotRequests === 1 ? 0 : 3,
+          ),
+        ),
+      );
     }
     const body = mutationBody(init);
     const mutation = { action: body.get("action"), path: body.get("path") };
@@ -364,7 +374,7 @@ Deno.test("mutation workers skip obsolete same-file work and send other files co
   }
 });
 
-Deno.test("empty snapshots preserve uncovered optimism and retire it once covered", async () => {
+test("empty snapshots preserve uncovered optimism and retire it once covered", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -373,13 +383,15 @@ Deno.test("empty snapshots preserve uncovered optimism and retire it once covere
   globalThis.fetch = (input) => {
     if (!String(input).includes("git-snapshot")) return mutationResponse.promise;
     snapshotRequests++;
-    return Promise.resolve(Response.json(
-      snapshotRequests === 1
-        ? fileSnapshot("initial-file", "unstaged")
-        : snapshotRequests === 2
-        ? emptySnapshot("empty-during-mutation")
-        : { ...emptySnapshot("empty-after-mutation"), mutationRevision: 1 },
-    ));
+    return Promise.resolve(
+      Response.json(
+        snapshotRequests === 1
+          ? fileSnapshot("initial-file", "unstaged")
+          : snapshotRequests === 2
+            ? emptySnapshot("empty-during-mutation")
+            : { ...emptySnapshot("empty-after-mutation"), mutationRevision: 1 },
+      ),
+    );
   };
 
   try {
@@ -391,12 +403,7 @@ Deno.test("empty snapshots preserve uncovered optimism and retire it once covere
     await initial;
 
     const stage = changes.updateFile("stage", "src/main.ts");
-    const pending = waitForProjectedFile(
-      changes,
-      "empty-during-mutation",
-      "staged",
-      true,
-    );
+    const pending = waitForProjectedFile(changes, "empty-during-mutation", "staged", true);
     page.apply({ type: "git.snapshot.updated" });
     await pending;
     assertEquals(changes.projection.loaded?.snapshot.sections.staged.files, []);
@@ -414,7 +421,7 @@ Deno.test("empty snapshots preserve uncovered optimism and retire it once covere
   }
 });
 
-Deno.test("mixed staged and unstaged truth retires covered optimism", async () => {
+test("mixed staged and unstaged truth retires covered optimism", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -424,11 +431,13 @@ Deno.test("mixed staged and unstaged truth retires covered optimism", async () =
       return Promise.resolve(mutationAccepted(1));
     }
     snapshotRequests++;
-    return Promise.resolve(Response.json(
-      snapshotRequests === 1
-        ? fileSnapshot("mixed-initial", "unstaged")
-        : mixedFileSnapshot("mixed-covered", 1),
-    ));
+    return Promise.resolve(
+      Response.json(
+        snapshotRequests === 1
+          ? fileSnapshot("mixed-initial", "unstaged")
+          : mixedFileSnapshot("mixed-covered", 1),
+      ),
+    );
   };
 
   try {
@@ -445,7 +454,10 @@ Deno.test("mixed staged and unstaged truth retires covered optimism", async () =
         state: row.state,
         pending: row.pending !== undefined,
       })),
-      [{ state: "unstaged", pending: false }, { state: "staged", pending: false }],
+      [
+        { state: "unstaged", pending: false },
+        { state: "staged", pending: false },
+      ],
     );
   } finally {
     lifetime.abort();
@@ -453,7 +465,7 @@ Deno.test("mixed staged and unstaged truth retires covered optimism", async () =
   }
 });
 
-Deno.test("snapshot revisions retire acknowledged files independently", async () => {
+test("snapshot revisions retire acknowledged files independently", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -465,11 +477,12 @@ Deno.test("snapshot revisions retire acknowledged files independently", async ()
       return Promise.resolve(mutationAccepted(path === "src/a.ts" ? 1 : 2));
     }
     snapshotRequests++;
-    const snapshot = snapshotRequests === 1
-      ? filesSnapshot("independent-initial", ["src/a.ts", "src/b.ts"])
-      : snapshotRequests === 2
-      ? splitFilesSnapshot("independent-first", 1)
-      : filesSnapshot("independent-both", ["src/a.ts", "src/b.ts"], "staged", 2);
+    const snapshot =
+      snapshotRequests === 1
+        ? filesSnapshot("independent-initial", ["src/a.ts", "src/b.ts"])
+        : snapshotRequests === 2
+          ? splitFilesSnapshot("independent-first", 1)
+          : filesSnapshot("independent-both", ["src/a.ts", "src/b.ts"], "staged", 2);
     return Promise.resolve(Response.json(snapshot));
   };
 
@@ -497,7 +510,7 @@ Deno.test("snapshot revisions retire acknowledged files independently", async ()
   }
 });
 
-Deno.test("an obsolete mutation error body cannot overwrite a newer file generation", async () => {
+test("an obsolete mutation error body cannot overwrite a newer file generation", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -527,9 +540,8 @@ Deno.test("an obsolete mutation error body cannot overwrite a newer file generat
   try {
     const changes = new SessionChangesResource("csrf-token", "session-id", lifetime.signal);
     changes.connect(new SessionPageController("ready", []));
-    changes.addEventListener(
-      "change",
-      () => observedErrors.push(changes.projection.operationError),
+    changes.addEventListener("change", () =>
+      observedErrors.push(changes.projection.operationError),
     );
     const initial = waitForSnapshot(changes, "snapshot-1");
     changes.setViewActive(view, true);
@@ -552,7 +564,7 @@ Deno.test("an obsolete mutation error body cannot overwrite a newer file generat
   }
 });
 
-Deno.test("session changes pull full patches one bounded chunk at a time", async () => {
+test("session changes pull full patches one bounded chunk at a time", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "sidebar" };
@@ -583,13 +595,15 @@ Deno.test("session changes pull full patches one bounded chunk at a time", async
         sections: {
           staged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
           unstaged: {
-            files: [{
-              kind: "tracked",
-              path: "src/main.ts",
-              displayPath: "src/main.ts",
-              status: "modified",
-              diffState: "available",
-            }],
+            files: [
+              {
+                kind: "tracked",
+                path: "src/main.ts",
+                displayPath: "src/main.ts",
+                status: "modified",
+                diffState: "available",
+              },
+            ],
             patch: "",
             fullPatchBytes: encoded.byteLength,
             truncated: false,
@@ -609,7 +623,7 @@ Deno.test("session changes pull full patches one bounded chunk at a time", async
       snapshotId,
       section: "unstaged",
       offset,
-      bytes: encodeBase64(bytes),
+      bytes: Buffer.from(bytes).toString("base64"),
       nextOffset: end,
       done: end === encoded.byteLength,
     });
@@ -629,7 +643,7 @@ Deno.test("session changes pull full patches one bounded chunk at a time", async
   }
 });
 
-Deno.test("session changes reuse current hydration and cancel it only for a newer snapshot", async () => {
+test("session changes reuse current hydration and cancel it only for a newer snapshot", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -648,11 +662,15 @@ Deno.test("session changes reuse current hydration and cancel it only for a newe
     if (url.includes("git-snapshot")) {
       snapshotRequests++;
       const first = snapshotRequests < 3;
-      return Promise.resolve(Response.json(bulkSnapshot(
-        first ? firstSnapshotId : secondSnapshotId,
-        first ? `first-${snapshotRequests}` : "second",
-        first ? firstPatch.byteLength : secondPatch.byteLength,
-      )));
+      return Promise.resolve(
+        Response.json(
+          bulkSnapshot(
+            first ? firstSnapshotId : secondSnapshotId,
+            first ? `first-${snapshotRequests}` : "second",
+            first ? firstPatch.byteLength : secondPatch.byteLength,
+          ),
+        ),
+      );
     }
 
     const first = url.includes(firstSnapshotId);
@@ -668,11 +686,15 @@ Deno.test("session changes reuse current hydration and cancel it only for a newe
     firstChunkRequests++;
     const signal = init?.signal;
     return new Promise<Response>((_resolve, reject) => {
-      signal?.addEventListener("abort", () => {
-        firstChunkAborted = true;
-        activeChunkRequests--;
-        reject(signal.reason);
-      }, { once: true });
+      signal?.addEventListener(
+        "abort",
+        () => {
+          firstChunkAborted = true;
+          activeChunkRequests--;
+          reject(signal.reason);
+        },
+        { once: true },
+      );
     });
   };
 
@@ -704,7 +726,7 @@ Deno.test("session changes reuse current hydration and cancel it only for a newe
   }
 });
 
-Deno.test("same-snapshot refresh at hydration completion retains the full patch", async () => {
+test("same-snapshot refresh at hydration completion retains the full patch", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -717,11 +739,9 @@ Deno.test("same-snapshot refresh at hydration completion retains the full patch"
   globalThis.fetch = (input) => {
     if (String(input).includes("git-snapshot")) {
       snapshotRequests++;
-      return Promise.resolve(Response.json(bulkSnapshot(
-        snapshotId,
-        `completion-${snapshotRequests}`,
-        patch.byteLength,
-      )));
+      return Promise.resolve(
+        Response.json(bulkSnapshot(snapshotId, `completion-${snapshotRequests}`, patch.byteLength)),
+      );
     }
     return Promise.resolve(patchChunkResponse(snapshotId, patch));
   };
@@ -733,7 +753,8 @@ Deno.test("same-snapshot refresh at hydration completion retains the full patch"
       if (
         completionRefreshStarted ||
         changes.projection.loaded?.snapshot.sections.unstaged.patch !== "completed patch"
-      ) return;
+      )
+        return;
       completionRefreshStarted = true;
       page.apply({ type: "git.snapshot.updated" });
     });
@@ -747,7 +768,7 @@ Deno.test("same-snapshot refresh at hydration completion retains the full patch"
   }
 });
 
-Deno.test("session changes expose bulk patch load failures", async () => {
+test("session changes expose bulk patch load failures", async () => {
   const originalFetch = globalThis.fetch;
   const lifetime = new AbortController();
   const view: SessionChangesViewOwner = { variant: "content" };
@@ -756,29 +777,33 @@ Deno.test("session changes expose bulk patch load failures", async () => {
     if (!String(input).includes("git-snapshot")) {
       return Promise.resolve(Response.json({ error: "unavailable" }, { status: 503 }));
     }
-    return Promise.resolve(Response.json({
-      snapshotId,
-      mutationRevision: 0,
-      generatedAt: "snapshot-failure",
-      completeness: "complete",
-      stale: false,
-      truncated: false,
-      sections: {
-        staged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
-        unstaged: {
-          files: [{
-            kind: "tracked",
-            path: "src/main.ts",
-            displayPath: "src/main.ts",
-            status: "modified",
-            diffState: "available",
-          }],
-          patch: "preview",
-          fullPatchBytes: 1024,
-          truncated: false,
+    return Promise.resolve(
+      Response.json({
+        snapshotId,
+        mutationRevision: 0,
+        generatedAt: "snapshot-failure",
+        completeness: "complete",
+        stale: false,
+        truncated: false,
+        sections: {
+          staged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
+          unstaged: {
+            files: [
+              {
+                kind: "tracked",
+                path: "src/main.ts",
+                displayPath: "src/main.ts",
+                status: "modified",
+                diffState: "available",
+              },
+            ],
+            patch: "preview",
+            fullPatchBytes: 1024,
+            truncated: false,
+          },
         },
-      },
-    }));
+      }),
+    );
   };
 
   try {
@@ -895,10 +920,11 @@ function waitForProjectedRows(
         return;
       }
       if (
-        loaded.changes.rows.some((row) =>
-          row.state !== state || (row.pending !== undefined) !== pending
+        loaded.changes.rows.some(
+          (row) => row.state !== state || (row.pending !== undefined) !== pending,
         )
-      ) return;
+      )
+        return;
       clearTimeout(timeout);
       changes.removeEventListener("change", handleChange);
       resolve();
@@ -934,13 +960,15 @@ function bulkSnapshot(snapshotId: string, generatedAt: string, fullPatchBytes: n
     sections: {
       staged: { files: [], patch: "", fullPatchBytes: 0, truncated: false },
       unstaged: {
-        files: [{
-          kind: "tracked",
-          path: "src/main.ts",
-          displayPath: "src/main.ts",
-          status: "modified",
-          diffState: "available",
-        }],
+        files: [
+          {
+            kind: "tracked",
+            path: "src/main.ts",
+            displayPath: "src/main.ts",
+            status: "modified",
+            diffState: "available",
+          },
+        ],
         patch: "",
         fullPatchBytes,
         truncated: false,
@@ -954,7 +982,7 @@ function patchChunkResponse(snapshotId: string, bytes: Uint8Array): Response {
     snapshotId,
     section: "unstaged",
     offset: 0,
-    bytes: encodeBase64(bytes),
+    bytes: Buffer.from(bytes).toString("base64"),
     nextOffset: bytes.byteLength,
     done: true,
   });
@@ -974,11 +1002,7 @@ function emptySnapshot(generatedAt: string) {
   };
 }
 
-function fileSnapshot(
-  generatedAt: string,
-  state: "staged" | "unstaged",
-  mutationRevision = 0,
-) {
+function fileSnapshot(generatedAt: string, state: "staged" | "unstaged", mutationRevision = 0) {
   const file = {
     kind: "tracked" as const,
     path: "src/main.ts",
@@ -1067,26 +1091,30 @@ function renameSnapshot(generatedAt: string) {
     truncated: false,
     sections: {
       staged: {
-        files: [{
-          kind: "tracked" as const,
-          path: "src/new.ts",
-          displayPath: "src/new.ts",
-          status: "renamed" as const,
-          diffState: "available" as const,
-          previousPath: "src/old.ts",
-          previousDisplayPath: "src/old.ts",
-        }],
+        files: [
+          {
+            kind: "tracked" as const,
+            path: "src/new.ts",
+            displayPath: "src/new.ts",
+            status: "renamed" as const,
+            diffState: "available" as const,
+            previousPath: "src/old.ts",
+            previousDisplayPath: "src/old.ts",
+          },
+        ],
         patch: "",
         truncated: false,
       },
       unstaged: {
-        files: [{
-          kind: "tracked" as const,
-          path: "src/new.ts",
-          displayPath: "src/new.ts",
-          status: "modified" as const,
-          diffState: "available" as const,
-        }],
+        files: [
+          {
+            kind: "tracked" as const,
+            path: "src/new.ts",
+            displayPath: "src/new.ts",
+            status: "modified" as const,
+            diffState: "available" as const,
+          },
+        ],
         patch: "",
         truncated: false,
       },

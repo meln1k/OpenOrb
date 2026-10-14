@@ -1,13 +1,14 @@
-import { assert, assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals } from "@jsr/std__assert";
 import { createRpcClient } from "./workspace/rpc-client.ts";
 
-const gatewayUrl = Deno.env.get("OPENORB_TEST_GATEWAY_URL");
-const browserEndpoint = Deno.env.get("OPENORB_BROWSER_TEST_CDP");
+const gatewayUrl = process.env["OPENORB_TEST_GATEWAY_URL"];
+const browserEndpoint = process.env["OPENORB_BROWSER_TEST_CDP"];
 
-Deno.test({
-  name: "Worker router cache preserves each request's secure cookie policy",
-  ignore: !gatewayUrl,
-  async fn() {
+test(
+  "Worker router cache preserves each request's secure cookie policy",
+  { skip: !gatewayUrl, timeout: 120_000 },
+  async () => {
     assert(gatewayUrl);
     const workspace = createRpcClient(new URL("/__workspace", gatewayUrl).href);
     await workspace.createAdministrator("rpc-fixture-password");
@@ -21,12 +22,12 @@ Deno.test({
       await response.body?.cancel();
     }
   },
-});
+);
 
-Deno.test({
-  name: "native Worker authenticates through Workspace RPC and hydrates bundled client entries",
-  ignore: !gatewayUrl || !browserEndpoint,
-  async fn() {
+test(
+  "native Worker authenticates through Workspace RPC and hydrates bundled client entries",
+  { skip: !gatewayUrl || !browserEndpoint, timeout: 120_000 },
+  async () => {
     assert(gatewayUrl && browserEndpoint);
     const workspace = createRpcClient(new URL("/__workspace", gatewayUrl).href);
     await workspace.createAdministrator("rpc-fixture-password");
@@ -41,9 +42,9 @@ Deno.test({
         if (message.type() === "error") errors.push(message.text());
       });
       await page.goto(new URL("/auth/login", gatewayUrl).href);
-      await page.getByRole("textbox", { name: "Password", exact: true }).fill(
-        "rpc-fixture-password",
-      );
+      await page
+        .getByRole("textbox", { name: "Password", exact: true })
+        .fill("rpc-fixture-password");
       await page.getByRole("button", { name: "Log in", exact: true }).click();
       await page.waitForURL("**/app");
       await page.getByRole("button", { name: "New session", exact: true }).click();
@@ -51,8 +52,9 @@ Deno.test({
       await prompt.fill("Native Worker hydration");
       await page.getByRole("button", { name: "Orb size", exact: true }).click();
       await page.getByRole("option", { name: /^large ·/ }).click();
-      await page.waitForFunction(() =>
-        document.querySelector('button[aria-label="Orb size"]')?.textContent?.trim() === "large"
+      await page.waitForFunction(
+        () =>
+          document.querySelector('button[aria-label="Orb size"]')?.textContent?.trim() === "large",
       );
       assertEquals(
         await page.getByRole("button", { name: "Orb size", exact: true }).innerText(),
@@ -74,4 +76,4 @@ Deno.test({
       await browser.close();
     }
   },
-});
+);

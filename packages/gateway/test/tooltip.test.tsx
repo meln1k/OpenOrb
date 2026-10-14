@@ -1,4 +1,5 @@
-import { assertMatch, assertStringIncludes } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertMatch, assertStringIncludes } from "@jsr/std__assert";
 import { renderToString } from "remix/component/server";
 
 import {
@@ -6,13 +7,15 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@/app/ui/public/components/index.ts";
+} from "../app/ui/public/components/index.ts";
 
-Deno.test("tooltip composes an accessible trigger and positioned content", async () => {
+test("tooltip composes an accessible trigger and positioned content", async () => {
   const html = await renderToString(
     <TooltipProvider delay={100}>
       <Tooltip id="vm-tooltip">
-        <TooltipTrigger id="vm-status" tabIndex={0}>Status</TooltipTrigger>
+        <TooltipTrigger id="vm-status" tabIndex={0}>
+          Status
+        </TooltipTrigger>
         <TooltipContent side="bottom" align="end" sideOffset={8}>
           Gondolin VM: Active
         </TooltipContent>

@@ -1,6 +1,6 @@
-/// <reference lib="deno.unstable" />
-
-import { assertEquals } from "@std/assert";
+import { deepStrictEqual as assertEquals } from "node:assert";
+import { test } from "vite-plus/test";
+import { lintPlugin } from "../lint-rules/test-lint.ts";
 import { syntaxAntiSlopRules } from "./syntax-rules.ts";
 
 function findings(
@@ -11,17 +11,17 @@ function findings(
   const rule = syntaxAntiSlopRules[ruleName];
   if (!rule) throw new Error(`Missing rule: ${ruleName}`);
   const plugin = {
-    name: "openorb",
+    meta: { name: "openorb" },
     rules: { [ruleName]: rule },
-  } satisfies Deno.lint.Plugin;
-  const diagnostics = Deno.lint.runPlugin(plugin, filename, source);
+  };
+  const diagnostics = lintPlugin(plugin, filename, source);
   return {
     ids: diagnostics.map((diagnostic) => diagnostic.id),
     texts: diagnostics.map((diagnostic) => source.slice(...diagnostic.range)),
   };
 }
 
-Deno.test("no-chained-type-assertions preserves chains and const exemptions", () => {
+test("no-chained-type-assertions preserves chains and const exemptions", () => {
   const rule = "no-chained-type-assertions";
   assertEquals(findings("const a = (value as unknown) as string;", rule).texts, [
     "(value as unknown) as string",
@@ -35,7 +35,7 @@ Deno.test("no-chained-type-assertions preserves chains and const exemptions", ()
   });
 });
 
-Deno.test("no-runtime-typeof rejects ordinary checks and type guards", () => {
+test("no-runtime-typeof rejects ordinary checks and type guards", () => {
   const rule = "no-runtime-typeof";
   const source =
     'if (typeof input === "string") {} function isString(v: unknown): v is string { return typeof v === "string"; }';
@@ -46,7 +46,7 @@ Deno.test("no-runtime-typeof rejects ordinary checks and type guards", () => {
   assertEquals(findings("const value = input;", rule).ids, []);
 });
 
-Deno.test("require-safety-comment-for-type-assertion enforces preceding comments", () => {
+test("require-safety-comment-for-type-assertion enforces preceding comments", () => {
   const rule = "require-safety-comment-for-type-assertion";
   const accepted =
     "// SAFETY: parser checked it\nconst a = value as UserId; const b = [1] as const; const c = /* SAFETY: checked */ value as UserId;";
@@ -56,4 +56,34 @@ Deno.test("require-safety-comment-for-type-assertion enforces preceding comments
     ids: ["openorb/require-safety-comment-for-type-assertion"],
     texts: ["value as UserId"],
   });
+  assertEquals(
+    findings("// SAFETY: checked export\nexport const id = value as UserId;", rule).ids,
+    [],
+  );
+  assertEquals(
+    findings("// SAFETY: checked export\nexport default value as UserId;", rule).ids,
+    [],
+  );
+  assertEquals(
+    findings("// SAFETY: checked condition\nif ((value as UserId) === id) {}", rule).ids,
+    [],
+  );
+  assertEquals(
+    findings(
+      "function read() {\n// SAFETY: checked branch\nif (ready) return value as UserId;\n}",
+      rule,
+    ).ids,
+    [],
+  );
+  assertEquals(
+    findings("// SAFETY: only the condition\nif (ready) { const id = value as UserId; }", rule).ids,
+    ["openorb/require-safety-comment-for-type-assertion"],
+  );
+  assertEquals(
+    findings(
+      "// SAFETY: only the preceding export\nexport const id = value as UserId;\nexport const other = value as UserId;",
+      rule,
+    ).ids,
+    ["openorb/require-safety-comment-for-type-assertion"],
+  );
 });

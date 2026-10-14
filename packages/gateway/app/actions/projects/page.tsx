@@ -1,8 +1,8 @@
 import { css, type Handle } from "remix/component";
 
-import type { Project, SessionNavigationEntry } from "@/app/cells/workspace/api.ts";
-import { routes } from "@/app/routes.ts";
-import type { SessionComposerData } from "@/app/session-composer-data.ts";
+import type { Project, SessionNavigationEntry } from "../../cells/workspace/api.ts";
+import { routes } from "../../routes.ts";
+import type { SessionComposerData } from "../../session-composer-data.ts";
 import {
   AlertDialog,
   AlertDialogDescription,
@@ -26,9 +26,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/app/ui/public/components/index.ts";
-import { AppShell } from "@/app/ui/app-shell.tsx";
-import { media } from "@/app/ui/public/responsive.ts";
+} from "../../ui/public/components/index.ts";
+import { AppShell } from "../../ui/app-shell.tsx";
+import { media } from "../../ui/public/responsive.ts";
 
 export interface ProjectsPageProps {
   composer: SessionComposerData;
@@ -53,13 +53,11 @@ export function ProjectsPage(handle: Handle<ProjectsPageProps>) {
       heading="Projects"
       copy="Configure the GitHub repositories used to start OpenOrb sessions."
     >
-      {error
-        ? (
-          <p role="alert" mix={errorStyle}>
-            {error}
-          </p>
-        )
-        : null}
+      {error ? (
+        <p role="alert" mix={errorStyle}>
+          {error}
+        </p>
+      ) : null}
       <section aria-label="Configured projects" mix={projectPanelStyle}>
         <header mix={panelHeaderStyle}>
           <div mix={panelTitleStyle}>
@@ -84,27 +82,22 @@ export function ProjectsPage(handle: Handle<ProjectsPageProps>) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {projects.length === 0
-                ? (
-                  <TableRow>
-                    <TableCell colSpan={2} mix={emptyCellStyle}>No projects configured.</TableCell>
-                  </TableRow>
-                )
-                : projects.map((project) => (
-                  <ProjectRow
-                    key={project.id}
-                    project={project}
-                    csrfToken={csrfToken}
-                  />
-                ))}
+              {projects.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={2} mix={emptyCellStyle}>
+                    No projects configured.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                projects.map((project) => (
+                  <ProjectRow key={project.id} project={project} csrfToken={csrfToken} />
+                ))
+              )}
             </TableBody>
           </Table>
         </div>
       </section>
-      <ProjectDialog
-        dialogId={addDialogId}
-        csrfToken={csrfToken}
-      />
+      <ProjectDialog dialogId={addDialogId} csrfToken={csrfToken} />
     </AppShell>
   );
 }
@@ -147,16 +140,8 @@ function ProjectRow(
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <ProjectDialog
-          dialogId={editDialogId}
-          csrfToken={csrfToken}
-          project={project}
-        />
-        <DeleteProjectDialog
-          dialogId={deleteDialogId}
-          csrfToken={csrfToken}
-          project={project}
-        />
+        <ProjectDialog dialogId={editDialogId} csrfToken={csrfToken} project={project} />
+        <DeleteProjectDialog dialogId={deleteDialogId} csrfToken={csrfToken} project={project} />
       </TableCell>
     </TableRow>
   );
@@ -204,7 +189,9 @@ function ProjectDialog(
             data-submit-label={submitLabel}
             data-submit-pending-label={submitPendingLabel}
           >
-            <span data-slot="submit-idle" mix={submitLabelStyle}>{submitLabel}</span>
+            <span data-slot="submit-idle" mix={submitLabelStyle}>
+              {submitLabel}
+            </span>
             <span data-slot="spinner" hidden mix={submitLabelStyle}>
               <span aria-hidden="true" mix={submitSpinnerStyle} />
               {submitPendingLabel}
@@ -266,8 +253,8 @@ function DeleteProjectDialog(
       <AlertDialogHeader>
         <AlertDialogTitle id={titleId}>Delete project?</AlertDialogTitle>
         <AlertDialogDescription id={descriptionId}>
-          This deletes{" "}
-          <strong>{project.name}</strong>. Projects referenced by sessions cannot be deleted.
+          This deletes <strong>{project.name}</strong>. Projects referenced by sessions cannot be
+          deleted.
         </AlertDialogDescription>
       </AlertDialogHeader>
       <form method="post" action={routes.app.projects.action.href()}>
@@ -278,7 +265,9 @@ function DeleteProjectDialog(
           <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
-          <Button type="submit" variant="destructive">Delete project</Button>
+          <Button type="submit" variant="destructive">
+            Delete project
+          </Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>

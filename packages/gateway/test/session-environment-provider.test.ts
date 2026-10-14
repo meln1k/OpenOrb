@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 import {
   type AgentEnvironmentCapabilities,
   receivesCredentials,
@@ -13,7 +14,7 @@ const mediated: AgentEnvironmentCapabilities = {
 const optIn: AgentEnvironmentCapabilities = { ...mediated, credentials: "opt-in" };
 const none: AgentEnvironmentCapabilities = { ...mediated, credentials: "none" };
 
-Deno.test("credentials reach unmediated providers only with Guest Credential Opt-in", () => {
+test("credentials reach unmediated providers only with Guest Credential Opt-in", () => {
   assertEquals(receivesCredentials(mediated, false), true);
   assertEquals(receivesCredentials(optIn, false), false);
   assertEquals(receivesCredentials(optIn, true), true);

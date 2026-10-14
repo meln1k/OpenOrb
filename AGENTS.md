@@ -6,25 +6,29 @@ protocols, persistence, or interfaces.
 
 ## Commands
 
-- Static checks: `deno task check`
-- Tests: `deno task test [<test-path> ...]`
-- QEMU integration tests: `deno task test:gondolin`
+- Install: `npm ci` (Node.js 26.11.1, Vite+ 1.1.0)
+- Static checks: `npm run check`
+- Tests: `npm test -- [<test-path> ...]`
+- QEMU integration tests: `npm run test:gondolin`
 
-Never invoke `deno test` directly or recreate task permissions and environment variables. The root
+Use the root npm scripts rather than invoking Vitest directly or recreating environment gates. The root
 formatter intentionally excludes imported `.agents/skills` and generated `.amp/in`; do not reformat
 installed skills to satisfy product checks.
 
 For a read-only package probe, run:
 
 ```sh
-deno task --filter @openorb/gateway probe '<code>'
+npm exec --workspace @openorb/gateway -- node --input-type=module --eval '<code>'
 ```
 
-Replace `gateway` with the owning package. Pass eval options after `probe`; permissions are implicit
-and dependencies frozen. Put repeatable logic or writes in a checked-in, scoped task—never a
+Replace `gateway` with the owning package. Dependencies come from the locked npm workspace graph.
+Node does not provide the former Deno runtime permission sandbox: production runner isolation is
+enforced by the reviewed systemd/OS configuration, with guest work isolated in VMs.
+Put repeatable logic or writes in a checked-in, scoped script—never a
 package-dependent `/tmp` entrypoint.
 
 <!-- effect-solutions:start -->
+
 ## Effect Best Practices
 
 Before writing Effect code, run `effect-solutions list`, then

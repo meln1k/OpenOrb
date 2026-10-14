@@ -14,17 +14,18 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v4
         with:
-          deno-version: 2.9.5
-          cache: true
+          node-version: 26.11.1
+          cache: npm
+      - run: npm ci
       - name: Install pinned Worker runtime and bundler
         run: bash scripts/install-celld.sh
-      - run: deno task check
-      - run: deno task check:docs
-      - run: deno task test
-      - run: deno task test:pi-env
-      - run: deno task test:security
+      - run: npm run check
+      - run: npm run check:docs
+      - run: npm test
+      - run: npm run test:pi-env
+      - run: npm run test:security
       - name: Record secret-test policy
         run: |
           echo "### Secret-gated acceptance" >> "$GITHUB_STEP_SUMMARY"
@@ -36,10 +37,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v4
         with:
-          deno-version: 2.9.5
-          cache: true
+          node-version: 26.11.1
+          cache: npm
+      - run: npm ci
       - name: Install virtualization and image tools
         run: |
           sudo apt-get update
@@ -48,6 +50,6 @@ jobs:
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm -a -w /dev/kvm
       - name: Build pinned x64 guest image
-        run: deno task build:image x86_64
+        run: npm run build:image -- x86_64
       - name: Run non-secret Gondolin suite
-        run: deno task test:gondolin
+        run: npm run test:gondolin

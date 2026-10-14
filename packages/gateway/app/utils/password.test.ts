@@ -1,4 +1,5 @@
-import { assertEquals, assertNotEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertNotEquals } from "@jsr/std__assert";
 
 import {
   hashPassword,
@@ -7,9 +8,9 @@ import {
   PASSWORD_ITERATIONS,
   PASSWORD_KEY_LENGTH_BITS,
   verifyPassword,
-} from "@/app/utils/password.ts";
+} from "./password.ts";
 
-Deno.test("hashes and verifies passwords with the fixed PBKDF2 profile", async () => {
+test("hashes and verifies passwords with the fixed PBKDF2 profile", async () => {
   const stored = await hashPassword("correct horse battery staple");
 
   assertEquals(stored.algorithm, PASSWORD_ALGORITHM);
@@ -22,7 +23,7 @@ Deno.test("hashes and verifies passwords with the fixed PBKDF2 profile", async (
   assertEquals(await verifyPassword("incorrect", stored), false);
 });
 
-Deno.test("uses a unique random salt for each password credential", async () => {
+test("uses a unique random salt for each password credential", async () => {
   const first = await hashPassword("same password");
   const second = await hashPassword("same password");
   assertNotEquals(first.salt.toHex(), second.salt.toHex());

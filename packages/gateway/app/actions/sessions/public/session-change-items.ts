@@ -50,21 +50,22 @@ export function reconcileSessionChangeItems(
 ): ReconciledSessionChangeItems {
   const nextIds = new Set(rows.map((row) => row.key));
   const unmatchedRows = rows.filter((row) => !previous.has(row.key));
-  const unmatchedPrevious = Array.from(previous.values()).filter((record) =>
-    !nextIds.has(record.row.key)
+  const unmatchedPrevious = Array.from(previous.values()).filter(
+    (record) => !nextIds.has(record.row.key),
   );
   const transitions = matchFileTransitions(unmatchedRows, unmatchedPrevious);
   const records = new Map<string, SessionChangeItemRecord>();
   const items = rows.map((row) => {
     const exact = previous.get(row.key);
     const prior = exact ?? transitions.get(row.key);
-    const item = exact !== undefined && sameSessionChangeRow(exact.row, row)
-      ? exact.item
-      : createCodeViewItem(
-        row,
-        prior?.item.collapsed ?? true,
-        exact === undefined ? 0 : (exact.item.version ?? 0) + 1,
-      );
+    const item =
+      exact !== undefined && sameSessionChangeRow(exact.row, row)
+        ? exact.item
+        : createCodeViewItem(
+            row,
+            prior?.item.collapsed ?? true,
+            exact === undefined ? 0 : (exact.item.version ?? 0) + 1,
+          );
     records.set(row.key, { row, item });
     return item;
   });
@@ -86,12 +87,14 @@ export function projectPendingSessionChanges(
   const intents = Array.from(pending).sort((left, right) => left.generation - right.generation);
   for (const intent of intents) {
     const matching = projected.filter((row) =>
-      sessionChangeFileMatches(row.file, intent.path, intent.previousPath)
+      sessionChangeFileMatches(row.file, intent.path, intent.previousPath),
     );
-    const targetState = intent.action === "stage" ? "staged" as const : "unstaged" as const;
+    const targetState = intent.action === "stage" ? ("staged" as const) : ("unstaged" as const);
     const sourceState = targetState === "staged" ? "unstaged" : "staged";
-    const target = matching.find((row) => row.state === targetState) ??
-      matching.find((row) => row.state === sourceState) ?? intent.row;
+    const target =
+      matching.find((row) => row.state === targetState) ??
+      matching.find((row) => row.state === sourceState) ??
+      intent.row;
     const optimistic = optimisticSessionChangeRow(
       target,
       targetState,
@@ -99,31 +102,29 @@ export function projectPendingSessionChanges(
       intent.ambiguousDiff || matching.length > 1,
     );
     projected = [
-      ...projected.filter((row) =>
-        !sessionChangeFileMatches(row.file, intent.path, intent.previousPath)
+      ...projected.filter(
+        (row) => !sessionChangeFileMatches(row.file, intent.path, intent.previousPath),
       ),
       optimistic,
     ];
   }
 
   return (["unstaged", "staged"] as const).flatMap((state) =>
-    projected.filter((row) => row.state === state)
+    projected
+      .filter((row) => row.state === state)
       .sort((left, right) => left.file.displayPath.localeCompare(right.file.displayPath))
       .map((row, index) => ({
         ...row,
         label: state === "staged" ? "Staged" : "Unstaged",
         startsSection: index === 0,
-      }))
+      })),
   );
 }
 
 function optimisticSessionChangeRow(
   target: PreparedSessionChangeRow,
   state: SessionChangeFileState,
-  intent: Pick<
-    PendingSessionChangeIntent,
-    "path" | "previousPath" | "acknowledgedRevision"
-  >,
+  intent: Pick<PendingSessionChangeIntent, "path" | "previousPath" | "acknowledgedRevision">,
   ambiguousDiff: boolean,
 ): PreparedSessionChangeRow {
   const optimistic: PreparedSessionChangeRow = {
@@ -146,8 +147,11 @@ function optimisticSessionChangeRow(
 export function isRenderableSessionChange(
   row: PreparedSessionChangeRow,
 ): row is PreparedSessionChangeRow & { readonly fileDiff: FileDiffMetadata } {
-  return row.file.diffState === "available" && row.fileDiff !== undefined &&
-    row.fileDiff.hunks.length > 0;
+  return (
+    row.file.diffState === "available" &&
+    row.fileDiff !== undefined &&
+    row.fileDiff.hunks.length > 0
+  );
 }
 
 export function sessionChangeRowKey(
@@ -197,9 +201,12 @@ export function sessionChangeMutationPathsMatch(
   left: SessionChangeMutationPaths,
   right: SessionChangeMutationPaths,
 ): boolean {
-  return left.path === right.path || left.path === right.previousPath ||
+  return (
+    left.path === right.path ||
+    left.path === right.previousPath ||
     left.previousPath === right.path ||
-    left.previousPath !== undefined && left.previousPath === right.previousPath;
+    (left.previousPath !== undefined && left.previousPath === right.previousPath)
+  );
 }
 
 function createCodeViewItem(
@@ -233,14 +240,16 @@ function sameSessionChangeRow(
   left: PreparedSessionChangeRow,
   right: PreparedSessionChangeRow,
 ): boolean {
-  return left.label === right.label &&
+  return (
+    left.label === right.label &&
     left.state === right.state &&
     left.startsSection === right.startsSection &&
     JSON.stringify(left.pending) === JSON.stringify(right.pending) &&
     left.fallback === right.fallback &&
     JSON.stringify(left.file) === JSON.stringify(right.file) &&
     JSON.stringify(left.stats) === JSON.stringify(right.stats) &&
-    sameFileDiff(left.fileDiff, right.fileDiff);
+    sameFileDiff(left.fileDiff, right.fileDiff)
+  );
 }
 
 function sameFileDiff(
@@ -249,8 +258,10 @@ function sameFileDiff(
 ): boolean {
   if (left === right) return true;
   if (left === undefined || right === undefined) return false;
-  return JSON.stringify({ ...left, cacheKey: undefined }) ===
-    JSON.stringify({ ...right, cacheKey: undefined });
+  return (
+    JSON.stringify({ ...left, cacheKey: undefined }) ===
+    JSON.stringify({ ...right, cacheKey: undefined })
+  );
 }
 
 function matchFileTransitions(
@@ -284,8 +295,10 @@ function matchFileTransitions(
 function sameLogicalFile(left: SessionGitFileData, right: SessionGitFileData): boolean {
   const leftPrevious = filePreviousPath(left);
   const rightPrevious = filePreviousPath(right);
-  return left.path === right.path ||
+  return (
+    left.path === right.path ||
     left.path === rightPrevious ||
     leftPrevious === right.path ||
-    leftPrevious !== undefined && leftPrevious === rightPrevious;
+    (leftPrevious !== undefined && leftPrevious === rightPrevious)
+  );
 }

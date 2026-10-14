@@ -1,8 +1,8 @@
 import { css, type Handle } from "remix/component";
 
-import { routes } from "@/app/routes.ts";
-import { Icon, type IconName } from "@/app/ui/public/components/icons.tsx";
-import { media } from "@/app/ui/public/responsive.ts";
+import { routes } from "../../routes.ts";
+import { Icon, type IconName } from "../../ui/public/components/icons.tsx";
+import { media } from "../../ui/public/responsive.ts";
 
 export type SettingsSection = "providers" | "secrets" | "github" | "git-author" | "runners";
 export type SettingsModelProvider = { providerId: string; name: string; updatedAt: string };

@@ -5,19 +5,21 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import { GitAuthorSettingsPage } from "@/app/actions/settings/page.tsx";
-import type { Administrator } from "@/app/cells/workspace/api.ts";
-import { csrf } from "@/app/middleware/csrf.ts";
-import type { AppContext } from "@/app/router.ts";
-import { routes } from "@/app/routes.ts";
+import { GitAuthorSettingsPage } from "../page.tsx";
+import type { Administrator } from "../../../cells/workspace/api.ts";
+import { csrf } from "../../../middleware/csrf.ts";
+import type { AppContext } from "../../../router.ts";
+import { routes } from "../../../routes.ts";
 
 const saveGitAuthorSchema = f.object({
   intent: f.field(s.literal("save-git-author")),
   authorName: f.field(
-    s.string().refine(
-      (value) => value.trim().length > 0 && value.trim().length <= 200,
-      "The Git author name is required and must be at most 200 characters.",
-    ),
+    s
+      .string()
+      .refine(
+        (value) => value.trim().length > 0 && value.trim().length <= 200,
+        "The Git author name is required and must be at most 200 characters.",
+      ),
   ),
   authorEmail: f.field(
     s.string().refine((value) => {
@@ -51,13 +53,10 @@ export default createController(routes.app.settings.gitAuthor, {
           400,
         );
       }
-      await context.services.workspace.saveGitAuthorConfiguration(
-        context.auth.identity.userId,
-        {
-          authorName: parsed.value.authorName.trim(),
-          authorEmail: parsed.value.authorEmail.trim(),
-        },
-      );
+      await context.services.workspace.saveGitAuthorConfiguration(context.auth.identity.userId, {
+        authorName: parsed.value.authorName.trim(),
+        authorEmail: parsed.value.authorEmail.trim(),
+      });
       return redirect(routes.app.settings.gitAuthor.index.href(), 303);
     },
   },
@@ -72,11 +71,7 @@ async function renderGitAuthor(
     context.auth.identity.userId,
   );
   return context.render(
-    <GitAuthorSettingsPage
-      csrfToken={getCsrfToken(context)}
-      error={error}
-      gitAuthor={gitAuthor}
-    />,
+    <GitAuthorSettingsPage csrfToken={getCsrfToken(context)} error={error} gitAuthor={gitAuthor} />,
     { status, headers: { "cache-control": "no-store" } },
   );
 }

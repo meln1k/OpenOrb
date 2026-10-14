@@ -118,7 +118,7 @@ export const RunnerSessionCreatedAt = Schema.String.check(
   Schema.makeFilter((value) =>
     Schema.decodeUnknownResult(Schema.DateTimeUtcFromString)(value)._tag === "Success"
       ? undefined
-      : "Expected an ISO 8601 instant."
+      : "Expected an ISO 8601 instant.",
   ),
 );
 
@@ -126,7 +126,7 @@ const InitialPromptPreview = Schema.String.check(
   Schema.makeFilter((value) =>
     value.length > 0 && value === collapseWhitespace(value) && Array.from(value).length <= 200
       ? undefined
-      : "Initial prompt previews must contain 1 to 200 normalized Unicode code points."
+      : "Initial prompt previews must contain 1 to 200 normalized Unicode code points.",
   ),
 );
 
@@ -217,7 +217,7 @@ const SessionEnvironmentSecretName = Schema.String.check(
   Schema.makeFilter((value) =>
     isReservedSessionEnvironmentName(value)
       ? "Environment secret names must not use OpenOrb's reserved variables."
-      : undefined
+      : undefined,
   ),
 );
 const SessionSecretHost = Schema.String.check(
@@ -227,7 +227,7 @@ const SessionSecretHost = Schema.String.check(
   Schema.makeFilter((value) =>
     isValidSessionSecretHost(value)
       ? undefined
-      : "Expected a hostname or leading-wildcard hostname such as api.example.com or *.example.com."
+      : "Expected a hostname or leading-wildcard hostname such as api.example.com or *.example.com.",
   ),
 );
 const SessionSecretHosts = Schema.Array(SessionSecretHost).check(
@@ -235,12 +235,12 @@ const SessionSecretHosts = Schema.Array(SessionSecretHost).check(
   Schema.makeFilter((hosts) =>
     new Set(hosts.map((host) => host.toLowerCase())).size === hosts.length
       ? undefined
-      : "Environment secret host patterns must be unique."
+      : "Environment secret host patterns must be unique.",
   ),
   Schema.makeFilter((hosts) =>
     !hosts.includes("*") || hosts.length === 1
       ? undefined
-      : "The wildcard host must be the only environment secret host pattern."
+      : "The wildcard host must be the only environment secret host pattern.",
   ),
 );
 
@@ -257,12 +257,12 @@ export const SessionEnvironmentSecrets = Schema.Array(SessionEnvironmentSecret).
   Schema.makeFilter((secrets) =>
     new Set(secrets.map((secret) => secret.name)).size === secrets.length
       ? undefined
-      : "Environment secret names must be unique."
+      : "Environment secret names must be unique.",
   ),
   Schema.makeFilter((secrets) =>
     utf8Length(JSON.stringify(secrets)) <= MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES
       ? undefined
-      : `Environment secrets must fit within ${MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES} JSON bytes.`
+      : `Environment secrets must fit within ${MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES} JSON bytes.`,
   ),
 );
 
@@ -271,7 +271,7 @@ const GitAuthorName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(200),
   Schema.makeFilter((value) =>
-    value.includes("\0") ? "Git author names must not contain NUL bytes." : undefined
+    value.includes("\0") ? "Git author names must not contain NUL bytes." : undefined,
   ),
 );
 const GitAuthorEmail = Schema.String.check(
@@ -304,12 +304,12 @@ export const SessionRepositoryUrl = Schema.String.check(
   Schema.makeFilter((value) =>
     isCanonicalGitHubRepository(value)
       ? undefined
-      : "Expected a canonical GitHub HTTPS repository URL."
+      : "Expected a canonical GitHub HTTPS repository URL.",
   ),
 );
 export const SessionGitReference = Schema.String.check(
   Schema.makeFilter((value) =>
-    isSafeGitReference(value) ? undefined : "Expected a valid Git branch or tag reference."
+    isSafeGitReference(value) ? undefined : "Expected a valid Git branch or tag reference.",
   ),
 );
 export const SessionGitHead = Schema.String.check(
@@ -343,7 +343,7 @@ const SessionGitPath = Schema.String.check(
   Schema.makeFilter((value) =>
     Array.from(value).length <= MAX_SESSION_GIT_PATH_CHARACTERS
       ? undefined
-      : `Git paths must contain at most ${MAX_SESSION_GIT_PATH_CHARACTERS} characters.`
+      : `Git paths must contain at most ${MAX_SESSION_GIT_PATH_CHARACTERS} characters.`,
   ),
 );
 const SessionGitFileBase = {
@@ -377,12 +377,12 @@ const SessionGitPatch = Schema.String.check(
   Schema.makeFilter((value) =>
     utf8Length(value) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES
       ? undefined
-      : `Git Snapshot patch sections must be at most ${MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES} UTF-8 bytes.`
+      : `Git Snapshot patch sections must be at most ${MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES} UTF-8 bytes.`,
   ),
   Schema.makeFilter((value) =>
     utf8Length(JSON.stringify(value)) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES
       ? undefined
-      : `Git Snapshot patch sections must fit within ${MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES} JSON bytes.`
+      : `Git Snapshot patch sections must fit within ${MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES} JSON bytes.`,
   ),
 );
 const SessionGitStagedSection = Schema.Struct({
@@ -404,25 +404,29 @@ const SessionGitUnstagedSection = Schema.Struct({
 const SessionGitSections = Schema.Struct({
   staged: SessionGitStagedSection,
   unstaged: SessionGitUnstagedSection,
-}).pipe(strictObject).check(
-  Schema.makeFilter((value) => {
-    const files = [...value.staged.files, ...value.unstaged.files];
-    return files.length <= MAX_SESSION_GIT_SNAPSHOT_FILES &&
+})
+  .pipe(strictObject)
+  .check(
+    Schema.makeFilter((value) => {
+      const files = [...value.staged.files, ...value.unstaged.files];
+      return files.length <= MAX_SESSION_GIT_SNAPSHOT_FILES &&
         utf8Length(JSON.stringify(files)) <= MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES
-      ? undefined
-      : `Git Snapshot file metadata must fit within ${MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES} JSON bytes and ${MAX_SESSION_GIT_SNAPSHOT_FILES} rows.`;
-  }),
-  Schema.makeFilter((value) =>
-    utf8Length(value.staged.patch) + utf8Length(value.unstaged.patch) <=
+        ? undefined
+        : `Git Snapshot file metadata must fit within ${MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES} JSON bytes and ${MAX_SESSION_GIT_SNAPSHOT_FILES} rows.`;
+    }),
+    Schema.makeFilter((value) =>
+      utf8Length(value.staged.patch) + utf8Length(value.unstaged.patch) <=
         MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES &&
-      utf8Length(JSON.stringify({
+      utf8Length(
+        JSON.stringify({
           staged: value.staged.patch,
           unstaged: value.unstaged.patch,
-        })) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES
-      ? undefined
-      : `Git Snapshot patches must fit within ${MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES} JSON bytes.`
-  ),
-);
+        }),
+      ) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES
+        ? undefined
+        : `Git Snapshot patches must fit within ${MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES} JSON bytes.`,
+    ),
+  );
 
 export class SessionGitSnapshot extends Schema.Class<SessionGitSnapshot>("SessionGitSnapshot")(
   Schema.Struct({
@@ -447,25 +451,23 @@ export class RunnerIdentityError extends Schema.TaggedError<RunnerIdentityError>
   { message: SafeMessage },
 ) {}
 
-export class RunnerWatchError extends Schema.TaggedError<RunnerWatchError>()(
-  "RunnerWatchError",
-  { message: SafeMessage },
-) {}
+export class RunnerWatchError extends Schema.TaggedError<RunnerWatchError>()("RunnerWatchError", {
+  message: SafeMessage,
+}) {}
 
-export class CapacityExceeded extends Schema.TaggedError<CapacityExceeded>()(
-  "CapacityExceeded",
-  { message: SafeMessage },
-) {}
+export class CapacityExceeded extends Schema.TaggedError<CapacityExceeded>()("CapacityExceeded", {
+  message: SafeMessage,
+}) {}
 
-export class SessionConflict extends Schema.TaggedError<SessionConflict>()(
-  "SessionConflict",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
+export class SessionConflict extends Schema.TaggedError<SessionConflict>()("SessionConflict", {
+  sessionId: SessionId,
+  message: SafeMessage,
+}) {}
 
-export class DeleteFailed extends Schema.TaggedError<DeleteFailed>()(
-  "DeleteFailed",
-  { sessionId: SessionId, message: SafeMessage },
-) {}
+export class DeleteFailed extends Schema.TaggedError<DeleteFailed>()("DeleteFailed", {
+  sessionId: SessionId,
+  message: SafeMessage,
+}) {}
 
 function boundedString(minimumLength: number, maximumLength: number, label: string) {
   return Schema.String.check(
@@ -483,15 +485,24 @@ function collapseWhitespace(value: string): string {
 }
 
 export function isReservedSessionEnvironmentName(value: string): boolean {
-  return value.startsWith("OPENORB_") || value === "GH_TOKEN" || value === "GH_HOST" ||
-    value === "GH_PROMPT_DISABLED" || value === "GIT_TERMINAL_PROMPT" ||
-    value === "GIT_CONFIG_COUNT" || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(value);
+  return (
+    value.startsWith("OPENORB_") ||
+    value === "GH_TOKEN" ||
+    value === "GH_HOST" ||
+    value === "GH_PROMPT_DISABLED" ||
+    value === "GIT_TERMINAL_PROMPT" ||
+    value === "GIT_CONFIG_COUNT" ||
+    /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(value)
+  );
 }
 
 export function isValidSessionSecretHost(value: string): boolean {
-  return value.length <= MAX_SESSION_SECRET_HOST_CHARACTERS &&
-    /^(?:\*|(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)$/
-      .test(value);
+  return (
+    value.length <= MAX_SESSION_SECRET_HOST_CHARACTERS &&
+    /^(?:\*|(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)$/.test(
+      value,
+    )
+  );
 }
 
 function isCanonicalGitHubRepository(value: string): boolean {
@@ -499,25 +510,44 @@ function isCanonicalGitHubRepository(value: string): boolean {
   if (decoded._tag === "Failure") return false;
   const url = decoded.success;
   if (
-    url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username ||
-    url.password || url.search || url.hash || !url.pathname.endsWith(".git")
+    url.protocol !== "https:" ||
+    url.hostname !== "github.com" ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !url.pathname.endsWith(".git")
   ) {
     return false;
   }
   const parts = url.pathname.slice(1, -4).split("/");
   const owner = parts[0];
   const repository = parts[1];
-  return parts.length === 2 && owner !== undefined && repository !== undefined &&
+  return (
+    parts.length === 2 &&
+    owner !== undefined &&
+    repository !== undefined &&
     /^(?!-)(?!.*--)[A-Za-z0-9-]{1,39}(?<!-)$/.test(owner) &&
-    /^[A-Za-z0-9._-]{1,100}$/.test(repository) && repository !== "." &&
-    repository !== ".." && value === `https://github.com/${owner}/${repository}.git`;
+    /^[A-Za-z0-9._-]{1,100}$/.test(repository) &&
+    repository !== "." &&
+    repository !== ".." &&
+    value === `https://github.com/${owner}/${repository}.git`
+  );
 }
 
 export function isSafeGitReference(value: string): boolean {
-  return value.length > 0 && value.length <= 255 &&
-    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) && !value.includes("..") &&
-    !value.includes("//") && !value.includes("@{") && !value.endsWith("/") &&
-    !value.endsWith(".") && !value.endsWith(".lock");
+  return (
+    value.length > 0 &&
+    value.length <= 255 &&
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) &&
+    !value.includes("..") &&
+    !value.includes("//") &&
+    !value.includes("@{") &&
+    !value.endsWith("/") &&
+    !value.endsWith(".") &&
+    !value.endsWith(".lock")
+  );
 }
 
 function utf8Length(value: string): number {

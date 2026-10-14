@@ -1,10 +1,10 @@
 import { tryAsync } from "../../../../../result/src/index.ts";
 import { css, type Dispatched, type Handle, on } from "remix/component";
 
-import { routes } from "@/app/routes.ts";
-import { Button } from "@/app/ui/public/components/button.tsx";
-import { Icon } from "@/app/ui/public/components/icons.tsx";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/app/ui/public/components/tooltip.tsx";
+import { routes } from "../../../routes.ts";
+import { Button } from "../../../ui/public/components/button.tsx";
+import { Icon } from "../../../ui/public/components/icons.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../../ui/public/components/tooltip.tsx";
 import { actionResponseAccepted, actionResponseError } from "./session-action-response.ts";
 import { type SessionPageProjection, SessionPageScope } from "./session-page-controller.tsx";
 import {
@@ -26,11 +26,15 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
   let actionError: string | undefined;
 
   handle.queueTask(() => {
-    page.addEventListener("session", (message) => {
-      if (message.detail.type === "session.state") {
-        void handle.update();
-      }
-    }, { signal: handle.signal });
+    page.addEventListener(
+      "session",
+      (message) => {
+        if (message.detail.type === "session.state") {
+          void handle.update();
+        }
+      },
+      { signal: handle.signal },
+    );
     page.addEventListener("connection", () => void handle.update(), { signal: handle.signal });
   });
 
@@ -74,7 +78,7 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
       if (!handle.signal.aborted) await handle.update();
       return;
     }
-    if (!await actionResponseAccepted(response)) {
+    if (!(await actionResponseAccepted(response))) {
       rejectAction(`The session ${action} acknowledgement was invalid. Check its live state.`);
       await handle.update();
       return;
@@ -90,8 +94,8 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
   return () => {
     const vmPhase = sessionVmPhase(page.projection.environmentState);
     const action = pendingAction ?? actionForState(page.projection);
-    const canSubmit = !page.projection.connectionInterrupted &&
-      pendingAction === undefined && action !== undefined;
+    const canSubmit =
+      !page.projection.connectionInterrupted && pendingAction === undefined && action !== undefined;
     const transitioning = pendingAction !== undefined || isSessionVmTransitioning(vmPhase);
     const phaseLabel = sessionVmPhaseLabel(vmPhase);
     const actionLabel = action === "start" ? "Wake" : "Stop Session";
@@ -101,10 +105,10 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
     const actionTitle = canSubmit
       ? actionLabel
       : page.projection.connectionInterrupted
-      ? "Session controls are unavailable while the connection is interrupted"
-      : pendingAction !== undefined
-      ? `${pendingAction === "start" ? "Waking" : "Stopping"} session`
-      : `${phaseLabel} Gondolin VM`;
+        ? "Session controls are unavailable while the connection is interrupted"
+        : pendingAction !== undefined
+          ? `${pendingAction === "start" ? "Waking" : "Stopping"} session`
+          : `${phaseLabel} Gondolin VM`;
 
     return (
       <div
@@ -113,10 +117,14 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
         data-session-vm-control
         mix={vmControlStyle}
       >
-        {actionError
-          ? <span role="alert" title={actionError} mix={vmActionErrorStyle}>{actionError}</span>
-          : null}
-        <span role="status" data-agent-environment-status>{lifecycleLabel}</span>
+        {actionError ? (
+          <span role="alert" title={actionError} mix={vmActionErrorStyle}>
+            {actionError}
+          </span>
+        ) : null}
+        <span role="status" data-agent-environment-status>
+          {lifecycleLabel}
+        </span>
         <Tooltip>
           <TooltipTrigger
             role="status"
@@ -136,9 +144,11 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
         {action === undefined ? null : (
           <form
             method="post"
-            action={action === "start"
-              ? routes.api.sessions.wake.href({ sessionId: handle.props.sessionId })
-              : routes.app.sessions.stop.href({ sessionId: handle.props.sessionId })}
+            action={
+              action === "start"
+                ? routes.api.sessions.wake.href({ sessionId: handle.props.sessionId })
+                : routes.app.sessions.stop.href({ sessionId: handle.props.sessionId })
+            }
             mix={vmActionSubmit}
           >
             <input type="hidden" name="_csrf" value={handle.props.csrfToken} />
@@ -151,9 +161,11 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
               disabled={!canSubmit}
               mix={vmActionStyle}
             >
-              {transitioning
-                ? <span aria-hidden="true" data-slot="vm-action-spinner" mix={vmSpinnerStyle} />
-                : <Icon name={action === "start" ? "play" : "square"} size={14} />}
+              {transitioning ? (
+                <span aria-hidden="true" data-slot="vm-action-spinner" mix={vmSpinnerStyle} />
+              ) : (
+                <Icon name={action === "start" ? "play" : "square"} size={14} />
+              )}
             </Button>
           </form>
         )}
@@ -166,9 +178,11 @@ export function actionForState(
   state: Pick<SessionPageProjection, "agentState" | "environmentState">,
 ): VmAction | undefined {
   if (
-    state.agentState === null || state.environmentState === null ||
+    state.agentState === null ||
+    state.environmentState === null ||
     state.environmentState === "stopping"
-  ) return undefined;
+  )
+    return undefined;
   return state.agentState === "paused" ? "start" : "stop";
 }
 

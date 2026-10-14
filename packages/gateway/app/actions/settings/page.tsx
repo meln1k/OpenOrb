@@ -6,13 +6,13 @@ import type {
   ModelProviderCredential,
   RunnerEnrollmentToken,
   SecretEntry,
-} from "@/app/cells/workspace/api.ts";
-import type { ModelProviderOption } from "@/app/model-provider-catalog.ts";
-import { routes } from "@/app/routes.ts";
-import { Icon } from "@/app/ui/public/components/icons.tsx";
-import { designSystemStyle } from "@/app/ui/public/components/theme.ts";
-import { Document } from "@/app/ui/document.tsx";
-import { media } from "@/app/ui/public/responsive.ts";
+} from "../../cells/workspace/api.ts";
+import type { ModelProviderOption } from "../../model-provider-catalog.ts";
+import { routes } from "../../routes.ts";
+import { Icon } from "../../ui/public/components/icons.tsx";
+import { designSystemStyle } from "../../ui/public/components/theme.ts";
+import { Document } from "../../ui/document.tsx";
+import { media } from "../../ui/public/responsive.ts";
 import { GenericSecrets } from "./secrets/generic-secrets.tsx";
 import { GitAuthorSection } from "./git-author/git-author.tsx";
 import { GitHubCredentialSection } from "./github/github-credential.tsx";
@@ -56,8 +56,9 @@ export function ProvidersSettingsPage(
         providerOptions={[...handle.props.providerOptions]}
         providers={handle.props.providers.map((provider) => ({
           providerId: provider.providerId,
-          name: handle.props.providerOptions.find((option) => option.id === provider.providerId)
-            ?.name ?? provider.providerId,
+          name:
+            handle.props.providerOptions.find((option) => option.id === provider.providerId)
+              ?.name ?? provider.providerId,
           updatedAt: provider.updatedAt,
         }))}
       />
@@ -103,9 +104,9 @@ export function GitHubSettingsPage(
       <GitHubCredentialSection
         actionHref={routes.app.settings.github.action.href()}
         csrfToken={handle.props.csrfToken}
-        credential={handle.props.credential
-          ? { updatedAt: handle.props.credential.updatedAt }
-          : null}
+        credential={
+          handle.props.credential ? { updatedAt: handle.props.credential.updatedAt } : null
+        }
         dialogId={dialogId}
         deleteDialogId={deleteDialogId}
       />
@@ -129,13 +130,15 @@ export function GitAuthorSettingsPage(
         authorName={handle.props.gitAuthor?.authorName ?? ""}
         csrfToken={handle.props.csrfToken}
         formId={formId}
-        gitAuthor={handle.props.gitAuthor
-          ? {
-            authorEmail: handle.props.gitAuthor.authorEmail,
-            authorName: handle.props.gitAuthor.authorName,
-            updatedAt: handle.props.gitAuthor.updatedAt,
-          }
-          : null}
+        gitAuthor={
+          handle.props.gitAuthor
+            ? {
+                authorEmail: handle.props.gitAuthor.authorEmail,
+                authorName: handle.props.gitAuthor.authorName,
+                updatedAt: handle.props.gitAuthor.updatedAt,
+              }
+            : null
+        }
       />
     </SettingsLayout>
   );
@@ -177,20 +180,18 @@ function SettingsLayout(handle: Handle<SettingsLayoutProps>) {
               <h1 mix={pageHeadingStyle}>Settings</h1>
               <p mix={pageCopyStyle}>Manage gateway configuration and secrets.</p>
             </div>
-            <a
-              href={routes.app.index.href()}
-              aria-label="Close settings"
-              mix={closeButtonStyle}
-            >
+            <a href={routes.app.index.href()} aria-label="Close settings" mix={closeButtonStyle}>
               <Icon name="x" size={18} />
             </a>
           </header>
           <div mix={settingsContentStyle}>
             <SettingsNavigation activeSection={handle.props.activeSection} />
             <div mix={settingsMainStyle}>
-              {handle.props.error
-                ? <p role="alert" mix={errorStyle}>{handle.props.error}</p>
-                : null}
+              {handle.props.error ? (
+                <p role="alert" mix={errorStyle}>
+                  {handle.props.error}
+                </p>
+              ) : null}
               <div mix={settingsSectionStyle}>{handle.props.children}</div>
             </div>
           </div>
@@ -202,7 +203,7 @@ function SettingsLayout(handle: Handle<SettingsLayoutProps>) {
 
 function runnerEnrollmentCommand(gatewayUrl: string, enrollmentToken: string): string {
   return [
-    "deno task dev:runner \\",
+    "npm run dev:runner -- \\",
     `  --gateway ${gatewayUrl} \\`,
     `  --enrollment-token ${enrollmentToken}`,
   ].join("\n");

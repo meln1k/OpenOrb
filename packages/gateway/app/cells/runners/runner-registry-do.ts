@@ -20,7 +20,7 @@ export class Runners extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // SAFETY: native RPC implements WorkspaceApi; platform thenables differ only in checker types.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     const workspace = env.WORKSPACE.getByName("workspace") as unknown as WorkspaceApi;
     // Runner-side environment changes go to the Session Durable Object that owns the agent.
     const observer: EnvironmentObserver = {
@@ -83,10 +83,11 @@ export class Runners extends DurableObject<Env> {
     const server = pair[1];
     server.accept();
     // The protocol's reader scope owns the accepted socket, including replacement and revocation.
-    const socket = Socket.fromWebSocket(Effect.acquireRelease(
-      Effect.succeed(server),
-      (socket) => Effect.sync(() => socket.close(1000, "Connection closed")),
-    ));
+    const socket = Socket.fromWebSocket(
+      Effect.acquireRelease(Effect.succeed(server), (socket) =>
+        Effect.sync(() => socket.close(1000, "Connection closed")),
+      ),
+    );
     this.#runtime.runFork(
       Effect.gen(function* () {
         const registry = yield* Registry;

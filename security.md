@@ -161,6 +161,12 @@ The executable release criteria and regression evidence for these boundaries are
 
 ## Gondolin persistent root disk
 
+The runner uses Node.js, not a runtime permission sandbox. Production installations rely on the
+reviewed [systemd/OS isolation](docs/runner-installation.md): a dedicated user, private state,
+read-only host filesystem, restricted devices, and no elevated capabilities. Foreground development
+and administration commands do not reproduce that isolation. Untrusted repository code executes
+inside Gondolin VMs, never in the runner's Node process.
+
 **Status:** The former `RealFSProvider` workspace path race is resolved by removing the host-backed
 workspace mount.
 

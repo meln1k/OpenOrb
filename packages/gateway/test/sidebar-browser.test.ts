@@ -1,14 +1,15 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 
 import { createBuildAssetServer } from "../build-assets.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
+import { createTestServer } from "./http-test-server.ts";
 
-const browserEndpoint = Deno.env.get("OPENORB_BROWSER_TEST_CDP");
+const browserEndpoint = process.env["OPENORB_BROWSER_TEST_CDP"];
 
-Deno.test({
-  name: "mobile sidebar stays engaged during a diagonal horizontal swipe",
-  ignore: browserEndpoint === undefined,
-  async fn() {
+test(
+  "mobile sidebar stays engaged during a diagonal horizontal swipe",
+  { skip: browserEndpoint === undefined, timeout: 120_000 },
+  async () => {
     await using cleanup = new AsyncDisposableStack();
     const assetServer = createBuildAssetServer();
     cleanup.defer(() => assetServer.close());
@@ -30,8 +31,7 @@ Deno.test({
       "packages/gateway/app/ui/public/components/sidebar.tsx",
     ]);
     const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
-    const html =
-      `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body><div id="app"></div>
+    const html = `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body><div id="app"></div>
       <script type="module">
         import { createRoot } from ${JSON.stringify(uiHref)};
         import { jsx, jsxs } from ${JSON.stringify(jsxHref)};
@@ -57,7 +57,7 @@ Deno.test({
       </script></body></html>`;
     const server = await createTestServer(async (request) => {
       if (new URL(request.url).pathname.startsWith("/assets/")) {
-        return await assetServer.fetch(request) ?? new Response(null, { status: 404 });
+        return (await assetServer.fetch(request)) ?? new Response(null, { status: 404 });
       }
       return new Response(html, { headers: { "Content-Type": "text/html" } });
     });
@@ -67,8 +67,9 @@ Deno.test({
       const sidebar = page.locator("#mobile-sidebar");
       await sidebar.waitFor({ state: "attached" });
       await page.waitForFunction(() =>
-        getComputedStyle(document.querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")!)
-          .touchAction.includes("pan-y")
+        getComputedStyle(
+          document.querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")!,
+        ).touchAction.includes("pan-y"),
       );
 
       const session = await context.newCDPSession(page);
@@ -94,20 +95,20 @@ Deno.test({
         touchPoints: [{ x: 280, y: 520 }],
       });
       await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-      await page.waitForFunction(() =>
-        document.querySelector("#mobile-sidebar")?.getAttribute("data-swipe") === "open"
+      await page.waitForFunction(
+        () => document.querySelector("#mobile-sidebar")?.getAttribute("data-swipe") === "open",
       );
       assertEquals(await sidebar.evaluate((element) => element.matches(":popover-open")), true);
 
-      const screenshot = Deno.env.get("OPENORB_SIDEBAR_SCREENSHOT");
+      const screenshot = process.env["OPENORB_SIDEBAR_SCREENSHOT"];
       if (screenshot !== undefined) await page.screenshot({ path: screenshot });
 
       await sidebar.evaluate((element) => {
         if (!(element instanceof HTMLElement)) throw new Error("Sidebar is not an HTML element.");
         element.hidePopover();
       });
-      await page.waitForFunction(() =>
-        !document.querySelector("#mobile-sidebar")?.hasAttribute("data-swipe")
+      await page.waitForFunction(
+        () => !document.querySelector("#mobile-sidebar")?.hasAttribute("data-swipe"),
       );
       await session.send("Input.dispatchTouchEvent", {
         type: "touchStart",
@@ -130,4 +131,4 @@ Deno.test({
       await server.close();
     }
   },
-});
+);

@@ -41,12 +41,12 @@ const REVOKE_FAILED = "OpenAI Codex credential could not be revoked.";
 
 // These checks parse untrusted provider fields at the HTTP/JWT boundary.
 function nonemptyString(value: unknown): value is string {
-  // deno-lint-ignore openorb/no-runtime-typeof
+  // oxlint-disable-next-line openorb/no-runtime-typeof
   return typeof value === "string" && value.trim().length > 0;
 }
 
 function finiteNumber(value: unknown): value is number {
-  // deno-lint-ignore openorb/no-runtime-typeof
+  // oxlint-disable-next-line openorb/no-runtime-typeof
   return typeof value === "number" && Number.isFinite(value);
 }
 
@@ -84,14 +84,19 @@ async function requestDeviceLogin(
     interval?: unknown;
   } | null = await response.json();
   // Pi's custom protocol accepts both numeric and string intervals, including zero.
-  // deno-lint-ignore openorb/no-runtime-typeof
-  const interval = typeof data?.interval === "string" && data.interval.trim() !== ""
-    ? Number(data.interval)
-    : data?.interval;
+  const interval =
+    // oxlint-disable-next-line openorb/no-runtime-typeof -- Normalize the external protocol's string interval before validating its numeric contract.
+    typeof data?.interval === "string" && data.interval.trim() !== ""
+      ? Number(data.interval)
+      : data?.interval;
   if (
-    !nonemptyString(data?.device_auth_id) || !nonemptyString(data?.user_code) ||
-    !finiteNumber(interval) || interval < 0 || !Number.isFinite(interval * 1000)
-  ) return undefined;
+    !nonemptyString(data?.device_auth_id) ||
+    !nonemptyString(data?.user_code) ||
+    !finiteNumber(interval) ||
+    interval < 0 ||
+    !Number.isFinite(interval * 1000)
+  )
+    return undefined;
   const timestamp = now();
   return {
     id: crypto.randomUUID(),
@@ -116,9 +121,12 @@ async function readCredential(
     expires_in?: unknown;
   } | null = await response.json();
   if (
-    !nonemptyString(data?.access_token) || !nonemptyString(data?.refresh_token) ||
-    !finiteNumber(data?.expires_in) || data.expires_in <= 0
-  ) return undefined;
+    !nonemptyString(data?.access_token) ||
+    !nonemptyString(data?.refresh_token) ||
+    !finiteNumber(data?.expires_in) ||
+    data.expires_in <= 0
+  )
+    return undefined;
   const expires = now() + data.expires_in * 1000;
   if (!Number.isFinite(expires) || expires <= 0) return undefined;
 
@@ -127,9 +135,8 @@ async function readCredential(
   const payload = parts[1];
   if (parts.length !== 3 || !payload) return undefined;
   const base64 = payload.replaceAll("-", "+").replaceAll("_", "/");
-  const bytes = Uint8Array.from(
-    atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")),
-    (c) => c.charCodeAt(0),
+  const bytes = Uint8Array.from(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")), (c) =>
+    c.charCodeAt(0),
   );
   const claims: {
     "https://api.openai.com/auth"?: { chatgpt_account_id?: unknown };
@@ -195,7 +202,7 @@ async function requestDeviceToken(
   // In this custom protocol 403 and 404 are pending regardless of the body.
   if (response.status !== 403 && response.status !== 404) {
     const data: { error?: string | { code?: unknown } } | null = await response.json();
-    // deno-lint-ignore openorb/no-runtime-typeof
+    // oxlint-disable-next-line openorb/no-runtime-typeof
     const code = typeof data?.error === "string" ? data.error : data?.error?.code;
     if (code === "slow_down") intervalSeconds += 5;
     else if (code !== "deviceauth_authorization_pending") return { status: "error" };

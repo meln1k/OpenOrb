@@ -1,14 +1,18 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertThrows } from "@jsr/std__assert";
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { migrateDurableObjectDatabase } from "../app/cells/migrations.ts";
 import { sessionMigrations } from "../app/cells/session/migrations.ts";
 import { readGitSnapshot, readRecord } from "../app/cells/session/record.ts";
 import { MemoryStorage } from "./workspace/storage.ts";
 
-Deno.test("Session tables are migrated once, journaled, and share the database with Pi Durable", async () => {
+test("Session tables are migrated once, journaled, and share the database with Pi Durable", async () => {
   const storage = new MemoryStorage();
   const applied = await migrateDurableObjectDatabase(storage, sessionMigrations);
-  assertEquals(applied.applied.map((migration) => migration.id), ["0001"]);
+  assertEquals(
+    applied.applied.map((migration) => migration.id),
+    ["0001"],
+  );
   assertEquals(storage.rows("SELECT id FROM data_table_migrations"), [{ id: "0001" }]);
   assertEquals(
     storage.rows(
@@ -26,16 +30,18 @@ Deno.test("Session tables are migrated once, journaled, and share the database w
 
   // Pi Durable versions its own tables in the same database without touching OpenOrb's journal.
   await openDurableObjectSqliteStorage(storage);
-  assertEquals(storage.rows("SELECT version > 0 AS migrated FROM durable_schema"), [{
-    migrated: 1,
-  }]);
+  assertEquals(storage.rows("SELECT version > 0 AS migrated FROM durable_schema"), [
+    {
+      migrated: 1,
+    },
+  ]);
 
   const unchanged = storage.dump();
   assertEquals((await migrateDurableObjectDatabase(storage, sessionMigrations)).applied, []);
   assertEquals(storage.dump(), unchanged);
 });
 
-Deno.test("Session records without a placement were runner Sessions and read as such", async () => {
+test("Session records without a placement were runner Sessions and read as such", async () => {
   const storage = new MemoryStorage();
   await migrateDurableObjectDatabase(storage, sessionMigrations);
   const record = {
@@ -61,9 +67,13 @@ Deno.test("Session records without a placement were runner Sessions and read as 
   assertEquals(legacy?.project?.repositoryUrl, project.repositoryUrl);
   assertEquals(legacy?.project?.branchName, project.branchName);
   assertEquals(legacy?.project?.gitAuthor.email, "a@example.com");
-  for (
-    const flat of ["runnerId", "environmentProvider", "projectId", "repositoryUrl", "gitAuthor"]
-  ) {
+  for (const flat of [
+    "runnerId",
+    "environmentProvider",
+    "projectId",
+    "repositoryUrl",
+    "gitAuthor",
+  ]) {
     assertEquals(legacy !== undefined && flat in legacy, false, flat);
   }
 

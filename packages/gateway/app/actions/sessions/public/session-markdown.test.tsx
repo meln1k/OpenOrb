@@ -1,4 +1,5 @@
-import { assertEquals, assertNotMatch, assertStringIncludes } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertNotMatch, assertStringIncludes } from "@jsr/std__assert";
 import { renderToString } from "remix/component/server";
 
 import { AssistantMarkdown } from "./session-markdown.tsx";
@@ -6,7 +7,7 @@ import { AssistantMarkdown } from "./session-markdown.tsx";
 const SESSION_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c10";
 const ARTIFACT_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c11";
 
-Deno.test("renders the complete current source through Marked while streaming", async () => {
+test("renders the complete current source through Marked while streaming", async () => {
   const paragraph = await renderMarkdown("Candidate heading", false);
   assertStringIncludes(paragraph, 'data-markdown-kind="paragraph"');
   assertStringIncludes(paragraph, ">Candidate heading</p>");
@@ -18,7 +19,7 @@ Deno.test("renders the complete current source through Marked while streaming", 
   assertNotMatch(heading, /data-markdown-kind="paragraph"/);
 });
 
-Deno.test("renders long structured blocks before completion", async () => {
+test("renders long structured blocks before completion", async () => {
   const fixtures = [
     {
       source: "# Streaming **heading**",
@@ -55,7 +56,7 @@ Deno.test("renders long structured blocks before completion", async () => {
   }
 });
 
-Deno.test("reparses earlier tokens when appended Markdown changes their meaning", async () => {
+test("reparses earlier tokens when appended Markdown changes their meaning", async () => {
   const thematicBreakPrefix = await renderMarkdown("a\n***", false);
   assertStringIncludes(thematicBreakPrefix, 'data-markdown-block-count="2"');
   assertStringIncludes(thematicBreakPrefix, 'data-markdown-kind="hr"');
@@ -72,7 +73,7 @@ Deno.test("reparses earlier tokens when appended Markdown changes their meaning"
   assertNotMatch(setextHeading, /data-markdown-kind="hr"/);
 });
 
-Deno.test("renders safe GFM tokens directly through Remix JSX", async () => {
+test("renders safe GFM tokens directly through Remix JSX", async () => {
   const html = await renderMarkdown(
     `# Result
 
@@ -109,7 +110,7 @@ Deno.test("renders safe GFM tokens directly through Remix JSX", async () => {
   assertNotMatch(html, /<span data-markdown-streaming-cursor/);
 });
 
-Deno.test("lets Marked resolve reference links from the complete current source", async () => {
+test("lets Marked resolve reference links from the complete current source", async () => {
   const prefix = await renderMarkdown("Read [the guide][guide].", false);
   assertNotMatch(prefix, /href="https:\/\/example.com\/guide"/);
 
@@ -124,7 +125,7 @@ Deno.test("lets Marked resolve reference links from the complete current source"
   assertNotMatch(completed, /<img\b/);
 });
 
-Deno.test("renders only published session media inline", async () => {
+test("renders only published session media inline", async () => {
   const html = await renderMarkdown(
     `![Build result](openorb-artifact:image:${ARTIFACT_ID})
 

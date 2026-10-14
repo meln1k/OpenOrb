@@ -1,29 +1,28 @@
 {
   "name": "openorb-gateway-test",
   "main": "dist/worker.js",
+  "no_bundle": true,
   "compatibility_date": "2026-10-07",
   "vars": {
     "OPENORB_MASTER_KEY": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     "SESSION_SECRET": "disposable-gateway-fixture-secret",
     "PUBLIC_URL": "",
-    "OPENORB_SESSION_COOKIE_SECURE": "false"
+    "OPENORB_SESSION_COOKIE_SECURE": "false",
   },
   "assets": {
     "directory": "dist/assets",
     "binding": "ASSETS",
     "html_handling": "none",
-    "run_worker_first": true
+    "run_worker_first": true,
   },
   "worker_loaders": [{ "binding": "LOADER" }],
-  "r2_buckets": [
-    { "binding": "MEDIA", "bucket_name": "openorb-media" }
-  ],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "openorb-media" }],
   "durable_objects": {
     "bindings": [
       { "name": "WORKSPACE", "class_name": "Workspace" },
       { "name": "RUNNERS", "class_name": "Runners" },
-      { "name": "SESSIONS", "class_name": "Session" }
-    ]
+      { "name": "SESSIONS", "class_name": "Session" },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workspace", "Runners", "Session"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workspace", "Runners", "Session"] }],
 }

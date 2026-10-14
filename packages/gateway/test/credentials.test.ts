@@ -1,3 +1,4 @@
+import { test } from "vite-plus/test";
 import {
   assert,
   assertEquals,
@@ -5,27 +6,27 @@ import {
   assertNotEquals,
   assertNotMatch,
   assertRejects,
-} from "@std/assert";
+} from "@jsr/std__assert";
 import {
   MAX_SESSION_ENVIRONMENT_SECRETS,
   MAX_SESSION_SECRET_HOST_CHARACTERS,
   type UserId,
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
-import { OPENAI_CODEX_PROVIDER_ID } from "@/app/model-provider-catalog.ts";
-import { createAppRouter } from "@/test/workspace-test.ts";
-import { routes } from "@/app/routes.ts";
-import { importMasterKey } from "@/app/utils/master-key.ts";
-import { decryptSecret } from "@/app/utils/secret-cipher.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
+import { resolveSessionModelRuntime } from "../app/model-provider-runtime.ts";
+import { OPENAI_CODEX_PROVIDER_ID } from "../app/model-provider-catalog.ts";
+import { createAppRouter } from "./workspace-test.ts";
+import { routes } from "../app/routes.ts";
+import { importMasterKey } from "../app/utils/master-key.ts";
+import { decryptSecret } from "../app/utils/secret-cipher.ts";
+import { createTestServer } from "./http-test-server.ts";
 import {
   activate,
   createAppServices,
   type MemoryStorage,
   TEST_MASTER_KEY_BYTES,
   TEST_MASTER_KEY_HEX,
-} from "@/test/workspace-test.ts";
+} from "./workspace-test.ts";
 
 const OPENCODE_PROVIDER = "opencode-go";
 const OPENCODE_VALUE = "oc-go-secret-7f3d9a";
@@ -113,9 +114,7 @@ async function createAuthenticatedClient(): Promise<AuthenticatedClient> {
     const loginForm = await loginRequest.clone().formData();
     const loginResponse = await fetch(loginRequest);
     assertEquals(loginResponse.status, 303);
-    const user = await store.verifyAdministratorPassword(
-      String(loginForm.get("password")),
-    );
+    const user = await store.verifyAdministratorPassword(String(loginForm.get("password")));
     assert(user);
     assertNotEquals<string>(user.userId, user.workspaceId);
     return {
@@ -157,7 +156,7 @@ async function submitCredentialsForm(
   });
 }
 
-Deno.test("configures Pi providers without exposing or keying records by API key", async () => {
+test("configures Pi providers without exposing or keying records by API key", async () => {
   const client = await createAuthenticatedClient();
   try {
     const settingsIndex = await fetch(
@@ -195,17 +194,15 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     assertNotMatch(runners, /Model providers/);
     assertNotMatch(runners, /Copy command/);
 
-    for (
-      const [providerId, apiKey] of [
-        [OPENCODE_PROVIDER, OPENCODE_VALUE],
-        [OPENAI_PROVIDER, OPENAI_VALUE],
-      ] as const
-    ) {
-      const response = await submitCredentialsForm(
-        client,
-        PROVIDERS_SETTINGS_PATH,
-        { intent: "save-provider", providerId, apiKey },
-      );
+    for (const [providerId, apiKey] of [
+      [OPENCODE_PROVIDER, OPENCODE_VALUE],
+      [OPENAI_PROVIDER, OPENAI_VALUE],
+    ] as const) {
+      const response = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+        intent: "save-provider",
+        providerId,
+        apiKey,
+      });
       assertEquals(response.status, 303);
       assertEquals(response.headers.get("location"), PROVIDERS_SETTINGS_PATH);
     }
@@ -233,7 +230,10 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     assert(!client.storage.dump().includes(OPENAI_VALUE));
 
     const masterKey = await importMasterKey(TEST_MASTER_KEY_BYTES);
-    for (const [row, apiKey] of [[opencode, OPENCODE_VALUE], [openai, OPENAI_VALUE]] as const) {
+    for (const [row, apiKey] of [
+      [opencode, OPENCODE_VALUE],
+      [openai, OPENAI_VALUE],
+    ] as const) {
       assert(row.ciphertext instanceof ArrayBuffer);
       assertEquals(
         await decryptSecret(
@@ -246,15 +246,11 @@ Deno.test("configures Pi providers without exposing or keying records by API key
     }
 
     const replacement = "oc-go-replacement-secret-5c7e12";
-    const replaceResponse = await submitCredentialsForm(
-      client,
-      PROVIDERS_SETTINGS_PATH,
-      {
-        intent: "save-provider",
-        providerId: OPENCODE_PROVIDER,
-        apiKey: replacement,
-      },
-    );
+    const replaceResponse = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "save-provider",
+      providerId: OPENCODE_PROVIDER,
+      apiKey: replacement,
+    });
     assertEquals(replaceResponse.status, 303);
     const replaced = storedProviders(client.storage, client.workspaceId).find(
       (row) => row.providerId === OPENCODE_PROVIDER,
@@ -268,29 +264,22 @@ Deno.test("configures Pi providers without exposing or keying records by API key
       undefined,
     ]);
 
-    const deleteResponse = await submitCredentialsForm(
-      client,
-      PROVIDERS_SETTINGS_PATH,
-      {
-        intent: "delete-provider",
-        providerId: OPENAI_PROVIDER,
-      },
-    );
+    const deleteResponse = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "delete-provider",
+      providerId: OPENAI_PROVIDER,
+    });
     assertEquals(deleteResponse.status, 303);
     assertEquals(
       await client.store.getModelProviderCredential(client.workspaceId, OPENAI_PROVIDER),
       null,
     );
-    assertEquals(
-      client.storage.rows("SELECT id FROM model_provider_credentials").length,
-      1,
-    );
+    assertEquals(client.storage.rows("SELECT id FROM model_provider_credentials").length, 1);
   } finally {
     await client.server.close();
   }
 });
 
-Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and disconnects locally", async () => {
+test("ChatGPT device authorization persists encrypted Workspace OAuth and disconnects locally", async () => {
   const client = await createAuthenticatedClient();
   const credential = { access: accessToken("original"), refresh: "chatgpt-refresh-token-5c7e12" };
   let loginCalls = 0;
@@ -397,10 +386,7 @@ Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and d
     assertEquals(disconnect.status, 303);
     assertEquals(revokeCalls, 1);
     assertEquals(
-      await client.store.getModelProviderCredential(
-        client.workspaceId,
-        OPENAI_CODEX_PROVIDER_ID,
-      ),
+      await client.store.getModelProviderCredential(client.workspaceId, OPENAI_CODEX_PROVIDER_ID),
       null,
     );
   } finally {
@@ -409,7 +395,7 @@ Deno.test("ChatGPT device authorization persists encrypted Workspace OAuth and d
   }
 });
 
-Deno.test("ChatGPT runtime refreshes rotation once and sends only the access token", async () => {
+test("ChatGPT runtime refreshes rotation once and sends only the access token", async () => {
   const client = await createAuthenticatedClient();
   const expired = { access: accessToken("expired"), refresh: "rotating-refresh-token" };
   const rotated = { access: accessToken("fresh"), refresh: "fresh-refresh-token" };
@@ -470,10 +456,14 @@ Deno.test("ChatGPT runtime refreshes rotation once and sends only the access tok
 });
 
 function accessToken(marker: string): string {
-  const payload = new TextEncoder().encode(JSON.stringify({
-    "https://api.openai.com/auth": { chatgpt_account_id: "gateway-test-account" },
-    marker,
-  })).toBase64({ alphabet: "base64url", omitPadding: true });
+  const payload = new TextEncoder()
+    .encode(
+      JSON.stringify({
+        "https://api.openai.com/auth": { chatgpt_account_id: "gateway-test-account" },
+        marker,
+      }),
+    )
+    .toBase64({ alphabet: "base64url", omitPadding: true });
   return `e30.${payload}.unverified-signature`;
 }
 
@@ -493,7 +483,7 @@ function providerFetch(handler: (request: Request) => Promise<Response>): () => 
   };
 }
 
-Deno.test("generic secrets remain independent from model provider credentials", async () => {
+test("generic secrets remain independent from model provider credentials", async () => {
   const client = await createAuthenticatedClient();
   try {
     await client.store.saveModelProviderCredential(
@@ -501,41 +491,43 @@ Deno.test("generic secrets remain independent from model provider credentials", 
       OPENCODE_PROVIDER,
       OPENCODE_VALUE,
     );
-    const saveResponse = await submitCredentialsForm(
-      client,
-      SECRETS_SETTINGS_PATH,
-      {
-        intent: "save-secret",
-        key: GENERIC_SECRET_KEY,
-        value: GENERIC_SECRET_VALUE,
-        allowedHosts: "api.example.com, *.service.example",
-      },
-    );
+    const saveResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "save-secret",
+      key: GENERIC_SECRET_KEY,
+      value: GENERIC_SECRET_VALUE,
+      allowedHosts: "api.example.com, *.service.example",
+    });
     assertEquals(saveResponse.status, 303);
     assertEquals(saveResponse.headers.get("location"), SECRETS_SETTINGS_PATH);
 
-    assertEquals(await client.store.listSecrets(client.workspaceId), [{
-      key: GENERIC_SECRET_KEY,
-      keyVersion: 1,
-      allowedHosts: ["api.example.com", "*.service.example"],
-      createdAt: (await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY))!.createdAt,
-      updatedAt: (await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY))!.updatedAt,
-    }]);
+    assertEquals(await client.store.listSecrets(client.workspaceId), [
+      {
+        key: GENERIC_SECRET_KEY,
+        keyVersion: 1,
+        allowedHosts: ["api.example.com", "*.service.example"],
+        createdAt: (await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY))!
+          .createdAt,
+        updatedAt: (await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY))!
+          .updatedAt,
+      },
+    ]);
     const [environmentSecrets, environmentSecretError] = await client.store.getEnvironmentSecrets(
       client.workspaceId,
     );
     assertEquals(environmentSecretError, undefined);
     assertEquals(
       environmentSecrets?.map(({ name, value, allowedHosts }) => ({ name, value, allowedHosts })),
-      [{
-        name: GENERIC_SECRET_KEY,
-        value: GENERIC_SECRET_VALUE,
-        allowedHosts: ["api.example.com", "*.service.example"],
-      }],
+      [
+        {
+          name: GENERIC_SECRET_KEY,
+          value: GENERIC_SECRET_VALUE,
+          allowedHosts: ["api.example.com", "*.service.example"],
+        },
+      ],
     );
     assertEquals(
-      (await client.store.listModelProviderCredentials(client.workspaceId)).map((credential) =>
-        credential.providerId
+      (await client.store.listModelProviderCredentials(client.workspaceId)).map(
+        (credential) => credential.providerId,
       ),
       [OPENCODE_PROVIDER],
     );
@@ -563,14 +555,10 @@ Deno.test("generic secrets remain independent from model provider credentials", 
     );
     assert(await client.store.getSecret(client.workspaceId, GENERIC_SECRET_KEY));
 
-    const deleteResponse = await submitCredentialsForm(
-      client,
-      SECRETS_SETTINGS_PATH,
-      {
-        intent: "delete-secret",
-        key: GENERIC_SECRET_KEY,
-      },
-    );
+    const deleteResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
+      intent: "delete-secret",
+      key: GENERIC_SECRET_KEY,
+    });
     assertEquals(deleteResponse.status, 303);
     assertEquals(await client.store.listSecrets(client.workspaceId), []);
   } finally {
@@ -578,7 +566,7 @@ Deno.test("generic secrets remain independent from model provider credentials", 
   }
 });
 
-Deno.test("generic secrets enforce protocol host boundaries", async () => {
+test("generic secrets enforce protocol host boundaries", async () => {
   const client = await createAuthenticatedClient();
   try {
     const wildcardResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
@@ -593,12 +581,9 @@ Deno.test("generic secrets enforce protocol host boundaries", async () => {
       undefined,
     );
 
-    const maximumLengthHost = [
-      "a".repeat(63),
-      "b".repeat(63),
-      "c".repeat(63),
-      "d".repeat(61),
-    ].join(".");
+    const maximumLengthHost = ["a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(61)].join(
+      ".",
+    );
     assertEquals(maximumLengthHost.length, MAX_SESSION_SECRET_HOST_CHARACTERS);
     const maximumLengthResponse = await submitCredentialsForm(client, SECRETS_SETTINGS_PATH, {
       intent: "save-secret",
@@ -632,7 +617,7 @@ Deno.test("generic secrets enforce protocol host boundaries", async () => {
   }
 });
 
-Deno.test("generic secrets enforce the protocol count while allowing updates", async () => {
+test("generic secrets enforce the protocol count while allowing updates", async () => {
   const client = await createAuthenticatedClient();
   try {
     for (let index = 0; index < MAX_SESSION_ENVIRONMENT_SECRETS; index++) {
@@ -675,7 +660,7 @@ Deno.test("generic secrets enforce the protocol count while allowing updates", a
   }
 });
 
-Deno.test("generic secrets reject aggregate RPC frame overflow", async () => {
+test("generic secrets reject aggregate RPC frame overflow", async () => {
   const client = await createAuthenticatedClient();
   try {
     const escapedValue = "\0".repeat(4_096);
@@ -703,7 +688,7 @@ Deno.test("generic secrets reject aggregate RPC frame overflow", async () => {
   }
 });
 
-Deno.test("provider credentials remain decryptable across a gateway restart", async () => {
+test("provider credentials remain decryptable across a gateway restart", async () => {
   const { workspace: first, storage } = activate();
   assertEquals(await first.createAdministrator("restart test password"), [true, undefined]);
   const user = await first.verifyAdministratorPassword("restart test password");
@@ -713,8 +698,8 @@ Deno.test("provider credentials remain decryptable across a gateway restart", as
 
   const restarted = activate(storage).workspace;
   assertEquals(
-    (await restarted.listModelProviderCredentials(user.workspaceId)).map((credential) =>
-      credential.providerId
+    (await restarted.listModelProviderCredentials(user.workspaceId)).map(
+      (credential) => credential.providerId,
     ),
     [OPENAI_PROVIDER, OPENCODE_PROVIDER],
   );
@@ -728,7 +713,7 @@ Deno.test("provider credentials remain decryptable across a gateway restart", as
   ]);
 });
 
-Deno.test("a wrong master key fails provider resolution without destroying stored data", async () => {
+test("a wrong master key fails provider resolution without destroying stored data", async () => {
   const { workspace: first, storage } = activate();
   assertEquals(await first.createAdministrator("wrong key test password"), [true, undefined]);
   const user = await first.verifyAdministratorPassword("wrong key test password");
@@ -751,7 +736,7 @@ Deno.test("a wrong master key fails provider resolution without destroying store
   ]);
 });
 
-Deno.test("provider plaintext and master key never enter gateway rows", async () => {
+test("provider plaintext and master key never enter gateway rows", async () => {
   const client = await createAuthenticatedClient();
   try {
     await client.store.saveModelProviderCredential(
@@ -767,18 +752,14 @@ Deno.test("provider plaintext and master key never enter gateway rows", async ()
   }
 });
 
-Deno.test("rejects unknown providers, unauthenticated access, and missing CSRF", async () => {
+test("rejects unknown providers, unauthenticated access, and missing CSRF", async () => {
   const client = await createAuthenticatedClient();
   try {
-    const invalidProvider = await submitCredentialsForm(
-      client,
-      PROVIDERS_SETTINGS_PATH,
-      {
-        intent: "save-provider",
-        providerId: "not-a-pi-provider",
-        apiKey: OPENCODE_VALUE,
-      },
-    );
+    const invalidProvider = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "save-provider",
+      providerId: "not-a-pi-provider",
+      apiKey: OPENCODE_VALUE,
+    });
     assertEquals(invalidProvider.status, 400);
     assertEquals(await client.store.listModelProviderCredentials(client.workspaceId), []);
 

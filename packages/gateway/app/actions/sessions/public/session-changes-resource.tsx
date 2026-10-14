@@ -6,7 +6,7 @@ import { tryAsync, trySync } from "../../../../../result/src/index.ts";
 import { boolean, number, object, parseSafe, string } from "remix/data-schema";
 import { type Handle, type RemixNode, TypedEventTarget } from "remix/component";
 
-import { routes } from "@/app/routes.ts";
+import { routes } from "../../../routes.ts";
 import { type PreparedSessionChanges, prepareSessionChanges } from "./session-change-files.tsx";
 import {
   filePreviousPath,
@@ -19,20 +19,26 @@ import {
 import { type SessionPageController, SessionPageScope } from "./session-page-controller.tsx";
 
 const errorResponseSchema = object({ error: string() }, { unknownKeys: "error" });
-const gitFileUpdateAcceptedSchema = object({
-  mutationRevision: number().refine(
-    (value) => Number.isSafeInteger(value) && value >= 0,
-    "Expected a non-negative Git mutation revision.",
-  ),
-}, { unknownKeys: "error" });
-const patchChunkSchema = object({
-  snapshotId: string(),
-  section: string(),
-  offset: number(),
-  bytes: string(),
-  nextOffset: number(),
-  done: boolean(),
-}, { unknownKeys: "error" });
+const gitFileUpdateAcceptedSchema = object(
+  {
+    mutationRevision: number().refine(
+      (value) => Number.isSafeInteger(value) && value >= 0,
+      "Expected a non-negative Git mutation revision.",
+    ),
+  },
+  { unknownKeys: "error" },
+);
+const patchChunkSchema = object(
+  {
+    snapshotId: string(),
+    section: string(),
+    offset: number(),
+    bytes: string(),
+    nextOffset: number(),
+    done: boolean(),
+  },
+  { unknownKeys: "error" },
+);
 
 class GitPatchChunkError extends Error {}
 
@@ -112,22 +118,32 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   }
 
   get canMutate(): boolean {
-    return this.#page?.projection.environmentState === "running" &&
-      !this.#page.projection.connectionInterrupted;
+    return (
+      this.#page?.projection.environmentState === "running" &&
+      !this.#page.projection.connectionInterrupted
+    );
   }
 
   connect(page: SessionPageController): void {
     if (this.#connected) return;
     this.#connected = true;
     this.#page = page;
-    page.addEventListener("session", (message) => {
-      if (message.detail.type === "git.snapshot.updated") void this.#requestRefresh();
-      if (message.detail.type === "session.state") this.dispatchEvent(new Event("change"));
-    }, { signal: this.#signal });
-    page.addEventListener("connection", () => {
-      this.dispatchEvent(new Event("change"));
-      if (!page.projection.connectionInterrupted) void this.#requestRefresh();
-    }, { signal: this.#signal });
+    page.addEventListener(
+      "session",
+      (message) => {
+        if (message.detail.type === "git.snapshot.updated") void this.#requestRefresh();
+        if (message.detail.type === "session.state") this.dispatchEvent(new Event("change"));
+      },
+      { signal: this.#signal },
+    );
+    page.addEventListener(
+      "connection",
+      () => {
+        this.dispatchEvent(new Event("change"));
+        if (!page.projection.connectionInterrupted) void this.#requestRefresh();
+      },
+      { signal: this.#signal },
+    );
   }
 
   setViewActive(view: SessionChangesViewOwner, active: boolean): void {
@@ -154,10 +170,10 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     const key = fileMutationKey(identity.path, identity.previousPath);
     const matchingRows =
       this.#projection.loaded?.changes.rows.filter((candidate) =>
-        sessionChangeFileMatches(candidate.file, identity.path, identity.previousPath)
+        sessionChangeFileMatches(candidate.file, identity.path, identity.previousPath),
       ) ?? [];
-    const row = matchingRows.find((candidate) =>
-      candidate.state === (action === "stage" ? "unstaged" : "staged")
+    const row = matchingRows.find(
+      (candidate) => candidate.state === (action === "stage" ? "unstaged" : "staged"),
     );
     if (row !== undefined) {
       const current = this.#pendingMutations.get(key);
@@ -316,9 +332,8 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   ): Promise<{ readonly changes: PreparedSessionChanges; readonly error?: string }> {
     if (changedFileCount(snapshot) === 0) {
       const changes = prepareSessionChanges(snapshot);
-      const CodeView = this.#pendingMutations.size > 0
-        ? this.#confirmedChanges?.CodeView
-        : undefined;
+      const CodeView =
+        this.#pendingMutations.size > 0 ? this.#confirmedChanges?.CodeView : undefined;
       return {
         changes: CodeView === undefined ? changes : { ...changes, CodeView },
       };
@@ -387,19 +402,21 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     }
 
     const snapshot = parsed.value;
-    const bulkPending = snapshot.snapshotId !== undefined &&
-      (["staged", "unstaged"] as const).some((section) =>
-        (snapshot.sections[section].fullPatchBytes ?? 0) >
-          new TextEncoder().encode(snapshot.sections[section].patch).byteLength
+    const bulkPending =
+      snapshot.snapshotId !== undefined &&
+      (["staged", "unstaged"] as const).some(
+        (section) =>
+          (snapshot.sections[section].fullPatchBytes ?? 0) >
+          new TextEncoder().encode(snapshot.sections[section].patch).byteLength,
       );
     const displayedSnapshot = bulkPending
       ? {
-        ...snapshot,
-        sections: {
-          staged: { ...snapshot.sections.staged, patch: "" },
-          unstaged: { ...snapshot.sections.unstaged, patch: "" },
-        },
-      }
+          ...snapshot,
+          sections: {
+            staged: { ...snapshot.sections.staged, patch: "" },
+            unstaged: { ...snapshot.sections.unstaged, patch: "" },
+          },
+        }
       : snapshot;
     const preparation = await this.#prepareSnapshotChanges(displayedSnapshot);
     if (this.#signal.aborted) return;
@@ -422,9 +439,11 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   #startPatchLoad(snapshot: SessionGitSnapshotData): void {
     const snapshotId = snapshot.snapshotId;
     if (
-      snapshotId === undefined || this.#signal.aborted ||
+      snapshotId === undefined ||
+      this.#signal.aborted ||
       this.#patchLoad?.snapshotId === snapshotId
-    ) return;
+    )
+      return;
 
     this.#cancelPatchLoad();
     const controller = new AbortController();
@@ -529,9 +548,12 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
       if (!response.ok) throw new GitPatchChunkError("Git patch chunk unavailable");
       const parsed = parseSafe(patchChunkSchema, await response.json());
       if (
-        !parsed.success || parsed.value.snapshotId !== snapshotId ||
-        parsed.value.section !== section || parsed.value.offset !== offset ||
-        !Number.isSafeInteger(parsed.value.nextOffset) || parsed.value.nextOffset <= offset ||
+        !parsed.success ||
+        parsed.value.snapshotId !== snapshotId ||
+        parsed.value.section !== section ||
+        parsed.value.offset !== offset ||
+        !Number.isSafeInteger(parsed.value.nextOffset) ||
+        parsed.value.nextOffset <= offset ||
         parsed.value.nextOffset > expectedBytes
       ) {
         throw new GitPatchChunkError("Invalid Git patch chunk");
@@ -557,15 +579,11 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
 
   async #requestRefresh(): Promise<void> {
     this.#refreshPending = true;
-    if (
-      this.#activeViews.size === 0 || this.#refreshInFlight || this.#signal.aborted
-    ) return;
+    if (this.#activeViews.size === 0 || this.#refreshInFlight || this.#signal.aborted) return;
     this.#refreshInFlight = true;
     // Keep browser-side cleanup parseable by Safari, which does not support `using`.
     try {
-      while (
-        this.#refreshPending && this.#activeViews.size > 0 && !this.#signal.aborted
-      ) {
+      while (this.#refreshPending && this.#activeViews.size > 0 && !this.#signal.aborted) {
         this.#refreshPending = false;
         await this.#refresh();
       }
@@ -579,7 +597,8 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
       if (
         mutation.acknowledgedRevision !== undefined &&
         mutation.acknowledgedRevision <= snapshotRevision
-      ) this.#pendingMutations.delete(key);
+      )
+        this.#pendingMutations.delete(key);
     }
   }
 
@@ -588,10 +607,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     return latest === undefined || latest.generation === mutation.generation;
   }
 
-  #resolveMutationIdentity(
-    path: string,
-    previousPath?: string,
-  ): SessionChangeMutationPaths {
+  #resolveMutationIdentity(path: string, previousPath?: string): SessionChangeMutationPaths {
     const requested: SessionChangeMutationPaths = {
       path,
       ...(previousPath === undefined ? {} : { previousPath }),
@@ -599,9 +615,10 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
     if (previousPath !== undefined) return requested;
 
     const pending = Array.from(this.#pendingMutations.values())
-      .filter((mutation) =>
-        mutation.previousPath !== undefined &&
-        sessionChangeMutationPathsMatch(mutation, requested)
+      .filter(
+        (mutation) =>
+          mutation.previousPath !== undefined &&
+          sessionChangeMutationPathsMatch(mutation, requested),
       )
       .sort((left, right) => right.generation - left.generation)[0];
     if (pending?.previousPath !== undefined) {
@@ -624,8 +641,8 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
       if (
         !mutation.ambiguousDiff &&
         changes.rows.filter((row) =>
-            sessionChangeFileMatches(row.file, mutation.path, mutation.previousPath)
-          ).length > 1
+          sessionChangeFileMatches(row.file, mutation.path, mutation.previousPath),
+        ).length > 1
       ) {
         this.#pendingMutations.set(key, { ...mutation, ambiguousDiff: true });
       }

@@ -1,4 +1,12 @@
 import { basename, dirname, join, posix } from "node:path";
+import { execFile } from "node:child_process";
+import { lstat, mkdtemp, open, readdir, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
+import { promisify } from "node:util";
+
+const execute = promisify(execFile);
+function isNotFound(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
 
 const MODULE_FILE_SUFFIXES = [".ko", ".ko.gz", ".ko.xz", ".ko.zst"] as const;
 
@@ -24,13 +32,11 @@ export interface InitramfsPruneResult {
   readonly removedBootBytes: number;
 }
 
-export async function pruneInitramfsRoot(
-  initramfsRoot: string,
-): Promise<InitramfsPruneResult> {
+export async function pruneInitramfsRoot(initramfsRoot: string): Promise<InitramfsPruneResult> {
   const bytesBefore = await treeSize(initramfsRoot);
   const bootDirectory = join(initramfsRoot, "boot");
   const removedBootBytes = await requiredTreeSize(bootDirectory);
-  await Deno.remove(bootDirectory, { recursive: true });
+  await rm(bootDirectory, { recursive: true });
 
   const modulesBase = join(initramfsRoot, "lib", "modules");
   const versions = await kernelVersions(modulesBase);
@@ -51,16 +57,16 @@ export async function pruneInitramfsRoot(
     const requiredPaths = await resolveRequiredModulePaths(versionDirectory);
     for (const modulePath of await listModuleFiles(versionDirectory)) {
       if (!requiredPaths.has(modulePath)) {
-        await Deno.remove(join(versionDirectory, ...modulePath.split("/")));
+        await rm(join(versionDirectory, ...modulePath.split("/")));
       }
     }
     await removeEmptyDirectories(join(versionDirectory, "kernel"));
 
     const vmlinuzLink = join(versionDirectory, "vmlinuz");
     try {
-      await Deno.remove(vmlinuzLink);
+      await rm(vmlinuzLink);
     } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      if (!isNotFound(error)) throw error;
     }
 
     await regenerateModuleMetadata(initramfsRoot, version);
@@ -112,9 +118,7 @@ export async function resolveRequiredModulePaths(
       );
       if (resolvedPath !== undefined) {
         pending.push(resolvedPath);
-      } else if (
-        !builtinModuleNames.has(normalizeModuleName(moduleNameFromPath(dependencyPath)))
-      ) {
+      } else if (!builtinModuleNames.has(normalizeModuleName(moduleNameFromPath(dependencyPath)))) {
         throw new Error(
           `Kernel module dependency "${dependencyPath}" referenced by "${modulePath}" ` +
             `was not found in ${versionDirectory}.`,
@@ -125,49 +129,35 @@ export async function resolveRequiredModulePaths(
   return requiredPaths;
 }
 
-export async function repackInitramfs(
-  initramfsRoot: string,
-  destination: string,
-): Promise<void> {
-  const temporaryCpio = await Deno.makeTempFile({
-    dir: dirname(destination),
-    prefix: ".openorb-initramfs-",
-    suffix: ".cpio",
-  });
-  const temporaryLz4 = await Deno.makeTempFile({
-    dir: dirname(destination),
-    prefix: ".openorb-initramfs-",
-    suffix: ".cpio.lz4",
-  });
+export async function repackInitramfs(initramfsRoot: string, destination: string): Promise<void> {
+  const temporaryDirectory = await mkdtemp(join(dirname(destination), ".openorb-initramfs-"));
+  const temporaryCpio = join(temporaryDirectory, "initramfs.cpio");
+  const temporaryLz4 = join(temporaryDirectory, "initramfs.cpio.lz4");
   await using cleanup = new AsyncDisposableStack();
   cleanup.defer(async () => {
-    for (const path of [temporaryCpio, temporaryLz4]) {
-      await Deno.remove(path).catch((cause) => {
-        if (!(cause instanceof Deno.errors.NotFound)) throw cause;
-      });
-    }
+    await rm(temporaryDirectory, { recursive: true, force: true });
   });
   await runShell(
     [initramfsRoot, temporaryCpio, temporaryLz4],
     'cd "$1"\nfind . -print0 | cpio --null --create --format=newc --quiet > "$2"\nlz4 -l -c "$2" > "$3"',
     "The pruned initramfs could not be packed.",
   );
-  await Deno.rename(temporaryLz4, destination);
+  await using packed = await open(temporaryLz4, "r+");
+  await packed.sync();
+  await rename(temporaryLz4, destination);
+  await using directory = await open(dirname(destination), "r");
+  await directory.sync();
 }
 
 async function regenerateModuleMetadata(initramfsRoot: string, version: string): Promise<void> {
   const loaders = [];
-  for await (const entry of Deno.readDir(join(initramfsRoot, "lib"))) {
-    if (
-      entry.isFile && entry.name.startsWith("ld-musl-") && entry.name.endsWith(".so.1")
-    ) {
+  for (const entry of await readdir(join(initramfsRoot, "lib"), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.startsWith("ld-musl-") && entry.name.endsWith(".so.1")) {
       loaders.push(join(initramfsRoot, "lib", entry.name));
     }
   }
   if (loaders.length !== 1) {
-    throw new Error(
-      `Expected one Alpine musl loader in the initramfs, found ${loaders.length}.`,
-    );
+    throw new Error(`Expected one Alpine musl loader in the initramfs, found ${loaders.length}.`);
   }
   await runShell(
     [
@@ -187,22 +177,25 @@ async function runShell(
   script: string,
   message: string,
 ): Promise<void> {
-  const output = await new Deno.Command("sh", {
-    args: ["-c", `set -eu\n${script}`, "openorb-initramfs", ...arguments_],
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  if (output.success) return;
-  const stderr = new TextDecoder().decode(output.stderr).trim();
-  throw new Error(`${message}${stderr ? `\n${stderr}` : ""}`);
+  try {
+    const child = execute("sh", ["-c", `set -eu\n${script}`, "openorb-initramfs", ...arguments_]);
+    child.child.stdin?.end();
+    await child;
+  } catch (cause) {
+    const stderr =
+      // oxlint-disable-next-line openorb/no-runtime-typeof -- Validate the subprocess library's untrusted stderr field at the I/O boundary.
+      cause instanceof Error && "stderr" in cause && typeof cause.stderr === "string"
+        ? cause.stderr.trim()
+        : "";
+    throw new Error(`${message}${stderr ? `\n${stderr}` : ""}`, { cause });
+  }
 }
 
 async function readModuleDependencies(
   versionDirectory: string,
 ): Promise<ReadonlyMap<string, readonly string[]>> {
   const dependencies = new Map<string, readonly string[]>();
-  const contents = await Deno.readTextFile(join(versionDirectory, "modules.dep"));
+  const contents = await readFile(join(versionDirectory, "modules.dep"), "utf8");
   for (const line of contents.split("\n")) {
     const separator = line.indexOf(":");
     if (separator === -1) continue;
@@ -210,7 +203,12 @@ async function readModuleDependencies(
     if (!modulePath) continue;
     dependencies.set(
       modulePath,
-      line.slice(separator + 1).trim().split(/\s+/u).filter(Boolean).map(normalizeModulePath),
+      line
+        .slice(separator + 1)
+        .trim()
+        .split(/\s+/u)
+        .filter(Boolean)
+        .map(normalizeModulePath),
     );
   }
   return dependencies;
@@ -218,7 +216,7 @@ async function readModuleDependencies(
 
 async function readBuiltinModuleNames(versionDirectory: string): Promise<ReadonlySet<string>> {
   const names = new Set<string>();
-  const contents = await Deno.readTextFile(join(versionDirectory, "modules.builtin"));
+  const contents = await readFile(join(versionDirectory, "modules.builtin"), "utf8");
   for (const modulePath of contents.split("\n")) {
     if (modulePath.trim()) names.add(normalizeModuleName(moduleNameFromPath(modulePath)));
   }
@@ -246,10 +244,13 @@ async function indexModulePathsByName(
   const resolved = new Map<string, string>();
   for (const [name, paths] of pathsByName) {
     const candidates = [...paths].sort((left, right) => {
-      const dependencyPreference = Number(!dependencies.has(left)) -
-        Number(!dependencies.has(right));
-      return dependencyPreference || moduleSuffixPriority(left) - moduleSuffixPriority(right) ||
-        left.localeCompare(right);
+      const dependencyPreference =
+        Number(!dependencies.has(left)) - Number(!dependencies.has(right));
+      return (
+        dependencyPreference ||
+        moduleSuffixPriority(left) - moduleSuffixPriority(right) ||
+        left.localeCompare(right)
+      );
     });
     if (candidates[0] !== undefined) resolved.set(name, candidates[0]);
   }
@@ -258,8 +259,8 @@ async function indexModulePathsByName(
 
 async function kernelVersions(modulesBase: string): Promise<readonly string[]> {
   const versions: string[] = [];
-  for await (const entry of Deno.readDir(modulesBase)) {
-    if (entry.isDirectory) versions.push(entry.name);
+  for (const entry of await readdir(modulesBase, { withFileTypes: true })) {
+    if (entry.isDirectory()) versions.push(entry.name);
   }
   return versions.sort();
 }
@@ -267,17 +268,20 @@ async function kernelVersions(modulesBase: string): Promise<readonly string[]> {
 async function listModuleFiles(directory: string, relativeDirectory = ""): Promise<string[]> {
   const modulePaths: string[] = [];
   const entries = [];
-  for await (
-    const entry of Deno.readDir(join(directory, ...relativeDirectory.split("/").filter(Boolean)))
-  ) {
+  for await (const entry of await readdir(
+    join(directory, ...relativeDirectory.split("/").filter(Boolean)),
+    {
+      withFileTypes: true,
+    },
+  )) {
     entries.push(entry);
   }
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
     const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-    if (entry.isDirectory) {
-      modulePaths.push(...await listModuleFiles(directory, relativePath));
-    } else if (entry.isFile && isModuleFile(relativePath)) {
+    if (entry.isDirectory()) {
+      modulePaths.push(...(await listModuleFiles(directory, relativePath)));
+    } else if (entry.isFile() && isModuleFile(relativePath)) {
       modulePaths.push(relativePath);
     }
   }
@@ -287,18 +291,18 @@ async function listModuleFiles(directory: string, relativeDirectory = ""): Promi
 async function removeEmptyDirectories(directory: string): Promise<boolean> {
   let empty = true;
   try {
-    for await (const entry of Deno.readDir(directory)) {
-      if (entry.isDirectory) {
-        if (!await removeEmptyDirectories(join(directory, entry.name))) empty = false;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!(await removeEmptyDirectories(join(directory, entry.name)))) empty = false;
       } else {
         empty = false;
       }
     }
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return true;
+    if (isNotFound(error)) return true;
     throw error;
   }
-  if (empty) await Deno.remove(directory);
+  if (empty) await rmdir(directory);
   return empty;
 }
 
@@ -306,7 +310,7 @@ async function moduleStats(versionDirectory: string): Promise<{ bytes: number; f
   const modulePaths = await listModuleFiles(versionDirectory);
   let bytes = 0;
   for (const modulePath of modulePaths) {
-    bytes += (await Deno.stat(join(versionDirectory, ...modulePath.split("/")))).size;
+    bytes += (await stat(join(versionDirectory, ...modulePath.split("/")))).size;
   }
   return { bytes, files: modulePaths.length };
 }
@@ -315,7 +319,7 @@ async function requiredTreeSize(directory: string): Promise<number> {
   try {
     return await treeSize(directory);
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
+    if (isNotFound(error)) {
       throw new Error(`Expected initramfs directory is missing: ${directory}.`, { cause: error });
     }
     throw error;
@@ -323,11 +327,13 @@ async function requiredTreeSize(directory: string): Promise<number> {
 }
 
 async function treeSize(path: string): Promise<number> {
-  const info = await Deno.lstat(path);
-  if (info.isFile) return info.size;
-  if (!info.isDirectory) return 0;
+  const info = await lstat(path);
+  if (info.isFile()) return info.size;
+  if (!info.isDirectory()) return 0;
   let bytes = 0;
-  for await (const entry of Deno.readDir(path)) bytes += await treeSize(join(path, entry.name));
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    bytes += await treeSize(join(path, entry.name));
+  }
   return bytes;
 }
 

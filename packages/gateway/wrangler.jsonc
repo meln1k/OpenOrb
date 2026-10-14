@@ -1,33 +1,33 @@
 {
   "name": "openorb-workspace",
   "main": "dist/worker.js",
+  "no_bundle": true,
   "compatibility_date": "2026-10-07",
+  "compatibility_flags": ["nodejs_compat_do_not_populate_process_env"],
   "vars": {
     "OPENORB_MASTER_KEY": "",
     "SESSION_SECRET": "",
     "PUBLIC_URL": "",
-    "OPENORB_SESSION_COOKIE_SECURE": "false"
+    "OPENORB_SESSION_COOKIE_SECURE": "false",
   },
   "assets": {
     "directory": "dist/assets",
     "binding": "ASSETS",
     "html_handling": "none",
-    "run_worker_first": true
+    "run_worker_first": true,
   },
   "worker_loaders": [{ "binding": "LOADER" }],
-  "r2_buckets": [
-    { "binding": "MEDIA", "bucket_name": "openorb-media" }
-  ],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "openorb-media" }],
   "durable_objects": {
     "bindings": [
       { "name": "WORKSPACE", "class_name": "Workspace" },
       { "name": "RUNNERS", "class_name": "Runners" },
-      { "name": "SESSIONS", "class_name": "Session" }
-    ]
+      { "name": "SESSIONS", "class_name": "Session" },
+    ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Workspace"] },
     { "tag": "v2", "new_sqlite_classes": ["Runners"] },
-    { "tag": "v3", "new_sqlite_classes": ["Session"] }
-  ]
+    { "tag": "v3", "new_sqlite_classes": ["Session"] },
+  ],
 }

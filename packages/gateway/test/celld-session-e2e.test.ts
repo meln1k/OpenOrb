@@ -1,4 +1,9 @@
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { rm } from "node:fs/promises";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertStringIncludes } from "@jsr/std__assert";
 import { applyImmutable, type Op } from "@earendil-works/chord/delta";
 import { RUNNER_PROTOCOL_VERSION, RunnerCapacity, RunnerId } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Schema, Scope } from "effect";
@@ -14,8 +19,8 @@ import { SCRIPTED_PNG_BASE64 } from "./session-fixture.ts";
 // ADRs 0005 and 0006 end to end: a Session Durable Object in celld provisions the project, runs Pi
 // Durable, whose tools reach a real Gondolin guest through the runner's Environment Link, publishes
 // media to R2, and keeps a Git Snapshot. Only point this at a disposable test/celld.jsonc fixture.
-const gatewayUrl = Deno.env.get("OPENORB_TEST_GATEWAY_URL");
-const enabled = gatewayUrl !== undefined && Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") === "1";
+const gatewayUrl = process.env["OPENORB_TEST_GATEWAY_URL"];
+const enabled = gatewayUrl !== undefined && process.env["OPENORB_RUN_GONDOLIN_TESTS"] === "1";
 
 const REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 
@@ -83,12 +88,10 @@ async function waitForConversation(
   }
 }
 
-Deno.test({
-  name: "a Session Durable Object runs guest tools through a real runner's Environment Link",
-  ignore: !enabled,
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
+test(
+  "a Session Durable Object runs guest tools through a real runner's Environment Link",
+  { skip: !enabled, timeout: 1_500_000 },
+  async () => {
     const workspace = createRpcClient(new URL("/__workspace", gatewayUrl).href);
     await workspace.createAdministrator("e2e-fixture-password");
     const identity = await workspace.verifyAdministratorPassword("e2e-fixture-password");
@@ -102,7 +105,7 @@ Deno.test({
     });
     assert(runner);
 
-    const directory = await Deno.makeTempDir({ prefix: "openorb-session-e2e-" });
+    const directory = await mkdtemp(join(tmpdir(), "openorb-session-e2e-"));
     const scope = await Effect.runPromise(Scope.make());
     try {
       const capacity = new RunnerCapacity({
@@ -132,7 +135,7 @@ Deno.test({
           getCapacity: () => Promise.resolve(capacity),
         }).pipe(Effect.provide(services), Effect.provideService(Scope.Scope, scope)),
       );
-      for (let attempt = 0;; attempt++) {
+      for (let attempt = 0; ; attempt++) {
         const live = await fetch(
           new URL(
             `/__registry/live?workspaceId=${workspaceId}&runnerId=${runner.runnerId}`,
@@ -152,36 +155,42 @@ Deno.test({
       const sessionId = crypto.randomUUID();
       // The prompt is admitted at once; provisioning boots the VM (minutes under software
       // emulation) and clones the repository while the agent's guest tools wait for it.
-      const created = await json("/__session/create", {
-        workspaceId,
-        sessionId,
-        project: {
-          id: project.project.id,
-          repositoryUrl: REPOSITORY_URL,
-          ref: "main",
-          branchName: "openorb/session-e2e",
-          gitAuthor: { name: "OpenOrb E2E", email: "e2e@example.com" },
+      const created = await json(
+        "/__session/create",
+        {
+          workspaceId,
+          sessionId,
+          project: {
+            id: project.project.id,
+            repositoryUrl: REPOSITORY_URL,
+            ref: "main",
+            branchName: "openorb/session-e2e",
+            gitAuthor: { name: "OpenOrb E2E", email: "e2e@example.com" },
+          },
+          createdAt: new Date().toISOString(),
+          placement: { provider: "runner", runnerId: runner.runnerId },
+          // The orb's 2 CPUs and 4 GiB host fit the smallest size under software emulation.
+          orbSize: "tiny",
+          model: "faux/demo",
+          thinkingLevel: "high",
+          initialPrompt: "Run the guest command.",
         },
-        createdAt: new Date().toISOString(),
-        placement: { provider: "runner", runnerId: runner.runnerId },
-        // The orb's 2 CPUs and 4 GiB host fit the smallest size under software emulation.
-        orbSize: "tiny",
-        model: "faux/demo",
-        thinkingLevel: "high",
-        initialPrompt: "Run the guest command.",
-      }, 15 * 60_000);
+        15 * 60_000,
+      );
       assert(created.created);
 
       const messages = await waitForConversation(
         sessionId,
         (current) =>
-          current.some((message) =>
-            message.role === "assistant" && JSON.stringify(message).includes("The guest answered.")
+          current.some(
+            (message) =>
+              message.role === "assistant" &&
+              JSON.stringify(message).includes("The guest answered."),
           ),
         10 * 60_000,
       );
-      const [bashResult, publishResult] = messages.filter((message) =>
-        message.role === "toolResult"
+      const [bashResult, publishResult] = messages.filter(
+        (message) => message.role === "toolResult",
       );
       assert(bashResult && publishResult, "a tool result is missing");
       const output = JSON.stringify(bashResult.content);
@@ -212,9 +221,9 @@ Deno.test({
       // The Session refreshed its Git Snapshot after the tool boundary.
       let snapshot: GitSnapshot | undefined;
       for (let attempt = 0; attempt < 120; attempt++) {
-        snapshot = await (await fetch(
-          new URL(`/__session/git?sessionId=${sessionId}`, gatewayUrl),
-        )).json();
+        snapshot = await (
+          await fetch(new URL(`/__session/git?sessionId=${sessionId}`, gatewayUrl))
+        ).json();
         if (snapshot?.sections.unstaged.files.some((file) => file.path === "e2e.txt")) break;
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -233,16 +242,21 @@ Deno.test({
         15 * 60_000,
       );
       assertEquals(restarted.state, "running");
-      await json("/__session/submit", {
-        sessionId,
-        prompt: "Which skills do you have?",
-        requestId: "skills-after-restart",
-      }, 60_000);
+      await json(
+        "/__session/submit",
+        {
+          sessionId,
+          prompt: "Which skills do you have?",
+          requestId: "skills-after-restart",
+        },
+        60_000,
+      );
       const answered = await waitForConversation(
         sessionId,
         (current) =>
-          current.some((message) =>
-            message.role === "assistant" && JSON.stringify(message).includes("Skills: ")
+          current.some(
+            (message) =>
+              message.role === "assistant" && JSON.stringify(message).includes("Skills: "),
           ),
         5 * 60_000,
       );
@@ -252,14 +266,14 @@ Deno.test({
       assert(!skills.includes("e2e-skill"), `the catalog changed after checkout: ${skills}`);
       console.log("[e2e] repository skills stayed fixed across an environment restart");
 
-      const view = await (await fetch(
-        new URL(`/__session/view?sessionId=${sessionId}`, gatewayUrl),
-      )).json();
+      const view = await (
+        await fetch(new URL(`/__session/view?sessionId=${sessionId}`, gatewayUrl))
+      ).json();
       assertEquals(view.issues, []);
     } finally {
       await Effect.runPromise(Scope.close(scope, Exit.void));
       await workspace.revokeRunner(workspaceId, runner.runnerId).catch(() => {});
-      await Deno.remove(directory, { recursive: true }).catch(() => {});
+      await rm(directory, { recursive: true }).catch(() => {});
     }
   },
-});
+);

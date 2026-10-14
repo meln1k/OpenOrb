@@ -1,9 +1,10 @@
-import { assert, assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals } from "@jsr/std__assert";
 import { renderToString } from "remix/component/server";
 
-import { AppShellNavigation } from "@/app/ui/public/shell.tsx";
+import { AppShellNavigation } from "../app/ui/public/shell.tsx";
 
-Deno.test("session navigation groups projects by recent activity", async () => {
+test("session navigation groups projects by recent activity", async () => {
   const html = await renderToString(
     <AppShellNavigation
       activeSection={undefined}
@@ -46,8 +47,11 @@ Deno.test("session navigation groups projects by recent activity", async () => {
   const olderAlpha = html.indexOf("Older Alpha session", newestAlpha);
 
   assert(
-    betaGroup !== -1 && betaGroup < betaSession && betaSession < alphaGroup &&
-      alphaGroup < newestAlpha && newestAlpha < olderAlpha,
+    betaGroup !== -1 &&
+      betaGroup < betaSession &&
+      betaSession < alphaGroup &&
+      alphaGroup < newestAlpha &&
+      newestAlpha < olderAlpha,
   );
   for (const sessionName of ["Only Beta session", "Newest Alpha session", "Older Alpha session"]) {
     assertEquals([...html.matchAll(new RegExp(`>${sessionName}<`, "g"))].length, 2);

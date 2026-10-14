@@ -18,9 +18,11 @@ export interface SessionApi {
   create(input: CreateSessionInput): Promise<{ readonly created: boolean }>;
   /** The view browser pages render; null once the Session is deleted. */
   view(): Promise<RunnerSessionSnapshot | null>;
-  submit(
-    input: { prompt: string; requestId: string; thinkingLevel?: ThinkingLevel },
-  ): Promise<{ submissionId: number }>;
+  submit(input: {
+    prompt: string;
+    requestId: string;
+    thinkingLevel?: ThinkingLevel;
+  }): Promise<{ submissionId: number }>;
   setThinkingLevel(level: ThinkingLevel): Promise<ThinkingLevel>;
   abort(): Promise<void>;
   stop(): Promise<{ state: EnvironmentState; forced: boolean }>;
@@ -29,12 +31,16 @@ export interface SessionApi {
   delete(): Promise<void>;
   media(id: string): Promise<SessionMedia | null>;
   gitSnapshot(): Promise<SessionGitSnapshot>;
-  gitPatchChunk(
-    input: { snapshotId: string; section: SessionGitPatchSection; offset: number },
-  ): Promise<GitPatchChunk>;
-  updateGitFile(
-    input: { action: SessionGitFileAction; path: string; previousPath?: string },
-  ): Promise<{ mutationRevision: number }>;
+  gitPatchChunk(input: {
+    snapshotId: string;
+    section: SessionGitPatchSection;
+    offset: number;
+  }): Promise<GitPatchChunk>;
+  updateGitFile(input: {
+    action: SessionGitFileAction;
+    path: string;
+    previousPath?: string;
+  }): Promise<{ mutationRevision: number }>;
   /** Conversation and session events as Server-Sent Events. */
   events(request: Request): Promise<Response>;
 }

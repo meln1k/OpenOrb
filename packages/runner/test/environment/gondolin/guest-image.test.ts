@@ -1,20 +1,24 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
-import { assertEquals, assertMatch, assertRejects } from "@std/assert";
-import { TarStream, type TarStreamInput } from "@std/tar";
+import { test } from "vite-plus/test";
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { hasErrorCode } from "../../../src/runtime/errors.ts";
+import { assertEquals, assertMatch, assertRejects } from "@jsr/std__assert";
+import { TarStream, type TarStreamInput } from "@jsr/std__tar";
 import type { Result } from "@openorb/result";
 
 import {
   currentGuestImageArchitecture,
   ensureGuestImage,
   prepareGuestImageForVm,
-} from "@/src/environment/gondolin/guest-image/installer.ts";
-import type { GuestImageRelease } from "@/src/environment/gondolin/guest-image/release.ts";
+} from "../../../src/environment/gondolin/guest-image/installer.ts";
+import type { GuestImageRelease } from "../../../src/environment/gondolin/guest-image/release.ts";
 import {
   initializeSessionRuntime,
   readSessionGuestImage,
-} from "@/src/environment/gondolin/guest-image/session-runtime.ts";
+} from "../../../src/environment/gondolin/guest-image/session-runtime.ts";
 
 const BUILD_ID = "0cc0ad9d-c995-58cb-8382-a9037aa2d4cc";
 const ASSET_CONTENTS = {
@@ -25,9 +29,9 @@ const ASSET_CONTENTS = {
   "krun-empty-initrd": new Uint8Array(),
 } as const;
 
-Deno.test("installs and reuses a verified guest image atomically", async () => {
+test("installs and reuses a verified guest image atomically", async () => {
   const fixture = await createImageFixture();
-  const workingDirectory = await Deno.makeTempDir();
+  const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
   let downloads = 0;
   const fetchImage = () => {
     downloads++;
@@ -57,40 +61,39 @@ Deno.test("installs and reuses a verified guest image atomically", async () => {
     assertEquals(second, first);
     assertEquals(first.gondolinBuildId, BUILD_ID);
     assertEquals(
-      (await Array.fromAsync(Deno.readDir(join(workingDirectory, "images", "test-1"))))
-        .map((entry) => entry.name),
+      (await fs.readdir(join(workingDirectory, "images", "test-1"), { withFileTypes: true })).map(
+        (entry) => entry.name,
+      ),
       ["x64"],
     );
   } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
+    await fs.rm(workingDirectory, { recursive: true });
   }
 });
 
-for (
-  const { name, response } of [
-    {
-      name: "wrong declared size",
-      response: (archive: Uint8Array) =>
-        responseFor(archive, { "content-length": String(archive.byteLength + 1) }),
+for (const { name, response } of [
+  {
+    name: "wrong declared size",
+    response: (archive: Uint8Array) =>
+      responseFor(archive, { "content-length": String(archive.byteLength + 1) }),
+  },
+  {
+    name: "truncated body",
+    response: (archive: Uint8Array) => responseFor(archive.subarray(0, archive.byteLength - 1)),
+  },
+  {
+    name: "corrupt body",
+    response: (archive: Uint8Array) => {
+      const corrupt = archive.slice();
+      const lastIndex = corrupt.byteLength - 1;
+      corrupt[lastIndex] = (corrupt[lastIndex] ?? 0) ^ 0xff;
+      return responseFor(corrupt);
     },
-    {
-      name: "truncated body",
-      response: (archive: Uint8Array) => responseFor(archive.subarray(0, archive.byteLength - 1)),
-    },
-    {
-      name: "corrupt body",
-      response: (archive: Uint8Array) => {
-        const corrupt = archive.slice();
-        const lastIndex = corrupt.byteLength - 1;
-        corrupt[lastIndex] = (corrupt[lastIndex] ?? 0) ^ 0xff;
-        return responseFor(corrupt);
-      },
-    },
-  ]
-) {
-  Deno.test(`rejects an image archive with ${name} without a partial install`, async () => {
+  },
+]) {
+  test(`rejects an image archive with ${name} without a partial install`, async () => {
     const fixture = await createImageFixture();
-    const workingDirectory = await Deno.makeTempDir();
+    const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     try {
       const error = failure(
         await ensureGuestImage({
@@ -106,20 +109,20 @@ for (
           name === "wrong declared size"
             ? "download size header"
             : name === "truncated body"
-            ? "downloaded"
-            : "download SHA-256",
+              ? "downloaded"
+              : "download SHA-256",
         ),
       );
       assertEquals(await releaseDirectoryEntries(workingDirectory), []);
     } finally {
-      await Deno.remove(workingDirectory, { recursive: true });
+      await fs.rm(workingDirectory, { recursive: true });
     }
   });
 }
 
-Deno.test("reports an unavailable image download without a partial install", async () => {
+test("reports an unavailable image download without a partial install", async () => {
   const fixture = await createImageFixture();
-  const workingDirectory = await Deno.makeTempDir();
+  const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
   try {
     const error = failure(
       await ensureGuestImage({
@@ -133,26 +136,24 @@ Deno.test("reports an unavailable image download without a partial install", asy
     assertMatch(error.message, /https:\/\/example\.test\/guest-image\.tar\.gz/);
     assertEquals(await releaseDirectoryEntries(workingDirectory), []);
   } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
+    await fs.rm(workingDirectory, { recursive: true });
   }
 });
 
-for (
-  const hostileEntry of [
-    fileEntry("../escape", new TextEncoder().encode("escape")),
-    fileEntry("/absolute-escape", new TextEncoder().encode("escape")),
-    fileEntry("unexpected", new TextEncoder().encode("unexpected")),
-    {
-      type: "symlink" as const,
-      path: "rootfs.ext4",
-      linkname: "/etc/passwd",
-    },
-  ]
-) {
-  Deno.test(`rejects hostile archive entry ${hostileEntry.path}`, async () => {
+for (const hostileEntry of [
+  fileEntry("../escape", new TextEncoder().encode("escape")),
+  fileEntry("/absolute-escape", new TextEncoder().encode("escape")),
+  fileEntry("unexpected", new TextEncoder().encode("unexpected")),
+  {
+    type: "symlink" as const,
+    path: "rootfs.ext4",
+    linkname: "/etc/passwd",
+  },
+]) {
+  test(`rejects hostile archive entry ${hostileEntry.path}`, async () => {
     const omit = hostileEntry.path === "rootfs.ext4" ? "rootfs.ext4" : undefined;
     const fixture = await createImageFixture({ extraEntries: [hostileEntry], omit });
-    const workingDirectory = await Deno.makeTempDir();
+    const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     try {
       const error = failure(
         await ensureGuestImage({
@@ -166,35 +167,34 @@ for (
       assertEquals(await releaseDirectoryEntries(workingDirectory), []);
       if (hostileEntry.path === "../escape") {
         await assertRejects(
-          () => Deno.lstat(join(workingDirectory, "images", "test-1", "escape")),
-          Deno.errors.NotFound,
+          () => fs.lstat(join(workingDirectory, "images", "test-1", "escape")),
+          Error,
+          "ENOENT",
         );
       }
     } finally {
-      await Deno.remove(workingDirectory, { recursive: true });
+      await fs.rm(workingDirectory, { recursive: true });
     }
   });
 }
 
-for (
-  const { name, buildId, architecture, expected } of [
-    {
-      name: "wrong Gondolin build ID",
-      buildId: "f4e0ee3a-4bb8-5233-89bf-0fd54a5e4efa",
-      architecture: "x86_64" as const,
-      expected: "manifest identity is incompatible",
-    },
-    {
-      name: "wrong guest architecture",
-      buildId: BUILD_ID,
-      architecture: "aarch64" as const,
-      expected: "manifest identity is incompatible",
-    },
-  ]
-) {
-  Deno.test(`rejects ${name} without a partial install`, async () => {
+for (const { name, buildId, architecture, expected } of [
+  {
+    name: "wrong Gondolin build ID",
+    buildId: "f4e0ee3a-4bb8-5233-89bf-0fd54a5e4efa",
+    architecture: "x86_64" as const,
+    expected: "manifest identity is incompatible",
+  },
+  {
+    name: "wrong guest architecture",
+    buildId: BUILD_ID,
+    architecture: "aarch64" as const,
+    expected: "manifest identity is incompatible",
+  },
+]) {
+  test(`rejects ${name} without a partial install`, async () => {
     const fixture = await createImageFixture({ buildId, architecture });
-    const workingDirectory = await Deno.makeTempDir();
+    const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     try {
       const error = failure(
         await ensureGuestImage({
@@ -207,14 +207,14 @@ for (
       assertMatch(error.message, new RegExp(expected));
       assertEquals(await releaseDirectoryEntries(workingDirectory), []);
     } finally {
-      await Deno.remove(workingDirectory, { recursive: true });
+      await fs.rm(workingDirectory, { recursive: true });
     }
   });
 }
 
-Deno.test("fails clearly instead of replacing a corrupt cached image", async () => {
+test("fails clearly instead of replacing a corrupt cached image", async () => {
   const fixture = await createImageFixture();
-  const workingDirectory = await Deno.makeTempDir();
+  const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
   try {
     const image = success(
       await ensureGuestImage({
@@ -224,7 +224,7 @@ Deno.test("fails clearly instead of replacing a corrupt cached image", async () 
         fetch: () => Promise.resolve(responseFor(fixture.archive)),
       }),
     );
-    await Deno.writeTextFile(join(image.path, "rootfs.ext4"), "corrupt");
+    await fs.writeFile(join(image.path, "rootfs.ext4"), "corrupt");
 
     const error = failure(
       await ensureGuestImage({
@@ -239,13 +239,13 @@ Deno.test("fails clearly instead of replacing a corrupt cached image", async () 
     assertMatch(error.message, /asset checksum does not match/);
     assertMatch(error.message, /Remove that image directory and restart the runner/);
   } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
+    await fs.rm(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("rejects a changed asset even when its manifest checksum is rewritten", async () => {
+test("rejects a changed asset even when its manifest checksum is rewritten", async () => {
   const fixture = await createImageFixture();
-  const workingDirectory = await Deno.makeTempDir();
+  const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
   try {
     const image = success(
       await ensureGuestImage({
@@ -256,11 +256,11 @@ Deno.test("rejects a changed asset even when its manifest checksum is rewritten"
       }),
     );
     const changedRootfs = new TextEncoder().encode("changed rootfs");
-    await Deno.writeFile(join(image.path, "rootfs.ext4"), changedRootfs);
+    await fs.writeFile(join(image.path, "rootfs.ext4"), changedRootfs);
     const manifestPath = join(image.path, "manifest.json");
-    const manifest = JSON.parse(await Deno.readTextFile(manifestPath));
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
     manifest.checksums.rootfs = sha256(changedRootfs);
-    await Deno.writeTextFile(manifestPath, JSON.stringify(manifest));
+    await fs.writeFile(manifestPath, JSON.stringify(manifest));
 
     const error = failure(
       await ensureGuestImage({
@@ -274,13 +274,13 @@ Deno.test("rejects a changed asset even when its manifest checksum is rewritten"
     );
     assertMatch(error.message, /manifest\.json SHA-256 does not match release metadata/);
   } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
+    await fs.rm(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("reverifies a guest image immediately before VM use", async () => {
+test("reverifies a guest image immediately before VM use", async () => {
   const fixture = await createImageFixture();
-  const workingDirectory = await Deno.makeTempDir();
+  const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
   try {
     const image = success(
       await ensureGuestImage({
@@ -296,24 +296,24 @@ Deno.test("reverifies a guest image immediately before VM use", async () => {
       rootfsPath: join(image.path, "rootfs.ext4"),
     });
 
-    await Deno.writeTextFile(join(image.path, "vmlinuz-virt"), "changed kernel");
+    await fs.writeFile(join(image.path, "vmlinuz-virt"), "changed kernel");
     const error = failure(await prepareGuestImageForVm(image));
     assertMatch(error.message, /asset checksum does not match manifest\.json/);
   } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
+    await fs.rm(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("maps supported host architecture names", () => {
+test("maps supported host architecture names", () => {
   assertEquals(currentGuestImageArchitecture("x86_64"), "x64");
   assertEquals(currentGuestImageArchitecture("amd64"), "x64");
   assertEquals(currentGuestImageArchitecture("aarch64"), "arm64");
   assertEquals(currentGuestImageArchitecture("arm64"), "arm64");
 });
 
-Deno.test("sessions retain their runtime across default image upgrades and recover missing assets", async () => {
+test("sessions retain their runtime across default image upgrades and recover missing assets", async () => {
   const fixture = await createImageFixture();
-  const workingDirectory = await Deno.makeTempDir();
+  const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
   const newRelease = { ...fixture.release, id: "test-2" };
   const fetchImage = () => Promise.resolve(responseFor(fixture.archive));
   try {
@@ -326,11 +326,11 @@ Deno.test("sessions retain their runtime across default image upgrades and recov
       }),
     );
     const oldSession = join(workingDirectory, "old-session");
-    await Deno.mkdir(oldSession);
+    await fs.mkdir(oldSession);
     const oldDisk = join(oldSession, "root-disk.qcow2");
     success(await initializeSessionRuntime(oldDisk, oldImage));
-    await Deno.writeTextFile(oldDisk, "preserved disk");
-    const originalPin = await Deno.readTextFile(join(oldSession, "runtime.json"));
+    await fs.writeFile(oldDisk, "preserved disk");
+    const originalPin = await fs.readFile(join(oldSession, "runtime.json"), "utf8");
     assertEquals(JSON.parse(originalPin), {
       version: 1,
       releaseId: "test-1",
@@ -362,26 +362,26 @@ Deno.test("sessions retain their runtime across default image upgrades and recov
       rootfsPath: join(oldImage.path, "rootfs.ext4"),
     });
     const newSession = join(workingDirectory, "new-session");
-    await Deno.mkdir(newSession);
+    await fs.mkdir(newSession);
     const newDisk = join(newSession, "root-disk.qcow2");
     success(await initializeSessionRuntime(newDisk, newImage));
     assertEquals(success(await readSessionGuestImage(newDisk, newImage)).path, newImage.path);
-    await Deno.remove(oldImage.path, { recursive: true });
+    await fs.rm(oldImage.path, { recursive: true });
     assertEquals(
       success(await readSessionGuestImage(oldDisk, newImage, options)).path,
       oldImage.path,
     );
-    assertEquals(await Deno.readTextFile(oldDisk), "preserved disk");
-    assertEquals(await Deno.readTextFile(join(oldSession, "runtime.json")), originalPin);
-    assertEquals((await Deno.stat(join(oldSession, "runtime.json"))).mode! & 0o777, 0o600);
+    assertEquals(await fs.readFile(oldDisk, "utf8"), "preserved disk");
+    assertEquals(await fs.readFile(join(oldSession, "runtime.json"), "utf8"), originalPin);
+    assertEquals((await fs.stat(join(oldSession, "runtime.json"))).mode & 0o777, 0o600);
   } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
+    await fs.rm(workingDirectory, { recursive: true });
   }
 });
 
-Deno.test("missing or invalid session runtime never falls back to the default image", async () => {
+test("missing or invalid session runtime never falls back to the default image", async () => {
   const fixture = await createImageFixture();
-  const workingDirectory = await Deno.makeTempDir();
+  const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
   try {
     const image = success(
       await ensureGuestImage({
@@ -393,11 +393,12 @@ Deno.test("missing or invalid session runtime never falls back to the default im
     );
     const disk = join(workingDirectory, "root-disk.qcow2");
     failure(await readSessionGuestImage(disk, image));
-    await Deno.writeTextFile(disk, "legacy disk");
+    await fs.writeFile(disk, "legacy disk");
     failure(await initializeSessionRuntime(disk, image));
     await assertRejects(
-      () => Deno.readTextFile(join(workingDirectory, "runtime.json")),
-      Deno.errors.NotFound,
+      () => fs.readFile(join(workingDirectory, "runtime.json"), "utf8"),
+      Error,
+      "ENOENT",
     );
     const pin = {
       version: 1,
@@ -405,23 +406,21 @@ Deno.test("missing or invalid session runtime never falls back to the default im
       architecture: "x64",
       manifestSha256: image.manifestSha256,
     };
-    for (
-      const invalid of [
-        "{broken",
-        JSON.stringify({ ...pin, releaseId: "../../untrusted" }),
-        JSON.stringify({ ...pin, architecture: "arm64" }),
-        JSON.stringify({ ...pin, manifestSha256: "0".repeat(64) }),
-        JSON.stringify({ ...pin, version: 2 }),
-      ]
-    ) {
-      await Deno.writeTextFile(join(workingDirectory, "runtime.json"), invalid);
+    for (const invalid of [
+      "{broken",
+      JSON.stringify({ ...pin, releaseId: "../../untrusted" }),
+      JSON.stringify({ ...pin, architecture: "arm64" }),
+      JSON.stringify({ ...pin, manifestSha256: "0".repeat(64) }),
+      JSON.stringify({ ...pin, version: 2 }),
+    ]) {
+      await fs.writeFile(join(workingDirectory, "runtime.json"), invalid);
       failure(await readSessionGuestImage(disk, image));
       success(await initializeSessionRuntime(disk, image));
-      assertEquals(await Deno.readTextFile(join(workingDirectory, "runtime.json")), invalid);
-      assertEquals(await Deno.readTextFile(disk), "legacy disk");
+      assertEquals(await fs.readFile(join(workingDirectory, "runtime.json"), "utf8"), invalid);
+      assertEquals(await fs.readFile(disk, "utf8"), "legacy disk");
     }
   } finally {
-    await Deno.remove(workingDirectory, { recursive: true });
+    await fs.rm(workingDirectory, { recursive: true });
   }
 });
 
@@ -455,21 +454,23 @@ async function createImageFixture(options: ImageFixtureOptions = {}) {
     krunKernel: sha256(ASSET_CONTENTS["krun-kernel"]),
     krunInitrd: sha256(ASSET_CONTENTS["krun-empty-initrd"]),
   };
-  const manifest = new TextEncoder().encode(JSON.stringify({
-    version: 1,
-    buildId,
-    config: { arch: architecture },
-    buildTime: "1970-01-01T00:00:00.000Z",
-    assets: {
-      kernel: "vmlinuz-virt",
-      initramfs: "initramfs.cpio.lz4",
-      rootfs: "rootfs.ext4",
-      krunKernel: "krun-kernel",
-      krunInitrd: "krun-empty-initrd",
-    },
-    checksums,
-    runtimeDefaults: { rootfsMode: "cow" },
-  }));
+  const manifest = new TextEncoder().encode(
+    JSON.stringify({
+      version: 1,
+      buildId,
+      config: { arch: architecture },
+      buildTime: "1970-01-01T00:00:00.000Z",
+      assets: {
+        kernel: "vmlinuz-virt",
+        initramfs: "initramfs.cpio.lz4",
+        rootfs: "rootfs.ext4",
+        krunKernel: "krun-kernel",
+        krunInitrd: "krun-empty-initrd",
+      },
+      checksums,
+      runtimeDefaults: { rootfsMode: "cow" },
+    }),
+  );
   const manifestSha256 = sha256(manifest);
   const entries: TarStreamInput[] = [fileEntry("manifest.json", manifest)];
   for (const [path, contents] of Object.entries(ASSET_CONTENTS)) {
@@ -484,7 +485,12 @@ async function createImageFixture(options: ImageFixtureOptions = {}) {
 }
 
 async function createArchive(entries: TarStreamInput[]): Promise<Uint8Array> {
-  const readable = ReadableStream.from(entries)
+  const readable = new ReadableStream<TarStreamInput>({
+    start(controller) {
+      for (const entry of entries) controller.enqueue(entry);
+      controller.close();
+    },
+  })
     .pipeThrough(new TarStream())
     .pipeThrough(new CompressionStream("gzip"));
   return new Uint8Array(await new Response(readable).arrayBuffer());
@@ -495,7 +501,12 @@ function fileEntry(path: string, contents: Uint8Array): TarStreamInput {
     type: "file",
     path,
     size: contents.byteLength,
-    readable: ReadableStream.from([contents]),
+    readable: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(contents);
+        controller.close();
+      },
+    }),
   };
 }
 
@@ -537,9 +548,9 @@ function sha256(bytes: Uint8Array): string {
 async function releaseDirectoryEntries(workingDirectory: string): Promise<string[]> {
   const directory = join(workingDirectory, "images", "test-1");
   try {
-    return (await Array.fromAsync(Deno.readDir(directory))).map((entry) => entry.name);
+    return await fs.readdir(directory);
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return [];
+    if (hasErrorCode(error, "ENOENT")) return [];
     throw error;
   }
 }

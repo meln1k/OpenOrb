@@ -5,9 +5,7 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { RunnerIdentity } from "./runner-api-schemas.ts";
 import { MAX_RUNNER_BULK_RPC_FRAME_BYTES } from "./runner-api-limits.ts";
 
-export const SessionGitSnapshotId = Schema.String.check(
-  Schema.isPattern(/^[0-9a-f]{64}$/),
-);
+export const SessionGitSnapshotId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 export type SessionGitSnapshotId = typeof SessionGitSnapshotId.Type;
 
 export const SessionGitPatchSection = Schema.Literals(["staged", "unstaged"]);

@@ -1,26 +1,24 @@
-import { assertStringIncludes } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertStringIncludes } from "@jsr/std__assert";
 import { renderToString } from "remix/component/server";
 
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
-} from "@/app/ui/public/components/index.ts";
-import { AppShellLayout } from "@/app/ui/public/shell.tsx";
+} from "../app/ui/public/components/index.ts";
+import { AppShellLayout } from "../app/ui/public/shell.tsx";
 
-Deno.test("resizable components render the shadcn composition and sizing attributes", async () => {
+test("resizable components render the shadcn composition and sizing attributes", async () => {
   const html = await renderToString(
     <ResizablePanelGroup id="layout" orientation="vertical">
-      <ResizablePanel
-        id="sidebar"
-        defaultSize="25%"
-        minSize="10%"
-        maxSize="40%"
-      >
+      <ResizablePanel id="sidebar" defaultSize="25%" minSize="10%" maxSize="40%">
         Sidebar
       </ResizablePanel>
       <ResizableHandle id="divider" withHandle />
-      <ResizablePanel id="content" defaultSize="75%">Content</ResizablePanel>
+      <ResizablePanel id="content" defaultSize="75%">
+        Content
+      </ResizablePanel>
     </ResizablePanelGroup>,
   );
 
@@ -40,7 +38,7 @@ Deno.test("resizable components render the shadcn composition and sizing attribu
   assertStringIncludes(html, 'aria-hidden="true" data-slot="resizable-handle-icon"');
 });
 
-Deno.test("disabled resizable handles are not keyboard focusable", async () => {
+test("disabled resizable handles are not keyboard focusable", async () => {
   const html = await renderToString(<ResizableHandle id="divider" disabled />);
 
   assertStringIncludes(
@@ -49,7 +47,7 @@ Deno.test("disabled resizable handles are not keyboard focusable", async () => {
   );
 });
 
-Deno.test("app shell composes both desktop sidebars as resizable panels", async () => {
+test("app shell composes both desktop sidebars as resizable panels", async () => {
   const html = await renderToString(
     <AppShellLayout
       composer={{

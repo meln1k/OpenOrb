@@ -1,4 +1,4 @@
-/// <reference lib="deno.unstable" />
+import type { TSESLint, TSESTree } from "@typescript-eslint/utils";
 
 // Adapted from dmmulroy/anti-slop revision 446268e5d15baa968eaec669ff65358d36ae6259.
 
@@ -9,16 +9,18 @@ const typeofMessage =
 const safetyMessage =
   "This type assertion has no `SAFETY:` justification. State the checked invariant immediately before the assertion or its containing statement.";
 
-type Assertion = Deno.lint.TSAsExpression | Deno.lint.TSTypeAssertion;
+type Assertion = TSESTree.TSAsExpression | TSESTree.TSTypeAssertion;
 
-function isAssertion(node: Deno.lint.Node): node is Assertion {
+function isAssertion(node: TSESTree.Node): node is Assertion {
   return node.type === "TSAsExpression" || node.type === "TSTypeAssertion";
 }
 
 function isConstAssertion(node: Assertion): boolean {
-  return node.typeAnnotation.type === "TSTypeReference" &&
+  return (
+    node.typeAnnotation.type === "TSTypeReference" &&
     node.typeAnnotation.typeName.type === "Identifier" &&
-    node.typeAnnotation.typeName.name === "const";
+    node.typeAnnotation.typeName.name === "const"
+  );
 }
 
 function isOutermostAssertion(node: Assertion): boolean {
@@ -28,7 +30,7 @@ function isOutermostAssertion(node: Assertion): boolean {
 function isForbiddenChain(node: Assertion): boolean {
   let count = 0;
   let hasNonConst = false;
-  let current: Deno.lint.Expression = node;
+  let current: TSESTree.Expression = node;
   while (isAssertion(current)) {
     count++;
     hasNonConst ||= !isConstAssertion(current);
@@ -38,28 +40,35 @@ function isForbiddenChain(node: Assertion): boolean {
 }
 
 const noChainedTypeAssertions = {
+  meta: { type: "problem", schema: [], messages: { assertion: assertionMessage } },
+  defaultOptions: [],
   create(context) {
     const check = (node: Assertion) => {
       if (isOutermostAssertion(node) && isForbiddenChain(node)) {
-        context.report({ node, message: assertionMessage });
+        context.report({ node, messageId: "assertion" });
       }
     };
     return { TSAsExpression: check, TSTypeAssertion: check };
   },
-} satisfies Deno.lint.Rule;
+} satisfies TSESLint.RuleModule<string, []>;
 
 const noRuntimeTypeof = {
+  meta: { type: "problem", schema: [], messages: { typeof: typeofMessage } },
+  defaultOptions: [],
   create(context) {
     return {
       UnaryExpression(node) {
-        if (node.operator === "typeof") context.report({ node, message: typeofMessage });
+        if (node.operator === "typeof") context.report({ node, messageId: "typeof" });
       },
     };
   },
-} satisfies Deno.lint.Rule;
+} satisfies TSESLint.RuleModule<string, []>;
 
 const commentOwners = new Set([
   "ExpressionStatement",
+  "ExportNamedDeclaration",
+  "ExportDefaultDeclaration",
+  "IfStatement",
   "PropertyDefinition",
   "ReturnStatement",
   "ThrowStatement",
@@ -67,25 +76,39 @@ const commentOwners = new Set([
 ]);
 
 const requireSafetyComment = {
+  meta: { type: "problem", schema: [], messages: { safety: safetyMessage } },
+  defaultOptions: [],
   create(context) {
     const check = (node: Assertion) => {
       if (isConstAssertion(node)) return;
       const ancestors = context.sourceCode.getAncestors(node);
       const candidates = [node, ...ancestors.toReversed()];
       for (const current of candidates) {
-        const justified = context.sourceCode.getCommentsBefore(current).some((comment) =>
-          comment.range[1] <= node.range[0] && /\bSAFETY\s*:/u.test(comment.value)
-        );
+        const justified = context.sourceCode
+          .getCommentsBefore(current)
+          .some(
+            (comment) => comment.range[1] <= node.range[0] && /\bSAFETY\s*:/u.test(comment.value),
+          );
         if (justified) return;
-        if (commentOwners.has(current.type) || current.type === "Program") break;
+        if (commentOwners.has(current.type)) {
+          const parent = current.parent;
+          if (
+            parent?.type === "ExportNamedDeclaration" ||
+            parent?.type === "ExportDefaultDeclaration" ||
+            (parent?.type === "IfStatement" && parent.consequent === current)
+          )
+            continue;
+          break;
+        }
+        if (current.type === "Program" || current.type === "BlockStatement") break;
       }
-      context.report({ node, message: safetyMessage });
+      context.report({ node, messageId: "safety" });
     };
     return { TSAsExpression: check, TSTypeAssertion: check };
   },
-} satisfies Deno.lint.Rule;
+} satisfies TSESLint.RuleModule<string, []>;
 
-export const syntaxAntiSlopRules: Record<string, Deno.lint.Rule> = {
+export const syntaxAntiSlopRules: Record<string, TSESLint.RuleModule<string, []>> = {
   "no-chained-type-assertions": noChainedTypeAssertions,
   "no-runtime-typeof": noRuntimeTypeof,
   "require-safety-comment-for-type-assertion": requireSafetyComment,

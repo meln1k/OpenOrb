@@ -1,7 +1,7 @@
 import { css, type Handle, type RemixNode } from "remix/component";
 import { ImportMap } from "remix/component/server";
 
-import { clientScriptEntry } from "@/app/assets.ts";
+import { clientScriptEntry } from "../assets.ts";
 
 export interface DocumentProps {
   children?: RemixNode;

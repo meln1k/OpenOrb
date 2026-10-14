@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertRejects } from "@jsr/std__assert";
 import {
   ProjectId,
   SessionEnvironmentSecret,
@@ -9,9 +10,9 @@ import { createRpcClient } from "./rpc-client.ts";
 import { WorkspaceSessionStorage } from "../../app/data/workspace-session-storage.ts";
 
 // Run against the isolated celld-worker fixture, whose DO fetch() deliberately throws.
-const url = Deno.env.get("OPENORB_TEST_WORKSPACE_URL");
+const url = process.env["OPENORB_TEST_WORKSPACE_URL"];
 
-Deno.test("HTTP test driver alone decodes Result/void undefined and omits optional arguments", async () => {
+test("HTTP test driver alone decodes Result/void undefined and omits optional arguments", async () => {
   const workspaceId = WorkspaceId.make(crypto.randomUUID());
   const replies = [
     Response.json([null, null]),
@@ -55,11 +56,10 @@ Deno.test("HTTP test driver alone decodes Result/void undefined and omits option
   }
 });
 
-Deno.test({
-  name:
-    "native celld RPC preserves configuration, wire records, browser sessions, and OAuth alarms",
-  ignore: !url,
-  async fn() {
+test(
+  "native celld RPC preserves configuration, wire records, browser sessions, and OAuth alarms",
+  { skip: !url, timeout: 120_000 },
+  async () => {
     assert(url);
     const health = await fetch(new URL("/healthz", url));
     assertEquals(health.status, 200);
@@ -85,14 +85,11 @@ Deno.test({
     assert(secrets);
     assertEquals(Object.getPrototypeOf(secrets[0]), Object.prototype);
     assertEquals(secrets[0] instanceof SessionEnvironmentSecret, false);
-    assertEquals(
-      secrets[0],
-      {
-        name: "RPC_TOKEN",
-        value: "fixture-secret",
-        allowedHosts: ["api.example.com"],
-      },
-    );
+    assertEquals(secrets[0], {
+      name: "RPC_TOKEN",
+      value: "fixture-secret",
+      allowedHosts: ["api.example.com"],
+    });
     const enrollment = await workspace.getRunnerEnrollmentToken(workspaceId);
     assertEquals(new Date(enrollment.createdAt).toISOString(), enrollment.createdAt);
     const enrolled = await workspace.enrollRunner({
@@ -108,8 +105,9 @@ Deno.test({
     assertEquals(runner.architecture, "arm64");
     assertEquals(runner.revokedAt, null);
     assertEquals(await workspace.revokeRunner(workspaceId, runner.id), "revoked");
-    const revokedAt = (await workspace.listRunners(workspaceId))
-      .find((r) => r.id === runner.id)?.revokedAt;
+    const revokedAt = (await workspace.listRunners(workspaceId)).find(
+      (r) => r.id === runner.id,
+    )?.revokedAt;
     assert(revokedAt !== null && revokedAt !== undefined);
     assertEquals(new Date(revokedAt).toISOString(), revokedAt);
     assertEquals(await workspace.authenticateRunner(enrolled.runnerToken), null);
@@ -119,11 +117,14 @@ Deno.test({
       createdAt: new Date().toISOString(),
       initialPromptPreview: "RPC catalog record",
     };
-    assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [entry]), [{
-      acceptedSessionIds: [entry.id],
-      tombstonedSessionIds: [],
-      rejected: [],
-    }, undefined]);
+    assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [entry]), [
+      {
+        acceptedSessionIds: [entry.id],
+        tombstonedSessionIds: [],
+        rejected: [],
+      },
+      undefined,
+    ]);
     const storage = new WorkspaceSessionStorage(workspace);
     const anonymous = await storage.read(null);
     anonymous.set("csrf", "fixture-csrf");
@@ -153,16 +154,9 @@ Deno.test({
     assert((await workspace.resolveProviderAccessToken(workspaceId))?.startsWith("e30."));
     assertEquals(await workspace.disconnectProvider(workspaceId), { status: "deleted" });
     assertEquals(
-      await workspace.deleteSessionCatalogEntry(
-        workspaceId,
-        entry.id,
-        new Date().toISOString(),
-      ),
+      await workspace.deleteSessionCatalogEntry(workspaceId, entry.id, new Date().toISOString()),
       ["deleted", undefined],
     );
-    assertEquals(await workspace.deleteProject(workspaceId, project.id), [
-      "deleted",
-      undefined,
-    ]);
+    assertEquals(await workspace.deleteProject(workspaceId, project.id), ["deleted", undefined]);
   },
-});
+);

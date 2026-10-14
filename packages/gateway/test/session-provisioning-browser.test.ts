@@ -1,11 +1,12 @@
+import { test } from "vite-plus/test";
 import {
   assert,
   assertEquals,
   assertMatch,
   assertNotMatch,
   assertStringIncludes,
-} from "@std/assert";
-import { decodeBase64 } from "@std/encoding/base64";
+} from "@jsr/std__assert";
+import { Buffer } from "node:buffer";
 
 import { SessionArtifactId } from "@openorb/protocol/runner-bulk-api";
 import {
@@ -16,23 +17,23 @@ import {
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Schema } from "effect";
-import type { SessionCatalogEntry } from "@/app/cells/workspace/api.ts";
+import type { SessionCatalogEntry } from "../app/cells/workspace/api.ts";
 import type {
   CreateSessionInput,
   MediaReader,
   SessionApi,
   SessionDirectory,
   SessionMedia,
-} from "@/app/cells/session/api.ts";
+} from "../app/cells/session/api.ts";
 import {
   createAppServices,
   disconnectedRunnerRegistry,
   type TestRunnerConnections,
-} from "@/test/workspace-test.ts";
-import { createAppRouter } from "@/test/workspace-test.ts";
-import { routes } from "@/app/routes.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
-import { activate, createWorkspace } from "@/test/workspace-test.ts";
+} from "./workspace-test.ts";
+import { createAppRouter } from "./workspace-test.ts";
+import { routes } from "../app/routes.ts";
+import { createTestServer } from "./http-test-server.ts";
+import { activate, createWorkspace } from "./workspace-test.ts";
 
 const PASSWORD = "[REDACTED:password] horse battery staple";
 const GITHUB_TOKEN = "browser-provisioning-github-token";
@@ -60,21 +61,21 @@ const INLINE_IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0
 const GIT_SNAPSHOT_ID = "a".repeat(64);
 const GIT_PATCH_BYTES = new TextEncoder().encode("diff --git a/README.md b/README.md\n");
 const SESSION_UNREACHABLE = "The Session Durable Object is unreachable.";
-const CONVERSATION_SNAPSHOT_EVENT = `event: session\ndata: ${
-  JSON.stringify({
-    type: "conversation.snapshot",
-    view: {
-      conversation: { id: 0 },
-      entries: [{
+const CONVERSATION_SNAPSHOT_EVENT = `event: session\ndata: ${JSON.stringify({
+  type: "conversation.snapshot",
+  view: {
+    conversation: { id: 0 },
+    entries: [
+      {
         id: 1,
         conversationId: 0,
         kind: "pi.user",
         model: [{ role: "user", content: INITIAL_PROMPT }],
-      }],
-      docs: {},
-    },
-  })
-}\n\n`;
+      },
+    ],
+    docs: {},
+  },
+})}\n\n`;
 
 type SessionMethod = keyof SessionApi;
 
@@ -134,14 +135,22 @@ class BrowserTestSessions {
       const bytes = this.objects.get(key);
       if (bytes === undefined) return Promise.resolve(null);
       const slice = bytes.slice(options.range.offset, options.range.offset + options.range.length);
-      return Promise.resolve({ body: ReadableStream.from([slice]) });
+      return Promise.resolve({
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(slice);
+            controller.close();
+          },
+        }),
+      });
     },
   };
 
   inputsOf(method: SessionMethod, sessionId?: string): unknown[] {
     return this.calls
-      .filter((call) =>
-        call.method === method && (sessionId === undefined || call.sessionId === sessionId)
+      .filter(
+        (call) =>
+          call.method === method && (sessionId === undefined || call.sessionId === sessionId),
       )
       .map((call) => call.input);
   }
@@ -320,7 +329,7 @@ function createSessionServer(store: ReturnType<typeof activate>["workspace"]) {
   return { sessions, router };
 }
 
-Deno.test("session composer creates a new server-assigned session on each submission without client initialization", async () => {
+test("session composer creates a new server-assigned session on each submission without client initialization", async () => {
   const { workspace: store } = activate();
   const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
@@ -352,11 +361,9 @@ Deno.test("session composer creates a new server-assigned session on each submis
 
     // Preserve SSR hidden fields, as a submission without SessionComposerBehavior would.
     const body = new URLSearchParams();
-    for (
-      const field of form[2]!.matchAll(
-        /<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g,
-      )
-    ) {
+    for (const field of form[2]!.matchAll(
+      /<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g,
+    )) {
       body.set(field[1]!, field[2]!);
     }
     assertNotMatch(form[2]!, /name="sessionId"/);
@@ -412,7 +419,7 @@ Deno.test("session composer creates a new server-assigned session on each submis
   }
 });
 
-Deno.test("sessions start in the built-in sandbox without a runner, and by choice with one", async () => {
+test("sessions start in the built-in sandbox without a runner, and by choice with one", async () => {
   const { workspace: store } = activate();
   const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
@@ -433,11 +440,9 @@ Deno.test("sessions start in the built-in sandbox without a runner, and by choic
       const form = composer[1]!.match(/<form[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/);
       assert(form, "expected the session creation form");
       const body = new URLSearchParams();
-      for (
-        const field of form[2]!.matchAll(
-          /<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g,
-        )
-      ) {
+      for (const field of form[2]!.matchAll(
+        /<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g,
+      )) {
         body.set(field[1]!, field[2]!);
       }
       body.set("model", MODEL);
@@ -513,7 +518,7 @@ Deno.test("sessions start in the built-in sandbox without a runner, and by choic
   }
 });
 
-Deno.test("browser form waits for Session creation, catalogs first, rolls back failures, and keeps secrets in the gateway", async () => {
+test("browser form waits for Session creation, catalogs first, rolls back failures, and keeps secrets in the gateway", async () => {
   const { workspace: store, storage } = activate();
   const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
@@ -647,12 +652,14 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
     const sessionId = create.sessionId;
     assert(sessionId !== composerSessionId);
     assertEquals(location, routes.app.sessions.detail.href({ sessionId }));
-    assertEquals(catalogAtCreate, [{
-      id: sessionId,
-      projectId: projectResult.project.id,
-      createdAt: create.createdAt,
-      initialPromptPreview: "Inspect this repository and explain the architecture.",
-    }]);
+    assertEquals(catalogAtCreate, [
+      {
+        id: sessionId,
+        projectId: projectResult.project.id,
+        createdAt: create.createdAt,
+        initialPromptPreview: "Inspect this repository and explain the architecture.",
+      },
+    ]);
     assertEquals(create, {
       workspaceId: client.workspaceId,
       sessionId,
@@ -676,12 +683,14 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
       FROM sessions WHERE workspaceId = ?`,
       client.workspaceId,
     );
-    assertEquals(catalog, [{
-      id: sessionId,
-      projectId: projectResult.project.id,
-      createdAt: create.createdAt,
-      initialPromptPreview: "Inspect this repository and explain the architecture.",
-    }]);
+    assertEquals(catalog, [
+      {
+        id: sessionId,
+        projectId: projectResult.project.id,
+        createdAt: create.createdAt,
+        initialPromptPreview: "Inspect this repository and explain the architecture.",
+      },
+    ]);
 
     // A Session that cannot be created leaves no catalog entry and reopens the composer.
     sessions.createError = "The runner could not accept the Session.";
@@ -782,24 +791,15 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
       detailHtml,
       /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/app\/actions\/sessions\/public\/session-changes-panel\.tsx"/,
     );
-    assertMatch(
-      detailHtml,
-      /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/npm\//,
-    );
+    assertMatch(detailHtml, /<link data-rmx(?:-module-preload)?[^>]+href="\/assets\/npm\//);
     assertNotMatch(detailHtml, /"exportName":"SessionVmControl"/);
     assertNotMatch(detailHtml, /"exportName":"SessionChangesPanel"/);
     assertMatch(detailHtml, /aria-label="Session changes"/);
     assertMatch(detailHtml, />Changes<\/strong>/);
-    assertMatch(
-      detailHtml,
-      new RegExp(`action="/app/sessions/${sessionId}/messages"`),
-    );
+    assertMatch(detailHtml, new RegExp(`action="/app/sessions/${sessionId}/messages"`));
     assertMatch(detailHtml, /<textarea[^>]*name="prompt"[^>]*aria-label="Continue session"/);
     assertMatch(detailHtml, /aria-label="Send prompt"/);
-    assertMatch(
-      detailHtml,
-      new RegExp(`action="/app/sessions/${sessionId}/stop"`),
-    );
+    assertMatch(detailHtml, new RegExp(`action="/app/sessions/${sessionId}/stop"`));
     assertMatch(detailHtml, /aria-label="Agent: idle · Environment: running"/);
     assertMatch(detailHtml, /aria-label="Stop Session"/);
     assertNotMatch(detailHtml, /data-session-toolbar/);
@@ -810,10 +810,7 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
     assert(!detailHtml.includes(ENVIRONMENT_SECRET_VALUE));
 
     const frame = await fetch(
-      new URL(
-        routes.app.sessions.frame.href({ sessionId: sessionId }),
-        server.baseUrl,
-      ),
+      new URL(routes.app.sessions.frame.href({ sessionId: sessionId }), server.baseUrl),
       { headers: { Cookie: client.cookie } },
     );
     assertEquals(frame.status, 200);
@@ -823,10 +820,7 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
     assertNotMatch(frameHtml, /aria-label="Primary navigation"/);
 
     const anonymousFrame = await fetch(
-      new URL(
-        routes.app.sessions.frame.href({ sessionId: sessionId }),
-        server.baseUrl,
-      ),
+      new URL(routes.app.sessions.frame.href({ sessionId: sessionId }), server.baseUrl),
       { redirect: "manual" },
     );
     assertEquals(anonymousFrame.status, 302);
@@ -859,7 +853,8 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
     );
     const projectsLink = detailHtml.indexOf(routes.app.projects.index.href(), olderSidebarLink);
     assert(
-      newerSidebarLink !== -1 && newerSidebarLink < currentSidebarLink &&
+      newerSidebarLink !== -1 &&
+        newerSidebarLink < currentSidebarLink &&
         currentSidebarLink < olderSidebarLink,
     );
     assert(projectsLink > olderSidebarLink);
@@ -889,7 +884,10 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
     assertEquals(gitPatchResponse.status, 200);
     assertEquals(gitPatchResponse.headers.get("cache-control"), "no-store");
     const gitPatch = await gitPatchResponse.json();
-    assertEquals(new TextDecoder().decode(decodeBase64(gitPatch.bytes)), "DME.md b/README.");
+    assertEquals(
+      new TextDecoder().decode(Buffer.from(gitPatch.bytes, "base64")),
+      "DME.md b/README.",
+    );
     assertEquals(
       { ...gitPatch, bytes: undefined },
       {
@@ -1244,14 +1242,8 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
       headers: { Cookie: client.cookie },
     });
     const runningHtml = await runningDetail.text();
-    assertMatch(
-      runningHtml,
-      new RegExp(`action="/app/sessions/${sessionId}/abort"`),
-    );
-    assertMatch(
-      runningHtml,
-      new RegExp(`form="session-${sessionId}-abort"`),
-    );
+    assertMatch(runningHtml, new RegExp(`action="/app/sessions/${sessionId}/abort"`));
+    assertMatch(runningHtml, new RegExp(`form="session-${sessionId}-abort"`));
     assertMatch(runningHtml, /aria-label="Stop active turn"/);
     assertMatch(runningHtml, /title="Stop active turn"/);
     assertMatch(runningHtml, /data-slot="stop-icon"/);
@@ -1263,10 +1255,7 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
       runningHtml,
       /<button(?=[^>]*aria-label="Stop active turn")(?![^>]*disabled)[^>]*>/,
     );
-    assertMatch(
-      runningHtml,
-      /<button(?=[^>]*aria-label="Stop Session")(?![^>]*disabled)[^>]*>/,
-    );
+    assertMatch(runningHtml, /<button(?=[^>]*aria-label="Stop Session")(?![^>]*disabled)[^>]*>/);
     assertNotMatch(runningHtml, /aria-label="Send prompt"/);
     assertNotMatch(runningHtml, />Abort<\/button>/);
     const busyStop = await fetch(new URL(stopHref, server.baseUrl), {
@@ -1344,10 +1333,7 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
       offlineHtml,
       /<textarea(?=[^>]*aria-label="Continue session")(?![^>]*disabled)[^>]*>/,
     );
-    assertMatch(
-      offlineHtml,
-      /<button(?=[^>]*aria-label="Send prompt")(?=[^>]*disabled)[^>]*>/,
-    );
+    assertMatch(offlineHtml, /<button(?=[^>]*aria-label="Send prompt")(?=[^>]*disabled)[^>]*>/);
     assertNotMatch(offlineHtml, /openorb\/browser-test/);
     assertNotMatch(offlineHtml, /0123456789abcdef0123456789abcdef01234567/);
 
@@ -1415,13 +1401,15 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
       state: "error",
       agentState: "error",
       environmentState: "error",
-      issues: [{
-        category: "vm-start",
-        severity: "failure",
-        message: "The Gondolin VM could not be started.",
-        diagnostics: "qemu exited safely",
-        recovery: "retry-provisioning",
-      }],
+      issues: [
+        {
+          category: "vm-start",
+          severity: "failure",
+          message: "The Gondolin VM could not be started.",
+          diagnostics: "qemu exited safely",
+          recovery: "retry-provisioning",
+        },
+      ],
     });
     const failedDetail = await fetch(new URL(location, server.baseUrl), {
       headers: { Cookie: client.cookie },
@@ -1492,7 +1480,7 @@ Deno.test("browser form waits for Session creation, catalogs first, rolls back f
   }
 });
 
-Deno.test("session routes enforce auth, CSRF, project ownership, and runner ownership", async () => {
+test("session routes enforce auth, CSRF, project ownership, and runner ownership", async () => {
   const { workspace: store } = activate();
   const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
@@ -1530,10 +1518,10 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
     const html = await page.text();
     assertMatch(html, /DeepSeek V4 Flash/);
     assertMatch(html, /GPT-4\.1/);
-    const sessionsIndex = await fetch(
-      new URL(routes.app.sessions.index.href(), server.baseUrl),
-      { redirect: "manual", headers: { Cookie: client.cookie } },
-    );
+    const sessionsIndex = await fetch(new URL(routes.app.sessions.index.href(), server.baseUrl), {
+      redirect: "manual",
+      headers: { Cookie: client.cookie },
+    });
     assertEquals(sessionsIndex.status, 302);
     assertEquals(sessionsIndex.headers.get("location"), routes.app.index.href());
     const composerSessionId = crypto.randomUUID();
@@ -1704,7 +1692,7 @@ Deno.test("session routes enforce auth, CSRF, project ownership, and runner owne
   }
 });
 
-Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolates tenants", async () => {
+test("browser deletion confirms, dispatches cleanup, tombstones, and isolates tenants", async () => {
   const { workspace: store, storage } = activate();
   const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
@@ -1777,9 +1765,10 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     assertEquals(deleted.status, 303);
     assertEquals(deleted.headers.get("location"), routes.app.index.href());
     assertEquals(await store.getSessionCatalogEntry(client.workspaceId, onlineSession.id), null);
-    assertEquals(sessions.calls.filter((call) => call.method === "delete"), [
-      { sessionId: onlineSession.id, method: "delete", input: undefined },
-    ]);
+    assertEquals(
+      sessions.calls.filter((call) => call.method === "delete"),
+      [{ sessionId: onlineSession.id, method: "delete", input: undefined }],
+    );
     assertEquals(catalogAtDelete, [null]);
     assertEquals(sessions.views.has(onlineSession.id), false);
 
@@ -1819,9 +1808,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     );
     const [foreignReconciled] = await otherWorkspace.reconcileSessionManifestEntries(
       otherWorkspaceId,
-      [
-        foreignSession,
-      ],
+      [foreignSession],
     );
     assert(foreignReconciled);
     // A Session of another Workspace is never addressed, even when it exists and is healthy.
@@ -1846,9 +1833,7 @@ Deno.test("browser deletion confirms, dispatches cleanup, tombstones, and isolat
     );
     const [sameIdReconciled] = await otherWorkspace.reconcileSessionManifestEntries(
       otherWorkspaceId,
-      [
-        sameIdForOtherWorkspace,
-      ],
+      [sameIdForOtherWorkspace],
     );
     assert(sameIdReconciled);
     assertEquals(sameIdReconciled.acceptedSessionIds, [onlineSession.id]);
@@ -2056,12 +2041,14 @@ async function assertForeignSessionHidden(
     ["gitSnapshot", get(routes.api.sessions.gitSnapshot.href({ sessionId }))],
     [
       "gitPatchChunk",
-      get(routes.api.sessions.gitPatchChunk.href({
-        sessionId,
-        snapshotId: GIT_SNAPSHOT_ID,
-        section: "staged",
-        offset: "0",
-      })),
+      get(
+        routes.api.sessions.gitPatchChunk.href({
+          sessionId,
+          snapshotId: GIT_SNAPSHOT_ID,
+          section: "staged",
+          offset: "0",
+        }),
+      ),
     ],
     ["artifact", get(routes.api.sessions.artifact.href({ sessionId, artifactId: ARTIFACT_ID }))],
     ["events", get(routes.api.sessions.events.href({ sessionId }))],
@@ -2087,14 +2074,12 @@ function submitInputs(
 }
 
 function assertNoSecrets(source: string): void {
-  for (
-    const plaintext of [
-      GITHUB_TOKEN,
-      MODEL_PROVIDER_KEY,
-      OPENAI_PROVIDER_KEY,
-      ENVIRONMENT_SECRET_VALUE,
-    ]
-  ) {
+  for (const plaintext of [
+    GITHUB_TOKEN,
+    MODEL_PROVIDER_KEY,
+    OPENAI_PROVIDER_KEY,
+    ENVIRONMENT_SECRET_VALUE,
+  ]) {
     assertEquals(source.includes(plaintext), false, `${plaintext} must stay in the gateway`);
   }
 }

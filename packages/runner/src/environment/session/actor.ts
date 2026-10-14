@@ -62,21 +62,24 @@ export const makeEnvironmentActor = Effect.fn("makeEnvironmentActor")(function* 
   const rejected = (message: string) => new EnvironmentRejected({ sessionId, message });
 
   const persist = (event: EnvironmentEvent) =>
-    persistence.withPermit(
-      store.append(sessionId, sequence, event).pipe(
-        Effect.map((next) => {
-          sequence = next;
-          record = event.type === "disk.initialized"
-            ? { ...record, diskInitialized: true }
-            : event.type === "environment.changed"
-            ? { ...record, state: event.state }
-            : event.type === "stop.completed"
-            ? { ...record, state: "stopped" }
-            : record;
-        }),
-        Effect.uninterruptible,
-      ),
-    ).pipe(Effect.andThen(Effect.suspend(() => onChange(environmentSnapshot(record)))));
+    persistence
+      .withPermit(
+        store.append(sessionId, sequence, event).pipe(
+          Effect.map((next) => {
+            sequence = next;
+            record =
+              event.type === "disk.initialized"
+                ? { ...record, diskInitialized: true }
+                : event.type === "environment.changed"
+                  ? { ...record, state: event.state }
+                  : event.type === "stop.completed"
+                    ? { ...record, state: "stopped" }
+                    : record;
+          }),
+          Effect.uninterruptible,
+        ),
+      )
+      .pipe(Effect.andThen(Effect.suspend(() => onChange(environmentSnapshot(record)))));
 
   const lifecycle = yield* makeEnvironmentLifecycle({
     boot: (acquired) =>
@@ -91,13 +94,15 @@ export const makeEnvironmentActor = Effect.fn("makeEnvironmentActor")(function* 
           rootDiskPath,
           sessionLabel: `openorb session ${sessionId}`,
           sessionId,
-          ...(record.definition.repository === undefined ? {} : {
-            github: {
-              repositoryUrl: record.definition.repository.url,
-              gitAuthor: record.definition.repository.gitAuthor,
-              ...(githubToken === undefined ? {} : { token: githubToken }),
-            },
-          }),
+          ...(record.definition.repository === undefined
+            ? {}
+            : {
+                github: {
+                  repositoryUrl: record.definition.repository.url,
+                  gitAuthor: record.definition.repository.gitAuthor,
+                  ...(githubToken === undefined ? {} : { token: githubToken }),
+                },
+              }),
           ...(environmentSecrets === undefined ? {} : { environmentSecrets }),
           cpuCount: resources.cpuCount,
           memoryMiB: resources.memoryMiB,
@@ -113,7 +118,7 @@ export const makeEnvironmentActor = Effect.fn("makeEnvironmentActor")(function* 
         Effect.mapError((cause) =>
           cause instanceof AgentEnvironmentError
             ? cause
-            : new AgentEnvironmentError("The guest environment could not be started.", cause)
+            : new AgentEnvironmentError("The guest environment could not be started.", cause),
         ),
       ),
     changed: (state: EnvironmentState, forced?: boolean) =>
@@ -122,8 +127,8 @@ export const makeEnvironmentActor = Effect.fn("makeEnvironmentActor")(function* 
           ? { type: "stop.completed" }
           : { type: "environment.changed", state },
       ).pipe(
-        Effect.mapError((cause) =>
-          new AgentEnvironmentError("Environment state could not be recorded.", cause)
+        Effect.mapError(
+          (cause) => new AgentEnvironmentError("Environment state could not be recorded.", cause),
         ),
       ),
     syncDisk: store.syncRootDisk(sessionId),
@@ -134,31 +139,33 @@ export const makeEnvironmentActor = Effect.fn("makeEnvironmentActor")(function* 
   }).pipe(Effect.provideService(Scope.Scope, owner));
 
   const closeLinks = Effect.suspend(() =>
-    Effect.forEach([...links], (fiber) => Fiber.interrupt(fiber), { discard: true })
+    Effect.forEach([...links], (fiber) => Fiber.interrupt(fiber), { discard: true }),
   );
 
   const control = (payload: ControlEnvironmentPayload) =>
-    commands.withPermit(Effect.gen(function* () {
-      if (payload.action !== "stop") {
-        // Credentials apply to the VM this action starts; a running VM keeps its own.
-        githubToken = payload.githubToken;
-        environmentSecrets = payload.environmentSecrets;
-      }
-      if (payload.action === "start" && record.state === "error") {
-        if (payload.recovery !== "restart-environment") {
-          return yield* rejected(
-            "The environment was interrupted; restart it to recover the root disk.",
-          );
+    commands.withPermit(
+      Effect.gen(function* () {
+        if (payload.action !== "stop") {
+          // Credentials apply to the VM this action starts; a running VM keeps its own.
+          githubToken = payload.githubToken;
+          environmentSecrets = payload.environmentSecrets;
         }
-        // No VM can still own the disk after a runner restart; only a live instance needs stopping.
-        if (lifecycle.active) yield* lifecycle.forceStop.pipe(Effect.ignore);
-      }
-      if (payload.action !== "start") yield* closeLinks;
-      const result = yield* lifecycle.control(payload.action).pipe(
-        Effect.mapError((error) => rejected(error.message)),
-      );
-      return new EnvironmentControlled({ state: result.state, forced: result.forced });
-    }));
+        if (payload.action === "start" && record.state === "error") {
+          if (payload.recovery !== "restart-environment") {
+            return yield* rejected(
+              "The environment was interrupted; restart it to recover the root disk.",
+            );
+          }
+          // No VM can still own the disk after a runner restart; only a live instance needs stopping.
+          if (lifecycle.active) yield* lifecycle.forceStop.pipe(Effect.ignore);
+        }
+        if (payload.action !== "start") yield* closeLinks;
+        const result = yield* lifecycle
+          .control(payload.action)
+          .pipe(Effect.mapError((error) => rejected(error.message)));
+        return new EnvironmentControlled({ state: result.state, forced: result.forced });
+      }),
+    );
 
   const attach = (nonce: string) =>
     Effect.gen(function* () {
@@ -171,25 +178,27 @@ export const makeEnvironmentActor = Effect.fn("makeEnvironmentActor")(function* 
       }
       const attached = yield* Deferred.make<void>();
       let failureMessage: string | undefined;
-      const fiber = yield* Effect.scoped(Effect.gen(function* () {
-        const daemon = yield* lifecycle.proxy.startDaemon;
-        yield* Effect.addFinalizer(() => daemon.close);
-        const end = yield* dialEnvironmentLink({
-          gatewayUrl: link.gatewayUrl,
-          sessionId,
-          runnerToken: link.runnerToken,
-          nonce,
-        });
-        yield* Deferred.succeed(attached, undefined);
-        const reason = yield* relayEnvironmentDaemon(daemon, end);
-        yield* Effect.logInfo("environment.link-closed").pipe(
-          Effect.annotateLogs({ component: "openorb-runner", sessionId, reason }),
-        );
-      })).pipe(
+      const fiber = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const daemon = yield* lifecycle.proxy.startDaemon;
+          yield* Effect.addFinalizer(() => daemon.close);
+          const end = yield* dialEnvironmentLink({
+            gatewayUrl: link.gatewayUrl,
+            sessionId,
+            runnerToken: link.runnerToken,
+            nonce,
+          });
+          yield* Deferred.succeed(attached, undefined);
+          const reason = yield* relayEnvironmentDaemon(daemon, end);
+          yield* Effect.logInfo("environment.link-closed").pipe(
+            Effect.annotateLogs({ component: "openorb-runner", sessionId, reason }),
+          );
+        }),
+      ).pipe(
         Effect.catch((error) =>
           Effect.sync(() => {
             failureMessage = error.message;
-          })
+          }),
         ),
         Effect.ensuring(Deferred.succeed(attached, undefined)),
         Effect.forkIn(owner),

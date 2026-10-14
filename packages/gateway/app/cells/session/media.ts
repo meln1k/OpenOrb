@@ -142,11 +142,13 @@ export async function inlineImageId(mediaType: string, data: string): Promise<st
   );
   digest[6] = (digest[6]! & 0x0f) | 0x80;
   digest[8] = (digest[8]! & 0x3f) | 0x80;
-  const hex = Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${
-    hex.slice(20, 32)
-  }`;
+  const hex = Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(
+    20,
+    32,
+  )}`;
 }
 
 export interface InlineImageSink {
@@ -180,7 +182,7 @@ export class ConversationProjection {
   }
 
   async #node(value: JsonValue, entryId: number | undefined): Promise<JsonValue> {
-    if (value === null || !isObject(value) && !Array.isArray(value)) return value;
+    if (value === null || (!isObject(value) && !Array.isArray(value))) return value;
     const cached = this.#cache.get(value);
     if (cached !== undefined) return cached;
     let result: JsonValue;
@@ -220,7 +222,7 @@ export async function findInlineImage(
   value: JsonValue,
   id: string,
 ): Promise<{ mediaType: MediaType; bytes: Uint8Array } | undefined> {
-  if (value === null || !isObject(value) && !Array.isArray(value)) return undefined;
+  if (value === null || (!isObject(value) && !Array.isArray(value))) return undefined;
   if (Array.isArray(value)) {
     for (const child of value) {
       const found = await findInlineImage(child, id);
@@ -230,7 +232,7 @@ export async function findInlineImage(
   }
   if (value.type === "image" && isString(value.data)) {
     const mediaType = Schema.decodeUnknownOption(SessionArtifactMediaType)(value.mimeType);
-    if (mediaType._tag === "Some" && await inlineImageId(mediaType.value, value.data) === id) {
+    if (mediaType._tag === "Some" && (await inlineImageId(mediaType.value, value.data)) === id) {
       return { mediaType: mediaType.value, bytes: Uint8Array.fromBase64(value.data) };
     }
   }

@@ -18,10 +18,13 @@ import {
   type EnvLinkHandlers,
   RemoteExecutionEnv,
 } from "@openorb/pi-env";
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@jsr/std__assert";
 import { Effect } from "effect";
-import type { AgentEnvironment } from "@/src/environment/agent-environment.ts";
-import { type EnvironmentLinkEnd, relayEnvironmentDaemon } from "@/src/environment/link/relay.ts";
+import type { AgentEnvironment } from "../../../src/environment/agent-environment.ts";
+import {
+  type EnvironmentLinkEnd,
+  relayEnvironmentDaemon,
+} from "../../../src/environment/link/relay.ts";
 
 /** An Environment Link that delivers one frame per message asynchronously, as a WebSocket does. */
 interface InMemoryLink {
@@ -106,39 +109,43 @@ export function guestTools(env: RemoteExecutionEnv) {
       const api = Object.assign({} as ToolExecutionApi, {
         env,
         output: (chunk: string | Uint8Array) => {
-          const text = chunk instanceof Uint8Array
-            ? decoder.decode(chunk, { stream: true })
-            : chunk;
+          const text =
+            chunk instanceof Uint8Array ? decoder.decode(chunk, { stream: true }) : chunk;
           output += text;
           options.onOutput?.(text);
         },
         diagnostic: (diagnostic: ToolDiagnostic) => diagnostics.push(diagnostic),
       });
-      const context = options.signal === undefined
-        ? BACKGROUND_CONTEXT
-        : withAbortSignal(options.signal, BACKGROUND_CONTEXT);
-      const result: ToolExecutionResult = await tool.execute(args, api, context).catch(
-        (error: unknown) => {
+      const context =
+        options.signal === undefined
+          ? BACKGROUND_CONTEXT
+          : withAbortSignal(options.signal, BACKGROUND_CONTEXT);
+      const result: ToolExecutionResult = await tool
+        .execute(args, api, context)
+        .catch((error: unknown) => {
           if (!options.expectError) throw error;
           return {
             isError: true,
-            diagnostics: [{
-              severity: "error",
-              message: error instanceof Error ? error.message : String(error),
-            }],
+            diagnostics: [
+              {
+                severity: "error",
+                message: error instanceof Error ? error.message : String(error),
+              },
+            ],
           };
-        },
-      );
+        });
       output += decoder.decode();
-      diagnostics.push(...result.diagnostics ?? []);
+      diagnostics.push(...(result.diagnostics ?? []));
       assertEquals(
         result.isError ?? false,
         options.expectError ?? false,
         JSON.stringify(diagnostics),
       );
       const text =
-        result.output?.filter((part) => part.type === "text").map((part) => part.text).join("") ??
-          "";
+        result.output
+          ?.filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("") ?? "";
       return { result, output, text, diagnostics };
     },
   };
@@ -147,12 +154,14 @@ export function guestTools(env: RemoteExecutionEnv) {
 /** A guest file's contents through the runner's own exec path, independent of the daemon. */
 export async function readGuestText(environment: AgentEnvironment, path: string) {
   let output = "";
-  const result = await Effect.runPromise(environment.run(["/bin/cat", "--", path], {
-    onOutput: (chunk) =>
-      Effect.sync(() => {
-        if (chunk.stream === "stdout") output += chunk.text;
-      }),
-  }));
+  const result = await Effect.runPromise(
+    environment.run(["/bin/cat", "--", path], {
+      onOutput: (chunk) =>
+        Effect.sync(() => {
+          if (chunk.stream === "stdout") output += chunk.text;
+        }),
+    }),
+  );
   assertEquals(result.exitCode, 0, `could not read ${path}`);
   return output;
 }
@@ -163,18 +172,9 @@ export async function guestPathExists(environment: AgentEnvironment, path: strin
 }
 
 /** Writes a guest file through the runner's own exec path, independent of the daemon. */
-export async function writeGuestText(
-  environment: AgentEnvironment,
-  path: string,
-  content: string,
-) {
-  const result = await Effect.runPromise(environment.run([
-    "/bin/sh",
-    "-c",
-    'printf %s "$1" > "$2"',
-    "openorb-write",
-    content,
-    path,
-  ]));
+export async function writeGuestText(environment: AgentEnvironment, path: string, content: string) {
+  const result = await Effect.runPromise(
+    environment.run(["/bin/sh", "-c", 'printf %s "$1" > "$2"', "openorb-write", content, path]),
+  );
   assertEquals(result.exitCode, 0, `could not write ${path}`);
 }

@@ -1,6 +1,4 @@
-export type Result<T, E> =
-  | readonly [T, undefined]
-  | readonly [undefined, E];
+export type Result<T, E> = readonly [T, undefined] | readonly [undefined, E];
 
 export const ok = <T>(value: T): Result<T, never> => [value, undefined];
 
@@ -17,10 +15,7 @@ export async function tryAsync<T, E>(
   }
 }
 
-export function trySync<T, E>(
-  fn: () => T,
-  mapError: (cause: unknown) => E,
-): Result<T, E> {
+export function trySync<T, E>(fn: () => T, mapError: (cause: unknown) => E): Result<T, E> {
   try {
     return ok(fn());
   } catch (cause) {

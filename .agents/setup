@@ -66,24 +66,25 @@ install_system_packages() {
     "${missing[@]}"
 }
 
-install_deno() {
+install_node() {
   local pinned_version
-  pinned_version="$(awk '$1 == "deno" { print $2 }' .tool-versions)"
+  pinned_version="$(awk '$1 == "nodejs" { print $2 }' .tool-versions)"
   if [[ -z "$pinned_version" ]]; then
-    echo 'No Deno version is pinned in .tool-versions.' >&2
+    echo 'No Node.js version is pinned in .tool-versions.' >&2
     return 1
   fi
 
-  if command -v deno >/dev/null 2>&1 &&
-    [[ "$(deno --version | awk 'NR == 1 { print $2 }')" == "$pinned_version" ]]; then
-    echo "Deno $pinned_version already installed."
+  local installation="/usr/local/lib/openorb-node-v$pinned_version"
+  if [[ -x "$installation/bin/node" ]] && command -v node >/dev/null 2>&1 &&
+    [[ "$(node --version)" == "v$pinned_version" ]]; then
+    echo "Node.js $pinned_version already installed."
     return
   fi
 
   local target
   case "$(uname -m)" in
-    x86_64) target=x86_64-unknown-linux-gnu ;;
-    aarch64 | arm64) target=aarch64-unknown-linux-gnu ;;
+    x86_64) target=linux-x64 ;;
+    aarch64 | arm64) target=linux-arm64 ;;
     *)
       printf 'Unsupported CPU architecture: %s\n' "$(uname -m)" >&2
       return 1
@@ -93,13 +94,23 @@ install_deno() {
   local temp_dir
   temp_dir="$(mktemp -d)"
   curl --fail --location --silent --show-error \
-    "https://github.com/denoland/deno/releases/download/v${pinned_version}/deno-${target}.zip" \
-    --output "$temp_dir/deno.zip"
-  unzip -q "$temp_dir/deno.zip" -d "$temp_dir"
-  as_root install -m 0755 "$temp_dir/deno" /usr/local/bin/deno
+    "https://nodejs.org/dist/v${pinned_version}/node-v${pinned_version}-${target}.tar.xz" \
+    --output "$temp_dir/node-v${pinned_version}-${target}.tar.xz"
+  curl --fail --location --silent --show-error \
+    "https://nodejs.org/dist/v${pinned_version}/SHASUMS256.txt" \
+    --output "$temp_dir/SHASUMS256.txt"
+  (cd "$temp_dir" && grep " node-v${pinned_version}-${target}.tar.xz$" SHASUMS256.txt | sha256sum --check)
+  tar -xJf "$temp_dir/node-v${pinned_version}-${target}.tar.xz" -C "$temp_dir"
+  # Do not overlay an older npm installation: stale files can corrupt its dependency graph.
+  as_root rm -rf -- "$installation"
+  as_root mv "$temp_dir/node-v${pinned_version}-${target}" "$installation"
+  local executable
+  for executable in node npm npx; do
+    as_root ln -sfn "$installation/bin/$executable" "/usr/local/bin/$executable"
+  done
   rm -rf -- "$temp_dir"
 
-  deno --version | head -n 1
+  node --version
 }
 
 install_effect_solutions() {
@@ -112,8 +123,7 @@ install_effect_solutions() {
     return
   fi
 
-  as_root deno install --global --allow-all --force --root /usr/local \
-    --name effect-solutions "npm:effect-solutions@$version"
+  as_root npm install --global --prefix /usr/local "effect-solutions@$version"
 
   if [[ "$(effect-solutions --version)" != "$expected" ]]; then
     echo "Effect Solutions $version installation failed." >&2
@@ -184,7 +194,7 @@ create_local_environment() {
 }
 
 install_dependencies() {
-  deno install --frozen
+  npm ci
 }
 
 install_gotel() {
@@ -230,13 +240,16 @@ install_gotel() {
 }
 
 step 'Install system packages' install_system_packages
-step 'Install pinned Deno toolchain' install_deno
+# Oxlint's JS-plugin bridge reserves aligned virtual-memory pools larger than the orb's
+# heuristic commit limit. Permit reservations; physical memory remains bounded by the orb.
+step 'Allow Oxlint JS-plugin virtual-memory reservations' as_root sysctl -w vm.overcommit_memory=1
+step 'Install pinned Node.js toolchain' install_node
 step 'Install pinned celld and esbuild' bash "$repo_root/scripts/install-celld.sh"
 step 'Install Effect Solutions CLI' install_effect_solutions
 step 'Clone Effect v4 reference repository' clone_effect_repository
 step 'Clone Remix 3 RC 5 reference repository' clone_remix_repository
 step 'Create local gateway environment' create_local_environment
-step 'Install locked Deno dependencies' install_dependencies
+step 'Install locked npm workspace dependencies (including Vite+ 1.1.0)' install_dependencies
 step 'Install GoTel local observability tool' install_gotel
 
 echo

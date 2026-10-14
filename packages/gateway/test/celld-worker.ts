@@ -70,10 +70,12 @@ export default {
       );
     }
     if (url.pathname === "/__registry/disconnect" && request.method === "POST") {
-      const input = Schema.decodeUnknownSync(Schema.Struct({
-        workspaceId: WorkspaceId,
-        runnerId: Schema.String,
-      }))(await request.json());
+      const input = Schema.decodeUnknownSync(
+        Schema.Struct({
+          workspaceId: WorkspaceId,
+          runnerId: Schema.String,
+        }),
+      )(await request.json());
       return Response.json(
         await env.RUNNERS.getByName("runners").disconnectRunner(input.workspaceId, input.runnerId),
       );
@@ -86,7 +88,7 @@ export default {
     }
     if (url.pathname === "/__sandbox-reload-probe" && request.method === "POST") {
       // SAFETY: only the disposable ScriptedSession fixture exposes this probe.
-      // deno-lint-ignore openorb/no-chained-type-assertions
+      // oxlint-disable-next-line openorb/no-chained-type-assertions
       const session = env.SESSIONS.getByName(crypto.randomUUID()) as unknown as {
         sandboxReloadProbe(): Promise<{ cycles: number; retained: number }>;
       };
@@ -106,7 +108,7 @@ export default {
     }
     if (url.pathname === "/__workspace-credential-reads") {
       // SAFETY: the fixture's Workspace subclass adds this disposable probe.
-      // deno-lint-ignore openorb/no-chained-type-assertions
+      // oxlint-disable-next-line openorb/no-chained-type-assertions
       const workspace = env.WORKSPACE.getByName("workspace") as unknown as {
         credentialReads(): Promise<number>;
       };
@@ -133,15 +135,15 @@ export default {
     }
     if (url.pathname === "/__session/events") {
       const session = env.SESSIONS.getByName(url.searchParams.get("sessionId")!);
-      // SAFETY: celld uses Workers Web APIs; Deno's checker has different Request/Response types.
-      // deno-lint-ignore openorb/no-chained-type-assertions
+      // SAFETY: celld uses Workers Web APIs; Node's checker has different Request/Response types.
+      // oxlint-disable-next-line openorb/no-chained-type-assertions
       const eventsRequest = new Request(
         "https://session.internal/events",
         request,
       ) as unknown as WorkerRequest;
       // SAFETY: return the native streaming response unchanged.
-      // deno-lint-ignore openorb/no-chained-type-assertions
-      return await session.fetch(eventsRequest) as unknown as Response;
+      // oxlint-disable-next-line openorb/no-chained-type-assertions
+      return (await session.fetch(eventsRequest)) as unknown as Response;
     }
     return gateway.fetch(request, env);
   },

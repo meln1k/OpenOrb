@@ -95,8 +95,9 @@ export class EnvironmentCreated extends Schema.Class<EnvironmentCreated>("Enviro
   environment: RunnerEnvironmentSnapshot,
 }) {}
 
-export class EnvironmentDeleted
-  extends Schema.Class<EnvironmentDeleted>("EnvironmentDeleted")({}) {}
+export class EnvironmentDeleted extends Schema.Class<EnvironmentDeleted>("EnvironmentDeleted")(
+  {},
+) {}
 
 export class EnvironmentNotFound extends Schema.TaggedError<EnvironmentNotFound>()(
   "EnvironmentNotFound",

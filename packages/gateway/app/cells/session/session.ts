@@ -133,17 +133,17 @@ export interface CreateSessionInput {
 /** Where one transcript media item's bytes are: R2 for published media, Harness State inline. */
 export type SessionMedia =
   | {
-    readonly kind: "published";
-    readonly key: string;
-    readonly mediaType: SessionArtifactMediaType;
-    readonly byteLength: number;
-    readonly fileName: string;
-  }
+      readonly kind: "published";
+      readonly key: string;
+      readonly mediaType: SessionArtifactMediaType;
+      readonly byteLength: number;
+      readonly fileName: string;
+    }
   | {
-    readonly kind: "inline";
-    readonly mediaType: SessionArtifactMediaType;
-    readonly bytes: Uint8Array;
-  };
+      readonly kind: "inline";
+      readonly mediaType: SessionArtifactMediaType;
+      readonly bytes: Uint8Array;
+    };
 
 interface Runtime {
   readonly environment: SessionEnvironment;
@@ -180,13 +180,13 @@ export class Session extends DurableObject<Env> {
     super(ctx, env);
     this.#ctx = ctx;
     // SAFETY: native RPC stubs implement these interfaces; platform thenables differ only in types.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     this.#workspace = env.WORKSPACE.getByName("workspace") as unknown as WorkspaceApi;
     // SAFETY: as above, for the Runners Durable Object's environment procedures.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     this.#runners = env.RUNNERS.getByName("runners") as unknown as RunnerEnvironmentApi;
     // SAFETY: the R2 binding implements this subset; its thenables differ only in checker types.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     this.#media = env.MEDIA as unknown as MediaBucket;
     this.#links = new EnvironmentLinks(ctx);
     // Link liveness answered by the platform, so an idle link never wakes this object.
@@ -206,11 +206,12 @@ export class Session extends DurableObject<Env> {
    * same Session is harmless.
    */
   async create(input: CreateSessionInput): Promise<{ readonly created: boolean }> {
-    if (await this.#runtime !== undefined) return { created: false };
+    if ((await this.#runtime) !== undefined) return { created: false };
     if (
       input.project !== undefined &&
       !this.#provider(input.placement, input.sessionId).capabilities.git
-    ) throw new SessionError("This environment has no Git, so its Sessions cannot have a project.");
+    )
+      throw new SessionError("This environment has no Git, so its Sessions cannot have a project.");
     this.#write({
       workspaceId: Schema.decodeUnknownSync(WorkspaceId)(input.workspaceId),
       sessionId: input.sessionId,
@@ -248,9 +249,11 @@ export class Session extends DurableObject<Env> {
     return encodeSessionView(sessionSnapshot(record, this.#busy));
   }
 
-  async submit(
-    input: { prompt: string; requestId: string; thinkingLevel?: ThinkingLevel },
-  ): Promise<{ submissionId: number }> {
+  async submit(input: {
+    prompt: string;
+    requestId: string;
+    thinkingLevel?: ThinkingLevel;
+  }): Promise<{ submissionId: number }> {
     const runtime = await this.#required();
     const { agent } = runtime;
     if (!/^[A-Za-z0-9-]{1,100}$/.test(input.requestId) || !input.prompt.trim()) {
@@ -276,12 +279,15 @@ export class Session extends DurableObject<Env> {
         this.#background(this.#serialized(() => this.#startEnvironment(runtime)));
       }
       this.#touch();
-      return await agent.conversation.submit({
-        type: "input",
-        content: input.prompt,
-        requestId: input.requestId,
-        whenBusy: "followUp",
-      }, context);
+      return await agent.conversation.submit(
+        {
+          type: "input",
+          content: input.prompt,
+          requestId: input.requestId,
+          whenBusy: "followUp",
+        },
+        context,
+      );
     });
     await this.#wake(runtime);
     return { submissionId: submission.id };
@@ -349,9 +355,12 @@ export class Session extends DurableObject<Env> {
   ): Promise<void> {
     const placement = this.#record?.placement;
     if (
-      placement?.provider !== "runner" || placement.runnerId !== notice.runnerId ||
-      this.#record?.workspaceId !== workspaceId || this.#record.sessionId !== sessionId
-    ) return;
+      placement?.provider !== "runner" ||
+      placement.runnerId !== notice.runnerId ||
+      this.#record?.workspaceId !== workspaceId ||
+      this.#record.sessionId !== sessionId
+    )
+      return;
     if (notice.type === "updated") {
       this.#update({ environmentState: notice.environment.state, environmentReachable: true });
       if (notice.environment.state !== "running" && notice.environment.state !== "starting") {
@@ -392,15 +401,19 @@ export class Session extends DurableObject<Env> {
   }
 
   /** One byte range of a full patch, read from the guest; needs a running environment. */
-  async gitPatchChunk(
-    input: { snapshotId: string; section: SessionGitPatchSection; offset: number },
-  ): Promise<GitPatchChunk> {
+  async gitPatchChunk(input: {
+    snapshotId: string;
+    section: SessionGitPatchSection;
+    offset: number;
+  }): Promise<GitPatchChunk> {
     return await (await this.#project()).patchChunk(input);
   }
 
-  async updateGitFile(
-    input: { action: SessionGitFileAction; path: string; previousPath?: string },
-  ): Promise<{ mutationRevision: number }> {
+  async updateGitFile(input: {
+    action: SessionGitFileAction;
+    path: string;
+    previousPath?: string;
+  }): Promise<{ mutationRevision: number }> {
     return { mutationRevision: await (await this.#project()).updateFile(input) };
   }
 
@@ -408,10 +421,9 @@ export class Session extends DurableObject<Env> {
   async media(id: string): Promise<SessionMedia | null> {
     const record = this.#record;
     if (record === undefined || record.deleting) return null;
-    const published = this.#ctx.storage.sql.exec(
-      "SELECT file_name, media_type, byte_length FROM openorb_media WHERE id = ?",
-      id,
-    ).toArray()[0];
+    const published = this.#ctx.storage.sql
+      .exec("SELECT file_name, media_type, byte_length FROM openorb_media WHERE id = ?", id)
+      .toArray()[0];
     if (published !== undefined) {
       return {
         kind: "published",
@@ -421,10 +433,9 @@ export class Session extends DurableObject<Env> {
         fileName: String(published.file_name),
       };
     }
-    const inline = this.#ctx.storage.sql.exec(
-      "SELECT entry_id FROM openorb_inline_image WHERE id = ?",
-      id,
-    ).toArray()[0];
+    const inline = this.#ctx.storage.sql
+      .exec("SELECT entry_id FROM openorb_inline_image WHERE id = ?", id)
+      .toArray()[0];
     if (inline === undefined) return null;
     const runtime = await this.#required();
     const { conversation } = runtime.agent;
@@ -459,11 +470,13 @@ export class Session extends DurableObject<Env> {
     await this.#links.message(
       socket,
       message,
-      record?.placement.provider !== "runner" ? undefined : {
-        runnerId: record.placement.runnerId,
-        workspaceId: record.workspaceId,
-        authenticate: (token) => this.#workspace.authenticateRunner(token),
-      },
+      record?.placement.provider !== "runner"
+        ? undefined
+        : {
+            runnerId: record.placement.runnerId,
+            workspaceId: record.workspaceId,
+            authenticate: (token) => this.#workspace.authenticateRunner(token),
+          },
     );
   }
 
@@ -506,29 +519,35 @@ export class Session extends DurableObject<Env> {
     const environment = provider.bind({
       workspaceId: record.workspaceId,
       sessionId: Schema.decodeUnknownSync(SessionId)(record.sessionId),
-      ...(record.project === undefined ? {} : {
-        repository: { url: record.project.repositoryUrl, gitAuthor: record.project.gitAuthor },
-      }),
+      ...(record.project === undefined
+        ? {}
+        : {
+            repository: { url: record.project.repositoryUrl, gitAuthor: record.project.gitAuthor },
+          }),
     });
     const gated = gatedExecutionEnv(environment.env, () => this.#readiness);
     let project: ProjectIntegration | undefined;
-    const agent = await openAgent(this.#ctx.storage, {
-      sessionId: record.sessionId,
-      model: record.model,
-      thinkingLevel: record.initialThinkingLevel,
-      project: record.project,
-      guestPrompt: provider.guestPrompt,
-      models: this.agentModels(new WorkspaceCredentialStore(this.#workspace, record.workspaceId)),
-      env: gated,
-      controlEnvironment: async (action) => {
-        const runtime = await this.#required();
-        if (action === "stop") return await runtime.environment.control("stop");
-        return await this.#control(runtime, action);
+    const agent = await openAgent(
+      this.#ctx.storage,
+      {
+        sessionId: record.sessionId,
+        model: record.model,
+        thinkingLevel: record.initialThinkingLevel,
+        project: record.project,
+        guestPrompt: provider.guestPrompt,
+        models: this.agentModels(new WorkspaceCredentialStore(this.#workspace, record.workspaceId)),
+        env: gated,
+        controlEnvironment: async (action) => {
+          const runtime = await this.#required();
+          if (action === "stop") return await runtime.environment.control("stop");
+          return await this.#control(runtime, action);
+        },
+        publishMedia: (path, description) => this.#publishMedia(gated, path, description),
+        // Without a project there is no repository to discover skills in.
+        repositorySkills: () => project?.skillsPrompt() ?? "",
       },
-      publishMedia: (path, description) => this.#publishMedia(gated, path, description),
-      // Without a project there is no repository to discover skills in.
-      repositorySkills: () => project?.skillsPrompt() ?? "",
-    }, context);
+      context,
+    );
     if (record.project !== undefined && provider.capabilities.git) {
       project = new ProjectIntegration(
         record.project,
@@ -555,7 +574,7 @@ export class Session extends DurableObject<Env> {
         this.#serialized(() =>
           record.operation === "provisioning"
             ? this.#provision(runtime)
-            : this.#startEnvironment(runtime)
+            : this.#startEnvironment(runtime),
         ),
       );
     }
@@ -574,7 +593,9 @@ export class Session extends DurableObject<Env> {
         if (event.type === "snapshot") this.#busy = event.run !== undefined;
         if (event.type === "run_start") this.#busy = true;
         if (event.type === "run_end") this.#busy = false;
-        boundary ||= event.type === "tool_execution_end" || event.type === "turn_end" ||
+        boundary ||=
+          event.type === "tool_execution_end" ||
+          event.type === "turn_end" ||
           event.type === "run_end";
       }
       if (before !== this.#busy) this.#publishState();
@@ -583,7 +604,7 @@ export class Session extends DurableObject<Env> {
       }
       if (boundary) {
         void this.#runtime.then((runtime) =>
-          runtime?.project?.scheduleRefresh(GIT_REFRESH_DEBOUNCE_MS)
+          runtime?.project?.scheduleRefresh(GIT_REFRESH_DEBOUNCE_MS),
         );
       }
       return Promise.resolve();
@@ -610,15 +631,11 @@ export class Session extends DurableObject<Env> {
     await this.#operation(runtime, "provisioning", async (reporter, credentials) => {
       const record = this.#record!;
       reporter.stage("starting-vm");
-      await this.#guard(
-        "vm-start",
-        "The environment could not be created.",
-        () => runtime.environment.create({ orbSize: record.orbSize }),
+      await this.#guard("vm-start", "The environment could not be created.", () =>
+        runtime.environment.create({ orbSize: record.orbSize }),
       );
-      await this.#guard(
-        "vm-start",
-        "The environment could not be started.",
-        () => this.#control(runtime, "start", undefined, credentials),
+      await this.#guard("vm-start", "The environment could not be started.", () =>
+        this.#control(runtime, "start", undefined, credentials),
       );
       if (runtime.project === undefined) {
         // Without a project /workspace starts empty and no project behaviour runs.
@@ -652,21 +669,15 @@ export class Session extends DurableObject<Env> {
       return;
     }
     if (
-      record.environmentState === "running" && recovery === undefined &&
+      record.environmentState === "running" &&
+      recovery === undefined &&
       this.#idleStop === undefined
-    ) return;
+    )
+      return;
     await this.#operation(runtime, "resuming", async (reporter, credentials) => {
       reporter.stage("starting-vm");
-      await this.#guard(
-        "vm-start",
-        "The environment could not be started.",
-        () =>
-          this.#control(
-            runtime,
-            recovery === undefined ? "start" : "restart",
-            recovery,
-            credentials,
-          ),
+      await this.#guard("vm-start", "The environment could not be started.", () =>
+        this.#control(runtime, recovery === undefined ? "start" : "restart", recovery, credentials),
       );
       if (runtime.project === undefined || this.#record!.checkoutState !== "available") return;
       const issues = await runtime.project.resume(reporter, redactedValues(credentials), context);
@@ -705,12 +716,15 @@ export class Session extends DurableObject<Env> {
       (cause) => cause,
     );
     if (failure !== undefined) {
-      const issue = failure instanceof ProvisioningFailure ? failure.issue : sessionIssue({
-        category: "vm-start",
-        severity: "failure",
-        message: failure instanceof Error ? failure.message : "Session setup failed.",
-        recovery: operation === "provisioning" ? "retry-provisioning" : "restart-environment",
-      });
+      const issue =
+        failure instanceof ProvisioningFailure
+          ? failure.issue
+          : sessionIssue({
+              category: "vm-start",
+              severity: "failure",
+              message: failure instanceof Error ? failure.message : "Session setup failed.",
+              recovery: operation === "provisioning" ? "retry-provisioning" : "restart-environment",
+            });
       this.#update({ issues: appendIssues(this.#record!.issues, [issue]) });
       return;
     }
@@ -722,14 +736,19 @@ export class Session extends DurableObject<Env> {
     message: string,
     action: () => Promise<void | EnvironmentControlResult>,
   ): Promise<void> {
-    const [, failure] = await tryAsync(action(), (cause) =>
-      new ProvisioningFailure(sessionIssue({
-        category,
-        severity: "failure",
-        message,
-        diagnostics: cause instanceof Error ? cause.message : undefined,
-        recovery: "retry-provisioning",
-      })));
+    const [, failure] = await tryAsync(
+      action(),
+      (cause) =>
+        new ProvisioningFailure(
+          sessionIssue({
+            category,
+            severity: "failure",
+            message,
+            diagnostics: cause instanceof Error ? cause.message : undefined,
+            recovery: "retry-provisioning",
+          }),
+        ),
+    );
     if (failure !== undefined) throw failure;
   }
 
@@ -756,7 +775,7 @@ export class Session extends DurableObject<Env> {
           recordState: (environmentState) => this.#update({ environmentState }),
         });
       case "sandbox":
-        return this.#sandbox ??= sandboxProvider({
+        return (this.#sandbox ??= sandboxProvider({
           facets: this.#ctx.facets,
           loader: this.env.LOADER,
           sessionId,
@@ -767,7 +786,7 @@ export class Session extends DurableObject<Env> {
           },
           state: () => this.#record?.environmentState ?? "stopped",
           recordState: (environmentState) => this.#update({ environmentState }),
-        });
+        }));
     }
   }
 
@@ -777,7 +796,7 @@ export class Session extends DurableObject<Env> {
     recovery?: SessionEnvironmentRecoveryMode,
     credentials?: EnvironmentCredentials,
   ): Promise<EnvironmentControlResult> {
-    const permitted = credentials ?? await this.#credentials(runtime);
+    const permitted = credentials ?? (await this.#credentials(runtime));
     this.#touch();
     const result = await runtime.environment.control(action, {
       credentials: permitted,
@@ -797,9 +816,7 @@ export class Session extends DurableObject<Env> {
     if (!receivesCredentials(runtime.capabilities, record.guestCredentialOptIn)) return {};
     const [githubToken, githubError] = await this.#workspace.getGitHubToken(record.workspaceId);
     if (githubError !== undefined) throw githubError;
-    const [secrets, secretsError] = await this.#workspace.getEnvironmentSecrets(
-      record.workspaceId,
-    );
+    const [secrets, secretsError] = await this.#workspace.getEnvironmentSecrets(record.workspaceId);
     if (secretsError !== undefined) throw secretsError;
     return {
       ...(githubToken === null ? {} : { githubToken }),
@@ -810,7 +827,10 @@ export class Session extends DurableObject<Env> {
   /** Orders durable admission and scheduling decisions, never the agent run or transport drain. */
   #schedule<T>(work: () => Promise<T>): Promise<T> {
     const next = this.#wakeTail.then(work);
-    this.#wakeTail = next.then(() => {}, () => {});
+    this.#wakeTail = next.then(
+      () => {},
+      () => {},
+    );
     return next;
   }
 
@@ -830,7 +850,9 @@ export class Session extends DurableObject<Env> {
       }
       if (!tasks.length) {
         if (
-          record.placement.provider === "sandbox" && !this.#busy && !record.deleting &&
+          record.placement.provider === "sandbox" &&
+          !this.#busy &&
+          !record.deleting &&
           record.operation === undefined
         ) {
           runtime.environment.close();
@@ -855,16 +877,19 @@ export class Session extends DurableObject<Env> {
       this.#touch();
       const live = await harness.snapshot(LiveDoc, conversation.id, context);
       const at = live?.generation?.deferred?.pollAt ?? live?.generation?.retry?.at;
-      const sleeping = !this.#idle && at !== undefined &&
-        at - Date.now() > 60_000;
+      const sleeping = !this.#idle && at !== undefined && at - Date.now() > 60_000;
       await this.#ctx.storage.setAlarm(sleeping ? at : Date.now() + RECOVERY_MS);
       harness.resume();
       if (sleeping || this.#idle || tasks.every((task) => task.record.background)) return;
       // Bound the host wait, not the durable turn; an alarm renews it if needed.
       const budget = new AbortController();
       const timer = setTimeout(() => budget.abort(), 10 * 60_000);
-      this.#idle = conversation.waitForIdle(withAbortSignal(budget.signal, context))
-        .then(() => {}, () => {})
+      this.#idle = conversation
+        .waitForIdle(withAbortSignal(budget.signal, context))
+        .then(
+          () => {},
+          () => {},
+        )
         .finally(async () => {
           clearTimeout(timer);
           this.#idle = undefined;
@@ -898,14 +923,20 @@ export class Session extends DurableObject<Env> {
   async #publishMedia(env: ExecutionEnv, path: string, description: string): Promise<string> {
     const record = this.#record!;
     const used = Number(
-      this.#ctx.storage.sql.exec("SELECT COALESCE(SUM(byte_length), 0) AS used FROM openorb_media")
+      this.#ctx.storage.sql
+        .exec("SELECT COALESCE(SUM(byte_length), 0) AS used FROM openorb_media")
         .toArray()[0]?.used ?? 0,
     );
-    const published = await publishGuestMedia(env, this.#media, {
-      path,
-      prefix: mediaPrefix(record.workspaceId, record.sessionId),
-      usedBytes: used,
-    }, context);
+    const published = await publishGuestMedia(
+      env,
+      this.#media,
+      {
+        path,
+        prefix: mediaPrefix(record.workspaceId, record.sessionId),
+        usedBytes: used,
+      },
+      context,
+    );
     this.#ctx.storage.sql.exec(
       "INSERT INTO openorb_media (id, file_name, media_type, byte_length) VALUES (?, ?, ?, ?)",
       published.id,
@@ -914,8 +945,10 @@ export class Session extends DurableObject<Env> {
       published.byteLength,
     );
     const kind = published.mediaType.startsWith("image/") ? "image" : "video";
-    const label = (description.trim() || published.fileName).replaceAll("\\", "\\\\")
-      .replaceAll("]", "\\]").replaceAll("\n", " ");
+    const label = (description.trim() || published.fileName)
+      .replaceAll("\\", "\\\\")
+      .replaceAll("]", "\\]")
+      .replaceAll("\n", " ");
     return `![${label}](openorb-artifact:${kind}:${published.id})`;
   }
 
@@ -972,9 +1005,10 @@ export class Session extends DurableObject<Env> {
           controller.enqueue(encoder.encode(`event: session\ndata: ${JSON.stringify(event)}\n\n`));
         controller.enqueue(
           encoder.encode(
-            `event: session\ndata: ${
-              JSON.stringify({ type: "conversation.snapshot", view: delivered })
-            }\n\n`,
+            `event: session\ndata: ${JSON.stringify({
+              type: "conversation.snapshot",
+              view: delivered,
+            })}\n\n`,
           ),
         );
         if (initialState !== undefined) send(initialState);
@@ -986,7 +1020,7 @@ export class Session extends DurableObject<Env> {
         watch.start(async (value) => {
           // Pi bounds pending frames and replaces them with a snapshot on overflow.
           while (!stopped && (controller.desiredSize ?? 0) <= 0) {
-            await new Promise<void>((done) => resume = done);
+            await new Promise<void>((done) => (resume = done));
           }
           if (stopped) return;
           const latest = await projection.project(value);
@@ -1060,12 +1094,21 @@ export class Session extends DurableObject<Env> {
 
   #serialized<T>(work: () => Promise<T>): Promise<T> {
     const result = this.#operations.then(work, work);
-    this.#operations = result.then(() => {}, () => {});
+    this.#operations = result.then(
+      () => {},
+      () => {},
+    );
     return result;
   }
 
   #background(work: Promise<unknown> | undefined): void {
-    if (work !== undefined) this.#ctx.waitUntil(work.then(() => {}, () => {}));
+    if (work !== undefined)
+      this.#ctx.waitUntil(
+        work.then(
+          () => {},
+          () => {},
+        ),
+      );
   }
 
   #touch(): void {

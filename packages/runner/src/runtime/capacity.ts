@@ -1,4 +1,5 @@
 import { statfs as readFileSystemStats } from "node:fs/promises";
+import { availableParallelism, totalmem } from "node:os";
 
 import type { RunnerCapacity } from "@openorb/protocol/runner-api";
 
@@ -18,14 +19,16 @@ export interface RunnerCapacityReporterOptions {
 export function createRunnerCapacityReporter(
   options: RunnerCapacityReporterOptions,
 ): () => Promise<RunnerCapacity> {
-  const vmCpuCount = options.vmCpuCount ??
-    (options.getHardwareConcurrency ?? (() => navigator.hardwareConcurrency))();
-  const vmMemoryMiB = options.vmMemoryMiB ?? Math.floor(
-    (options.getSystemMemoryInfo ?? Deno.systemMemoryInfo)().total / MIB_BYTES,
-  );
+  const vmCpuCount =
+    options.vmCpuCount ?? (options.getHardwareConcurrency ?? availableParallelism)();
+  const vmMemoryMiB =
+    options.vmMemoryMiB ??
+    Math.floor(
+      (options.getSystemMemoryInfo ?? (() => ({ total: totalmem() })))().total / MIB_BYTES,
+    );
   const getActiveSessions = options.getActiveSessions ?? (() => 0);
-  const getFileSystemStats = options.getFileSystemStats ??
-    ((path) => readFileSystemStats(path, { bigint: true }));
+  const getFileSystemStats =
+    options.getFileSystemStats ?? ((path) => readFileSystemStats(path, { bigint: true }));
 
   assertPositiveInteger(vmCpuCount, "VM CPU count");
   assertPositiveInteger(vmMemoryMiB, "VM memory");
@@ -34,7 +37,7 @@ export function createRunnerCapacityReporter(
     const activeSessions = getActiveSessions();
     assertNonNegativeInteger(activeSessions, "Active session count");
     const fileSystem = await getFileSystemStats(options.path);
-    const diskFreeMiB = toSafeInteger(fileSystem.bavail * fileSystem.bsize / MIB_BYTES_BIGINT);
+    const diskFreeMiB = toSafeInteger((fileSystem.bavail * fileSystem.bsize) / MIB_BYTES_BIGINT);
 
     return {
       activeSessions,

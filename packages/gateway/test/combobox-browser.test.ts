@@ -1,14 +1,15 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 
 import { createBuildAssetServer } from "../build-assets.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
+import { createTestServer } from "./http-test-server.ts";
 
-const browserEndpoint = Deno.env.get("OPENORB_BROWSER_TEST_CDP");
+const browserEndpoint = process.env["OPENORB_BROWSER_TEST_CDP"];
 
-Deno.test({
-  name: "combobox filters, skips disabled options, and submits the committed value",
-  ignore: browserEndpoint === undefined,
-  async fn() {
+test(
+  "combobox filters, skips disabled options, and submits the committed value",
+  { skip: browserEndpoint === undefined, timeout: 120_000 },
+  async () => {
     await using cleanup = new AsyncDisposableStack();
     const assetServer = createBuildAssetServer();
     cleanup.defer(() => assetServer.close());
@@ -29,8 +30,7 @@ Deno.test({
       "packages/gateway/app/ui/public/components/theme.ts",
     ]);
     const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
-    const html =
-      `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body><div id="app"></div>
+    const html = `<!doctype html><html><head><script type="importmap">${importMapJson}</script></head><body><div id="app"></div>
       <script type="module">
         import { createRoot, css } from ${JSON.stringify(uiHref)};
         import { jsx, jsxs } from ${JSON.stringify(jsxHref)};
@@ -100,7 +100,7 @@ Deno.test({
       </script></body></html>`;
     const server = await createTestServer(async (request) => {
       if (new URL(request.url).pathname.startsWith("/assets/")) {
-        return await assetServer.fetch(request) ?? new Response(null, { status: 404 });
+        return (await assetServer.fetch(request)) ?? new Response(null, { status: 404 });
       }
       return new Response(html, { headers: { "Content-Type": "text/html" } });
     });
@@ -122,8 +122,8 @@ Deno.test({
       const activeId = await input.getAttribute("aria-activedescendant");
       assertEquals(await page.locator(`#${activeId}`).textContent(), "Remix");
       await input.press("Enter");
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>("input[role='combobox']")?.value === "Remix"
+      await page.waitForFunction(
+        () => document.querySelector<HTMLInputElement>("input[role='combobox']")?.value === "Remix",
       );
       assertEquals(await input.getAttribute("aria-expanded"), "false");
       assertEquals(
@@ -133,9 +133,9 @@ Deno.test({
       const selectedOption = list.getByRole("option", { name: "Remix" });
       assertEquals(await selectedOption.getAttribute("aria-selected"), "true");
       assertEquals(
-        await selectedOption.locator('[data-slot="combobox-item-indicator"]').evaluate((element) =>
-          getComputedStyle(element).opacity
-        ),
+        await selectedOption
+          .locator('[data-slot="combobox-item-indicator"]')
+          .evaluate((element) => getComputedStyle(element).opacity),
         "1",
       );
 
@@ -145,18 +145,21 @@ Deno.test({
         "SvelteKit",
       ]);
 
-      const screenshot = Deno.env.get("OPENORB_COMBOBOX_SCREENSHOT");
+      const screenshot = process.env["OPENORB_COMBOBOX_SCREENSHOT"];
       if (screenshot !== undefined) {
-        await page.locator('[data-slot="combobox-content"]:popover-open').evaluate((element) =>
-          Promise.all(element.getAnimations().map((animation) => animation.finished))
-        );
+        await page
+          .locator('[data-slot="combobox-content"]:popover-open')
+          .evaluate((element) =>
+            Promise.all(element.getAnimations().map((animation) => animation.finished)),
+          );
         await page.screenshot({ path: screenshot });
       }
 
       await input.press("ArrowDown");
       await input.press("Enter");
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>("input[role='combobox']")?.value === "SvelteKit"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>("input[role='combobox']")?.value === "SvelteKit",
       );
       assertEquals(
         await page.locator('input[type="hidden"][name="framework"]').inputValue(),
@@ -179,4 +182,4 @@ Deno.test({
       await server.close();
     }
   },
-});
+);

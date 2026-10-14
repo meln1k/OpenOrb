@@ -2,11 +2,11 @@ import { requireAuth } from "remix/middleware/auth";
 import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 
-import { AppPage } from "@/app/actions/app/page.tsx";
-import type { Administrator } from "@/app/cells/workspace/api.ts";
-import { csrf } from "@/app/middleware/csrf.ts";
-import { routes } from "@/app/routes.ts";
-import { loadSessionComposerData } from "@/app/session-composer-data.ts";
+import { AppPage } from "./page.tsx";
+import type { Administrator } from "../../cells/workspace/api.ts";
+import { csrf } from "../../middleware/csrf.ts";
+import { routes } from "../../routes.ts";
+import { loadSessionComposerData } from "../../session-composer-data.ts";
 
 export default createController(routes.app, {
   middleware: [requireAuth<Administrator>(), csrf()],

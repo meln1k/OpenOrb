@@ -1,8 +1,9 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 
-import { ORB_SIZE_RESOURCES, ORB_SIZES } from "@/src/index.ts";
+import { ORB_SIZE_RESOURCES, ORB_SIZES } from "../src/index.ts";
 
-Deno.test("defines the fixed orb provisioning sizes", () => {
+test("defines the fixed orb provisioning sizes", () => {
   assertEquals(ORB_SIZES, ["tiny", "small", "medium", "large", "xxlarge"]);
   assertEquals(ORB_SIZE_RESOURCES, {
     tiny: { cpuCount: 1, memoryMiB: 2048 },

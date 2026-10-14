@@ -1,4 +1,4 @@
-/// <reference lib="deno.unstable" />
+import type { TSESLint } from "@typescript-eslint/utils";
 
 // OpenOrb-specific cleanup policy.
 const message =
@@ -15,16 +15,18 @@ function isBrowserFile(filename: string): boolean {
 }
 
 const preferDisposableStack = {
+  meta: { type: "problem", schema: [], messages: { cleanup: message } },
+  defaultOptions: [],
   create(context) {
     if (isTestFile(context.filename) || isBrowserFile(context.filename)) return {};
     return {
       TryStatement(node) {
-        if (node.finalizer !== null) context.report({ node, message });
+        if (node.finalizer !== null) context.report({ node, messageId: "cleanup" });
       },
     };
   },
-} satisfies Deno.lint.Rule;
+} satisfies TSESLint.RuleModule<string, []>;
 
 export const disposableStackRules = {
   "prefer-disposable-stack": preferDisposableStack,
-} satisfies Record<string, Deno.lint.Rule>;
+} satisfies Record<string, TSESLint.RuleModule<string, []>>;

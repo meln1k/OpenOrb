@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "@jsr/std__assert";
 import type { Result } from "@openorb/result";
 import { SessionEnvironmentSecret } from "@openorb/protocol/runner-api";
 
@@ -6,14 +7,14 @@ import {
   createOpenOrbNetworkVmOptions,
   type OpenOrbGitHubMediationOptions,
   type OpenOrbNetworkVmOptions,
-} from "@/src/environment/gondolin/network-mediation.ts";
+} from "../../../src/environment/gondolin/network-mediation.ts";
 
 const REPOSITORY_URL = "https://github.com/meln1k/openorb-test-repo.git";
 const MODIFIED_REPOSITORY_URL = "https://github.com/octocat/Hello-World.git";
 const TOKEN = "github-test-token-4e63d197c57a";
 const GIT_AUTHOR = { name: "OpenOrb User", email: "user@example.com" };
 
-Deno.test("creates a fresh guest placeholder and a scoped Git credential helper", () => {
+test("creates a fresh guest placeholder and a scoped Git credential helper", () => {
   const first = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
   const second = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
   const firstEnvironment = environmentOf(first.env);
@@ -43,18 +44,16 @@ Deno.test("creates a fresh guest placeholder and a scoped Git credential helper"
   assertEquals(first.dns, { mode: "synthetic" });
 });
 
-Deno.test("allows public HTTP and HTTPS while blocking private destination IPs", async () => {
+test("allows public HTTP and HTTPS while blocking private destination IPs", async () => {
   const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
 
-  for (
-    const url of [
-      "http://snapshot.debian.org/archive/debian/20260803T000000Z/dists/trixie/InRelease",
-      "https://registry.npmjs.org/",
-      "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-unknown-linux-gnu.zip",
-      "https://github.com/octocat/Hello-World.git/info/refs?service=git-upload-pack",
-      "https://api.github.com/repos/octocat/Hello-World",
-    ] as const
-  ) {
+  for (const url of [
+    "http://snapshot.debian.org/archive/debian/20260803T000000Z/dists/trixie/InRelease",
+    "https://registry.npmjs.org/",
+    "https://github.com/denoland/deno/releases/download/v2.9.5/deno-x86_64-unknown-linux-gnu.zip",
+    "https://github.com/octocat/Hello-World.git/info/refs?service=git-upload-pack",
+    "https://api.github.com/repos/octocat/Hello-World",
+  ] as const) {
     assert(await requestAllowed(options, "GET", url), `expected GET ${url} to be allowed`);
   }
 
@@ -69,18 +68,16 @@ Deno.test("allows public HTTP and HTTPS while blocking private destination IPs",
       protocol: "http",
     }),
   );
-  for (
-    const [ip, family] of [
-      ["127.0.0.1", 4],
-      ["10.0.0.1", 4],
-      ["172.16.0.1", 4],
-      ["192.168.1.1", 4],
-      ["169.254.169.254", 4],
-      ["::1", 6],
-      ["fc00::1", 6],
-      ["fe80::1", 6],
-    ] as const
-  ) {
+  for (const [ip, family] of [
+    ["127.0.0.1", 4],
+    ["10.0.0.1", 4],
+    ["172.16.0.1", 4],
+    ["192.168.1.1", 4],
+    ["169.254.169.254", 4],
+    ["::1", 6],
+    ["fc00::1", 6],
+    ["fe80::1", 6],
+  ] as const) {
     assert(
       !(await ipPolicy({
         hostname: "attacker.example",
@@ -94,7 +91,7 @@ Deno.test("allows public HTTP and HTTPS while blocking private destination IPs",
   }
 });
 
-Deno.test("substitutes the placeholder only for allowed GitHub hosts", async () => {
+test("substitutes the placeholder only for allowed GitHub hosts", async () => {
   const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN });
   const environment = environmentOf(options.env);
   const placeholder = environment.GH_TOKEN;
@@ -132,7 +129,7 @@ Deno.test("substitutes the placeholder only for allowed GitHub hosts", async () 
   );
 });
 
-Deno.test("supports an unauthenticated public policy without exposing GH_TOKEN", () => {
+test("supports an unauthenticated public policy without exposing GH_TOKEN", () => {
   const options = githubVmOptions({ repositoryUrl: REPOSITORY_URL });
   const environment = environmentOf(options.env);
   assertEquals(environment.GH_TOKEN, undefined);
@@ -144,17 +141,19 @@ Deno.test("supports an unauthenticated public policy without exposing GH_TOKEN",
   assertEquals(environment.GIT_CONFIG_KEY_2, undefined);
 });
 
-Deno.test("generic secrets use placeholders and substitute only for configured hosts", async () => {
+test("generic secrets use placeholders and substitute only for configured hosts", async () => {
   const secretValue = "scoped-secret-value-f21b";
-  const options = success(createOpenOrbNetworkVmOptions({
-    environmentSecrets: [
-      new SessionEnvironmentSecret({
-        name: "DEPLOY_TOKEN",
-        value: secretValue,
-        allowedHosts: ["api.example.com", "*.service.example"],
-      }),
-    ],
-  }));
+  const options = success(
+    createOpenOrbNetworkVmOptions({
+      environmentSecrets: [
+        new SessionEnvironmentSecret({
+          name: "DEPLOY_TOKEN",
+          value: secretValue,
+          allowedHosts: ["api.example.com", "*.service.example"],
+        }),
+      ],
+    }),
+  );
   const environment = environmentOf(options.env);
   const placeholder = environment.DEPLOY_TOKEN;
 
@@ -183,16 +182,18 @@ Deno.test("generic secrets use placeholders and substitute only for configured h
   );
 });
 
-Deno.test("generic secrets without allowed hosts substitute for any public host", async () => {
+test("generic secrets without allowed hosts substitute for any public host", async () => {
   const secretValue = "unrestricted-secret-value-a783";
-  const options = success(createOpenOrbNetworkVmOptions({
-    environmentSecrets: [
-      new SessionEnvironmentSecret({
-        name: "PUBLIC_API_TOKEN",
-        value: secretValue,
-      }),
-    ],
-  }));
+  const options = success(
+    createOpenOrbNetworkVmOptions({
+      environmentSecrets: [
+        new SessionEnvironmentSecret({
+          name: "PUBLIC_API_TOKEN",
+          value: secretValue,
+        }),
+      ],
+    }),
+  );
   const placeholder = environmentOf(options.env).PUBLIC_API_TOKEN;
   assert(placeholder && placeholder !== secretValue);
 
@@ -205,7 +206,7 @@ Deno.test("generic secrets without allowed hosts substitute for any public host"
   assertEquals(mediated.headers.get("x-api-key"), secretValue);
 });
 
-Deno.test("credential helper remains scoped to the canonical repository after origin changes", () => {
+test("credential helper remains scoped to the canonical repository after origin changes", () => {
   const environment = environmentOf(
     githubVmOptions({ repositoryUrl: REPOSITORY_URL, token: TOKEN }).env,
   );
@@ -217,21 +218,19 @@ Deno.test("credential helper remains scoped to the canonical repository after or
   );
 });
 
-Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
-  for (
-    const repositoryUrl of [
-      "meln1k/openorb-test-repo",
-      "http://github.com/meln1k/openorb-test-repo.git",
-      "https://github.com/meln1k/openorb-test-repo",
-      "https://github.com/meln1k/openorb-test-repo.git/",
-      "https://github.com/meln1k/openorb-test-repo.git?ref=main",
-      "https://github.com/meln1k/openorb-test-repo.git#readme",
-      "https://github.com/meln1k/openorb-test-repo/extra.git",
-      "https://github.com/meln1k/%6fpenorb-test-repo.git",
-      "https://api.github.com/meln1k/openorb-test-repo.git",
-      "ssh://git@github.com/meln1k/openorb-test-repo.git",
-    ]
-  ) {
+test("rejects non-canonical repository URLs and invalid tokens", () => {
+  for (const repositoryUrl of [
+    "meln1k/openorb-test-repo",
+    "http://github.com/meln1k/openorb-test-repo.git",
+    "https://github.com/meln1k/openorb-test-repo",
+    "https://github.com/meln1k/openorb-test-repo.git/",
+    "https://github.com/meln1k/openorb-test-repo.git?ref=main",
+    "https://github.com/meln1k/openorb-test-repo.git#readme",
+    "https://github.com/meln1k/openorb-test-repo/extra.git",
+    "https://github.com/meln1k/%6fpenorb-test-repo.git",
+    "https://api.github.com/meln1k/openorb-test-repo.git",
+    "ssh://git@github.com/meln1k/openorb-test-repo.git",
+  ]) {
     const repositoryError = failure(
       createOpenOrbNetworkVmOptions({ github: { repositoryUrl, gitAuthor: GIT_AUTHOR } }),
     );
@@ -250,13 +249,11 @@ Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
     assertStringIncludes(tokenError.message, "non-empty trimmed value");
   }
 
-  for (
-    const gitAuthor of [
-      { name: "", email: GIT_AUTHOR.email },
-      { name: " OpenOrb User", email: GIT_AUTHOR.email },
-      { name: GIT_AUTHOR.name, email: "not-an-email" },
-    ]
-  ) {
+  for (const gitAuthor of [
+    { name: "", email: GIT_AUTHOR.email },
+    { name: " OpenOrb User", email: GIT_AUTHOR.email },
+    { name: GIT_AUTHOR.name, email: "not-an-email" },
+  ]) {
     const authorError = failure(
       createOpenOrbNetworkVmOptions({ github: { repositoryUrl: REPOSITORY_URL, gitAuthor } }),
     );
@@ -267,9 +264,11 @@ Deno.test("rejects non-canonical repository URLs and invalid tokens", () => {
 function githubVmOptions(
   options: Omit<OpenOrbGitHubMediationOptions, "gitAuthor">,
 ): OpenOrbNetworkVmOptions {
-  return success(createOpenOrbNetworkVmOptions({
-    github: { ...options, gitAuthor: GIT_AUTHOR },
-  }));
+  return success(
+    createOpenOrbNetworkVmOptions({
+      github: { ...options, gitAuthor: GIT_AUTHOR },
+    }),
+  );
 }
 
 function success<T, E>(result: Result<T, E>): T {

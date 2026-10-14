@@ -25,12 +25,7 @@ export function MarkerIcon(handle: Handle<Props<"span">>) {
   return () => {
     const { mix, ...props } = handle.props;
     return (
-      <span
-        {...props}
-        data-slot="marker-icon"
-        aria-hidden="true"
-        mix={[markerIconStyle, mix]}
-      />
+      <span {...props} data-slot="marker-icon" aria-hidden="true" mix={[markerIconStyle, mix]} />
     );
   };
 }

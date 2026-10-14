@@ -34,12 +34,7 @@ export function BreadcrumbPage(handle: Handle<Props<"span">>) {
   return () => {
     const { mix, ...props } = handle.props;
     return (
-      <span
-        {...props}
-        aria-current="page"
-        data-slot="breadcrumb-page"
-        mix={[pageStyle, mix]}
-      />
+      <span {...props} aria-current="page" data-slot="breadcrumb-page" mix={[pageStyle, mix]} />
     );
   };
 }

@@ -1,15 +1,16 @@
-import { assert, assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals } from "@jsr/std__assert";
 import { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
-import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
+import type { WorkspaceApi } from "../cells/workspace/api.ts";
 
-import type { AppServices } from "@/app/middleware/services.ts";
-import type { SecretMetadata } from "@/app/utils/secret-cipher.ts";
-import { parseBrowserSessionAuth } from "@/app/utils/session-policy.ts";
+import type { AppServices } from "../middleware/services.ts";
+import type { SecretMetadata } from "./secret-cipher.ts";
+import { parseBrowserSessionAuth } from "./session-policy.ts";
 
 const USER_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c12";
 const WORKSPACE_ID = "01989d78-65ee-7f6a-a97e-0f16ad134c13";
 
-Deno.test("browser identity validates UUIDv7 fields and returns distinct ID brands", () => {
+test("browser identity validates UUIDv7 fields and returns distinct ID brands", () => {
   const identity = parseBrowserSessionAuth({ userId: USER_ID, workspaceId: WORKSPACE_ID });
   assert(identity);
   assertEquals<UserId>(identity.userId, UserId.make(USER_ID));
@@ -19,23 +20,21 @@ Deno.test("browser identity validates UUIDv7 fields and returns distinct ID bran
     JSON.stringify({ userId: USER_ID, workspaceId: WORKSPACE_ID }),
   );
 
-  for (
-    const invalid of [
-      null,
-      { userId: USER_ID },
-      { workspaceId: WORKSPACE_ID },
-      { userId: "not-a-uuid", workspaceId: WORKSPACE_ID },
-      { userId: USER_ID, workspaceId: "not-a-uuid" },
-      { userId: "1770199d-f6b8-4bd8-851f-7bcffc1bb7f8", workspaceId: WORKSPACE_ID },
-      { userId: USER_ID, workspaceId: "1770199d-f6b8-4bd8-851f-7bcffc1bb7f8" },
-      { userId: USER_ID, workspaceId: WORKSPACE_ID, extra: true },
-    ]
-  ) {
+  for (const invalid of [
+    null,
+    { userId: USER_ID },
+    { workspaceId: WORKSPACE_ID },
+    { userId: "not-a-uuid", workspaceId: WORKSPACE_ID },
+    { userId: USER_ID, workspaceId: "not-a-uuid" },
+    { userId: "1770199d-f6b8-4bd8-851f-7bcffc1bb7f8", workspaceId: WORKSPACE_ID },
+    { userId: USER_ID, workspaceId: "1770199d-f6b8-4bd8-851f-7bcffc1bb7f8" },
+    { userId: USER_ID, workspaceId: WORKSPACE_ID, extra: true },
+  ]) {
     assertEquals(parseBrowserSessionAuth(invalid), null);
   }
 });
 
-Deno.test("gateway ownership signatures reject swapped IDs and unvalidated strings", () => {
+test("gateway ownership signatures reject swapped IDs and unvalidated strings", () => {
   const identity = parseBrowserSessionAuth({ userId: USER_ID, workspaceId: WORKSPACE_ID });
   assert(identity);
   // These expressions are compile-time checks; no Workspace or runner operation executes.

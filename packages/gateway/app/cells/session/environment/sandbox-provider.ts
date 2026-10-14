@@ -63,13 +63,14 @@ export function sandboxProvider(options: SandboxProviderOptions): AgentEnvironme
   let releaseRequested = false;
   const facet = (): SandboxRpc => {
     if (stub !== undefined) return stub;
-    // Sources run unbundled in Deno tests; only the build embeds the sandbox worker.
+    // Sources run unbundled in Vitest; only the build embeds the sandbox worker.
     if (SANDBOX_WORKER.code === "") {
       throw new EnvironmentUnavailableError("This gateway build does not include the sandbox.");
     }
     // SAFETY: the facet runs the sandbox worker's Sandbox class, whose RPC is SandboxRpc.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     stub = facets.get(FACET, () => {
+      // SAFETY: WorkerLoader.get returns the loaded worker synchronously or throws, never undefined.
       worker = loader.get(`openorb-sandbox:${sessionId}:${SANDBOX_WORKER.hash}`, () => ({
         compatibilityDate: "2026-10-07",
         // just-bash's gzip and rg import node:zlib.
@@ -119,16 +120,21 @@ export function sandboxProvider(options: SandboxProviderOptions): AgentEnvironme
     // All bindings share this authority. Close guest admission before waiting for older RPCs.
     transitions++;
     if (action === "delete") deleted = true;
-    const next = lifecycle.then(async () => {
-      if (action !== "start" || deleted) {
-        options.recordState("stopped");
-        await Promise.allSettled([...pending]);
-        retire();
-      }
-      if (action === "delete") facets.delete(FACET);
-      if (!deleted && action !== "stop") options.recordState("running");
-    }).finally(() => transitions--);
-    lifecycle = next.then(() => {}, () => {});
+    const next = lifecycle
+      .then(async () => {
+        if (action !== "start" || deleted) {
+          options.recordState("stopped");
+          await Promise.allSettled([...pending]);
+          retire();
+        }
+        if (action === "delete") facets.delete(FACET);
+        if (!deleted && action !== "stop") options.recordState("running");
+      })
+      .finally(() => transitions--);
+    lifecycle = next.then(
+      () => {},
+      () => {},
+    );
     return next;
   };
   return {
@@ -184,20 +190,23 @@ export function sandboxExecutionEnv(
       const opened = await call(sandbox, context, (rpc) => rpc.open(cwd, method, args));
       if (!opened.ok) return opened;
       const handle = opened.value;
-      return ok(Object.fromEntries(
-        READER_METHODS[method].map((name) => [name, async (...readerArgs: unknown[]) => {
-          const readerContext = takeContext(readerArgs);
-          const result = await call(
-            sandbox,
-            readerContext,
-            (rpc) => rpc.reader(handle, name, readerArgs),
-          );
-          return name === "close" ? undefined : result;
-        }]),
-      ));
+      return ok(
+        Object.fromEntries(
+          READER_METHODS[method].map((name) => [
+            name,
+            async (...readerArgs: unknown[]) => {
+              const readerContext = takeContext(readerArgs);
+              const result = await call(sandbox, readerContext, (rpc) =>
+                rpc.reader(handle, name, readerArgs),
+              );
+              return name === "close" ? undefined : result;
+            },
+          ]),
+        ),
+      );
     };
     // SAFETY: the reader exposes exactly the methods of the reader type that `method` opens.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     return open as unknown as ExecutionEnv[M];
   };
   return {
@@ -243,7 +252,10 @@ export function sandboxExecutionEnv(
         sandbox(async (rpc) => {
           let cancellation: Promise<unknown> | undefined;
           const cancel = () => {
-            cancellation = tryAsync(Promise.resolve().then(() => rpc.cancel(execution)), () => {});
+            cancellation = tryAsync(
+              Promise.resolve().then(() => rpc.cancel(execution)),
+              () => {},
+            );
           };
           context.abortSignal?.addEventListener("abort", cancel, { once: true });
           await using _listener = {
@@ -268,7 +280,10 @@ export function sandboxExecutionEnv(
       return decodeExecResult(reply.result);
     },
     cleanup: async () => {
-      await tryAsync(sandbox((rpc) => rpc.cleanup()), () => {});
+      await tryAsync(
+        sandbox((rpc) => rpc.cleanup()),
+        () => {},
+      );
     },
   };
 }

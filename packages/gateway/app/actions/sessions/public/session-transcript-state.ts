@@ -123,7 +123,7 @@ export function failOptimisticUserMessage(
     entries: state.entries.map((entry) =>
       "role" in entry && entry.role === "user" && entry.messageId === messageId && entry.delivery
         ? { ...entry, delivery: "failed", deliveryError }
-        : entry
+        : entry,
     ),
   };
 }
@@ -133,8 +133,14 @@ export function removeOptimisticUserMessage(
 ): SessionTranscriptState {
   return {
     ...state,
-    entries: state.entries.filter((entry) =>
-      !("role" in entry && entry.role === "user" && entry.messageId === messageId && entry.delivery)
+    entries: state.entries.filter(
+      (entry) =>
+        !(
+          "role" in entry &&
+          entry.role === "user" &&
+          entry.messageId === messageId &&
+          entry.delivery
+        ),
     ),
   };
 }
@@ -153,8 +159,8 @@ export function reduceSessionTranscriptState(
     };
   }
   if (event.type === "provisioning.log") {
-    const output = state.entries.find((entry): entry is ProvisioningEntry =>
-      "role" in entry && entry.role === "provisioning"
+    const output = state.entries.find(
+      (entry): entry is ProvisioningEntry => "role" in entry && entry.role === "provisioning",
     );
     return {
       ...state,
@@ -168,9 +174,8 @@ export function reduceSessionTranscriptState(
   if (event.type === "conversation.ops" && state.view === undefined) {
     throw new ConversationFrameError("Conversation ops received before a snapshot.");
   }
-  const view = event.type === "conversation.snapshot"
-    ? event.view
-    : applyImmutable(state.view, event.ops);
+  const view =
+    event.type === "conversation.snapshot" ? event.view : applyImmutable(state.view, event.ops);
   if (!isConversationView(view)) {
     throw new ConversationFrameError("Invalid conversation view after patch.");
   }
@@ -178,10 +183,12 @@ export function reduceSessionTranscriptState(
   // Local pending input is not part of the replicated state. Match only newly observed user entries,
   // so an old identical prompt cannot acknowledge a new submission on reconnect.
   const previousIds = new Set(state.view?.entries.map((entry) => entry.id));
-  const newTexts = view.entries.filter((entry) => !previousIds.has(entry.id))
+  const newTexts = view.entries
+    .filter((entry) => !previousIds.has(entry.id))
     .flatMap((entry) =>
-      (entry.model ?? []).filter((message) => message.role === "user")
-        .map((message) => normalizeText(contentText(message.content)))
+      (entry.model ?? [])
+        .filter((message) => message.role === "user")
+        .map((message) => normalizeText(contentText(message.content))),
     );
   const local = state.entries.filter((entry) => {
     if (!("role" in entry)) return false;
@@ -225,8 +232,10 @@ export function projectConversation(
     }
     if (item.role === "assistant") {
       const text = contentText(content);
-      const thinking = content.filter((block) => object(block).type === "thinking")
-        .map((block) => string(object(block).thinking)).join("");
+      const thinking = content
+        .filter((block) => object(block).type === "thinking")
+        .map((block) => string(object(block).thinking))
+        .join("");
       if (text || thinking) {
         entries.push({ role: "assistant", messageId, text, thinking, completed });
       }
@@ -245,9 +254,11 @@ export function projectConversation(
       if (item.usage) {
         latestUsage = usage(item.usage);
         if (
-          item.stopReason !== "error" && item.stopReason !== "aborted" &&
+          item.stopReason !== "error" &&
+          item.stopReason !== "aborted" &&
           latestUsage.totalTokens > 0
-        ) contextUsage = latestUsage;
+        )
+          contextUsage = latestUsage;
       }
     }
     if (item.role === "toolResult") {
@@ -273,9 +284,9 @@ export function projectConversation(
         detail: (entry.model ?? []).map((item) => contentText(item.content)).join("\n"),
       });
       contextUsage = undefined;
-    } else {(entry.model ?? []).forEach((item, index) =>
-        message(item, `${entry.id}:${index}`, true)
-      );}
+    } else {
+      (entry.model ?? []).forEach((item, index) => message(item, `${entry.id}:${index}`, true));
+    }
   }
   const live = object(view.docs["pi.live"]);
   const generation = object(live.generation);
@@ -306,11 +317,10 @@ export function projectConversation(
     });
   }
   const level = view.docs["pi.agent"]?.thinkingLevel;
-  const thinkingLevel = SESSION_THINKING_LEVELS.find((candidate) => candidate === level) ??
-    initialThinkingLevel;
-  const followUpQueue = array(view.docs["pi.inbox"]?.items).filter((item) =>
-    object(item).mode !== "write"
-  )
+  const thinkingLevel =
+    SESSION_THINKING_LEVELS.find((candidate) => candidate === level) ?? initialThinkingLevel;
+  const followUpQueue = array(view.docs["pi.inbox"]?.items)
+    .filter((item) => object(item).mode !== "write")
     .map((item) => contentText(object(item).content));
   const ledger = object(view.docs["pi.usage"]);
   const totalUsage = emptyUsage();
@@ -329,35 +339,37 @@ function normalizeText(value: string): string {
 
 function object(value: unknown): JsonObject {
   // SAFETY: Every caller reads JSON from the validated ConversationView, never host objects.
-  // deno-lint-ignore openorb/no-runtime-typeof -- Narrow the JSON union to its object member for presentation.
+  // oxlint-disable-next-line openorb/no-runtime-typeof -- Narrow the JSON union to its object member for presentation.
   return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as JsonObject
+    ? (value as JsonObject)
     : {};
 }
 function array(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
 }
 function string(value: unknown): string {
-  // deno-lint-ignore openorb/no-runtime-typeof -- Narrow a field in the already validated JSON document.
+  // oxlint-disable-next-line openorb/no-runtime-typeof -- Narrow a field in the already validated JSON document.
   return typeof value === "string" ? value : "";
 }
 function number(value: unknown): number {
-  // deno-lint-ignore openorb/no-runtime-typeof -- Narrow a field in the already validated JSON document.
+  // oxlint-disable-next-line openorb/no-runtime-typeof -- Narrow a field in the already validated JSON document.
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 function contentText(value: unknown): string {
-  // deno-lint-ignore openorb/no-runtime-typeof -- Durable UserInput is a string or content-block array.
+  // oxlint-disable-next-line openorb/no-runtime-typeof -- Durable UserInput is a string or content-block array.
   if (typeof value === "string") return value;
-  return array(value).map((block) => {
-    const item = object(block);
-    if (item.type === "text") return string(item.text);
-    if (item.type === "image") {
-      return item.artifactId
-        ? `\n\n![Image](openorb-artifact:image:${string(item.artifactId)})\n\n`
-        : string(item.text);
-    }
-    return "";
-  }).join("");
+  return array(value)
+    .map((block) => {
+      const item = object(block);
+      if (item.type === "text") return string(item.text);
+      if (item.type === "image") {
+        return item.artifactId
+          ? `\n\n![Image](openorb-artifact:image:${string(item.artifactId)})\n\n`
+          : string(item.text);
+      }
+      return "";
+    })
+    .join("");
 }
 function emptyUsage() {
   return {
@@ -392,11 +404,13 @@ export function totalSessionUsage(state: SessionTranscriptState): SessionUsage {
   return state.totalUsage;
 }
 export function usageContextTokens(usage: SessionUsage): number {
-  return usage.totalTokens ||
-    usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+  return (
+    usage.totalTokens ||
+    usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
+  );
 }
 export function activeActivityId(state: SessionTranscriptState): number | undefined {
-  return state.entries.findLast((entry): entry is ActivityEntry =>
-    !("role" in entry) && entry.inProgress === true
+  return state.entries.findLast(
+    (entry): entry is ActivityEntry => !("role" in entry) && entry.inProgress === true,
   )?.id;
 }

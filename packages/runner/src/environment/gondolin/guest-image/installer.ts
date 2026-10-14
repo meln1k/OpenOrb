@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
+import * as fs from "node:fs/promises";
+import { hasErrorCode } from "../../../runtime/errors.ts";
 
-import { UntarStream } from "@std/tar";
+import { UntarStream } from "@jsr/std__tar";
 import { err, ok, type Result, tryAsync, trySync } from "@openorb/result";
 
 import {
@@ -32,13 +34,7 @@ const MANIFEST_ASSETS = {
   krunKernel: "krun-kernel",
   krunInitrd: "krun-empty-initrd",
 } as const;
-const MANIFEST_ASSET_NAMES = [
-  "kernel",
-  "initramfs",
-  "rootfs",
-  "krunKernel",
-  "krunInitrd",
-] as const;
+const MANIFEST_ASSET_NAMES = ["kernel", "initramfs", "rootfs", "krunKernel", "krunInitrd"] as const;
 
 export interface GuestImage {
   readonly path: string;
@@ -145,15 +141,15 @@ async function installGuestImage(
   const [, installError] = await tryAsync(
     (async () => {
       await downloadArchive(asset, archivePath, fetchImage);
-      await Deno.mkdir(temporaryDirectory, { mode: 0o700 });
+      await fs.mkdir(temporaryDirectory, { mode: 0o700 });
       await extractArchive(archivePath, temporaryDirectory);
       return undefined;
     })(),
     (cause) =>
       guestImageError(
-        `Unable to install OpenOrb guest image ${release.id} for ${architecture}: ${
-          errorMessage(cause)
-        }`,
+        `Unable to install OpenOrb guest image ${release.id} for ${architecture}: ${errorMessage(
+          cause,
+        )}`,
         cause,
       ),
   );
@@ -163,9 +159,8 @@ async function installGuestImage(
     release,
   });
   if (verificationError !== undefined) return err(verificationError);
-  const [, renameError] = await tryAsync(
-    Deno.rename(temporaryDirectory, imageDirectory),
-    (cause) => guestImageError("Guest image installation could not be committed", cause),
+  const [, renameError] = await tryAsync(fs.rename(temporaryDirectory, imageDirectory), (cause) =>
+    guestImageError("Guest image installation could not be committed", cause),
   );
   if (renameError !== undefined) {
     const [concurrentInstallExists, concurrentExistenceError] = await pathExists(imageDirectory);
@@ -193,12 +188,10 @@ export async function verifyGuestImage(
 ): Promise<Result<GuestImage, GuestImageError>> {
   const release = options.release ?? GUEST_IMAGE_RELEASE;
   const expectedPath = resolve(imageDirectory);
-  return await tryAsync(
-    verifyGuestImageValue(imageDirectory, options),
-    (cause) =>
-      cause instanceof Deno.errors.NotFound
-        ? invalidImageError(release.id, expectedPath, "the image directory is missing")
-        : guestImageError(`Guest image verification failed for ${imageDirectory}`, cause),
+  return await tryAsync(verifyGuestImageValue(imageDirectory, options), (cause) =>
+    hasErrorCode(cause, "ENOENT")
+      ? invalidImageError(release.id, expectedPath, "the image directory is missing")
+      : guestImageError(`Guest image verification failed for ${imageDirectory}`, cause),
   );
 }
 
@@ -213,21 +206,21 @@ async function verifyGuestImageValue(
   validateReleaseAsset(asset, architecture);
 
   const expectedPath = resolve(imageDirectory);
-  const directoryInfo = await Deno.lstat(expectedPath);
-  if (!directoryInfo.isDirectory || directoryInfo.isSymlink) {
+  const directoryInfo = await fs.lstat(expectedPath);
+  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
     throw invalidImageError(release.id, expectedPath, "the image path is not a real directory");
   }
-  const realPath = await Deno.realPath(expectedPath);
+  const realPath = await fs.realpath(expectedPath);
   if (realPath !== expectedPath) {
     throw invalidImageError(release.id, expectedPath, `the image resolves through ${realPath}`);
   }
 
   const found = new Set<string>();
-  for await (const entry of Deno.readDir(realPath)) {
+  for (const entry of await fs.readdir(realPath, { withFileTypes: true })) {
     if (!IMAGE_FILES.has(entry.name)) {
       throw invalidImageError(release.id, realPath, `unexpected asset ${entry.name}`);
     }
-    if (!entry.isFile || entry.isSymlink) {
+    if (!entry.isFile() || entry.isSymbolicLink()) {
       throw invalidImageError(release.id, realPath, `asset ${entry.name} is not a regular file`);
     }
     found.add(entry.name);
@@ -239,11 +232,11 @@ async function verifyGuestImageValue(
   }
 
   const manifestPath = join(realPath, "manifest.json");
-  const manifestInfo = await Deno.lstat(manifestPath);
+  const manifestInfo = await fs.lstat(manifestPath);
   if (manifestInfo.size > MAX_MANIFEST_BYTES) {
     throw invalidImageError(release.id, realPath, "manifest.json is too large");
   }
-  const manifestBytes = await Deno.readFile(manifestPath);
+  const manifestBytes = await fs.readFile(manifestPath);
   if (manifestBytes.byteLength > MAX_MANIFEST_BYTES) {
     throw invalidImageError(release.id, realPath, "manifest.json is too large");
   }
@@ -257,7 +250,7 @@ async function verifyGuestImageValue(
   }
   const manifest = parseManifest(new TextDecoder().decode(manifestBytes));
   validateManifest(manifest, asset, realPath, release.id);
-  if (!await verifyManifestChecksums(realPath, manifest)) {
+  if (!(await verifyManifestChecksums(realPath, manifest))) {
     throw invalidImageError(release.id, realPath, "an asset checksum does not match manifest.json");
   }
 
@@ -276,13 +269,8 @@ export async function prepareGuestImageForVm(
 ): Promise<Result<GuestImageVmAssets, GuestImageError>> {
   const release = image[VERIFIED_GUEST_IMAGE];
   const asset = release?.assets[image.architecture];
-  if (
-    !asset || release.id !== image.releaseId ||
-    asset.gondolinBuildId !== image.gondolinBuildId
-  ) {
-    return err(
-      new GuestImageError("The OpenOrb guest image handle is invalid.", undefined),
-    );
+  if (!asset || release.id !== image.releaseId || asset.gondolinBuildId !== image.gondolinBuildId) {
+    return err(new GuestImageError("The OpenOrb guest image handle is invalid.", undefined));
   }
 
   const [verified, verificationError] = await verifyGuestImage(image.path, {
@@ -298,7 +286,7 @@ export async function prepareGuestImageForVm(
 }
 
 export function currentGuestImageArchitecture(
-  architecture: string = Deno.build.arch,
+  architecture: string = process.arch,
 ): GuestImageArchitecture {
   if (architecture === "x86_64" || architecture === "x64" || architecture === "amd64") {
     return "x64";
@@ -334,11 +322,7 @@ async function downloadArchive(
     );
   }
 
-  using file = await Deno.open(destination, {
-    createNew: true,
-    write: true,
-    mode: 0o600,
-  });
+  await using file = await fs.open(destination, "wx", 0o600);
   const hash = createHash("sha256");
   let received = 0;
   for await (const chunk of response.body) {
@@ -370,10 +354,20 @@ async function downloadArchive(
 }
 
 async function extractArchive(archivePath: string, destination: string): Promise<void> {
-  const source = await Deno.open(archivePath, { read: true });
+  await using source = await fs.open(archivePath, "r");
   const seen = new Set<string>();
   let totalBytes = 0;
-  const entries = source.readable
+  // Use the standard Web stream boundary expected by portable std/tar. Node's
+  // FileHandle stream type and DOM stream declarations differ in their BYOB types.
+  const archive = new ReadableStream<Uint8Array<ArrayBuffer>>({
+    async pull(controller) {
+      const buffer = new Uint8Array(1024 * 1024);
+      const { bytesRead } = await source.read(buffer);
+      if (bytesRead === 0) controller.close();
+      else controller.enqueue(buffer.subarray(0, bytesRead));
+    },
+  });
+  const entries = archive
     .pipeThrough(new DecompressionStream("gzip"))
     .pipeThrough(new UntarStream());
 
@@ -402,17 +396,10 @@ async function extractArchive(archivePath: string, destination: string): Promise
     totalBytes += entry.header.size;
     if (totalBytes > MAX_UNCOMPRESSED_IMAGE_BYTES) {
       await entry.readable.cancel();
-      throw new GuestImageError(
-        "image archive expands beyond the 3 GiB safety limit",
-        undefined,
-      );
+      throw new GuestImageError("image archive expands beyond the 3 GiB safety limit", undefined);
     }
 
-    using output = await Deno.open(join(destination, entry.path), {
-      createNew: true,
-      write: true,
-      mode: 0o600,
-    });
+    await using output = await fs.open(join(destination, entry.path), "wx", 0o600);
     let written = 0;
     for await (const chunk of entry.readable) {
       written += chunk.byteLength;
@@ -452,7 +439,8 @@ function validateManifest(
   releaseId: string,
 ): void {
   if (
-    manifest.version !== 1 || manifest.buildId !== asset.gondolinBuildId ||
+    manifest.version !== 1 ||
+    manifest.buildId !== asset.gondolinBuildId ||
     manifest.config?.arch !== asset.gondolinArchitecture ||
     manifest.runtimeDefaults?.rootfsMode !== "cow"
   ) {
@@ -477,7 +465,7 @@ async function verifyManifestChecksums(
   manifest: GuestImageManifest,
 ): Promise<boolean> {
   for (const name of MANIFEST_ASSET_NAMES) {
-    if (await fileSha256(join(imagePath, MANIFEST_ASSETS[name])) !== manifest.checksums[name]) {
+    if ((await fileSha256(join(imagePath, MANIFEST_ASSETS[name]))) !== manifest.checksums[name]) {
       return false;
     }
   }
@@ -486,11 +474,11 @@ async function verifyManifestChecksums(
 
 async function fileSha256(path: string): Promise<string> {
   const hash = createHash("sha256");
-  using file = await Deno.open(path, { read: true });
+  await using file = await fs.open(path, "r");
   const buffer = new Uint8Array(1024 * 1024);
   while (true) {
-    const bytesRead = await file.read(buffer);
-    if (bytesRead === null) break;
+    const { bytesRead } = await file.read(buffer);
+    if (bytesRead === 0) break;
     hash.update(buffer.subarray(0, bytesRead));
   }
   return hash.digest("hex");
@@ -503,9 +491,11 @@ function validateReleaseAsset(
   const expectedGondolinArchitecture = architecture === "x64" ? "x86_64" : "aarch64";
   if (
     asset.gondolinArchitecture !== expectedGondolinArchitecture ||
-    !Number.isSafeInteger(asset.sizeBytes) || asset.sizeBytes <= 0 ||
+    !Number.isSafeInteger(asset.sizeBytes) ||
+    asset.sizeBytes <= 0 ||
     !SHA256_PATTERN.test(asset.manifestSha256) ||
-    !SHA256_PATTERN.test(asset.sha256) || new URL(asset.url).protocol !== "https:"
+    !SHA256_PATTERN.test(asset.sha256) ||
+    new URL(asset.url).protocol !== "https:"
   ) {
     throw new GuestImageError(
       `Invalid OpenOrb guest image release metadata for ${architecture}.`,
@@ -530,10 +520,7 @@ function pinRelease(release: GuestImageRelease): GuestImageRelease {
 
 function validateReleaseId(releaseId: string): void {
   if (!RELEASE_ID_PATTERN.test(releaseId)) {
-    throw new GuestImageError(
-      `Invalid OpenOrb guest image release ID: ${releaseId}.`,
-      undefined,
-    );
+    throw new GuestImageError(`Invalid OpenOrb guest image release ID: ${releaseId}.`, undefined);
   }
 }
 
@@ -546,9 +533,9 @@ function invalidImageError(releaseId: string, path: string, reason: string): Gue
 }
 
 async function ensureRealDirectory(path: string): Promise<void> {
-  await Deno.mkdir(path, { recursive: true, mode: 0o700 });
-  const info = await Deno.lstat(path);
-  if (!info.isDirectory || info.isSymlink || await Deno.realPath(path) !== resolve(path)) {
+  await fs.mkdir(path, { recursive: true, mode: 0o700 });
+  const info = await fs.lstat(path);
+  if (!info.isDirectory() || info.isSymbolicLink() || (await fs.realpath(path)) !== resolve(path)) {
     throw new GuestImageError(
       `Runner image directory must be a real directory: ${path}`,
       undefined,
@@ -556,18 +543,21 @@ async function ensureRealDirectory(path: string): Promise<void> {
   }
 }
 
-async function writeAll(file: Deno.FsFile, bytes: Uint8Array): Promise<void> {
+async function writeAll(file: fs.FileHandle, bytes: Uint8Array): Promise<void> {
   let offset = 0;
-  while (offset < bytes.byteLength) offset += await file.write(bytes.subarray(offset));
+  while (offset < bytes.byteLength) {
+    const { bytesWritten } = await file.write(bytes.subarray(offset));
+    if (bytesWritten === 0) throw new GuestImageError("File write made no progress.", undefined);
+    offset += bytesWritten;
+  }
 }
 
 async function pathExists(path: string): Promise<Result<boolean, GuestImageError>> {
-  const [, inspectionError] = await tryAsync(
-    Deno.lstat(path),
-    (cause) => guestImageError(`Guest image path could not be inspected: ${path}`, cause),
+  const [, inspectionError] = await tryAsync(fs.lstat(path), (cause) =>
+    guestImageError(`Guest image path could not be inspected: ${path}`, cause),
   );
   if (inspectionError !== undefined) {
-    if (inspectionError.cause instanceof Deno.errors.NotFound) return ok(false);
+    if (hasErrorCode(inspectionError.cause, "ENOENT")) return ok(false);
     return err(inspectionError);
   }
   return ok(true);
@@ -577,19 +567,18 @@ async function removeIfPresent(
   path: string,
   recursive = false,
 ): Promise<Result<void, GuestImageError>> {
-  const [, removalError] = await tryAsync(
-    Deno.remove(path, { recursive }),
-    (cause) => guestImageError(`Guest image temporary path could not be removed: ${path}`, cause),
+  const [, removalError] = await tryAsync(fs.rm(path, { recursive }), (cause) =>
+    guestImageError(`Guest image temporary path could not be removed: ${path}`, cause),
   );
   if (removalError !== undefined) {
-    if (removalError.cause instanceof Deno.errors.NotFound) return ok(undefined);
+    if (hasErrorCode(removalError.cause, "ENOENT")) return ok(undefined);
     return err(removalError);
   }
   return ok(undefined);
 }
 
 export class GuestImageError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
+  constructor(message: string, cause: unknown) {
     super(message, { cause });
     this.name = "GuestImageError";
   }

@@ -71,9 +71,11 @@ export async function migrateDurableObjectDatabase(
   });
   const writeVersion = () =>
     JSON.stringify(
-      storage.sql.exec(
-        "SELECT total_changes() AS changes, schema_version AS schemaVersion FROM pragma_schema_version",
-      ).toArray()[0],
+      storage.sql
+        .exec(
+          "SELECT total_changes() AS changes, schema_version AS schemaVersion FROM pragma_schema_version",
+        )
+        .toArray()[0],
     );
   let changed = false;
   const result = await storage.transaction(async () => {

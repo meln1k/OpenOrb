@@ -1,14 +1,15 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 
 import { createBuildAssetServer } from "../build-assets.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
+import { createTestServer } from "./http-test-server.ts";
 
-const browserEndpoint = Deno.env.get("OPENORB_BROWSER_TEST_CDP");
+const browserEndpoint = process.env["OPENORB_BROWSER_TEST_CDP"];
 
-Deno.test({
-  name: "new session composer accepts typing and selection changes",
-  ignore: browserEndpoint === undefined,
-  async fn() {
+test(
+  "new session composer accepts typing and selection changes",
+  { skip: browserEndpoint === undefined, timeout: 120_000 },
+  async () => {
     await using cleanup = new AsyncDisposableStack();
     const assetServer = createBuildAssetServer();
     cleanup.defer(() => assetServer.close());
@@ -27,8 +28,7 @@ Deno.test({
       "packages/gateway/app/ui/public/components/theme.ts",
     ]);
     const importMapJson = JSON.stringify(importMap).replaceAll("<", "\\u003c");
-    const html =
-      `<!doctype html><html><head><script type="importmap">${importMapJson}</script><style>:root { --border: #e5e5e5; }</style></head><body>
+    const html = `<!doctype html><html><head><script type="importmap">${importMapJson}</script><style>:root { --border: #e5e5e5; }</style></head><body>
       <button command="show-modal" commandfor="composer">New session</button>
       <div id="app"></div>
       <script type="module">
@@ -63,7 +63,7 @@ Deno.test({
       </script></body></html>`;
     const server = await createTestServer(async (request) => {
       if (new URL(request.url).pathname.startsWith("/assets/")) {
-        return await assetServer.fetch(request) ?? new Response(null, { status: 404 });
+        return (await assetServer.fetch(request)) ?? new Response(null, { status: 404 });
       }
       return new Response(html, { headers: { "Content-Type": "text/html" } });
     });
@@ -71,9 +71,9 @@ Deno.test({
       await page.goto(server.baseUrl.href);
       await page.locator("#composer").waitFor({ state: "attached" });
       assertEquals(
-        await page.locator("#composer form").evaluate((form) =>
-          form.hasAttribute("data-rmx-document")
-        ),
+        await page
+          .locator("#composer form")
+          .evaluate((form) => form.hasAttribute("data-rmx-document")),
         true,
       );
       await page.getByRole("button", { name: "New session", exact: true }).click();
@@ -105,42 +105,44 @@ Deno.test({
       await orbSize.locator("svg").first().click();
       assertEquals(
         await page.getByRole("listbox").evaluate((list) => {
-          const trigger = document.querySelector('button[aria-label="Orb size"]')
+          const trigger = document
+            .querySelector('button[aria-label="Orb size"]')
             ?.getBoundingClientRect();
           const popover = list.parentElement?.getBoundingClientRect();
           return trigger && popover
             ? {
-              horizontalOffset: Math.round(popover.left - trigger.left),
-              verticalGap: Math.round(popover.top - trigger.bottom),
-            }
+                horizontalOffset: Math.round(popover.left - trigger.left),
+                verticalGap: Math.round(popover.top - trigger.bottom),
+              }
             : null;
         }),
         { horizontalOffset: 0, verticalGap: 4 },
       );
-      assertEquals(
-        await page.getByRole("listbox").getByRole("option").allTextContents(),
-        [
-          "tiny · 1 CPU · 2 GB memory",
-          "small · 2 CPUs · 4 GB memory",
-          "medium · 4 CPUs · 8 GB memory",
-          "large · 8 CPUs · 16 GB memory",
-          "xxlarge · 16 CPUs · 32 GB memory",
-        ],
-      );
+      assertEquals(await page.getByRole("listbox").getByRole("option").allTextContents(), [
+        "tiny · 1 CPU · 2 GB memory",
+        "small · 2 CPUs · 4 GB memory",
+        "medium · 4 CPUs · 8 GB memory",
+        "large · 8 CPUs · 16 GB memory",
+        "xxlarge · 16 CPUs · 32 GB memory",
+      ]);
       await page.getByRole("option", { name: "large · 8 CPUs · 16 GB memory" }).click();
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="orbSize"]')?.value === "large"
+      await page.waitForFunction(
+        () => document.querySelector<HTMLInputElement>('input[name="orbSize"]')?.value === "large",
       );
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLButtonElement>('button[aria-label="Orb size"]')?.textContent
-          ?.trim() === "large"
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector<HTMLButtonElement>('button[aria-label="Orb size"]')
+            ?.textContent?.trim() === "large",
       );
       assertEquals(await orbSizeInput.inputValue(), "large");
       assertEquals((await orbSize.textContent())?.trim(), "large");
       assertEquals(
-        await dialog.locator("form").evaluate((form) =>
-          form instanceof HTMLFormElement ? new FormData(form).get("orbSize") : null
-        ),
+        await dialog
+          .locator("form")
+          .evaluate((form) =>
+            form instanceof HTMLFormElement ? new FormData(form).get("orbSize") : null,
+          ),
         "large",
       );
       assertEquals(await thinkingLevelInput.inputValue(), "high");
@@ -154,14 +156,17 @@ Deno.test({
         "rgb(163, 53, 238)",
       );
       assertEquals(
-        await dialog.locator("[data-thinking-level-option]:not([hidden])").evaluateAll((options) =>
-          options.map((option) => option.getAttribute("data-thinking-level-option"))
-        ),
+        await dialog
+          .locator("[data-thinking-level-option]:not([hidden])")
+          .evaluateAll((options) =>
+            options.map((option) => option.getAttribute("data-thinking-level-option")),
+          ),
         ["off", "low", "high", "max"],
       );
       await prompt.press("Shift+Tab");
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value === "max"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value === "max",
       );
       assertEquals(await thinkingLevelInput.inputValue(), "max");
       assertEquals((await thinkingLevel.textContent())?.trim(), "Max");
@@ -174,22 +179,23 @@ Deno.test({
       await model.click();
       assertEquals(
         await page.getByRole("listbox").evaluate((list) => {
-          const trigger = document.querySelector('button[aria-label="Model"]')
+          const trigger = document
+            .querySelector('button[aria-label="Model"]')
             ?.getBoundingClientRect();
           const popover = list.parentElement?.getBoundingClientRect();
           return trigger && popover
             ? {
-              horizontalOffset: Math.round(popover.left - trigger.left),
-              verticalGap: Math.round(trigger.top - popover.bottom),
-            }
+                horizontalOffset: Math.round(popover.left - trigger.left),
+                verticalGap: Math.round(trigger.top - popover.bottom),
+              }
             : null;
         }),
         { horizontalOffset: 0, verticalGap: 4 },
       );
-      assertEquals(
-        await page.getByRole("listbox").getByRole("option").allTextContents(),
-        ["Test · First", "Test · Second"],
-      );
+      assertEquals(await page.getByRole("listbox").getByRole("option").allTextContents(), [
+        "Test · First",
+        "Test · Second",
+      ]);
       const modelSearch = page.getByRole("combobox", { name: "Search models" });
       await modelSearch.fill("Unknown");
       assertEquals(
@@ -203,28 +209,38 @@ Deno.test({
       assertEquals((await model.textContent())?.trim(), "First");
       await modelSearch.fill("Sec");
       assertEquals(
-        await page.getByRole("listbox").getByRole("option").filter({ visible: true })
+        await page
+          .getByRole("listbox")
+          .getByRole("option")
+          .filter({ visible: true })
           .allTextContents(),
         ["Test · Second"],
       );
       await page.getByRole("option", { name: "Test · Second" }).click();
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="model"]')?.value === "second-model"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('input[name="model"]')?.value === "second-model",
       );
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent
-          ?.trim() === "Second"
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector<HTMLButtonElement>('button[aria-label="Model"]')
+            ?.textContent?.trim() === "Second",
       );
       assertEquals(await modelInput.inputValue(), "second-model");
       assertEquals((await model.textContent())?.trim(), "Second");
       assertEquals(
-        await dialog.locator("[data-thinking-level-option]:not([hidden])").evaluateAll((options) =>
-          options.map((option) => option.getAttribute("data-thinking-level-option"))
-        ),
+        await dialog
+          .locator("[data-thinking-level-option]:not([hidden])")
+          .evaluateAll((options) =>
+            options.map((option) => option.getAttribute("data-thinking-level-option")),
+          ),
         ["off", "minimal", "medium"],
       );
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value === "medium"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value ===
+          "medium",
       );
       assertEquals(await thinkingLevelInput.inputValue(), "medium");
       assertEquals((await thinkingLevel.textContent())?.trim(), "Medium");
@@ -234,62 +250,73 @@ Deno.test({
         "rgb(0, 112, 221)",
       );
       await orbSize.press("Shift+Tab");
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value === "off"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value === "off",
       );
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
-          ?.textContent
-          ?.trim() === "Off"
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
+            ?.textContent?.trim() === "Off",
       );
       assertEquals(await thinkingLevelInput.inputValue(), "off");
-      assertEquals(
-        await orbSize.evaluate((element) => element === document.activeElement),
-        true,
-      );
+      assertEquals(await orbSize.evaluate((element) => element === document.activeElement), true);
       await project.press("Shift+Tab");
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value === "minimal"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value ===
+          "minimal",
       );
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
-          ?.textContent
-          ?.trim() === "Minimal"
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
+            ?.textContent?.trim() === "Minimal",
       );
       assertEquals(await thinkingLevelInput.inputValue(), "minimal");
       assertEquals(await project.evaluate((element) => element === document.activeElement), true);
       const close = page.getByRole("button", { name: "Close new session" });
       await close.press("Shift+Tab");
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value === "medium"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value ===
+          "medium",
       );
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
-          ?.textContent
-          ?.trim() === "Medium"
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
+            ?.textContent?.trim() === "Medium",
       );
       assertEquals(await thinkingLevelInput.inputValue(), "medium");
       assertEquals(await close.evaluate((element) => element === document.activeElement), true);
       await project.locator("svg").first().click();
       await page.getByRole("option", { name: "Second" }).click();
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="projectId"]')?.value === "second"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('input[name="projectId"]')?.value === "second",
       );
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLButtonElement>('button[aria-label="Project"]')?.textContent
-          ?.trim() === "Second"
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector<HTMLButtonElement>('button[aria-label="Project"]')
+            ?.textContent?.trim() === "Second",
       );
       assertEquals(await projectInput.inputValue(), "second");
       assertEquals((await project.textContent())?.trim(), "Second");
       await thinkingLevel.locator("svg").first().click();
       await page.getByRole("option", { name: "Minimal" }).click();
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value === "minimal"
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('input[name="thinkingLevel"]')?.value ===
+          "minimal",
       );
-      await page.waitForFunction(() =>
-        document.querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
-          ?.textContent
-          ?.trim() === "Minimal"
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
+            ?.textContent?.trim() === "Minimal",
       );
       assertEquals(await thinkingLevelInput.inputValue(), "minimal");
       assertEquals(await dialog.getAttribute("data-thinking-level"), "minimal");
@@ -316,10 +343,10 @@ Deno.test({
       const environmentInput = page.locator('input[name="environment"]');
       assertEquals((await environment.textContent())?.trim(), "Runner");
       await environment.locator("svg").first().click();
-      assertEquals(
-        await page.getByRole("listbox").getByRole("option").allTextContents(),
-        ["Runner · full Linux VM with Git", "Sandbox · built-in just-bash, no Git or network"],
-      );
+      assertEquals(await page.getByRole("listbox").getByRole("option").allTextContents(), [
+        "Runner · full Linux VM with Git",
+        "Sandbox · built-in just-bash, no Git or network",
+      ]);
       await page.getByRole("option", { name: "Sandbox · built-in just-bash" }).click();
       assertEquals(await environmentInput.inputValue(), "sandbox");
       // The Sandbox has neither orb sizes nor a project to check out.
@@ -331,10 +358,11 @@ Deno.test({
       await project.waitFor({ state: "visible" });
       assertEquals(await environmentInput.inputValue(), "runner");
       await project.locator("svg").first().click();
-      assertEquals(
-        await page.getByRole("listbox").getByRole("option").allTextContents(),
-        ["No project", "First", "Second"],
-      );
+      assertEquals(await page.getByRole("listbox").getByRole("option").allTextContents(), [
+        "No project",
+        "First",
+        "Second",
+      ]);
       await page.keyboard.press("Escape");
       // Without a runner the Sandbox is the only environment, with no project or orb size.
       await page.goto(new URL("?noRunner", server.baseUrl).href);
@@ -345,10 +373,9 @@ Deno.test({
       await project.waitFor({ state: "hidden" });
       await orbSize.waitFor({ state: "hidden" });
       await environment.locator("svg").first().click();
-      assertEquals(
-        await page.getByRole("listbox").getByRole("option").allTextContents(),
-        ["Sandbox · built-in just-bash, no Git or network"],
-      );
+      assertEquals(await page.getByRole("listbox").getByRole("option").allTextContents(), [
+        "Sandbox · built-in just-bash, no Git or network",
+      ]);
       await page.keyboard.press("Escape");
       await page.setViewportSize({ width: 390, height: 844 });
       await page.goto(new URL("?autoOpen", server.baseUrl).href);
@@ -361,11 +388,11 @@ Deno.test({
           const rect = list.parentElement?.getBoundingClientRect();
           return rect
             ? {
-              top: Math.round(rect.top),
-              right: Math.round(globalThis.innerWidth - rect.right),
-              bottom: Math.round(globalThis.innerHeight - rect.bottom),
-              left: Math.round(rect.left),
-            }
+                top: Math.round(rect.top),
+                right: Math.round(globalThis.innerWidth - rect.right),
+                bottom: Math.round(globalThis.innerHeight - rect.bottom),
+                left: Math.round(rect.left),
+              }
             : null;
         }),
         { top: 12, right: 12, bottom: 12, left: 12 },
@@ -380,26 +407,23 @@ Deno.test({
           const rect = list.parentElement?.getBoundingClientRect();
           return rect
             ? {
-              top: Math.round(rect.top),
-              right: Math.round(globalThis.innerWidth - rect.right),
-              bottom: Math.round(globalThis.innerHeight - rect.bottom),
-              left: Math.round(rect.left),
-            }
+                top: Math.round(rect.top),
+                right: Math.round(globalThis.innerWidth - rect.right),
+                bottom: Math.round(globalThis.innerHeight - rect.bottom),
+                left: Math.round(rect.left),
+              }
             : null;
         }),
         { top: 12, right: 12, bottom: 12, left: 12 },
       );
-      assertEquals(
-        await page.getByRole("listbox").getByRole("option").allTextContents(),
-        ["Test · First", "Test · Second"],
-      );
+      assertEquals(await page.getByRole("listbox").getByRole("option").allTextContents(), [
+        "Test · First",
+        "Test · Second",
+      ]);
       await page.getByRole("button", { name: "Back to session" }).click();
       assertEquals(await model.getAttribute("aria-expanded"), "false");
       await project.locator("svg").first().click();
-      assertEquals(
-        await page.getByRole("heading", { name: "Choose a project" }).isVisible(),
-        true,
-      );
+      assertEquals(await page.getByRole("heading", { name: "Choose a project" }).isVisible(), true);
       await page.getByRole("button", { name: "Back to session" }).click();
       assertEquals(await project.getAttribute("aria-expanded"), "false");
       await thinkingLevel.locator("svg").first().click();
@@ -407,10 +431,12 @@ Deno.test({
         await page.getByRole("heading", { name: "Choose a thinking level" }).isVisible(),
         true,
       );
-      assertEquals(
-        await page.getByRole("listbox").getByRole("option").allTextContents(),
-        ["Off", "Low", "High", "Max"],
-      );
+      assertEquals(await page.getByRole("listbox").getByRole("option").allTextContents(), [
+        "Off",
+        "Low",
+        "High",
+        "Max",
+      ]);
       await page.getByRole("button", { name: "Back to session" }).click();
       assertEquals(await thinkingLevel.getAttribute("aria-expanded"), "false");
       assertEquals(errors, []);
@@ -420,4 +446,4 @@ Deno.test({
       await server.close();
     }
   },
-});
+);

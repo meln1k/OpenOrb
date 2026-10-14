@@ -2,13 +2,13 @@ import { DEFAULT_SESSION_THINKING_LEVEL, SESSION_THINKING_LEVELS } from "@openor
 import type { RunnerSessionSnapshot, SessionIssue } from "@openorb/protocol/runner-api";
 import { Frame, type Handle } from "remix/component";
 
-import type { SessionCatalogEntry, SessionNavigationEntry } from "@/app/cells/workspace/api.ts";
-import { modelContextWindow, modelThinkingLevels } from "@/app/model-provider-catalog.ts";
-import { routes } from "@/app/routes.ts";
-import type { SessionComposerData } from "@/app/session-composer-data.ts";
+import type { SessionCatalogEntry, SessionNavigationEntry } from "../../cells/workspace/api.ts";
+import { modelContextWindow, modelThinkingLevels } from "../../model-provider-catalog.ts";
+import { routes } from "../../routes.ts";
+import type { SessionComposerData } from "../../session-composer-data.ts";
 import { SessionDetailClient } from "./public/session-detail-client.tsx";
-import { AppShellLayout, SESSION_WORKSPACE_FRAME } from "@/app/ui/public/shell.tsx";
-import { Document } from "@/app/ui/document.tsx";
+import { AppShellLayout, SESSION_WORKSPACE_FRAME } from "../../ui/public/shell.tsx";
+import { Document } from "../../ui/document.tsx";
 
 interface SessionDetailPageProps {
   composer: SessionComposerData;
@@ -53,15 +53,14 @@ export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
   // Without a view the Session Durable Object is unreachable.
   const state = snapshot?.state ?? "offline";
   const issues: readonly SessionIssue[] = snapshot?.issues ?? [];
-  const initialThinkingLevel = snapshot === null
-    ? DEFAULT_SESSION_THINKING_LEVEL
-    : snapshot.initialThinkingLevel;
+  const initialThinkingLevel =
+    snapshot === null ? DEFAULT_SESSION_THINKING_LEVEL : snapshot.initialThinkingLevel;
 
   return () => (
     <SessionDetailClient
       // Only a Session with a project loads Git integration (ADR 0007).
       changes={session.projectId !== undefined}
-      contextWindow={snapshot === null ? 0 : modelContextWindow(snapshot.model) ?? 0}
+      contextWindow={snapshot === null ? 0 : (modelContextWindow(snapshot.model) ?? 0)}
       csrfToken={csrfToken}
       error={error}
       initialState={state}
@@ -74,7 +73,7 @@ export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
       thinkingLevels={[
         ...(snapshot === null
           ? SESSION_THINKING_LEVELS
-          : modelThinkingLevels(snapshot.model) ?? SESSION_THINKING_LEVELS),
+          : (modelThinkingLevels(snapshot.model) ?? SESSION_THINKING_LEVELS)),
       ]}
     />
   );

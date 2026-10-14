@@ -7,18 +7,12 @@ export type SeparatorProps = Props<"div"> & {
 
 export function Separator(handle: Handle<SeparatorProps>) {
   return () => {
-    const {
-      decorative = true,
-      mix,
-      orientation = "horizontal",
-      role,
-      ...props
-    } = handle.props;
+    const { decorative = true, mix, orientation = "horizontal", role, ...props } = handle.props;
 
     return (
       <div
         {...props}
-        role={decorative ? "presentation" : role ?? "separator"}
+        role={decorative ? "presentation" : (role ?? "separator")}
         aria-orientation={decorative ? undefined : orientation}
         data-slot="separator"
         data-orientation={orientation}

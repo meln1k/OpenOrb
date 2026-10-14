@@ -1,3 +1,4 @@
+import { test, describe } from "vite-plus/test";
 import {
   assert,
   assertEquals,
@@ -5,7 +6,7 @@ import {
   assertNotMatch,
   assertRejects,
   assertThrows,
-} from "@std/assert";
+} from "@jsr/std__assert";
 import {
   ProjectId,
   SessionEnvironmentSecret,
@@ -31,17 +32,14 @@ function testEnvironment(getByName: () => Workspace): Env {
   return {
     OPENORB_MASTER_KEY: "ab".repeat(32),
     // SAFETY: Logic tests call ordinary methods; native celld tests exercise the RPC transport.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     WORKSPACE: { getByName } as unknown as Env["WORKSPACE"],
   } as Env;
 }
 
 async function configured() {
   const context = activate();
-  assertEquals(await context.workspace.createAdministrator("test-password"), [
-    true,
-    undefined,
-  ]);
+  assertEquals(await context.workspace.createAdministrator("test-password"), [true, undefined]);
   const administrator = await context.workspace.verifyAdministratorPassword("test-password");
   assert(administrator);
   return { ...context, administrator, workspaceId: administrator.workspaceId };
@@ -65,14 +63,15 @@ function snapshot(projectId: string) {
   };
 }
 
-Deno.test("test SQLite storage isolates BLOB reads and rolls back writes, deletes, and alarms", async () => {
+test("test SQLite storage isolates BLOB reads and rolls back writes, deletes, and alarms", async () => {
   const storage = new MemoryStorage();
   storage.sql.exec("CREATE TABLE records (id TEXT PRIMARY KEY, bytes BLOB, name TEXT)");
   const bytes = new Uint8Array([1, 2]);
   storage.sql.exec("INSERT INTO records VALUES (?, ?, ?)", "record", bytes.buffer, "original");
   bytes[0] = 99;
-  const read =
-    storage.rows<{ bytes: ArrayBuffer; name: string }>("SELECT bytes, name FROM records")[0];
+  const read = storage.rows<{ bytes: ArrayBuffer; name: string }>(
+    "SELECT bytes, name FROM records",
+  )[0];
   assert(read);
   assertEquals(new Uint8Array(read.bytes), new Uint8Array([1, 2]));
   new Uint8Array(read.bytes)[0] = 98;
@@ -98,10 +97,12 @@ Deno.test("test SQLite storage isolates BLOB reads and rolls back writes, delete
   assertEquals(storage.dump(), before);
   assertEquals(
     storage.rows<{ bytes: ArrayBuffer; name: string }>("SELECT bytes, name FROM records"),
-    [{
-      bytes: new Uint8Array([1, 2]).buffer,
-      name: "original",
-    }],
+    [
+      {
+        bytes: new Uint8Array([1, 2]).buffer,
+        name: "original",
+      },
+    ],
   );
   assertEquals(storage.rows("SELECT id FROM records WHERE id = ?", "partial"), []);
   assertEquals(storage.alarm, 123);
@@ -117,7 +118,7 @@ Deno.test("test SQLite storage isolates BLOB reads and rolls back writes, delete
   assertEquals(storage.dump(), before);
 });
 
-Deno.test("Workspace setup admits one concurrent administrator and survives reactivation", async () => {
+test("Workspace setup admits one concurrent administrator and survives reactivation", async () => {
   const { workspace, storage } = activate();
   assertEquals(await workspace.hasAdministrator(), false);
   storage.sql.exec(`CREATE TRIGGER reject_password BEFORE INSERT ON password_credentials
@@ -154,7 +155,7 @@ Deno.test("Workspace setup admits one concurrent administrator and survives reac
   assertEquals(storage.rows("SELECT userId FROM password_credentials").length, 1);
 });
 
-Deno.test("Workspace migrations preserve records, roll back failed upgrades, and reject drift", async () => {
+test("Workspace migrations preserve records, roll back failed upgrades, and reject drift", async () => {
   const { workspace, storage, administrator, workspaceId } = await configured();
   const project = await createProject(workspace, workspaceId);
   const reopened = activate(storage).workspace;
@@ -179,11 +180,7 @@ Deno.test("Workspace migrations preserve records, roll back failed upgrades, and
     up: "CREATE TABLE migration_probe (value TEXT); INSERT INTO missing_table VALUES ('fail');",
   };
   await assertRejects(() =>
-    migrateWorkspaceDatabase(storage, [
-      ...workspaceMigrations,
-      upgrade,
-      failed,
-    ])
+    migrateWorkspaceDatabase(storage, [...workspaceMigrations, upgrade, failed]),
   );
   assertEquals(storage.dump(), unchanged);
   assertEquals(
@@ -200,14 +197,16 @@ Deno.test("Workspace migrations preserve records, roll back failed upgrades, and
       up: "CREATE TABLE migration_probe (value TEXT); INSERT INTO migration_probe VALUES ('ok');",
     },
   ];
-  assertEquals((await migrateWorkspaceDatabase(storage, migrations)).applied.map((m) => m.id), [
-    "0003",
-    "0004",
+  assertEquals(
+    (await migrateWorkspaceDatabase(storage, migrations)).applied.map((m) => m.id),
+    ["0003", "0004"],
+  );
+  assertEquals(storage.rows("SELECT id, note FROM projects"), [
+    {
+      id: project.id,
+      note: "retained",
+    },
   ]);
-  assertEquals(storage.rows("SELECT id, note FROM projects"), [{
-    id: project.id,
-    note: "retained",
-  }]);
   assertEquals(storage.rows("SELECT * FROM migration_probe"), [{ value: "ok" }]);
   const upgraded = storage.dump();
   assertEquals((await migrateWorkspaceDatabase(storage, migrations)).applied, []);
@@ -216,7 +215,7 @@ Deno.test("Workspace migrations preserve records, roll back failed upgrades, and
       ...workspaceMigrations,
       { ...upgrade, up: upgrade.up + "\n" },
       migrations[2]!,
-    ])
+    ]),
   );
   assertEquals(storage.dump(), upgraded);
   // An older Workspace build must refuse an unknown applied migration before serving requests.
@@ -225,7 +224,7 @@ Deno.test("Workspace migrations preserve records, roll back failed upgrades, and
   await assertRejects(() => older.getProject(workspaceId, project.id));
 });
 
-Deno.test("migration 0002 keeps catalog rows and lets Sessions go without a project", async () => {
+test("migration 0002 keeps catalog rows and lets Sessions go without a project", async () => {
   const storage = new MemoryStorage();
   await migrateWorkspaceDatabase(storage, workspaceMigrations.slice(0, 1));
   storage.sql.exec("INSERT INTO workspaces (id, singleton, createdAt) VALUES ('w', 1, 'now')");
@@ -250,17 +249,17 @@ Deno.test("migration 0002 keeps catalog rows and lets Sessions go without a proj
   assertThrows(() =>
     storage.sql.exec(
       "INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview) VALUES ('w', 'gone', NULL, '3', 'x')",
-    )
+    ),
   );
   assertThrows(() => storage.sql.exec("DELETE FROM projects WHERE id = 'p'"));
 });
 
-Deno.test("Worker validates HTTP before RPC and keeps remote failures private", async () => {
+test("Worker validates HTTP before RPC and keeps remote failures private", async () => {
   const { workspace, storage, workspaceId } = await configured();
   const environment = testEnvironment(() => workspace);
   const stub = environment.WORKSPACE.getByName("workspace");
   // Also fail type checking if the generated namespace loses its source types and becomes any.
-  assertEquals<0 extends (1 & typeof stub.health) ? never : void>(await stub.health(), undefined);
+  assertEquals<0 extends 1 & typeof stub.health ? never : void>(await stub.health(), undefined);
   const invalid = await httpWorker.fetch(
     new Request("http://workspace.test/saveProject", {
       method: "POST",
@@ -299,26 +298,28 @@ Deno.test("Worker validates HTTP before RPC and keeps remote failures private", 
   assertEquals(await result.text(), "Workspace operation failed");
 });
 
-Deno.test("native secret arguments accept optional undefined or omission but reject null", async () => {
+test("native secret arguments accept optional undefined or omission but reject null", async () => {
   const { workspace, workspaceId } = await configured();
   assertEquals((await workspace.saveSecret(workspaceId, "OMITTED", "value")).status, "saved");
   assertEquals(
     (await workspace.saveSecret(workspaceId, "UNDEFINED", "value", undefined)).status,
     "saved",
   );
-  assertEquals(
-    decodeWorkspaceArguments("saveSecret", [workspaceId, "TOKEN", "value", undefined]),
-    [workspaceId, "TOKEN", "value", undefined],
-  );
+  assertEquals(decodeWorkspaceArguments("saveSecret", [workspaceId, "TOKEN", "value", undefined]), [
+    workspaceId,
+    "TOKEN",
+    "value",
+    undefined,
+  ]);
   assertThrows(() => decodeWorkspaceArguments("saveSecret", [workspaceId, "TOKEN", "value", null]));
   await assertRejects(() =>
     // @ts-expect-error Untrusted native arguments must reject null, not normalize HTTP placeholders.
-    workspace.saveSecret(workspaceId, "INVALID", "value", null)
+    workspace.saveSecret(workspaceId, "INVALID", "value", null),
   );
   assertEquals(await workspace.getSecret(workspaceId, "INVALID"), null);
 });
 
-Deno.test("project name conflicts do not overwrite data and reads are Workspace-scoped", async () => {
+test("project name conflicts do not overwrite data and reads are Workspace-scoped", async () => {
   const { workspace, storage, workspaceId } = await configured();
   const input = { name: "OpenOrb", repositoryUrl: "https://github.com/example/openorb.git" };
   const results = await Promise.all([
@@ -334,19 +335,15 @@ Deno.test("project name conflicts do not overwrite data and reads are Workspace-
   const foreign = WorkspaceId.make(crypto.randomUUID());
   assertEquals(await workspace.getProject(foreign, saved.project.id), null);
   assertEquals(await workspace.listProjects(foreign), []);
-  assertEquals(
-    await workspace.saveProject(workspaceId, { ...input, id: crypto.randomUUID() }),
-    { status: "not-found" },
-  );
+  assertEquals(await workspace.saveProject(workspaceId, { ...input, id: crypto.randomUUID() }), {
+    status: "not-found",
+  });
   assertEquals(await activate(storage).workspace.listProjects(workspaceId), [saved.project]);
 });
 
-Deno.test("credentials persist as ciphertext; metadata omits secrets; null Results stay successful", async () => {
+test("credentials persist as ciphertext; metadata omits secrets; null Results stay successful", async () => {
   const { workspace, storage, workspaceId } = await configured();
-  assertEquals(await workspace.getModelProviderApiKey(workspaceId, "openai"), [
-    null,
-    undefined,
-  ]);
+  assertEquals(await workspace.getModelProviderApiKey(workspaceId, "openai"), [null, undefined]);
   assertEquals(await workspace.getGitHubToken(workspaceId), [null, undefined]);
   const apiKey = "provider-plaintext-must-not-persist";
   const gitToken = "github-plaintext-must-not-persist";
@@ -377,32 +374,32 @@ Deno.test("credentials persist as ciphertext; metadata omits secrets; null Resul
   assertEquals("secret" in provider, false);
   const restarted = activate(storage).workspace;
   assertEquals(await restarted.getModelProviderCredential(workspaceId, "openai"), provider);
-  assertEquals(await restarted.getModelProviderApiKey(workspaceId, "openai"), [
-    apiKey,
-    undefined,
-  ]);
+  assertEquals(await restarted.getModelProviderApiKey(workspaceId, "openai"), [apiKey, undefined]);
   assertEquals(await restarted.getGitHubToken(workspaceId), [gitToken, undefined]);
   const [secrets, error] = await restarted.getEnvironmentSecrets(workspaceId);
   assertEquals(error, undefined);
   assert(secrets);
-  assertEquals([secrets, error], [[
-    {
-      name: "SERVICE_TOKEN",
-      value: secretValue,
-      allowedHosts: ["api.example.com"],
-    },
-  ], undefined]);
+  assertEquals(
+    [secrets, error],
+    [
+      [
+        {
+          name: "SERVICE_TOKEN",
+          value: secretValue,
+          allowedHosts: ["api.example.com"],
+        },
+      ],
+      undefined,
+    ],
+  );
   assertEquals(Object.getPrototypeOf(secrets[0]), Object.prototype);
   assertEquals(secrets[0] instanceof SessionEnvironmentSecret, false);
   const foreign = WorkspaceId.make(crypto.randomUUID());
-  assertEquals(await restarted.getModelProviderApiKey(foreign, "openai"), [
-    null,
-    undefined,
-  ]);
+  assertEquals(await restarted.getModelProviderApiKey(foreign, "openai"), [null, undefined]);
   assertEquals(await restarted.getSecret(foreign, "SERVICE_TOKEN"), null);
 });
 
-Deno.test("runner enrollment authenticates durably and revocation invalidates the token", async () => {
+test("runner enrollment authenticates durably and revocation invalidates the token", async () => {
   const { workspace, storage, workspaceId } = await configured();
   const enrollment = await workspace.getRunnerEnrollmentToken(workspaceId);
   assertEquals(new Date(enrollment.createdAt).toISOString(), enrollment.createdAt);
@@ -434,10 +431,7 @@ Deno.test("runner enrollment authenticates durably and revocation invalidates th
     "not-found",
   );
   assertEquals(await restarted.revokeRunner(workspaceId, enrolled.runnerId), "revoked");
-  assertEquals(
-    await activate(storage).workspace.authenticateRunner(enrolled.runnerToken),
-    null,
-  );
+  assertEquals(await activate(storage).workspace.authenticateRunner(enrolled.runnerToken), null);
   const revokedAt = (await restarted.listRunners(workspaceId))[0]?.revokedAt;
   assert(revokedAt !== null && revokedAt !== undefined);
   assertEquals(new Date(revokedAt).toISOString(), revokedAt);
@@ -447,15 +441,18 @@ Deno.test("runner enrollment authenticates durably and revocation invalidates th
   assertEquals(await restarted.enrollRunner(input), null);
 });
 
-Deno.test("catalog manifests are all-or-nothing and durable tombstones prevent resurrection", async () => {
+test("catalog manifests are all-or-nothing and durable tombstones prevent resurrection", async () => {
   const { workspace, storage, workspaceId } = await configured();
   const project = await createProject(workspace, workspaceId);
   const existing = snapshot(project.id);
-  assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [existing]), [{
-    acceptedSessionIds: [existing.id],
-    tombstonedSessionIds: [],
-    rejected: [],
-  }, undefined]);
+  assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [existing]), [
+    {
+      acceptedSessionIds: [existing.id],
+      tombstonedSessionIds: [],
+      rejected: [],
+    },
+    undefined,
+  ]);
   const fresh = snapshot(project.id);
   const missing = snapshot(crypto.randomUUID());
   const conflict = {
@@ -464,14 +461,17 @@ Deno.test("catalog manifests are all-or-nothing and durable tombstones prevent r
   };
   assertEquals(
     await workspace.reconcileSessionManifestEntries(workspaceId, [fresh, conflict, missing]),
-    [{
-      acceptedSessionIds: [],
-      tombstonedSessionIds: [],
-      rejected: [
-        { sessionId: existing.id, reason: "catalog-conflict" },
-        { sessionId: missing.id, reason: "project-not-found" },
-      ],
-    }, undefined],
+    [
+      {
+        acceptedSessionIds: [],
+        tombstonedSessionIds: [],
+        rejected: [
+          { sessionId: existing.id, reason: "catalog-conflict" },
+          { sessionId: missing.id, reason: "project-not-found" },
+        ],
+      },
+      undefined,
+    ],
   );
   assertEquals(await workspace.getSessionCatalogEntry(workspaceId, fresh.id), null);
   assertEquals(
@@ -479,19 +479,19 @@ Deno.test("catalog manifests are all-or-nothing and durable tombstones prevent r
     existing.initialPromptPreview,
   );
   const deletedAt = new Date().toISOString();
-  assertEquals(
-    await workspace.deleteSessionCatalogEntry(workspaceId, existing.id, deletedAt),
-    ["deleted", undefined],
-  );
+  assertEquals(await workspace.deleteSessionCatalogEntry(workspaceId, existing.id, deletedAt), [
+    "deleted",
+    undefined,
+  ]);
   const restarted = activate(storage).workspace;
-  assertEquals(
-    await restarted.reconcileSessionManifestEntries(workspaceId, [existing, fresh]),
-    [{
+  assertEquals(await restarted.reconcileSessionManifestEntries(workspaceId, [existing, fresh]), [
+    {
       acceptedSessionIds: [fresh.id],
       tombstonedSessionIds: [existing.id],
       rejected: [],
-    }, undefined],
-  );
+    },
+    undefined,
+  ]);
   assertEquals(await restarted.getSessionCatalogEntry(workspaceId, existing.id), null);
   assertEquals(
     storage.rows(
@@ -501,15 +501,17 @@ Deno.test("catalog manifests are all-or-nothing and durable tombstones prevent r
     ),
     [{ deletedAt }],
   );
-  assertEquals(await restarted.listSessionNavigationEntries(workspaceId), [{
-    id: fresh.id,
-    projectId: project.id,
-    projectName: project.name,
-    initialPromptPreview: fresh.initialPromptPreview,
-  }]);
+  assertEquals(await restarted.listSessionNavigationEntries(workspaceId), [
+    {
+      id: fresh.id,
+      projectId: project.id,
+      projectName: project.name,
+      initialPromptPreview: fresh.initialPromptPreview,
+    },
+  ]);
 });
 
-Deno.test("Workspace preserves protocol limits and rejects conflicting entries in one manifest", async () => {
+test("Workspace preserves protocol limits and rejects conflicting entries in one manifest", async () => {
   const { workspace, workspaceId } = await configured();
   const hosts = Array.from({ length: 32 }, (_, index) => `api${index}.example.com`);
   assertEquals(
@@ -517,7 +519,7 @@ Deno.test("Workspace preserves protocol limits and rejects conflicting entries i
     "saved",
   );
   await assertRejects(() =>
-    workspace.saveSecret(workspaceId, "HOSTS", "test-secret", [...hosts, "extra.example.com"])
+    workspace.saveSecret(workspaceId, "HOSTS", "test-secret", [...hosts, "extra.example.com"]),
   );
   const project = await createProject(workspace, workspaceId);
   const entry = {
@@ -531,7 +533,7 @@ Deno.test("Workspace preserves protocol limits and rejects conflicting entries i
   await assertRejects(() =>
     workspace.reconcileSessionManifestEntries(workspaceId, [
       { ...entry, initialPromptPreview: "😀".repeat(201) },
-    ])
+    ]),
   );
   const fresh = snapshot(project.id);
   const [rejected] = await workspace.reconcileSessionManifestEntries(workspaceId, [
@@ -542,7 +544,7 @@ Deno.test("Workspace preserves protocol limits and rejects conflicting entries i
   assertEquals(await workspace.getSessionCatalogEntry(workspaceId, fresh.id), null);
 });
 
-Deno.test("browser-session rotation and logout reject stale saves after reactivation", async () => {
+test("browser-session rotation and logout reject stale saves after reactivation", async () => {
   const { workspace, storage, administrator } = await configured();
   const anonymous: SaveBrowserSession = {
     id: crypto.randomUUID(),
@@ -567,10 +569,7 @@ Deno.test("browser-session rotation and logout reject stale saves after reactiva
   assertEquals(record.data, authenticated.data);
   await restarted.deleteBrowserSessions([authenticated.id, anonymous.id]);
   const afterLogout = activate(storage).workspace;
-  assertEquals(
-    await afterLogout.saveBrowserSession({ ...authenticated, mode: "update" }),
-    false,
-  );
+  assertEquals(await afterLogout.saveBrowserSession({ ...authenticated, mode: "update" }), false);
   const staleRotationId = crypto.randomUUID();
   assertEquals(
     await afterLogout.saveBrowserSession({
@@ -586,11 +585,13 @@ Deno.test("browser-session rotation and logout reject stale saves after reactiva
   assertEquals(storage.rows("SELECT id FROM browser_sessions"), []);
 });
 
-const ACCESS_TOKEN = `e30.${
-  new TextEncoder().encode(JSON.stringify({
-    "https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
-  })).toBase64({ alphabet: "base64url", omitPadding: true })
-}.unverified-signature`;
+const ACCESS_TOKEN = `e30.${new TextEncoder()
+  .encode(
+    JSON.stringify({
+      "https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
+    }),
+  )
+  .toBase64({ alphabet: "base64url", omitPadding: true })}.unverified-signature`;
 
 const DEVICE_PATH = "/api/accounts/deviceauth/usercode";
 const POLL_PATH = "/api/accounts/deviceauth/token";
@@ -642,7 +643,7 @@ async function withProviderFetch(
   }
 }
 
-Deno.test("device OAuth polling persists through alarms and object reconstruction", async () => {
+test("device OAuth polling persists through alarms and object reconstruction", async () => {
   const context = await configured();
   const replies = [
     { path: DEVICE_PATH, response: deviceResponse() },
@@ -650,110 +651,111 @@ Deno.test("device OAuth polling persists through alarms and object reconstructio
     { path: POLL_PATH, response: authorizedResponse() },
     { path: EXCHANGE_PATH, response: tokenResponse() },
   ];
-  await withProviderFetch((request) => {
-    const reply = replies.shift();
-    assert(reply, "unexpected provider HTTP request");
-    assertEquals(new URL(request.url).pathname, reply.path);
-    return Promise.resolve(reply.response);
-  }, async (requests) => {
-    const authorization = await context.workspace.startProviderLogin(context.workspaceId);
-    assert(context.storage.alarm !== null);
-    const restarted = activate(context.storage);
-    assertEquals(
-      await restarted.workspace.getProviderLoginStatus(context.workspaceId, authorization.id),
-      {
-        status: "pending",
-        authorization,
-      },
-    );
-    await restarted.workspace.alarm();
-    assert(context.storage.alarm !== null);
-    assertEquals(
-      await restarted.workspace.getModelProviderCredential(
-        context.workspaceId,
-        "openai-codex",
-      ),
-      null,
-    );
-    const again = activate(context.storage);
-    const originalNow = Date.now;
-    Date.now = () => context.storage.alarm ?? originalNow();
-    try {
+  await withProviderFetch(
+    (request) => {
+      const reply = replies.shift();
+      assert(reply, "unexpected provider HTTP request");
+      assertEquals(new URL(request.url).pathname, reply.path);
+      return Promise.resolve(reply.response);
+    },
+    async (requests) => {
+      const authorization = await context.workspace.startProviderLogin(context.workspaceId);
+      assert(context.storage.alarm !== null);
+      const restarted = activate(context.storage);
+      assertEquals(
+        await restarted.workspace.getProviderLoginStatus(context.workspaceId, authorization.id),
+        {
+          status: "pending",
+          authorization,
+        },
+      );
+      await restarted.workspace.alarm();
+      assert(context.storage.alarm !== null);
+      assertEquals(
+        await restarted.workspace.getModelProviderCredential(context.workspaceId, "openai-codex"),
+        null,
+      );
+      const again = activate(context.storage);
+      const originalNow = Date.now;
+      Date.now = () => context.storage.alarm ?? originalNow();
+      try {
+        await again.workspace.alarm();
+      } finally {
+        Date.now = originalNow;
+      }
+      assertEquals(
+        await again.workspace.getProviderLoginStatus(context.workspaceId, authorization.id),
+        { status: "complete" },
+      );
+      assertEquals(context.storage.alarm, null);
+      assertEquals(
+        (await again.workspace.getModelProviderCredential(context.workspaceId, "openai-codex"))
+          ?.credentialType,
+        "oauth",
+      );
+      assertEquals(
+        await activate(context.storage).workspace.resolveProviderAccessToken(context.workspaceId),
+        ACCESS_TOKEN,
+      );
+      assertEquals(
+        await again.workspace.getModelProviderApiKey(context.workspaceId, "openai-codex"),
+        [null, undefined],
+      );
+      assertEquals(replies.length, 0);
+      assertEquals(JSON.parse(await requests[1]!.text()), {
+        device_auth_id: "device-id",
+        user_code: "ABCD-EFGH",
+      });
+      const persisted = context.storage.dump();
+      assertEquals(persisted.includes(ACCESS_TOKEN), false);
+      assertEquals(persisted.includes("refresh-secret"), false);
       await again.workspace.alarm();
-    } finally {
-      Date.now = originalNow;
-    }
-    assertEquals(
-      await again.workspace.getProviderLoginStatus(context.workspaceId, authorization.id),
-      { status: "complete" },
-    );
-    assertEquals(context.storage.alarm, null);
-    assertEquals(
-      (await again.workspace.getModelProviderCredential(context.workspaceId, "openai-codex"))
-        ?.credentialType,
-      "oauth",
-    );
-    assertEquals(
-      await activate(context.storage).workspace.resolveProviderAccessToken(
-        context.workspaceId,
-      ),
-      ACCESS_TOKEN,
-    );
-    assertEquals(
-      await again.workspace.getModelProviderApiKey(context.workspaceId, "openai-codex"),
-      [null, undefined],
-    );
-    assertEquals(replies.length, 0);
-    assertEquals(JSON.parse(await requests[1]!.text()), {
-      device_auth_id: "device-id",
-      user_code: "ABCD-EFGH",
-    });
-    const persisted = context.storage.dump();
-    assertEquals(persisted.includes(ACCESS_TOKEN), false);
-    assertEquals(persisted.includes("refresh-secret"), false);
-    await again.workspace.alarm();
-    assertEquals(requests.length, 4, "a completed alarm must not exchange twice");
-  });
+      assertEquals(requests.length, 4, "a completed alarm must not exchange twice");
+    },
+  );
 });
 
-Deno.test("cancelling or replacing persisted OAuth attempts rejects stale IDs and stale alarms", async () => {
+test("cancelling or replacing persisted OAuth attempts rejects stale IDs and stale alarms", async () => {
   const { workspace, storage, workspaceId } = await configured();
-  await withProviderFetch((request) => {
-    assertEquals(
-      new URL(request.url).pathname,
-      DEVICE_PATH,
-      "cancelled attempts must never poll or exchange",
-    );
-    return Promise.resolve(deviceResponse());
-  }, async (requests) => {
-    const cancelled = await workspace.startProviderLogin(workspaceId);
-    const restarted = activate(storage);
-    await restarted.workspace.cancelProviderLogin(workspaceId, cancelled.id);
-    await activate(storage).workspace.alarm();
-    assertEquals(storage.alarm, null);
-    assertEquals(await restarted.workspace.getProviderLoginStatus(workspaceId, cancelled.id), {
-      status: "missing",
-    });
-    const old = await restarted.workspace.startProviderLogin(workspaceId);
-    const replacement = await activate(storage).workspace.startProviderLogin(workspaceId);
-    assertNotEquals(old.id, replacement.id);
-    await restarted.workspace.cancelProviderLogin(workspaceId, old.id);
-    assertEquals(await restarted.workspace.getProviderLoginStatus(workspaceId, old.id), {
-      status: "missing",
-    });
-    assertEquals(
-      await restarted.workspace.getProviderLoginStatus(workspaceId, replacement.id),
-      { status: "pending", authorization: replacement },
-    );
-    await restarted.workspace.cancelProviderLogin(workspaceId, replacement.id);
-    await activate(storage).workspace.alarm();
-    assertEquals(
-      await restarted.workspace.getModelProviderCredential(workspaceId, "openai-codex"),
-      null,
-    );
-    assertEquals(storage.alarm, null);
-    assertEquals(requests.length, 3);
-  });
+  await withProviderFetch(
+    (request) => {
+      assertEquals(
+        new URL(request.url).pathname,
+        DEVICE_PATH,
+        "cancelled attempts must never poll or exchange",
+      );
+      return Promise.resolve(deviceResponse());
+    },
+    async (requests) => {
+      const cancelled = await workspace.startProviderLogin(workspaceId);
+      const restarted = activate(storage);
+      await restarted.workspace.cancelProviderLogin(workspaceId, cancelled.id);
+      await activate(storage).workspace.alarm();
+      assertEquals(storage.alarm, null);
+      assertEquals(await restarted.workspace.getProviderLoginStatus(workspaceId, cancelled.id), {
+        status: "missing",
+      });
+      const old = await restarted.workspace.startProviderLogin(workspaceId);
+      const replacement = await activate(storage).workspace.startProviderLogin(workspaceId);
+      assertNotEquals(old.id, replacement.id);
+      await restarted.workspace.cancelProviderLogin(workspaceId, old.id);
+      assertEquals(await restarted.workspace.getProviderLoginStatus(workspaceId, old.id), {
+        status: "missing",
+      });
+      assertEquals(await restarted.workspace.getProviderLoginStatus(workspaceId, replacement.id), {
+        status: "pending",
+        authorization: replacement,
+      });
+      await restarted.workspace.cancelProviderLogin(workspaceId, replacement.id);
+      await activate(storage).workspace.alarm();
+      assertEquals(
+        await restarted.workspace.getModelProviderCredential(workspaceId, "openai-codex"),
+        null,
+      );
+      assertEquals(storage.alarm, null);
+      assertEquals(requests.length, 3);
+    },
+  );
 });
 
 async function bounded<T>(promise: Promise<T>): Promise<T> {
@@ -773,89 +775,98 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
-Deno.test("cancellation, replacement, and disconnect during an OAuth poll cannot save a stale credential", async (t) => {
+describe("cancellation, replacement, and disconnect during an OAuth poll cannot save a stale credential", () => {
   for (const action of ["cancel", "replace", "disconnect"] as const) {
-    await t.step(action, async () => {
+    test(action, async () => {
       const { workspace, storage, workspaceId } = await configured();
       const entered = Promise.withResolvers<void>();
       const response = Promise.withResolvers<Response>();
-      await withProviderFetch((request) => {
-        const path = new URL(request.url).pathname;
-        if (path === DEVICE_PATH) return Promise.resolve(deviceResponse());
-        if (path === POLL_PATH) {
-          entered.resolve();
-          // Deliberately deliver a late result, even if the request signal was aborted.
-          return response.promise;
-        }
-        assertEquals(path, EXCHANGE_PATH);
-        return Promise.resolve(tokenResponse());
-      }, async () => {
-        const old = await workspace.startProviderLogin(workspaceId);
-        const polling = workspace.alarm();
-        await bounded(entered.promise);
-        const mutation = action === "cancel"
-          ? workspace.cancelProviderLogin(workspaceId, old.id)
-          : action === "replace"
-          ? workspace.startProviderLogin(workspaceId)
-          : workspace.disconnectProvider(workspaceId);
-        response.resolve(authorizedResponse());
-        await bounded(Promise.all([polling, mutation]));
-        const restarted = activate(storage).workspace;
-        assertEquals(await restarted.getProviderLoginStatus(workspaceId, old.id), {
-          status: "missing",
-        });
-        assertEquals(
-          await restarted.getModelProviderCredential(workspaceId, "openai-codex"),
-          null,
-          "the invalidated attempt must not persist its late credential",
-        );
-      });
+      await withProviderFetch(
+        (request) => {
+          const path = new URL(request.url).pathname;
+          if (path === DEVICE_PATH) return Promise.resolve(deviceResponse());
+          if (path === POLL_PATH) {
+            entered.resolve();
+            // Deliberately deliver a late result, even if the request signal was aborted.
+            return response.promise;
+          }
+          assertEquals(path, EXCHANGE_PATH);
+          return Promise.resolve(tokenResponse());
+        },
+        async () => {
+          const old = await workspace.startProviderLogin(workspaceId);
+          const polling = workspace.alarm();
+          await bounded(entered.promise);
+          const mutation =
+            action === "cancel"
+              ? workspace.cancelProviderLogin(workspaceId, old.id)
+              : action === "replace"
+                ? workspace.startProviderLogin(workspaceId)
+                : workspace.disconnectProvider(workspaceId);
+          response.resolve(authorizedResponse());
+          await bounded(Promise.all([polling, mutation]));
+          const restarted = activate(storage).workspace;
+          assertEquals(await restarted.getProviderLoginStatus(workspaceId, old.id), {
+            status: "missing",
+          });
+          assertEquals(
+            await restarted.getModelProviderCredential(workspaceId, "openai-codex"),
+            null,
+            "the invalidated attempt must not persist its late credential",
+          );
+        },
+      );
     });
   }
 });
 
-Deno.test("disconnect during refresh revokes the rotated token and cannot resurrect credentials", async () => {
+test("disconnect during refresh revokes the rotated token and cannot resurrect credentials", async () => {
   const { workspace, storage, workspaceId } = await configured();
   const entered = Promise.withResolvers<void>();
   const response = Promise.withResolvers<Response>();
-  await withProviderFetch(async (request) => {
-    const path = new URL(request.url).pathname;
-    if (path === DEVICE_PATH) return deviceResponse();
-    if (path === POLL_PATH) return authorizedResponse();
-    if (path === EXCHANGE_PATH) {
-      const fields = new URLSearchParams(await request.text());
-      if (fields.get("grant_type") === "authorization_code") {
-        return Response.json({
-          access_token: ACCESS_TOKEN,
-          refresh_token: "initial-refresh-token",
-          expires_in: 1,
-        });
+  await withProviderFetch(
+    async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === DEVICE_PATH) return deviceResponse();
+      if (path === POLL_PATH) return authorizedResponse();
+      if (path === EXCHANGE_PATH) {
+        const fields = new URLSearchParams(await request.text());
+        if (fields.get("grant_type") === "authorization_code") {
+          return Response.json({
+            access_token: ACCESS_TOKEN,
+            refresh_token: "initial-refresh-token",
+            expires_in: 1,
+          });
+        }
+        assertEquals(fields.get("grant_type"), "refresh_token");
+        assertEquals(fields.get("refresh_token"), "initial-refresh-token");
+        entered.resolve();
+        return response.promise;
       }
-      assertEquals(fields.get("grant_type"), "refresh_token");
-      assertEquals(fields.get("refresh_token"), "initial-refresh-token");
-      entered.resolve();
-      return response.promise;
-    }
-    assertEquals(path, "/oauth/revoke");
-    return new Response(null, { status: 200 });
-  }, async (requests) => {
-    await workspace.startProviderLogin(workspaceId);
-    await workspace.alarm();
-    const refreshing = workspace.resolveProviderAccessToken(workspaceId);
-    await bounded(entered.promise);
-    const disconnecting = workspace.disconnectProvider(workspaceId);
-    response.resolve(Response.json({
-      access_token: ACCESS_TOKEN,
-      refresh_token: "rotated-refresh-token",
-      expires_in: 3600,
-    }));
-    assertEquals(await bounded(disconnecting), { status: "deleted" });
-    await bounded(refreshing);
-    const restarted = activate(storage).workspace;
-    assertEquals(await restarted.getModelProviderCredential(workspaceId, "openai-codex"), null);
-    assertEquals(await restarted.resolveProviderAccessToken(workspaceId), null);
-    const revocations = requests.filter((r) => new URL(r.url).pathname === "/oauth/revoke");
-    assertEquals(revocations.length, 1);
-    assertEquals((await revocations[0]!.json()).token, "rotated-refresh-token");
-  });
+      assertEquals(path, "/oauth/revoke");
+      return new Response(null, { status: 200 });
+    },
+    async (requests) => {
+      await workspace.startProviderLogin(workspaceId);
+      await workspace.alarm();
+      const refreshing = workspace.resolveProviderAccessToken(workspaceId);
+      await bounded(entered.promise);
+      const disconnecting = workspace.disconnectProvider(workspaceId);
+      response.resolve(
+        Response.json({
+          access_token: ACCESS_TOKEN,
+          refresh_token: "rotated-refresh-token",
+          expires_in: 3600,
+        }),
+      );
+      assertEquals(await bounded(disconnecting), { status: "deleted" });
+      await bounded(refreshing);
+      const restarted = activate(storage).workspace;
+      assertEquals(await restarted.getModelProviderCredential(workspaceId, "openai-codex"), null);
+      assertEquals(await restarted.resolveProviderAccessToken(workspaceId), null);
+      const revocations = requests.filter((r) => new URL(r.url).pathname === "/oauth/revoke");
+      assertEquals(revocations.length, 1);
+      assertEquals((await revocations[0]!.json()).token, "rotated-refresh-token");
+    },
+  );
 });

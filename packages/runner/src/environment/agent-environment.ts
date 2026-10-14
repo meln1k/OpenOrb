@@ -61,9 +61,7 @@ export interface AgentEnvironmentOptions {
 }
 
 export interface AgentEnvironmentProvider {
-  readonly initializeRootDisk: (
-    path: string,
-  ) => Effect.Effect<void, AgentEnvironmentError>;
+  readonly initializeRootDisk: (path: string) => Effect.Effect<void, AgentEnvironmentError>;
   readonly make: (
     options: AgentEnvironmentOptions,
   ) => Effect.Effect<AgentEnvironment, AgentEnvironmentError, Scope.Scope>;

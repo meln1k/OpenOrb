@@ -5,26 +5,32 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import type { Administrator } from "@/app/cells/workspace/api.ts";
-import { csrf } from "@/app/middleware/csrf.ts";
-import { routes } from "@/app/routes.ts";
-import { loadSessionComposerData } from "@/app/session-composer-data.ts";
-import { ProjectsPage } from "@/app/actions/projects/page.tsx";
-import { canonicalizeGitHubRepository } from "@/app/actions/projects/project-input.ts";
+import type { Administrator } from "../../cells/workspace/api.ts";
+import { csrf } from "../../middleware/csrf.ts";
+import { routes } from "../../routes.ts";
+import { loadSessionComposerData } from "../../session-composer-data.ts";
+import { ProjectsPage } from "./page.tsx";
+import { canonicalizeGitHubRepository } from "./project-input.ts";
 
-const uuidSchema = s.string().refine(
-  (value) =>
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value),
-  "The project identifier is invalid.",
-);
-const nameSchema = s.string().refine(
-  (value) => value.trim().length > 0 && value.trim().length <= 100,
-  "The project name is required and must be at most 100 characters.",
-);
-const repositorySchema = s.string().refine(
-  (value) => canonicalizeGitHubRepository(value) !== null,
-  "Use owner/repository or an HTTPS github.com URL. SSH and non-GitHub repositories are not supported.",
-);
+const uuidSchema = s
+  .string()
+  .refine(
+    (value) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value),
+    "The project identifier is invalid.",
+  );
+const nameSchema = s
+  .string()
+  .refine(
+    (value) => value.trim().length > 0 && value.trim().length <= 100,
+    "The project name is required and must be at most 100 characters.",
+  );
+const repositorySchema = s
+  .string()
+  .refine(
+    (value) => canonicalizeGitHubRepository(value) !== null,
+    "Use owner/repository or an HTTPS github.com URL. SSH and non-GitHub repositories are not supported.",
+  );
 
 const createSchema = f.object({
   intent: f.field(s.literal("create-project")),

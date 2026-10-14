@@ -74,9 +74,7 @@ export function FieldDescription(handle: Handle<Props<"p">>) {
   };
 }
 
-export function FieldSeparator(
-  handle: Handle<Props<"div"> & { children?: RemixNode }>,
-) {
+export function FieldSeparator(handle: Handle<Props<"div"> & { children?: RemixNode }>) {
   return () => {
     const { children, mix, ...props } = handle.props;
     return (
@@ -87,13 +85,11 @@ export function FieldSeparator(
         mix={[fieldSeparatorStyle, mix]}
       >
         <span aria-hidden="true" mix={separatorLineStyle} />
-        {children
-          ? (
-            <span data-slot="field-separator-content" mix={separatorContentStyle}>
-              {children}
-            </span>
-          )
-          : null}
+        {children ? (
+          <span data-slot="field-separator-content" mix={separatorContentStyle}>
+            {children}
+          </span>
+        ) : null}
       </div>
     );
   };

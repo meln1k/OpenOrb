@@ -5,146 +5,101 @@ and validated on supported hosts.
 
 ## Pinned toolchain
 
-For reproducible release artifacts, use Deno 2.9.5 exactly with a frozen `deno.lock`. Source runners
-accept stable Deno 2.9.5 or newer. Dependency installation creates a Deno-managed local
-`node_modules` tree for gateway browser-asset compatibility; it is only a build/development input
-and is not shipped with the standalone runner:
+Use Node.js **26.11.1**, Vite+ **1.1.0**, and the committed `package-lock.json`. Install the npm
+workspace graph with `npm ci`; `.npmrc` maps the `@jsr` scope to the JSR npm registry. Source runners
+use Node; standalone runners embed it and do not require an installed JavaScript runtime.
 
 ```sh
-deno --version
-deno install --frozen
-deno task check
-deno task test
-deno task release:runner
+node --version
+npm ci
+npm run check
+npm test
+npm run release:runner
 ```
 
-No command invokes Node.js, npm, or pnpm. The compile tasks use Deno's managed npm graph and local
-links, not experimental bundling and not npm lifecycle scripts.
+Root scripts run TypeScript with Node's built-in type stripping. Vitest through Vite+ transforms
+test TSX; Rolldown bundles the gateway Worker; tsdown bundles the runner for Node SEA packaging.
+Do not substitute a different runtime, lockfile, or unreviewed dependency graph for a release.
 
-### Deno/Gondolin TLS compatibility gate
+### Gondolin TLS compatibility gate
 
 Guest HTTPS egress, including GitHub mediation and on-demand browser downloads, depends on Gondolin
-0.12.0 terminating TLS over its custom `GuestTlsStream`. Gondolin constructs a server `node:tls`
-`TLSSocket` and asynchronously supplies the per-host `SecureContext` through `SNICallback`. Node
-resumes the paused handshake after the callback. In the reduced OpenOrb reproduction, Deno 2.9.5
-left that custom-`Duplex` handshake paused, so the decrypted request never reached Gondolin's HTTP
-stack until `TLSSocket._start()` was called.
+0.12.0 terminating TLS over its custom `GuestTlsStream`. It uses a server `node:tls` `TLSSocket`
+with an asynchronous SNI callback. Node resumes the handshake natively; the former Deno-specific
+private `_start()` workaround is not installed on Node.
 
-`packages/runner/src/environment/gondolin/tls-compatibility.ts` contains the narrowly scoped
-workaround. It replaces `tls.TLSSocket` once, immediately before the first Gondolin VM starts, and
-calls the private `_start()` method only after a successful asynchronous SNI callback. It does not
-disable certificate validation or broaden the HTTP allowlist. The replacement is process-wide after
-it is installed, relies on a private Deno API, and is validated only for Deno 2.9.5 with Gondolin
-0.12.0.
-
-There is no Deno flag that supplies the missing handshake continuation. `--cert` changes trusted
-certificate authorities, while `--unsafely-ignore-certificate-errors` weakens outbound certificate
-validation; neither is a substitute. Related Deno fixes cover the initial server-side TLS start
-([#33303](https://github.com/denoland/deno/pull/33303)), SNI callbacks
-([#33360](https://github.com/denoland/deno/pull/33360)), and custom-`Duplex` TLS write cycles
-([#33914](https://github.com/denoland/deno/pull/33914)), but not the reproduced asynchronous-SNI
-stall.
-
-The runtime accepts stable Deno 2.9.5 or newer and checks for the private restart method when
-needed. The unit test retains the Gondolin dependency guard, but does not require an exact Deno
-version. Accepting a newer runtime is not proof that its TLS behavior has been validated. When
-upgrading the release toolchain or Gondolin:
-
-1. Review the workaround on the target runtime; do not update the Gondolin guard mechanically.
-2. On the target versions, temporarily bypass the `installGondolinTlsCompatibility()` call in
-   `packages/runner/src/environment/gondolin/layer.ts` (never commit that bypass) and run
-   `deno task test:gondolin`. The public GitHub clone is the checked-in async-SNI/custom-`Duplex`
-   regression path: if it stalls before the HTTP hook, native Deno behavior still needs a
-   compatibility fix.
-3. If native TLS now completes, delete the workaround and its version gate, then run the public and
-   credential-enabled private GitHub clone/push tests. Confirm that HTTP hooks execute and the real
-   token remains absent from every guest-visible surface.
-4. If native TLS still stalls, verify that `_start()` still has the required semantics before
-   updating the validated versions. Run multiple uncached and cached SNI handshakes, callback-error
-   cases, VM restarts, and the full Gondolin suite.
-5. Recheck whether Gondolin can instead pre-create the `SecureContext` before constructing
-   `TLSSocket`, or use `tls.createServer()` with the custom stream. Prefer an upstream fix over
-   retaining the monkey patch.
+When upgrading Node or Gondolin, run `npm run test:gondolin` on the target versions, including
+public and credential-enabled private GitHub clone/push tests. Verify uncached and cached SNI
+handshakes, callback failures, VM restarts, and HTTPS requests reaching the mediation hooks. Never
+disable certificate validation or broaden the host allowlist to fix a TLS regression. Real tokens
+must remain absent from guest environment values, files, transcripts, and logs.
 
 ## Artifacts
 
-`deno task release:runner` creates:
+`npm run release:runner` creates:
 
-- `dist/openorb-runner-linux-x64` from `x86_64-unknown-linux-gnu`
-- `dist/openorb-runner-linux-arm64` from `aarch64-unknown-linux-gnu`
+- `dist/openorb-runner-linux-x64`
+- `dist/openorb-runner-linux-arm64`
 - `dist/openorb-runner.service`
 - `dist/SHA256SUMS`
 
-`scripts/runner-artifact-metadata.ts` verifies the ELF architecture, computes SHA-256, and checks
-the ELF dynamic string table to reject a glibc symbol requirement newer than 2.27. It copies the
-reviewed systemd unit into `dist`, and `SHA256SUMS` covers all three installable files. Rebuilding
-an unchanged source/lock graph with Deno 2.9.5 must produce identical bytes and checksums.
+The architecture-specific `compile:runner:linux-x64` and `compile:runner:linux-arm64` scripts produce
+tsdown/Node SEA executables. `scripts/runner-artifact-metadata.ts` verifies ELF architecture,
+computes SHA-256, and rejects glibc symbol requirements newer than **2.28**. It copies the reviewed
+systemd unit into `dist`; `SHA256SUMS` covers all three installable files. Record the reviewed
+source revision and locked graph with the release checksums. Do not assume SEA builds are
+byte-for-byte reproducible without measuring them.
 
-The executables embed denort. Smoke-test each on its native architecture in a glibc 2.27+
-environment that has neither a `node` nor a `deno` executable. `--version` must report the matching
-architecture, Deno 2.9.5, and `standalone: true`. `doctor --gateway <origin>` must install and
-verify the pinned guest image, validate the host and gateway, fail actionably when QEMU is absent,
-warn and select TCG software emulation when KVM is unavailable, and reject musl hosts. Perform this
-release validation manually on native x86-64 and ARM64 hosts when CI capacity is unavailable.
+Smoke-test each executable on its native architecture in a glibc 2.28+ environment with no installed
+`node` or `deno` executable. `--version` must report the matching architecture, Node 26.11.1, and
+`standalone: true`. `doctor --gateway <origin>` must install and verify the pinned guest image,
+validate the host and gateway, fail actionably when QEMU is absent, warn and select TCG when KVM is
+unavailable, and reject musl hosts. Perform validation manually on native x86-64 and ARM64 hosts
+when CI capacity is unavailable.
 
 ## Source checkout alternative
 
-Operators who prefer repository-based upgrades may run the same runner entry point directly with
-Deno 2.9.5. The checkout lives at `/opt/openorb`, its prepared Deno cache lives at
-`/var/cache/openorb-runner/deno`, and both remain root-owned and read-only to the service. The base
-unit remains unchanged; the operator installs either `openorb-runner-source-x64.conf` or
-`openorb-runner-source-arm64.conf` as its `source.conf` drop-in. Each override directly executes
-Deno with a frozen, cached graph and the compiled artifact's architecture-specific permission
-profile, plus read-only access to the checkout and prepared cache. Source overrides are available
-from the checkout and are intentionally not standalone release artifacts. See
+The root-owned checkout lives at `/opt/openorb`, with dependencies installed using `npm ci`.
+Install Node at `/usr/local/bin/node`, and the architecture-matching source drop-in as
+`source.conf` alongside the unchanged base service. The drop-in directly runs the TypeScript
+entrypoint using Node's type stripping, without a shell wrapper. The checkout and `node_modules`
+remain read-only to the service. Source drop-ins are not standalone release artifacts. See
 [Linux runner installation](runner-installation.md).
 
-## Permission boundary
+## Host and guest isolation boundary
 
-The compile command bakes in:
+Node is not a replacement runtime permission sandbox. Neither source nor SEA executables bake in
+the former Deno filesystem, environment, network, or subprocess grants. The supported production
+boundary is the reviewed systemd/OS isolation: a dedicated service identity, read-only host
+filesystem except runner state, removed capabilities, and explicit optional `/dev/kvm` access.
+Do not describe Node's permission model as equivalent to the removed Deno permissions. Running the
+entrypoint outside that unit does not reproduce its OS sandbox.
 
-- read/write access relative to the canonical runner working directory; QEMU, rather than Deno,
-  opens the optional `/dev/kvm` device and otherwise uses TCG software emulation;
-- read-only access to standard system-library directories so `doctor` can inspect the host glibc
-  version without FFI or another subprocess;
-- unrestricted network access for approved public web access;
-- only `/usr/bin/qemu-system-x86_64,/usr/bin/qemu-img` or
-  `/usr/bin/qemu-system-aarch64,/usr/bin/qemu-img` subprocess access (absolute target-host paths
-  keep cross-compilation independent of the build host's installed QEMU architecture);
-- only `PATH`, `PWD`, and Deno's `NODE_V8_COVERAGE` and `TF_BUILD` runtime toggles as environment
-  access;
-- host UID/GID, home-directory, hostname, CPU, network-interface, OS release, filesystem-capacity,
-  and system-memory inspection;
-- no FFI and no `--allow-all`.
+Production systemd sets `WorkingDirectory=/var/lib/openorb-runner`; no `--data-dir` is accepted.
+The runner clears unrelated inherited environment variables before dependency evaluation. Keep
+provider credentials and host secrets out of the service environment; do not rely on this
+environment hygiene as filesystem or process isolation. Identity files remain mode 0600 in a mode
+0700 state directory. Persistence retains atomic publication, file/directory fsync, guest sync and
+QEMU flushes; migration does not relax Stop durability.
 
-The standalone entry evaluates the Node-compatible dependency graph with a temporary null-prototype
-`process.env` containing only `PATH` and `PWD`, then restores the original Deno permission-checked
-environment before starting the runner. This prevents irrelevant import-time agent, CI, and provider
-detection in transitive dependencies from requiring access to host secret variables. Dependency
-upgrades fail closed if they introduce an unapproved environment read after module evaluation.
+Untrusted work still runs in Gondolin VMs, not in Node subprocesses on the host. OpenOrb exposes
+no raw QEMU path/argv/device interface and creates VMs only through trusted typed options to the
+pinned Gondolin `VM` API. QEMU opens optional `/dev/kvm`; without it, TCG is used. No host Git
+process consumes the guest workspace.
 
-Production systemd sets `WorkingDirectory=/var/lib/openorb-runner`. The executable does not accept
-`--data-dir`. Deno permissions only govern the runner process; QEMU is a child outside that sandbox.
-OpenOrb therefore exposes no raw QEMU path/argv/device interface and creates VMs only through
-trusted typed options passed to the pinned Gondolin `VM` API. The systemd sandbox makes the host
-filesystem read-only except for runner state, removes capabilities, and grants only explicit
-`/dev/kvm` device access. See [Linux runner installation](runner-installation.md).
-
-Unrestricted Deno network permission is not the SSRF boundary. A session may make public HTTP and
-HTTPS requests so setup hooks, package managers, and agent tools can query the web. Gondolin
-resolves and pins the upstream address and reapplies request and IP policy to every redirect: host
-loopback, private, link-local, cloud-metadata, and DNS-rebinding destinations remain blocked.
-Guest-local loopback remains available for development servers. Generic TCP and WebSockets remain
-disabled. GitHub placeholder substitution is independently restricted to `github.com` and
-`api.github.com`; repository authorization follows the GitHub token's own permissions. The Git
-credential helper remains scoped to the configured repository for normal clone, fetch, and push.
+Host network access is not the SSRF boundary. Gondolin resolves and pins upstream addresses and
+reapplies HTTP request/IP policy to redirects: host loopback, private, link-local, cloud-metadata,
+and DNS-rebinding destinations remain blocked. Guest-local loopback remains available. Generic TCP
+and WebSockets remain disabled. GitHub placeholder substitution is independently restricted to
+`github.com` and `api.github.com`; repository authorization follows the token's permissions. The Git
+credential helper stays scoped to the configured repository. Generic secrets obey their configured
+host policies; omitting allowed hosts intentionally permits substitution to any public HTTP(S) host.
 
 ## Guest assets
 
 VM images are never embedded in the executable. The runner downloads the architecture-specific
 pinned asset into its working directory, verifies it, and gives Gondolin explicit local asset paths.
-See [Guest image release process](guest-image.md) for the build, publication, installation, and
-recovery procedure.
+See [Guest image release process](guest-image.md) for publication, installation, and recovery.
 
 Do not sign a runner release until native QEMU/KVM integration has exercised the exact executable
 and image assets. Release/checksum signing requires a separately approved signing identity and

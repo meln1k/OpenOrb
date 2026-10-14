@@ -20,14 +20,16 @@ export const runnerControlRpcSerializationLayer = Layer.succeed(RpcSerialization
     return {
       decode(data) {
         if (Predicate.isString(data)) throw new TypeError("Expected binary control data");
-        // deno-lint-ignore openorb/no-unknown-returns -- RpcSerialization requires unvalidated values; RPC/schema validation follows decoding.
+        // oxlint-disable-next-line openorb/no-unknown-returns -- RpcSerialization requires unvalidated values; RPC/schema validation follows decoding.
         return parser.feedSync(data).map((bytes): unknown => JSON.parse(textDecoder.decode(bytes)));
       },
       encode(response) {
         const messages = Array.isArray(response) ? response : [response];
-        return messages.length === 0 ? undefined : encoder.encodeMany(
-          messages.map((message) => textEncoder.encode(JSON.stringify(message))),
-        );
+        return messages.length === 0
+          ? undefined
+          : encoder.encodeMany(
+              messages.map((message) => textEncoder.encode(JSON.stringify(message))),
+            );
       },
     };
   },
@@ -43,11 +45,12 @@ export function runnerControlWebSocket(socket: Socket.Socket): Socket.Socket {
         ...reader,
         pull: reader.pull.pipe(
           Effect.tap((frames) =>
-            frames.every((frame) =>
-                frame instanceof Uint8Array && frame.byteLength <= MAX_RUNNER_RPC_FRAME_BYTES
-              )
+            frames.every(
+              (frame) =>
+                frame instanceof Uint8Array && frame.byteLength <= MAX_RUNNER_RPC_FRAME_BYTES,
+            )
               ? Effect.void
-              : reject(writer, "Invalid control chunk")
+              : reject(writer, "Invalid control chunk"),
           ),
         ),
       };
@@ -72,14 +75,18 @@ export function runnerControlWebSocket(socket: Socket.Socket): Socket.Socket {
           // Effect's WebSocket writeAll sends synchronously on one captured connection. A loop
           // of effectful writes would allow interleaving, cancellation, or a reconnect mid-frame.
           // SAFETY: frames is nonempty and each frame contributes at least one chunk.
-          return writer.writeAll(chunks as [Uint8Array, ...Uint8Array[]]).pipe(
-            Effect.tapError(() =>
-              writer.write(new Socket.CloseEvent(1011, "Control write failed")).pipe(Effect.ignore)
-            ),
-          );
+          return writer
+            .writeAll(chunks as [Uint8Array, ...Uint8Array[]])
+            .pipe(
+              Effect.tapError(() =>
+                writer
+                  .write(new Socket.CloseEvent(1011, "Control write failed"))
+                  .pipe(Effect.ignore),
+              ),
+            );
         });
       return {
-        write: (frame) => Socket.isCloseEvent(frame) ? writer.write(frame) : writeAll([frame]),
+        write: (frame) => (Socket.isCloseEvent(frame) ? writer.write(frame) : writeAll([frame])),
         writeAll,
       };
     }),
@@ -88,10 +95,12 @@ export function runnerControlWebSocket(socket: Socket.Socket): Socket.Socket {
 
 function reject(writer: Socket.Writer, reason: string): Effect.Effect<never, Socket.SocketError> {
   return writer.write(new Socket.CloseEvent(4400, reason)).pipe(
-    Effect.andThen(Effect.fail(
-      new Socket.SocketError({
-        reason: new Socket.SocketCloseError({ code: 4400, closeReason: reason }),
-      }),
-    )),
+    Effect.andThen(
+      Effect.fail(
+        new Socket.SocketError({
+          reason: new Socket.SocketCloseError({ code: 4400, closeReason: reason }),
+        }),
+      ),
+    ),
   );
 }

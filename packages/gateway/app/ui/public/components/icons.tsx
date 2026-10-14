@@ -94,10 +94,7 @@ export function Icon(handle: Handle<{ name: IconName; size?: number }>) {
         strokeLinejoin="round"
       >
         {getIconNodes(handle.props.name).map((node, index) => (
-          <LucideNode
-            key={index}
-            node={node}
-          />
+          <LucideNode key={index} node={node} />
         ))}
       </svg>
     );

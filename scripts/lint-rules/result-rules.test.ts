@@ -1,8 +1,8 @@
-/// <reference lib="deno.unstable" />
+import { deepStrictEqual as assertEquals } from "node:assert";
+import { test } from "vite-plus/test";
+import { lintPlugin } from "./test-lint.ts";
 
-import { assertEquals } from "@std/assert";
-
-import plugin from "@/scripts/lint-plugin.ts";
+import plugin from "../lint-plugin.ts";
 
 const RESULT_RULE = "openorb/require-result-handling";
 const THROW_RULE = "openorb/no-generic-error-throw";
@@ -10,10 +10,10 @@ const CATCH_RULE = "openorb/no-catch";
 const FILENAME = "packages/runner/src/example.ts";
 
 function diagnostics(source: string, rule: string = RESULT_RULE, filename = FILENAME) {
-  return Deno.lint.runPlugin(plugin, filename, source).filter(({ id }) => id === rule);
+  return lintPlugin(plugin, filename, source).filter(({ id }) => id === rule);
 }
 
-Deno.test("Results are immediately destructured and guarded by a terminating failure branch", () => {
+test("Results are immediately destructured and guarded by a terminating failure branch", () => {
   const source = `
 import { err, type Result } from "@openorb/result";
 declare function getUser(id: string): Promise<Result<{ name: string }, Error>>;
@@ -29,7 +29,7 @@ export async function load(id: string): Promise<Result<string, Error>> {
   assertEquals(diagnostics(source), []);
 });
 
-Deno.test("an unused success value may be omitted from the immediate destructure", () => {
+test("an unused success value may be omitted from the immediate destructure", () => {
   const source = `
 import { err, tryAsync } from "@openorb/result";
 async function persist(): Promise<void> {}
@@ -43,7 +43,7 @@ async function save() {
   assertEquals(diagnostics(source), []);
 });
 
-Deno.test("a Promise of a Result may be retained until it is awaited", () => {
+test("a Promise of a Result may be retained until it is awaited", () => {
   const source = `
 import { err, type Result } from "@openorb/result";
 declare function getUser(id: string): Promise<Result<string, Error>>;
@@ -58,7 +58,7 @@ async function load() {
   assertEquals(diagnostics(source), []);
 });
 
-Deno.test("Result containers cannot be retained or indexed", () => {
+test("Result containers cannot be retained or indexed", () => {
   const retained = `
 import type { Result } from "@openorb/result";
 declare function getUser(id: string): Promise<Result<string, Error>>;
@@ -83,7 +83,7 @@ console.log(result[0]);
   );
 });
 
-Deno.test("Result aggregates cannot be retained or indexed", () => {
+test("Result aggregates cannot be retained or indexed", () => {
   const source = `
 import type { Result } from "@openorb/result";
 declare function getUser(id: string): Promise<Result<string, Error>>;
@@ -100,7 +100,7 @@ console.log(results.find(([, error]) => error !== undefined)?.[1]);
   );
 });
 
-Deno.test("first-party imported Result producers remain known across module boundaries", () => {
+test("first-party imported Result producers remain known across module boundaries", () => {
   const source = `
 import { readRunnerIdentity as readIdentity } from "@/src/runtime/identity.ts";
 const retained = await readIdentity("/runner");
@@ -116,7 +116,7 @@ console.log(retained[0]);
   );
 });
 
-Deno.test("known Result parameters and method calls cannot be indexed or retained", () => {
+test("known Result parameters and method calls cannot be indexed or retained", () => {
   const source = `
 import type { Result as Outcome } from "@openorb/result";
 interface Users {
@@ -138,7 +138,7 @@ const retained = await users.getUser("1");
   );
 });
 
-Deno.test("ordinary tuples are not treated as Results", () => {
+test("ordinary tuples are not treated as Results", () => {
   const source = `
 declare function coordinates(): readonly [number, number];
 const point = coordinates();
@@ -148,7 +148,7 @@ console.log(point[0]);
   assertEquals(diagnostics(source), []);
 });
 
-Deno.test("a Result error guard must be the next statement", () => {
+test("a Result error guard must be the next statement", () => {
   const source = `
 import { err, tryAsync } from "@openorb/result";
 const [user, error] = await tryAsync(Promise.resolve("user"), cause => new Error(String(cause)));
@@ -163,7 +163,7 @@ console.log(user);
   );
 });
 
-Deno.test("a Result failure branch must terminate", () => {
+test("a Result failure branch must terminate", () => {
   const source = `
 import { tryAsync } from "@openorb/result";
 const [user, error] = await tryAsync(Promise.resolve("user"), cause => new Error(String(cause)));
@@ -179,7 +179,7 @@ console.log(user);
   );
 });
 
-Deno.test("nested failure paths are accepted only when every path terminates", () => {
+test("nested failure paths are accepted only when every path terminates", () => {
   const accepted = `
 import { err, trySync } from "@openorb/result";
 function load(verbose: boolean) {
@@ -207,7 +207,7 @@ function load(verbose: boolean) {
   );
 });
 
-Deno.test("continue terminates a Result failure path", () => {
+test("continue terminates a Result failure path", () => {
   const source = `
 import { trySync } from "@openorb/result";
 for (const input of ["first", "second"]) {
@@ -222,7 +222,7 @@ for (const input of ["first", "second"]) {
   assertEquals(diagnostics(source), []);
 });
 
-Deno.test("a Result value cannot be used inside its failure branch", () => {
+test("a Result value cannot be used inside its failure branch", () => {
   const source = `
 import { err, trySync } from "@openorb/result";
 function load() {
@@ -241,7 +241,7 @@ function load() {
   );
 });
 
-Deno.test("the success-first guard form is accepted when the failure branch terminates", () => {
+test("the success-first guard form is accepted when the failure branch terminates", () => {
   const source = `
 import { err, trySync } from "@openorb/result";
 function load() {
@@ -258,7 +258,7 @@ function load() {
   assertEquals(diagnostics(source), []);
 });
 
-Deno.test("application code cannot throw generic Error or catch exceptions", () => {
+test("application code cannot throw generic Error or catch exceptions", () => {
   assertEquals(
     diagnostics("throw new Error('failed');", THROW_RULE).map(({ id }) => id),
     [THROW_RULE],
@@ -275,7 +275,7 @@ Deno.test("application code cannot throw generic Error or catch exceptions", () 
   assertEquals(diagnostics("try { work(); } finally { cleanup(); }", CATCH_RULE), []);
 });
 
-Deno.test("browser code may catch exceptions without requiring Result wrappers", () => {
+test("browser code may catch exceptions without requiring Result wrappers", () => {
   const source = "try { work(); } catch { recover(); }";
   assertEquals(
     diagnostics(source, CATCH_RULE, "packages/gateway/app/actions/sessions/public/example.tsx"),
@@ -285,17 +285,14 @@ Deno.test("browser code may catch exceptions without requiring Result wrappers",
     diagnostics(source, CATCH_RULE, "packages/gateway/app/ui/public/components/example.tsx"),
     [],
   );
-  assertEquals(
-    diagnostics(source, CATCH_RULE, "packages/gateway/app/public/client.ts"),
-    [],
-  );
+  assertEquals(diagnostics(source, CATCH_RULE, "packages/gateway/app/public/client.ts"), []);
   assertEquals(
     diagnostics(source, CATCH_RULE, "packages/gateway/app/actions/example.tsx").map(({ id }) => id),
     [CATCH_RULE],
   );
 });
 
-Deno.test("application-created generic exceptions remain forbidden inside a Result boundary", () => {
+test("application-created generic exceptions remain forbidden inside a Result boundary", () => {
   const source = `
 import { trySync as attempt } from "@openorb/result";
 const [value, error] = attempt(
@@ -312,23 +309,23 @@ console.log(value);
   );
 });
 
-Deno.test("Result utility and test code may implement or assert exception boundaries", () => {
+test("Result utility and test code may implement or assert exception boundaries", () => {
   const source = "try { work(); } catch { throw new Error('failed'); }";
   assertEquals(
-    Deno.lint.runPlugin(plugin, "packages/result/src/index.ts", source).filter(({ id }) =>
-      id === CATCH_RULE || id === THROW_RULE
+    lintPlugin(plugin, "packages/result/src/index.ts", source).filter(
+      ({ id }) => id === CATCH_RULE || id === THROW_RULE,
     ),
     [],
   );
   assertEquals(
-    Deno.lint.runPlugin(plugin, "packages/runner/test/example.test.ts", source).filter(({ id }) =>
-      id === CATCH_RULE || id === THROW_RULE
+    lintPlugin(plugin, "packages/runner/test/example.test.ts", source).filter(
+      ({ id }) => id === CATCH_RULE || id === THROW_RULE,
     ),
     [],
   );
   assertEquals(
-    Deno.lint.runPlugin(plugin, "packages/gateway/app/example.test.ts", source).filter(({ id }) =>
-      id === CATCH_RULE || id === THROW_RULE
+    lintPlugin(plugin, "packages/gateway/app/example.test.ts", source).filter(
+      ({ id }) => id === CATCH_RULE || id === THROW_RULE,
     ),
     [],
   );

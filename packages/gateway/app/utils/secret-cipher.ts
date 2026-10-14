@@ -1,8 +1,8 @@
-import { decryptAesGcm, encryptAesGcm } from "@std/crypto/aes-gcm";
+import { decryptAesGcm, encryptAesGcm } from "@jsr/std__crypto/aes-gcm";
 import { err, ok, type Result, tryAsync } from "@openorb/result";
 import type { WorkspaceId } from "@openorb/protocol/runner-api";
 
-import type { MasterKey } from "@/app/utils/master-key.ts";
+import type { MasterKey } from "./master-key.ts";
 
 /** Immutable metadata authenticated (but not encrypted) with each secret. */
 export interface SecretMetadata {
@@ -37,11 +37,9 @@ export async function encryptSecret(
   metadata: SecretMetadata,
 ): Promise<EncryptedSecret> {
   const additionalData = secretAad(metadata, masterKey.version);
-  const ciphertext = await encryptAesGcm(
-    masterKey.key,
-    new TextEncoder().encode(plaintext),
-    { additionalData },
-  );
+  const ciphertext = await encryptAesGcm(masterKey.key, new TextEncoder().encode(plaintext), {
+    additionalData,
+  });
   return { ciphertext, keyVersion: masterKey.version };
 }
 

@@ -12,29 +12,29 @@ import {
   MAX_SESSION_SECRET_HOSTS,
 } from "@openorb/protocol/runner-api";
 
-import { SecretsSettingsPage } from "@/app/actions/settings/page.tsx";
-import type { Administrator } from "@/app/cells/workspace/api.ts";
-import { csrf } from "@/app/middleware/csrf.ts";
-import type { AppContext } from "@/app/router.ts";
-import { routes } from "@/app/routes.ts";
+import { SecretsSettingsPage } from "../page.tsx";
+import type { Administrator } from "../../../cells/workspace/api.ts";
+import { csrf } from "../../../middleware/csrf.ts";
+import type { AppContext } from "../../../router.ts";
+import { routes } from "../../../routes.ts";
 
-const secretKeySchema = s.string().refine(
-  (value) => {
-    const key = value.trim();
-    return key.length > 0 && key.length <= 64 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
-      !isReservedSessionEnvironmentName(key);
-  },
-  'Start with a letter or underscore and use only letters, digits, and underscores, such as "SERVICE_TOKEN". OpenOrb runtime variable names are reserved.',
-);
-const allowedHostsSchema = s.string().refine(
-  (value) => {
-    const hosts = splitAllowedHosts(value);
-    return hosts.length <= MAX_SESSION_SECRET_HOSTS &&
-      hosts.every(isValidSessionSecretHost) &&
-      !(hosts.includes("*") && hosts.length > 1);
-  },
-  `Enter at most ${MAX_SESSION_SECRET_HOSTS} hostnames of at most ${MAX_SESSION_SECRET_HOST_CHARACTERS} characters, separated by commas. Use names such as api.example.com or *.example.com; use * alone or leave blank for any public host.`,
-);
+const secretKeySchema = s.string().refine((value) => {
+  const key = value.trim();
+  return (
+    key.length > 0 &&
+    key.length <= 64 &&
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
+    !isReservedSessionEnvironmentName(key)
+  );
+}, 'Start with a letter or underscore and use only letters, digits, and underscores, such as "SERVICE_TOKEN". OpenOrb runtime variable names are reserved.');
+const allowedHostsSchema = s.string().refine((value) => {
+  const hosts = splitAllowedHosts(value);
+  return (
+    hosts.length <= MAX_SESSION_SECRET_HOSTS &&
+    hosts.every(isValidSessionSecretHost) &&
+    !(hosts.includes("*") && hosts.length > 1)
+  );
+}, `Enter at most ${MAX_SESSION_SECRET_HOSTS} hostnames of at most ${MAX_SESSION_SECRET_HOST_CHARACTERS} characters, separated by commas. Use names such as api.example.com or *.example.com; use * alone or leave blank for any public host.`);
 
 const saveSecretSchema = f.object({
   intent: f.field(s.literal("save-secret")),
@@ -125,9 +125,7 @@ async function renderSecrets(
   error?: string,
   status = 200,
 ): Promise<Response> {
-  const secrets = await context.services.workspace.listSecrets(
-    context.auth.identity.workspaceId,
-  );
+  const secrets = await context.services.workspace.listSecrets(context.auth.identity.workspaceId);
   return context.render(
     <SecretsSettingsPage csrfToken={getCsrfToken(context)} error={error} secrets={secrets} />,
     { status, headers: { "cache-control": "no-store" } },
@@ -135,7 +133,11 @@ async function renderSecrets(
 }
 
 function splitAllowedHosts(value: string): string[] {
-  return value.trim().toLowerCase().split(/[\s,]+/u).filter(Boolean);
+  return value
+    .trim()
+    .toLowerCase()
+    .split(/[\s,]+/u)
+    .filter(Boolean);
 }
 
 function normalizeAllowedHosts(value: string): readonly string[] | undefined {

@@ -65,11 +65,9 @@ export class PersistentFs extends InMemoryFs {
     // One pass in path order: parents come before their children, and a file's chunks follow its
     // entry, so only one file's rows are held at a time.
     let file: { readonly entry: Entry; readonly chunks: Uint8Array[] } | undefined;
-    for (
-      const row of sql.exec(
-        "SELECT e.*, c.data FROM sandbox_entries e LEFT JOIN sandbox_chunks c ON c.path = e.path ORDER BY e.path, c.chunk",
-      )
-    ) {
+    for (const row of sql.exec(
+      "SELECT e.*, c.data FROM sandbox_entries e LEFT JOIN sandbox_chunks c ON c.path = e.path ORDER BY e.path, c.chunk",
+    )) {
       if (file?.entry.path !== String(row.path)) {
         if (file !== undefined) await fs.#restore(file.entry, file.chunks);
         file = { entry: entry(row), chunks: [] };
@@ -181,7 +179,7 @@ export class PersistentFs extends InMemoryFs {
   /** The path with every symbolic link resolved, as operations that follow links see it. */
   async #followed(path: string): Promise<string> {
     const absolute = this.resolvePath("/", path);
-    return await this.exists(absolute)
+    return (await this.exists(absolute))
       ? await this.realpath(absolute)
       : await this.#unfollowed(absolute);
   }
@@ -219,16 +217,16 @@ export class PersistentFs extends InMemoryFs {
       let parent = parentOf(path);
       parent !== "/" && !this.#stored(parent);
       parent = parentOf(parent)
-    ) await this.#save(parent);
-    const directory = path === "/" || await this.#save(path);
+    )
+      await this.#save(parent);
+    const directory = path === "/" || (await this.#save(path));
     if (!deep || !directory) return;
     // One ordered pass over every path, so parents come before their children. A path is saved
     // only below a saved directory, which skips anything reached through a symbolic link.
     const directories = new Set([path]);
-    for (
-      const child of this.getAllPaths().filter((other) => other !== path && other.startsWith(below))
-        .sort()
-    ) {
+    for (const child of this.getAllPaths()
+      .filter((other) => other !== path && other.startsWith(below))
+      .sort()) {
       if (ephemeral(child) || !directories.has(parentOf(child))) continue;
       if (await this.#save(child)) directories.add(child);
     }
@@ -238,12 +236,14 @@ export class PersistentFs extends InMemoryFs {
   async #persistMetadata(path: string): Promise<void> {
     if (this.#skipped(path)) return;
     const stat = await this.lstat(path);
-    const updated = this.#sql.exec(
-      "UPDATE sandbox_entries SET mode = ?, mtime = ? WHERE path = ? RETURNING path",
-      stat.mode,
-      stat.mtime.getTime(),
-      path,
-    ).toArray();
+    const updated = this.#sql
+      .exec(
+        "UPDATE sandbox_entries SET mode = ?, mtime = ? WHERE path = ? RETURNING path",
+        stat.mode,
+        stat.mtime.getTime(),
+        path,
+      )
+      .toArray();
     if (updated.length === 0) await this.#persist(path, false);
   }
 
@@ -254,16 +254,18 @@ export class PersistentFs extends InMemoryFs {
    */
   async #persistAppend(path: string): Promise<void> {
     if (this.#skipped(path)) return;
-    const [stored] = this.#sql.exec(
-      `SELECT e.kind, COALESCE(SUM(length(c.data)), 0) AS bytes, COALESCE(MAX(c.chunk), -1) AS last,
+    const [stored] = this.#sql
+      .exec(
+        `SELECT e.kind, COALESCE(SUM(length(c.data)), 0) AS bytes, COALESCE(MAX(c.chunk), -1) AS last,
         COALESCE(SUM(length(c.data) < ?), 0) AS short,
         MIN(CASE WHEN length(c.data) < ? THEN c.chunk END) AS firstShort
       FROM sandbox_entries e LEFT JOIN sandbox_chunks c ON c.path = e.path
       WHERE e.path = ? GROUP BY e.path`,
-      CHUNK_BYTES,
-      CHUNK_BYTES,
-      path,
-    ).toArray();
+        CHUNK_BYTES,
+        CHUNK_BYTES,
+        path,
+      )
+      .toArray();
     const content = await this.readFileBuffer(path);
     const storedBytes = Number(stored?.bytes ?? 0);
     // Anything but an append to the stored file, such as one that replaced a link, is saved whole.
@@ -274,11 +276,13 @@ export class PersistentFs extends InMemoryFs {
       this.#insertChunks(path, content.subarray(storedBytes), Number(stored.last) + 1);
     } else {
       const first = Number(stored.firstShort);
-      const [kept] = this.#sql.exec(
-        "SELECT COALESCE(SUM(length(data)), 0) AS bytes FROM sandbox_chunks WHERE path = ? AND chunk < ?",
-        path,
-        first,
-      ).toArray();
+      const [kept] = this.#sql
+        .exec(
+          "SELECT COALESCE(SUM(length(data)), 0) AS bytes FROM sandbox_chunks WHERE path = ? AND chunk < ?",
+          path,
+          first,
+        )
+        .toArray();
       this.#sql.exec("DELETE FROM sandbox_chunks WHERE path = ? AND chunk >= ?", path, first);
       this.#insertChunks(path, content.subarray(Number(kept?.bytes ?? 0)), first);
     }
@@ -286,12 +290,16 @@ export class PersistentFs extends InMemoryFs {
   }
 
   #stored(path: string): boolean {
-    return this.#sql.exec("SELECT 1 FROM sandbox_entries WHERE path = ?", path).toArray()
-      .length > 0;
+    return (
+      this.#sql.exec("SELECT 1 FROM sandbox_entries WHERE path = ?", path).toArray().length > 0
+    );
   }
 
   async #exists(path: string): Promise<boolean> {
-    return await this.lstat(path).then(() => true, () => false);
+    return await this.lstat(path).then(
+      () => true,
+      () => false,
+    );
   }
 
   /** Stores one entry, and a file's contents; true when it is a directory. */

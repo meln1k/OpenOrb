@@ -16,8 +16,8 @@ import { clientEntry, css, type Handle, on } from "remix/component";
 import * as popover from "@remix-run/ui/popover";
 import * as selectControl from "@remix-run/ui/select";
 
-import type { SessionComposerData } from "@/app/session-composer-data.ts";
-import { routes } from "@/app/routes.ts";
+import type { SessionComposerData } from "../../session-composer-data.ts";
+import { routes } from "../../routes.ts";
 import { DialogBehavior } from "./components/alert-dialog.tsx";
 import { Button } from "./components/button.tsx";
 import { Icon } from "./components/icons.tsx";
@@ -83,7 +83,8 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
   const firstProject = projects[0];
   const selectedProjectId = values?.projectId ?? firstProject?.id ?? "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
-  const selectedModel = values?.model ??
+  const selectedModel =
+    values?.model ??
     models.find((model) => model.id === DEFAULT_SESSION_MODEL)?.id ??
     models[0]?.id ??
     "";
@@ -92,7 +93,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
   const environments = hasConfiguredRunner ? ENVIRONMENTS : [SANDBOX_ENVIRONMENT];
   const selectedEnvironment =
     environments.find((environment) => environment.value === values?.environment) ??
-      (hasConnectedRunner ? RUNNER_ENVIRONMENT : SANDBOX_ENVIRONMENT);
+    (hasConnectedRunner ? RUNNER_ENVIRONMENT : SANDBOX_ENVIRONMENT);
   const selectedModelOption = models.find((model) => model.id === selectedModel);
   const supportedThinkingLevels = selectedModelOption?.thinkingLevels ?? SESSION_THINKING_LEVELS;
   const selectedThinkingLevel = clampThinkingLevel(
@@ -139,10 +140,16 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
           >
             <Icon name="x" size={20} />
           </Button>
-          <h2 id={titleId} mix={screenReaderOnlyStyle}>New session</h2>
+          <h2 id={titleId} mix={screenReaderOnlyStyle}>
+            New session
+          </h2>
         </header>
         <div mix={promptAreaStyle}>
-          {error ? <p role="alert" mix={errorStyle}>{error}</p> : null}
+          {error ? (
+            <p role="alert" mix={errorStyle}>
+              {error}
+            </p>
+          ) : null}
           <textarea
             name="initialPrompt"
             aria-label="Initial prompt"
@@ -152,9 +159,9 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
             autoFocus
             mix={promptStyle}
           />
-          {models.length === 0
-            ? <p mix={noticeStyle}>Configure a model provider before starting a session.</p>
-            : null}
+          {models.length === 0 ? (
+            <p mix={noticeStyle}>Configure a model provider before starting a session.</p>
+          ) : null}
         </div>
         <footer mix={footerStyle}>
           <div mix={controlsStyle}>
@@ -214,11 +221,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
               <button
                 type="button"
                 aria-label="Environment"
-                mix={[
-                  sessionSelectControlStyle,
-                  environmentTriggerStyle,
-                  selectControl.trigger(),
-                ]}
+                mix={[sessionSelectControlStyle, environmentTriggerStyle, selectControl.trigger()]}
               >
                 <Icon name="terminal" />
                 <SelectLabel />
@@ -340,11 +343,7 @@ export function SessionComposer(handle: Handle<SessionComposerProps>) {
           </Button>
         </footer>
       </form>
-      <DialogBehavior
-        dialogId={dialogId}
-        keepOpenWhileSubmitting
-        open={Boolean(autoOpen)}
-      />
+      <DialogBehavior dialogId={dialogId} keepOpenWhileSubmitting open={Boolean(autoOpen)} />
       <SessionComposerBehavior dialogId={dialogId} />
     </dialog>
   );
@@ -394,12 +393,11 @@ function SelectorPopoverHeader(handle: Handle<{ title: string }>) {
       <button
         type="button"
         aria-label="Back to session"
-        mix={[
-          sessionSelectorPopoverBackStyle,
-          on("click", () => context.close()),
-        ]}
+        mix={[sessionSelectorPopoverBackStyle, on("click", () => context.close())]}
       >
-        <span aria-hidden="true" mix={sessionSelectorPopoverBackIconStyle}>←</span>
+        <span aria-hidden="true" mix={sessionSelectorPopoverBackIconStyle}>
+          ←
+        </span>
         Back
       </button>
       <h3 mix={sessionSelectorPopoverTitleStyle}>{handle.props.title}</h3>
@@ -431,13 +429,11 @@ function ThinkingLevelControl(
             "openorb:update-thinking-levels",
             async (event) => {
               supportedThinkingLevels = SESSION_THINKING_LEVELS.filter((level) =>
-                event.detail.includes(level)
+                event.detail.includes(level),
               );
               await handle.update();
-              if (
-                isThinkingLevel(context.value) &&
-                supportedThinkingLevels.includes(context.value)
-              ) return;
+              if (isThinkingLevel(context.value) && supportedThinkingLevels.includes(context.value))
+                return;
               selectLevel(clampThinkingLevel(context.value ?? "", supportedThinkingLevels));
             },
           ),
@@ -495,11 +491,7 @@ function ThinkingLevelControl(
           </div>
         </div>
       </popover.Context>
-      <input
-        name="thinkingLevel"
-        required
-        mix={selectControl.hiddenInput()}
-      />
+      <input name="thinkingLevel" required mix={selectControl.hiddenInput()} />
     </>
   );
 }

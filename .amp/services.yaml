@@ -3,7 +3,7 @@ services:
     command: GOTEL_OTEL_HOST=127.0.0.1 GOTEL_OTEL_PORT="$PORT" gotel server
     port: 27686
   gateway:
-    command: deno task dev:gateway
+    command: npm run dev:gateway
     port: 44100
     portal:
       title: OpenOrb

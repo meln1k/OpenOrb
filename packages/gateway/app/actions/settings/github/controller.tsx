@@ -5,11 +5,11 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import { GitHubSettingsPage } from "@/app/actions/settings/page.tsx";
-import type { Administrator } from "@/app/cells/workspace/api.ts";
-import { csrf } from "@/app/middleware/csrf.ts";
-import type { AppContext } from "@/app/router.ts";
-import { routes } from "@/app/routes.ts";
+import { GitHubSettingsPage } from "../page.tsx";
+import type { Administrator } from "../../../cells/workspace/api.ts";
+import { csrf } from "../../../middleware/csrf.ts";
+import type { AppContext } from "../../../router.ts";
+import { routes } from "../../../routes.ts";
 
 const saveGitHubCredentialSchema = f.object({
   intent: f.field(s.literal("save-github-credential")),
@@ -63,20 +63,12 @@ export default createController(routes.app.settings.github, {
             context.auth.identity.workspaceId,
           );
           if (result.status === "not-found") {
-            return await renderGitHub(
-              context,
-              "The GitHub credential no longer exists.",
-              404,
-            );
+            return await renderGitHub(context, "The GitHub credential no longer exists.", 404);
           }
           return redirect(routes.app.settings.github.index.href(), 303);
         }
         default:
-          return await renderGitHub(
-            context,
-            "Invalid GitHub credential form submission.",
-            400,
-          );
+          return await renderGitHub(context, "Invalid GitHub credential form submission.", 400);
       }
     },
   },
@@ -91,11 +83,7 @@ async function renderGitHub(
     context.auth.identity.workspaceId,
   );
   return context.render(
-    <GitHubSettingsPage
-      csrfToken={getCsrfToken(context)}
-      credential={credential}
-      error={error}
-    />,
+    <GitHubSettingsPage csrfToken={getCsrfToken(context)} credential={credential} error={error} />,
     { status, headers: { "cache-control": "no-store" } },
   );
 }

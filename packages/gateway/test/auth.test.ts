@@ -1,18 +1,25 @@
-import { assert, assertEquals, assertMatch, assertNotEquals, assertNotMatch } from "@std/assert";
+import { test } from "vite-plus/test";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertNotEquals,
+  assertNotMatch,
+} from "@jsr/std__assert";
 import { UserId } from "@openorb/protocol/runner-api";
-import { v7 } from "@std/uuid";
+import { v7 } from "@jsr/std__uuid";
 
 import { createMemorySessionStorage } from "remix/session-storage/memory";
 
-import { createAppRouter, createSessionCookie } from "@/test/workspace-test.ts";
-import { routes } from "@/app/routes.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
+import { createAppRouter, createSessionCookie } from "./workspace-test.ts";
+import { routes } from "../app/routes.ts";
+import { createTestServer } from "./http-test-server.ts";
 import {
   activate,
   createAppServices,
   createWorkspace,
   disconnectedRunnerRegistry,
-} from "@/test/workspace-test.ts";
+} from "./workspace-test.ts";
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get("set-cookie");
@@ -26,26 +33,28 @@ function csrfFrom(html: string): string {
   return match[1]!;
 }
 
-Deno.test("sets up an administrator, rotates sessions on login, and logs out", async () => {
+test("sets up an administrator, rotates sessions on login, and logs out", async () => {
   const { workspace: store, storage } = activate();
   let connectedRunnerId: string | undefined;
-  const router = createAppRouter(createAppServices(store, {
-    ...disconnectedRunnerRegistry,
-    getRunnerLiveState: (_workspaceId, runnerId) =>
-      Promise.resolve(
-        runnerId === connectedRunnerId
-          ? {
-            capacity: {
-              activeSessions: 0,
-              vmCpuCount: 2,
-              vmMemoryMiB: 4_096,
-              diskFreeMiB: 10_000,
-            },
-            lastObservedAt: Date.now(),
-          }
-          : null,
-      ),
-  }));
+  const router = createAppRouter(
+    createAppServices(store, {
+      ...disconnectedRunnerRegistry,
+      getRunnerLiveState: (_workspaceId, runnerId) =>
+        Promise.resolve(
+          runnerId === connectedRunnerId
+            ? {
+                capacity: {
+                  activeSessions: 0,
+                  vmCpuCount: 2,
+                  vmMemoryMiB: 4_096,
+                  diskFreeMiB: 10_000,
+                },
+                lastObservedAt: Date.now(),
+              }
+            : null,
+        ),
+    }),
+  );
   const server = await createTestServer((request) => router.fetch(request));
 
   try {
@@ -150,8 +159,7 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     assertMatch(appHtml, />Connect runner<\/a>/);
     assertEquals([...appHtml.matchAll(/<main(?:\s|>)/g)].length, 1);
     assert(
-      appHtml.indexOf('data-setup-step="runner"') <
-        appHtml.indexOf('data-setup-step="provider"'),
+      appHtml.indexOf('data-setup-step="runner"') < appHtml.indexOf('data-setup-step="provider"'),
     );
     const logoutToken = csrfFrom(appHtml);
 
@@ -173,11 +181,7 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
 
     connectedRunnerId = runner.runnerId;
 
-    await store.saveModelProviderCredential(
-      workspaceId,
-      "opencode-go",
-      "opencode-test-key",
-    );
+    await store.saveModelProviderCredential(workspaceId, "opencode-go", "opencode-test-key");
     await store.saveGitHubCredential(workspaceId, "github-test-token");
     const partlyConfiguredResponse = await fetch(appUrl, {
       headers: { Cookie: authenticatedCookie },
@@ -191,10 +195,12 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
     assertMatch(partlyConfiguredHtml, /data-setup-step="project" data-status="pending"/);
 
     assertEquals(
-      (await store.saveProject(workspaceId, {
-        name: "OpenOrb",
-        repositoryUrl: "https://github.com/meln1k/openorb.git",
-      })).status,
+      (
+        await store.saveProject(workspaceId, {
+          name: "OpenOrb",
+          repositoryUrl: "https://github.com/meln1k/openorb.git",
+        })
+      ).status,
       "saved",
     );
     const configuredResponse = await fetch(appUrl, {
@@ -244,16 +250,11 @@ Deno.test("sets up an administrator, rotates sessions on login, and logs out", a
   }
 });
 
-Deno.test("rejects malformed persisted password material", async () => {
+test("rejects malformed persisted password material", async () => {
   const { workspace: store, storage } = activate();
 
-  assertEquals(await store.createAdministrator("correct horse battery staple"), [
-    true,
-    undefined,
-  ]);
-  const administrator = await store.verifyAdministratorPassword(
-    "correct horse battery staple",
-  );
+  assertEquals(await store.createAdministrator("correct horse battery staple"), [true, undefined]);
+  const administrator = await store.verifyAdministratorPassword("correct horse battery staple");
   assert(administrator);
   const changed = storage.rows<{ userId: string }>(
     "UPDATE password_credentials SET derivedKey = ? WHERE userId = ? RETURNING userId",
@@ -261,13 +262,10 @@ Deno.test("rejects malformed persisted password material", async () => {
     administrator.userId,
   );
   assertEquals(changed, [{ userId: administrator.userId }]);
-  assertEquals(
-    await store.verifyAdministratorPassword("correct horse battery staple"),
-    null,
-  );
+  assertEquals(await store.verifyAdministratorPassword("correct horse battery staple"), null);
 });
 
-Deno.test("rejects invalid setup input", async () => {
+test("rejects invalid setup input", async () => {
   const { workspace: store } = activate();
 
   const router = createAppRouter(createAppServices(store));
@@ -284,7 +282,7 @@ Deno.test("rejects invalid setup input", async () => {
   assertEquals(response.status, 403);
 });
 
-Deno.test("auth middleware checks Workspace identity against persistence independently of storage", async () => {
+test("auth middleware checks Workspace identity against persistence independently of storage", async () => {
   const { workspace: store } = activate();
   const password = "workspace identity verification password";
   const [created, error] = await store.createAdministrator(password);
@@ -299,14 +297,12 @@ Deno.test("auth middleware checks Workspace identity against persistence indepen
   const maxAge = cookie.maxAge;
   assert(maxAge !== undefined);
   const router = createAppRouter(createAppServices(store, undefined, sessionStorage), cookie);
-  for (
-    const identity of [
-      administrator,
-      { userId: administrator.userId, workspaceId: foreignWorkspaceId },
-      { userId: administrator.userId },
-      { userId: v7.generate(), workspaceId: administrator.workspaceId },
-    ]
-  ) {
+  for (const identity of [
+    administrator,
+    { userId: administrator.userId, workspaceId: foreignWorkspaceId },
+    { userId: administrator.userId },
+    { userId: v7.generate(), workspaceId: administrator.workspaceId },
+  ]) {
     const session = await sessionStorage.read(null);
     session.set("auth", identity);
     const sessionId = await sessionStorage.save(session);
@@ -331,7 +327,7 @@ Deno.test("auth middleware checks Workspace identity against persistence indepen
   }
 });
 
-Deno.test("concurrent setup creates exactly one workspace and resolves persisted identity", async () => {
+test("concurrent setup creates exactly one workspace and resolves persisted identity", async () => {
   const { workspace: store, storage } = activate();
   const password = "workspace setup race password";
   const results = await Promise.all([
@@ -340,7 +336,10 @@ Deno.test("concurrent setup creates exactly one workspace and resolves persisted
   ]);
   assertEquals(results.filter(([created]) => created === true).length, 1);
   assertEquals(results.filter(([created]) => created === false).length, 1);
-  assertEquals(results.map(([, error]) => error), [undefined, undefined]);
+  assertEquals(
+    results.map(([, error]) => error),
+    [undefined, undefined],
+  );
 
   const administrator = await store.verifyAdministratorPassword(password);
   assert(administrator);
@@ -361,7 +360,7 @@ Deno.test("concurrent setup creates exactly one workspace and resolves persisted
   );
 });
 
-Deno.test("public files and compiled assets are served without reading the browser session", async () => {
+test("public files and compiled assets are served without reading the browser session", async () => {
   const { workspace: store } = activate();
   const password = "asset session isolation password";
   await store.createAdministrator(password);
@@ -382,9 +381,11 @@ Deno.test("public files and compiled assets are served without reading the brows
   session.set("auth", administrator);
   const sessionId = await memory.save(session);
   assert(sessionId && cookie.maxAge !== undefined);
-  const header = (await cookie.serialize(
-    JSON.stringify({ value: sessionId, expires: Date.now() + cookie.maxAge * 1000 }),
-  )).split(";", 1)[0]!;
+  const header = (
+    await cookie.serialize(
+      JSON.stringify({ value: sessionId, expires: Date.now() + cookie.maxAge * 1000 }),
+    )
+  ).split(";", 1)[0]!;
   const get = (path: string) =>
     router.fetch(new Request(new URL(path, "http://localhost"), { headers: { Cookie: header } }));
 

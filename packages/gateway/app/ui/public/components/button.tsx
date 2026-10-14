@@ -1,12 +1,6 @@
 import { clientEntry, css, type Handle, type Props } from "remix/component";
 
-export type ButtonVariant =
-  | "default"
-  | "outline"
-  | "secondary"
-  | "ghost"
-  | "destructive"
-  | "link";
+export type ButtonVariant = "default" | "outline" | "secondary" | "ghost" | "destructive" | "link";
 export type ButtonSize =
   | "default"
   | "xs"
@@ -74,28 +68,32 @@ export const SubmitProgressBehavior = clientEntry<{
       if (!(form instanceof HTMLFormElement)) return;
       const signal = handle.signal;
 
-      form.addEventListener("submit", (event) => {
-        if (submittedButton) {
-          event.preventDefault();
-          return;
-        }
-        const submitter = event instanceof SubmitEvent &&
-            event.submitter instanceof HTMLButtonElement
-          ? event.submitter
-          : form.querySelector<HTMLButtonElement>("button[type='submit']");
-        if (!submitter) return;
+      form.addEventListener(
+        "submit",
+        (event) => {
+          if (submittedButton) {
+            event.preventDefault();
+            return;
+          }
+          const submitter =
+            event instanceof SubmitEvent && event.submitter instanceof HTMLButtonElement
+              ? event.submitter
+              : form.querySelector<HTMLButtonElement>("button[type='submit']");
+          if (!submitter) return;
 
-        submittedButton = submitter;
-        submitter.disabled = true;
-        submitter.setAttribute("aria-busy", "true");
-        submitter.setAttribute("aria-label", handle.props.pendingLabel);
-        submitter.querySelector("[data-slot='submit-idle']")?.setAttribute("hidden", "");
-        submitter.querySelector("[data-slot='submit-progress']")?.removeAttribute("hidden");
+          submittedButton = submitter;
+          submitter.disabled = true;
+          submitter.setAttribute("aria-busy", "true");
+          submitter.setAttribute("aria-label", handle.props.pendingLabel);
+          submitter.querySelector("[data-slot='submit-idle']")?.setAttribute("hidden", "");
+          submitter.querySelector("[data-slot='submit-progress']")?.removeAttribute("hidden");
 
-        setTimeout(() => {
-          if (!signal.aborted && event.defaultPrevented) settleSubmission();
-        }, 0);
-      }, { signal });
+          setTimeout(() => {
+            if (!signal.aborted && event.defaultPrevented) settleSubmission();
+          }, 0);
+        },
+        { signal },
+      );
 
       globalThis.navigation.addEventListener("navigatesuccess", settleSubmission, { signal });
       globalThis.navigation.addEventListener("navigateerror", settleSubmission, { signal });

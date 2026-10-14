@@ -1,19 +1,23 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { test } from "vite-plus/test";
+import { execute } from "../../../src/runtime/process.ts";
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@jsr/std__assert";
 import { Cause, Effect, Exit, Scope } from "effect";
 
 import {
   ensureGuestImage,
   type GuestImage,
-} from "@/src/environment/gondolin/guest-image/installer.ts";
+} from "../../../src/environment/gondolin/guest-image/installer.ts";
 import {
   GUEST_IMAGE_RELEASE,
   type GuestImageRelease,
   MVP_7,
-} from "@/src/environment/gondolin/guest-image/release.ts";
-import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin/layer.ts";
+} from "../../../src/environment/gondolin/guest-image/release.ts";
+import { makeGondolinAgentEnvironmentProvider } from "../../../src/environment/gondolin/layer.ts";
 
 const MVP_6: GuestImageRelease = {
   id: "mvp-6",
@@ -22,8 +26,7 @@ const MVP_6: GuestImageRelease = {
       gondolinArchitecture: "aarch64",
       gondolinBuildId: "6f91329b-2a19-5d4b-8497-59ca20bc893b",
       manifestSha256: "f0dbe0d8ae07be7e8d47ef9c8fb6a5cb056b23c1db35bc616a09d0e5fa6ceb36",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-6/gondolin-image-openorb-guest-mvp-6-aarch64.tar.gz",
+      url: "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-6/gondolin-image-openorb-guest-mvp-6-aarch64.tar.gz",
       sizeBytes: 816_901_913,
       sha256: "b116bbae2dcaa62ce1b198e0c76c32d642b6962d74eb843dd9c29d61f01e0d2f",
     },
@@ -31,8 +34,7 @@ const MVP_6: GuestImageRelease = {
       gondolinArchitecture: "x86_64",
       gondolinBuildId: "10689eb6-d019-5f32-b0d4-18443743278f",
       manifestSha256: "22b12f566823102467cc0109a917bf045a415f3b39b0642e3af3a2d1ab78f8ed",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-6/gondolin-image-openorb-guest-mvp-6-x86_64.tar.gz",
+      url: "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-6/gondolin-image-openorb-guest-mvp-6-x86_64.tar.gz",
       sizeBytes: 838_420_591,
       sha256: "11eadfae7e223ef135136cb591c9e84da21faf6ca0c6e1987231d77dc3578501",
     },
@@ -43,14 +45,14 @@ const RELEASES = [MVP_7, GUEST_IMAGE_RELEASE] as const;
 const MEMORY_MIB = 4096;
 const textDecoder = new TextDecoder();
 
-Deno.test({
-  name: "published mvp-7 sessions remain pinned when release-2 becomes the default",
-  ignore: Deno.env.get("OPENORB_RUN_PUBLISHED_IMAGE_TESTS") !== "1" ||
-    Deno.build.os !== "linux" || Deno.build.arch !== "x86_64",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    const workingDirectory = await Deno.makeTempDir({ prefix: "openorb-published-images-" });
+test.skipIf(
+  process.env.OPENORB_RUN_PUBLISHED_IMAGE_TESTS !== "1" ||
+    process.platform !== "linux" ||
+    process.arch !== "x64",
+)(
+  "published mvp-7 sessions remain pinned when release-2 becomes the default",
+  async () => {
+    const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-published-images-"));
     try {
       const oldImage = await install(workingDirectory, MVP_7);
       const newImage = await install(workingDirectory, GUEST_IMAGE_RELEASE);
@@ -58,7 +60,7 @@ Deno.test({
       assertEquals(newImage.releaseId, "release-2");
 
       const oldDisk = join(workingDirectory, "sessions", "old", "root-disk.qcow2");
-      await Deno.mkdir(join(workingDirectory, "sessions", "old"), { recursive: true });
+      await fs.mkdir(join(workingDirectory, "sessions", "old"), { recursive: true });
       const oldProvider = makeGondolinAgentEnvironmentProvider(oldImage, true);
       await Effect.runPromise(oldProvider.initializeRootDisk(oldDisk));
       await useEnvironment(oldProvider, oldDisk, async (environment) => {
@@ -69,7 +71,7 @@ Deno.test({
       assertEquals(oldBacking, join(oldImage.path, "rootfs.ext4"));
 
       // Force restore to exercise catalog-pinned recovery instead of merely reusing cached assets.
-      await Deno.remove(oldImage.path, { recursive: true });
+      await fs.rm(oldImage.path, { recursive: true });
       const upgradedProvider = makeGondolinAgentEnvironmentProvider(newImage, true, {
         releases: RELEASES,
       });
@@ -82,7 +84,7 @@ Deno.test({
       await assertInstalledImage(oldImage.path);
 
       const newDisk = join(workingDirectory, "sessions", "new", "root-disk.qcow2");
-      await Deno.mkdir(join(workingDirectory, "sessions", "new"), { recursive: true });
+      await fs.mkdir(join(workingDirectory, "sessions", "new"), { recursive: true });
       await Effect.runPromise(upgradedProvider.initializeRootDisk(newDisk));
       await useEnvironment(upgradedProvider, newDisk, async (environment) => {
         await assertGuestIdentity(environment, "release-2");
@@ -98,8 +100,8 @@ Deno.test({
 
       const diskDigest = await sha256File(oldDisk);
       const runtimePath = join(workingDirectory, "sessions", "old", "runtime.json");
-      const oldRuntime = await Deno.readTextFile(runtimePath);
-      await Deno.writeTextFile(
+      const oldRuntime = await fs.readFile(runtimePath, "utf8");
+      await fs.writeFile(
         runtimePath,
         JSON.stringify({
           version: 1,
@@ -111,9 +113,9 @@ Deno.test({
       const mismatchScope = await Effect.runPromise(Scope.make());
       try {
         const mismatch = await Effect.runPromiseExit(
-          restartedProvider.make(environmentOptions(oldDisk)).pipe(
-            Effect.provideService(Scope.Scope, mismatchScope),
-          ),
+          restartedProvider
+            .make(environmentOptions(oldDisk))
+            .pipe(Effect.provideService(Scope.Scope, mismatchScope)),
         );
         assert(Exit.isFailure(mismatch));
         assertStringIncludes(
@@ -123,22 +125,23 @@ Deno.test({
         assertEquals(await sha256File(oldDisk), diskDigest);
       } finally {
         await Effect.runPromise(Scope.close(mismatchScope, Exit.void));
-        await Deno.writeTextFile(runtimePath, oldRuntime);
+        await fs.writeFile(runtimePath, oldRuntime);
       }
     } finally {
-      await Deno.remove(workingDirectory, { recursive: true });
+      await fs.rm(workingDirectory, { recursive: true });
     }
   },
-});
+  600_000,
+);
 
-Deno.test({
-  name: "published MVP-6 either persists across an upgrade or proves its artifact limitation",
-  ignore: Deno.env.get("OPENORB_RUN_PUBLISHED_IMAGE_TESTS") !== "1" ||
-    Deno.build.os !== "linux" || Deno.build.arch !== "x86_64",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    const workingDirectory = await Deno.makeTempDir({ prefix: "openorb-published-mvp6-" });
+test.skipIf(
+  process.env.OPENORB_RUN_PUBLISHED_IMAGE_TESTS !== "1" ||
+    process.platform !== "linux" ||
+    process.arch !== "x64",
+)(
+  "published MVP-6 either persists across an upgrade or proves its artifact limitation",
+  async () => {
+    const workingDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-published-mvp6-"));
     try {
       const image = await install(workingDirectory, MVP_6);
       assertEquals(image.releaseId, "mvp-6");
@@ -146,15 +149,15 @@ Deno.test({
       assertEquals(image.manifestSha256, MVP_6.assets.x64.manifestSha256);
 
       const rootDiskPath = join(workingDirectory, "session", "root-disk.qcow2");
-      await Deno.mkdir(join(workingDirectory, "session"), { recursive: true });
+      await fs.mkdir(join(workingDirectory, "session"), { recursive: true });
       const provider = makeGondolinAgentEnvironmentProvider(image, true);
       await Effect.runPromise(provider.initializeRootDisk(rootDiskPath));
 
       const scope = await Effect.runPromise(Scope.make());
       const started = await Effect.runPromiseExit(
-        provider.make(environmentOptions(rootDiskPath)).pipe(
-          Effect.provideService(Scope.Scope, scope),
-        ),
+        provider
+          .make(environmentOptions(rootDiskPath))
+          .pipe(Effect.provideService(Scope.Scope, scope)),
       );
       if (Exit.isFailure(started)) {
         try {
@@ -183,10 +186,11 @@ Deno.test({
         await assertMarkers(environment, "mvp-6-marker");
       });
     } finally {
-      await Deno.remove(workingDirectory, { recursive: true });
+      await fs.rm(workingDirectory, { recursive: true });
     }
   },
-});
+  600_000,
+);
 
 type Provider = ReturnType<typeof makeGondolinAgentEnvironmentProvider>;
 type Environment = Awaited<ReturnType<typeof openEnvironment>>["environment"];
@@ -205,9 +209,9 @@ async function openEnvironment(provider: Provider, rootDiskPath: string) {
   const scope = await Effect.runPromise(Scope.make());
   try {
     const environment = await Effect.runPromise(
-      provider.make(environmentOptions(rootDiskPath)).pipe(
-        Effect.provideService(Scope.Scope, scope),
-      ),
+      provider
+        .make(environmentOptions(rootDiskPath))
+        .pipe(Effect.provideService(Scope.Scope, scope)),
     );
     return { environment, scope };
   } catch (error) {
@@ -252,11 +256,13 @@ async function assertGuestIdentity(environment: Environment, releaseId: string):
 }
 
 async function writeMarkers(environment: Environment, marker: string): Promise<void> {
-  const result = await Effect.runPromise(environment.run([
-    "/bin/sh",
-    "-c",
-    `set -eu; printf %s '${marker}' > /workspace/runtime-e2e-marker; mkdir -p /opt/openorb-runtime-e2e; printf %s '${marker}' > /opt/openorb-runtime-e2e/marker; sync`,
-  ]));
+  const result = await Effect.runPromise(
+    environment.run([
+      "/bin/sh",
+      "-c",
+      `set -eu; printf %s '${marker}' > /workspace/runtime-e2e-marker; mkdir -p /opt/openorb-runtime-e2e; printf %s '${marker}' > /opt/openorb-runtime-e2e/marker; sync`,
+    ]),
+  );
   assertEquals(result.exitCode, 0);
 }
 
@@ -276,35 +282,37 @@ async function commandOutput(
   command: readonly string[],
 ): Promise<string> {
   let output = "";
-  const result = await Effect.runPromise(environment.run(command, {
-    onOutput: (chunk) => Effect.sync(() => output += chunk.text),
-  }));
+  const result = await Effect.runPromise(
+    environment.run(command, {
+      onOutput: (chunk) => Effect.sync(() => (output += chunk.text)),
+    }),
+  );
   assertEquals(result.exitCode, 0);
   return output.trim();
 }
 
 async function backingFilename(path: string): Promise<string> {
-  const output = await new Deno.Command("qemu-img", {
+  const output = await execute("qemu-img", {
     args: ["info", "--output=json", path],
     stdout: "piped",
     stderr: "piped",
-  }).output();
+  });
   assert(output.success, textDecoder.decode(output.stderr));
   return JSON.parse(textDecoder.decode(output.stdout))["backing-filename"];
 }
 
 async function assertInstalledImage(path: string): Promise<void> {
   for (const name of ["manifest.json", "vmlinuz-virt", "initramfs.cpio.lz4", "rootfs.ext4"]) {
-    assert((await Deno.stat(join(path, name))).isFile);
+    assert((await fs.stat(join(path, name))).isFile());
   }
 }
 
 async function assertResize2fsAbsent(rootfsPath: string): Promise<void> {
-  const output = await new Deno.Command("/usr/sbin/debugfs", {
+  const output = await execute("/usr/sbin/debugfs", {
     args: ["-R", "stat /usr/sbin/resize2fs", rootfsPath],
     stdout: "piped",
     stderr: "piped",
-  }).output();
+  });
   assert(output.success);
   assertStringIncludes(
     textDecoder.decode(output.stdout) + textDecoder.decode(output.stderr),
@@ -314,7 +322,7 @@ async function assertResize2fsAbsent(rootfsPath: string): Promise<void> {
 
 async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
-  using file = await Deno.open(path, { read: true });
-  for await (const chunk of file.readable) hash.update(chunk);
+  await using file = await fs.open(path, "r");
+  for await (const chunk of file.readableWebStream()) hash.update(chunk);
   return hash.digest("hex");
 }

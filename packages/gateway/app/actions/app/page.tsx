@@ -1,7 +1,7 @@
 import { css, type Handle } from "remix/component";
 
-import type { SessionNavigationEntry } from "@/app/cells/workspace/api.ts";
-import { routes } from "@/app/routes.ts";
+import type { SessionNavigationEntry } from "../../cells/workspace/api.ts";
+import { routes } from "../../routes.ts";
 import {
   Empty,
   EmptyContent,
@@ -11,9 +11,9 @@ import {
   EmptyTitle,
   Icon,
   type IconName,
-} from "@/app/ui/public/components/index.ts";
-import { media } from "@/app/ui/public/responsive.ts";
-import { AppShell, type AppShellProps } from "@/app/ui/app-shell.tsx";
+} from "../../ui/public/components/index.ts";
+import { media } from "../../ui/public/responsive.ts";
+import { AppShell, type AppShellProps } from "../../ui/app-shell.tsx";
 
 interface AppPageProps {
   composer: AppShellProps["composer"];
@@ -32,77 +32,70 @@ interface AppPageProps {
 
 export function AppPage(handle: Handle<AppPageProps>) {
   const { composer, csrfToken, setup, sidebarSessions, title = "OpenOrb" } = handle.props;
-  const showSetup = setup &&
-    !(setup.runner && setup.provider && setup.github && setup.gitAuthor && setup.project);
+  const showSetup =
+    setup && !(setup.runner && setup.provider && setup.github && setup.gitAuthor && setup.project);
 
   return () => (
-    <AppShell
-      composer={composer}
-      csrfToken={csrfToken}
-      sessions={sidebarSessions}
-      title={title}
-    >
-      {showSetup
-        ? (
-          <div mix={mainStyle}>
-            <section aria-labelledby="getting-started-heading" mix={setupStyle}>
-              <header mix={setupHeadingStyle}>
-                <h1 id="getting-started-heading" mix={headingStyle}>Get started</h1>
-                <p mix={descriptionStyle}>
-                  Complete these steps before starting your first session.
-                </p>
-              </header>
-              <ol mix={stepsStyle}>
-                <SetupStep
-                  name="runner"
-                  complete={setup.runner}
-                  icon="server"
-                  title="Connect a runner"
-                  description="Connect a runner so OpenOrb can start and manage session VMs."
-                  href={routes.app.settings.runners.index.href()}
-                  action={setup.runnerConfigured ? undefined : "Connect runner"}
-                />
-                <SetupStep
-                  name="provider"
-                  complete={setup.provider}
-                  icon="sparkles"
-                  title="Add a LLM provider key"
-                  description="Configure a model provider to choose the agent and model for a session."
-                  href={routes.app.settings.providers.index.href()}
-                  action="Configure provider"
-                />
-                <SetupStep
-                  name="github"
-                  complete={setup.github}
-                  icon="github"
-                  title="Configure GitHub credentials"
-                  description="Add a GitHub token so OpenOrb can access your repositories."
-                  href={routes.app.settings.github.index.href()}
-                  action="Configure GitHub"
-                />
-                <SetupStep
-                  name="git-author"
-                  complete={setup.gitAuthor}
-                  icon="user"
-                  title="Set up Git username and email"
-                  description="Set the author name and email used for commits."
-                  href={routes.app.settings.gitAuthor.index.href()}
-                  action="Set up Git author"
-                />
-                <SetupStep
-                  name="project"
-                  complete={setup.project}
-                  icon="folder"
-                  title="Configure projects"
-                  description="Add a repository that sessions can work in."
-                  href={routes.app.projects.index.href()}
-                  action="Configure projects"
-                />
-              </ol>
-            </section>
-          </div>
-        )
-        : null}
+    <AppShell composer={composer} csrfToken={csrfToken} sessions={sidebarSessions} title={title}>
+      {showSetup ? (
+        <div mix={mainStyle}>
+          <section aria-labelledby="getting-started-heading" mix={setupStyle}>
+            <header mix={setupHeadingStyle}>
+              <h1 id="getting-started-heading" mix={headingStyle}>
+                Get started
+              </h1>
+              <p mix={descriptionStyle}>Complete these steps before starting your first session.</p>
+            </header>
+            <ol mix={stepsStyle}>
+              <SetupStep
+                name="runner"
+                complete={setup.runner}
+                icon="server"
+                title="Connect a runner"
+                description="Connect a runner so OpenOrb can start and manage session VMs."
+                href={routes.app.settings.runners.index.href()}
+                action={setup.runnerConfigured ? undefined : "Connect runner"}
+              />
+              <SetupStep
+                name="provider"
+                complete={setup.provider}
+                icon="sparkles"
+                title="Add a LLM provider key"
+                description="Configure a model provider to choose the agent and model for a session."
+                href={routes.app.settings.providers.index.href()}
+                action="Configure provider"
+              />
+              <SetupStep
+                name="github"
+                complete={setup.github}
+                icon="github"
+                title="Configure GitHub credentials"
+                description="Add a GitHub token so OpenOrb can access your repositories."
+                href={routes.app.settings.github.index.href()}
+                action="Configure GitHub"
+              />
+              <SetupStep
+                name="git-author"
+                complete={setup.gitAuthor}
+                icon="user"
+                title="Set up Git username and email"
+                description="Set the author name and email used for commits."
+                href={routes.app.settings.gitAuthor.index.href()}
+                action="Set up Git author"
+              />
+              <SetupStep
+                name="project"
+                complete={setup.project}
+                icon="folder"
+                title="Configure projects"
+                description="Add a repository that sessions can work in."
+                href={routes.app.projects.index.href()}
+                action="Configure projects"
+              />
+            </ol>
+          </section>
+        </div>
+      ) : null}
     </AppShell>
   );
 }
@@ -133,15 +126,17 @@ function SetupStep(handle: Handle<SetupStepProps>) {
               <EmptyDescription>{props.description}</EmptyDescription>
             </div>
           </EmptyHeader>
-          {props.complete || props.action
-            ? (
-              <EmptyContent mix={stepContentStyle}>
-                {props.complete
-                  ? <span mix={doneStyle}>Done</span>
-                  : <a href={props.href} mix={actionStyle}>{props.action}</a>}
-              </EmptyContent>
-            )
-            : null}
+          {props.complete || props.action ? (
+            <EmptyContent mix={stepContentStyle}>
+              {props.complete ? (
+                <span mix={doneStyle}>Done</span>
+              ) : (
+                <a href={props.href} mix={actionStyle}>
+                  {props.action}
+                </a>
+              )}
+            </EmptyContent>
+          ) : null}
         </Empty>
       </li>
     );

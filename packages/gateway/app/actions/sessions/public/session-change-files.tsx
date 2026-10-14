@@ -5,7 +5,7 @@ import type {
 import type { CodeViewItem, CodeViewOptions, FileDiffMetadata } from "@pierre/diffs";
 import { css, type Handle } from "remix/component";
 
-import { createIconElement } from "@/app/ui/public/components/icons.tsx";
+import { createIconElement } from "../../../ui/public/components/icons.tsx";
 import { RemixCodeView, type RemixCodeViewProps } from "./remix-code-view.tsx";
 import {
   filePreviousDisplayPath,
@@ -47,9 +47,9 @@ export function prepareSessionChanges(
 ): PreparedSessionChanges {
   const parsed = diffs
     ? {
-      staged: parsePatchSection(diffs, snapshot, "staged", cacheKey),
-      unstaged: parsePatchSection(diffs, snapshot, "unstaged", cacheKey),
-    }
+        staged: parsePatchSection(diffs, snapshot, "staged", cacheKey),
+        unstaged: parsePatchSection(diffs, snapshot, "unstaged", cacheKey),
+      }
     : { staged: new Map(), unstaged: new Map() };
   const rows = fileSections(snapshot).flatMap((section) =>
     section.files.map((file, index) => {
@@ -64,7 +64,7 @@ export function prepareSessionChanges(
         fallback: diffFallbackMessage(file, section.truncated, fileDiff),
         ...(fileDiff === undefined ? {} : { stats: summarizeDiff(fileDiff) }),
       };
-    })
+    }),
   );
   return {
     rows,
@@ -78,16 +78,15 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
   let rowsById = new Map<string, PreparedSessionChangeRow>();
   let itemRecords: ReadonlyMap<string, SessionChangeItemRecord> = new Map();
 
-  const renderCustomHeader = (
-    _input: unknown,
-    context: ChangeHeaderContext,
-  ) => {
+  const renderCustomHeader = (_input: unknown, context: ChangeHeaderContext) => {
     const row = rowsById.get(context.item.id);
-    return row === undefined ? undefined : createSessionChangeHeader(
-      row,
-      context.item.collapsed ?? false,
-      handle.props.mutationsDisabled ?? false,
-    );
+    return row === undefined
+      ? undefined
+      : createSessionChangeHeader(
+          row,
+          context.item.collapsed ?? false,
+          handle.props.mutationsDisabled ?? false,
+        );
   };
 
   const codeViewOptions: CodeViewOptions<undefined> = {
@@ -125,7 +124,7 @@ export function SessionChangeFiles(handle: Handle<SessionChangeFilesProps>) {
       const item = viewer.getItem(row.key);
       if (item === undefined) return;
       const updatedItem = toggleSessionChangeItem(row, item);
-      items = items.map((candidate) => candidate.id === row.key ? updatedItem : candidate);
+      items = items.map((candidate) => (candidate.id === row.key ? updatedItem : candidate));
       viewer.setItems(items);
       const record = itemRecords.get(row.key);
       if (record !== undefined) {
@@ -161,7 +160,7 @@ function createSessionChangeHeader(
   mutationsDisabled: boolean,
 ): HTMLElement {
   const { file, stats } = row;
-  const action = row.state === "staged" ? "unstage" as const : "stage" as const;
+  const action = row.state === "staged" ? ("unstage" as const) : ("stage" as const);
   const actionLabel = action === "stage" ? "Stage" : "Unstage";
   const path = splitFilePath(file.displayPath);
   const previousDisplayPath = filePreviousDisplayPath(file);
@@ -183,10 +182,7 @@ function createSessionChangeHeader(
   toggle.dataset.changeFileCommand = "toggle";
   toggle.dataset.changeFileId = row.key;
   toggle.setAttribute("aria-expanded", String(!collapsed));
-  toggle.setAttribute(
-    "aria-label",
-    `${collapsed ? "Expand" : "Collapse"} ${file.displayPath}`,
-  );
+  toggle.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${file.displayPath}`);
   toggle.title = previousDisplayPath
     ? `${previousDisplayPath} → ${file.displayPath}`
     : file.displayPath;
@@ -283,20 +279,17 @@ function parsePatchSection(
   const patch = snapshot.sections[state].patch;
   if (!patch) return new Map();
   const sectionCacheKey = `${cacheKey}:${state}`;
-  const compactFiles = diffs.parsePatchFiles(
-    diffs.trimPatchContext(patch, 3),
-    `${sectionCacheKey}:compact`,
-  ).flatMap((item) => item.files);
+  const compactFiles = diffs
+    .parsePatchFiles(diffs.trimPatchContext(patch, 3), `${sectionCacheKey}:compact`)
+    .flatMap((item) => item.files);
   if (!snapshot.sections[state].truncated) {
-    const fullFiles = diffs.parsePatchFiles(patch, `${sectionCacheKey}:full`).flatMap((item) =>
-      item.files
-    );
+    const fullFiles = diffs
+      .parsePatchFiles(patch, `${sectionCacheKey}:full`)
+      .flatMap((item) => item.files);
     const complete = new Map(fullFiles.map((file) => [file.name, file]));
     for (const file of compactFiles) {
       const fullFile = complete.get(file.name);
-      if (
-        fullFile?.hunks.length && (file.type === "change" || file.type === "rename-changed")
-      ) {
+      if (fullFile?.hunks.length && (file.type === "change" || file.type === "rename-changed")) {
         diffs.hydratePartialDiff("merge", file, {
           oldFile: {
             name: fullFile.prevName ?? fullFile.name,
@@ -324,8 +317,11 @@ function findFileDiff(
   files: ReadonlyMap<string, FileDiffMetadata>,
   file: SessionGitFileData,
 ): FileDiffMetadata | undefined {
-  return files.get(file.displayPath) ?? files.get(file.path) ??
-    files.get(JSON.stringify(file.path).slice(1, -1));
+  return (
+    files.get(file.displayPath) ??
+    files.get(file.path) ??
+    files.get(JSON.stringify(file.path).slice(1, -1))
+  );
 }
 
 function diffFallbackMessage(
@@ -334,7 +330,7 @@ function diffFallbackMessage(
   fileDiff?: FileDiffMetadata,
 ): string {
   if (file.diffState === "binary") return "Binary files cannot be displayed.";
-  if (file.diffState === "truncated" || sectionTruncated && !fileDiff) {
+  if (file.diffState === "truncated" || (sectionTruncated && !fileDiff)) {
     return "This diff was omitted because the Git Snapshot was truncated.";
   }
   if (fileDiff?.hunks.length === 0) {

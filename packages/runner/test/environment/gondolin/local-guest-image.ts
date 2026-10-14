@@ -1,13 +1,16 @@
+import * as fs from "node:fs/promises";
+import { closeSync, openSync, type Stats } from "node:fs";
+import { hasErrorCode } from "../../../src/runtime/errors.ts";
 import {
   currentGuestImageArchitecture,
   ensureGuestImage,
   type GuestImage,
-} from "@/src/environment/gondolin/guest-image/installer.ts";
+} from "../../../src/environment/gondolin/guest-image/installer.ts";
 import {
   GUEST_IMAGE_RELEASE,
   type GuestImageRelease,
-} from "@/src/environment/gondolin/guest-image/release.ts";
-import type { GondolinAgentEnvironmentConfig } from "@/src/environment/gondolin/layer.ts";
+} from "../../../src/environment/gondolin/guest-image/release.ts";
+import type { GondolinAgentEnvironmentConfig } from "../../../src/environment/gondolin/layer.ts";
 
 interface LocalGuestImageMetadata {
   releaseId: string;
@@ -24,41 +27,38 @@ export function gondolinTestEnvironmentOptions(): Pick<
   "softwareEmulation"
 > {
   if (softwareEmulation === undefined) {
-    softwareEmulation = Deno.build.os === "linux" && !canAccessKvm();
+    softwareEmulation = process.platform === "linux" && !canAccessKvm();
   }
   return softwareEmulation ? { softwareEmulation: true } : {};
 }
 
 function canAccessKvm(): boolean {
   try {
-    const device = Deno.openSync("/dev/kvm", { read: true, write: true });
-    device.close();
+    const device = openSync("/dev/kvm", "r+");
+    closeSync(device);
     return true;
   } catch {
     return false;
   }
 }
 
-export async function installLocalGuestImage(
-  workingDirectory: string,
-): Promise<GuestImage> {
+export async function installLocalGuestImage(workingDirectory: string): Promise<GuestImage> {
   const architecture = currentGuestImageArchitecture();
   const releaseAsset = GUEST_IMAGE_RELEASE.assets[architecture];
   const sourceReleaseId = (
-    await Deno.readTextFile(`${Deno.cwd()}/images/guest/openorb-image-release`)
+    await fs.readFile(`${process.cwd()}/images/guest/openorb-image-release`, "utf8")
   ).trim();
-  const archivePath =
-    `${Deno.cwd()}/dist/guest-image/gondolin-image-openorb-guest-${sourceReleaseId}-${releaseAsset.gondolinArchitecture}.tar.gz`;
+  const archivePath = `${process.cwd()}/dist/guest-image/gondolin-image-openorb-guest-${sourceReleaseId}-${releaseAsset.gondolinArchitecture}.tar.gz`;
 
   let metadata: LocalGuestImageMetadata;
-  let archiveInfo: Deno.FileInfo;
+  let archiveInfo: Stats;
   try {
-    metadata = JSON.parse(await Deno.readTextFile(`${archivePath}.json`));
-    archiveInfo = await Deno.lstat(archivePath);
+    metadata = JSON.parse(await fs.readFile(`${archivePath}.json`, "utf8"));
+    archiveInfo = await fs.lstat(archivePath);
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
+    if (hasErrorCode(error, "ENOENT")) {
       throw new Error(
-        `The local guest image is missing; run "deno task build:image ${releaseAsset.gondolinArchitecture}" first.`,
+        `The local guest image is missing; run "npm run build:image -- ${releaseAsset.gondolinArchitecture}" first.`,
       );
     }
     throw error;
@@ -87,8 +87,24 @@ export async function installLocalGuestImage(
     architecture,
     release,
     async fetch() {
-      const archive = await Deno.open(archivePath, { read: true });
-      return new Response(archive.readable, {
+      const archive = await fs.open(archivePath, "r");
+      const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
+        async pull(controller) {
+          try {
+            const buffer = new Uint8Array(1024 * 1024);
+            const { bytesRead } = await archive.read(buffer);
+            if (bytesRead === 0) {
+              await archive.close();
+              controller.close();
+            } else controller.enqueue(buffer.subarray(0, bytesRead));
+          } catch (error) {
+            await archive.close();
+            controller.error(error);
+          }
+        },
+        cancel: () => archive.close(),
+      });
+      return new Response(stream, {
         status: 200,
         headers: { "content-length": String(archiveInfo.size) },
       });

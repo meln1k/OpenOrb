@@ -1,8 +1,9 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 
-import { TokenBucketRateLimiter } from "@/app/utils/token-bucket-rate-limiter.ts";
+import { TokenBucketRateLimiter } from "./token-bucket-rate-limiter.ts";
 
-Deno.test("allows an initial burst and then refills continuously", () => {
+test("allows an initial burst and then refills continuously", () => {
   let now = 0;
   const limiter = new TokenBucketRateLimiter({
     tokensPerSecond: 1 / (3 * 60),
@@ -23,7 +24,7 @@ Deno.test("allows an initial burst and then refills continuously", () => {
   assertEquals(limiter.allow("client"), false);
 });
 
-Deno.test("reset restores a key to a full bucket", () => {
+test("reset restores a key to a full bucket", () => {
   const limiter = new TokenBucketRateLimiter({
     tokensPerSecond: 1,
     burst: 1,
@@ -35,7 +36,7 @@ Deno.test("reset restores a key to a full bucket", () => {
   assertEquals(limiter.allow("client"), true);
 });
 
-Deno.test("bounds memory by evicting the least recently used bucket", () => {
+test("bounds memory by evicting the least recently used bucket", () => {
   const limiter = new TokenBucketRateLimiter({
     tokensPerSecond: 1,
     burst: 1,

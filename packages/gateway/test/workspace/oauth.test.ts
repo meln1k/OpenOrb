@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertMatch, assertNotMatch, assertRejects } from "@std/assert";
+import { test, describe } from "vite-plus/test";
+import { assert, assertEquals, assertMatch, assertNotMatch, assertRejects } from "@jsr/std__assert";
 import {
   type DeviceLogin,
   type OAuthCredential,
@@ -30,7 +31,9 @@ const credential: OAuthCredential = {
 function jwt(payload: unknown): string {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
   const encoded = btoa(String.fromCharCode(...bytes))
-    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
   return `e30.${encoded}.unverified-signature`;
 }
 
@@ -67,7 +70,7 @@ async function assertRequest(
   assertEquals(request.headers.get("Authorization"), null);
 }
 
-Deno.test("device start uses the custom Codex protocol and allows an immediate first poll", async () => {
+test("device start uses the custom Codex protocol and allows an immediate first poll", async () => {
   const mock = mockFetch(
     Response.json({ device_auth_id: "device-id", user_code: "ABCD-EFGH", interval: " 5 " }),
   );
@@ -83,7 +86,7 @@ Deno.test("device start uses the custom Codex protocol and allows an immediate f
   );
 });
 
-Deno.test("device start accepts numeric and zero intervals", async () => {
+test("device start accepts numeric and zero intervals", async () => {
   for (const interval of [0, 5, "0"]) {
     const mock = mockFetch(Response.json({ device_auth_id: "id", user_code: "code", interval }));
     const result = await startDeviceLogin(mock.fetcher, clock);
@@ -91,7 +94,7 @@ Deno.test("device start accepts numeric and zero intervals", async () => {
   }
 });
 
-Deno.test("device start rejects invalid fields without exposing provider data", async (t) => {
+describe("device start rejects invalid fields without exposing provider data", () => {
   const valid = { device_auth_id: "id", user_code: "code", interval: 5 };
   const invalid = [
     null,
@@ -105,7 +108,7 @@ Deno.test("device start rejects invalid fields without exposing provider data", 
     })),
   ];
   for (const [index, data] of invalid.entries()) {
-    await t.step(`invalid response ${index}`, async () => {
+    test(`invalid response ${index}`, async () => {
       const mock = mockFetch(Response.json(data));
       const error = await assertRejects(() => startDeviceLogin(mock.fetcher, clock), Error);
       assertEquals(error.message, "OpenAI Codex device login could not be started.");
@@ -114,7 +117,7 @@ Deno.test("device start rejects invalid fields without exposing provider data", 
   }
 });
 
-Deno.test("poll classifies 403/404 and custom pending errors, sends only device IDs", async (t) => {
+describe("poll classifies 403/404 and custom pending errors, sends only device IDs", () => {
   const cases = [
     new Response("private provider body", { status: 403 }),
     Response.json({ error: "access_denied" }, { status: 404 }),
@@ -122,7 +125,7 @@ Deno.test("poll classifies 403/404 and custom pending errors, sends only device 
     Response.json({ error: { code: "deviceauth_authorization_pending" } }, { status: 401 }),
   ];
   for (const [index, response] of cases.entries()) {
-    await t.step(`pending response ${index}`, async () => {
+    test(`pending response ${index}`, async () => {
       const mock = mockFetch(response);
       assertEquals(await pollDeviceLogin(login, mock.fetcher, clock), {
         status: "pending",
@@ -140,7 +143,7 @@ Deno.test("poll classifies 403/404 and custom pending errors, sends only device 
   }
 });
 
-Deno.test("slow_down increases the persisted interval by five seconds on each poll", async () => {
+test("slow_down increases the persisted interval by five seconds on each poll", async () => {
   const mock = mockFetch(
     Response.json({ error: "slow_down" }, { status: 429 }),
     Response.json({ error: { code: "slow_down" } }, { status: 400 }),
@@ -158,7 +161,7 @@ Deno.test("slow_down increases the persisted interval by five seconds on each po
   assertEquals(mock.requests.length, 2);
 });
 
-Deno.test("poll respects deadlines and expiry without HTTP or loops", async () => {
+test("poll respects deadlines and expiry without HTTP or loops", async () => {
   const mock = mockFetch();
   const later = { ...login, nextPollAt: NOW + 5000 };
   assertEquals(await pollDeviceLogin(later, mock.fetcher, clock), {
@@ -179,7 +182,7 @@ Deno.test("poll respects deadlines and expiry without HTTP or loops", async () =
   });
 });
 
-Deno.test("expiry during a network poll prevents code exchange", async () => {
+test("expiry during a network poll prevents code exchange", async () => {
   let time = NOW;
   let calls = 0;
   const fetcher: typeof fetch = () => {
@@ -191,7 +194,7 @@ Deno.test("expiry during a network poll prevents code exchange", async () => {
   assertEquals(calls, 1);
 });
 
-Deno.test("authorized device code is exchanged once using the device callback, not device grant", async () => {
+test("authorized device code is exchanged once using the device callback, not device grant", async () => {
   const mock = mockFetch(
     Response.json(authorization),
     Response.json({ ...tokens, accountId: "discard", id_token: "discard" }),
@@ -210,22 +213,27 @@ Deno.test("authorized device code is exchanged once using the device callback, n
   );
 });
 
-Deno.test("poll returns a redacted fatal result for non-custom errors and malformed success", async (t) => {
+describe("poll returns a redacted fatal result for non-custom errors and malformed success", () => {
   const responses = [
     Response.json({ error: "authorization_pending" }, { status: 400 }),
     Response.json({ error: "access_denied", token: "secret" }, { status: 401 }),
     Response.json({ error: "expired_token" }, { status: 400 }),
     new Response("secret", { status: 500 }),
     new Response("not json secret"),
-    ...[null, {}, { authorization_code: 1, code_verifier: "secret" }, {
-      ...authorization,
-      code_verifier: "",
-    }].map((data) => Response.json(data)),
+    ...[
+      null,
+      {},
+      { authorization_code: 1, code_verifier: "secret" },
+      {
+        ...authorization,
+        code_verifier: "",
+      },
+    ].map((data) => Response.json(data)),
     new Error("network echoed secret"),
     new DOMException("timeout echoed secret", "TimeoutError"),
   ];
   for (const [index, reply] of responses.entries()) {
-    await t.step(`fatal response ${index}`, async () => {
+    test(`fatal response ${index}`, async () => {
       const mock = mockFetch(reply);
       assertEquals(await pollDeviceLogin(login, mock.fetcher, clock), { status: "error" });
       assertEquals(mock.requests.length, 1);
@@ -233,7 +241,7 @@ Deno.test("poll returns a redacted fatal result for non-custom errors and malfor
   }
 });
 
-Deno.test("refresh requires rotated credentials and retains only the credential contract", async () => {
+test("refresh requires rotated credentials and retains only the credential contract", async () => {
   const mock = mockFetch(Response.json({ ...tokens, accountId: "discard", scope: "discard" }));
   assertEquals(await refreshOAuthCredential(credential, mock.fetcher, clock), {
     type: "oauth",
@@ -251,7 +259,7 @@ Deno.test("refresh requires rotated credentials and retains only the credential 
   );
 });
 
-Deno.test("exchange and refresh reject missing tokens, invalid expiry and account claims", async (t) => {
+describe("exchange and refresh reject missing tokens, invalid expiry and account claims", () => {
   const invalid = [
     null,
     [],
@@ -268,12 +276,12 @@ Deno.test("exchange and refresh reject missing tokens, invalid expiry and accoun
       jwt({}),
       jwt({ "https://api.openai.com/auth": null }),
       ...["", " ", 42, null].map((chatgpt_account_id) =>
-        jwt({ "https://api.openai.com/auth": { chatgpt_account_id } })
+        jwt({ "https://api.openai.com/auth": { chatgpt_account_id } }),
       ),
     ].map((access_token) => ({ ...tokens, access_token })),
   ];
   for (const [index, data] of invalid.entries()) {
-    await t.step(`invalid token response ${index}`, async () => {
+    test(`invalid token response ${index}`, async () => {
       const refresh = mockFetch(Response.json(data));
       const error = await assertRejects(
         () => refreshOAuthCredential(credential, refresh.fetcher, clock),
@@ -286,13 +294,15 @@ Deno.test("exchange and refresh reject missing tokens, invalid expiry and accoun
       assertEquals(exchange.requests.length, 2);
     });
   }
-  const infinite = mockFetch(
-    new Response(`{"access_token":"${access}","refresh_token":"secret","expires_in":1e400}`),
-  );
-  await assertRejects(() => refreshOAuthCredential(credential, infinite.fetcher, clock));
+  test("rejects an expiry that overflows while parsing JSON", async () => {
+    const infinite = mockFetch(
+      new Response(`{"access_token":"${access}","refresh_token":"secret","expires_in":1e400}`),
+    );
+    await assertRejects(() => refreshOAuthCredential(credential, infinite.fetcher, clock));
+  });
 });
 
-Deno.test("revoke sends the refresh token as JSON and propagates failure for parent policy", async () => {
+test("revoke sends the refresh token as JSON and propagates failure for parent policy", async () => {
   const mock = mockFetch(new Response(null, { status: 204 }));
   await revokeOAuthCredential(credential, mock.fetcher);
   assertEquals(mock.requests.length, 1);
@@ -308,7 +318,7 @@ Deno.test("revoke sends the refresh token as JSON and propagates failure for par
   );
 });
 
-Deno.test("all OAuth HTTP operations use bounded AbortSignal.timeout requests", async () => {
+test("all OAuth HTTP operations use bounded AbortSignal.timeout requests", async () => {
   const originalTimeout = AbortSignal.timeout;
   const deadlines: number[] = [];
   AbortSignal.timeout = (milliseconds) => {
@@ -332,7 +342,7 @@ Deno.test("all OAuth HTTP operations use bounded AbortSignal.timeout requests", 
   }
 });
 
-Deno.test("HTTP, JSON, network, and timeout failures do not leak bodies, tokens, or causes", async (t) => {
+describe("HTTP, JSON, network, and timeout failures do not leak bodies, tokens, or causes", () => {
   const failures = [
     () =>
       new Response("provider-secret old-refresh-secret", {
@@ -344,7 +354,7 @@ Deno.test("HTTP, JSON, network, and timeout failures do not leak bodies, tokens,
     () => new DOMException("timeout leaked provider-secret", "TimeoutError"),
   ];
   for (const [index, failure] of failures.entries()) {
-    await t.step(`redacted failure ${index}`, async () => {
+    test(`redacted failure ${index}`, async () => {
       const start = mockFetch(failure());
       const refresh = mockFetch(failure());
       const revoke = mockFetch(failure());

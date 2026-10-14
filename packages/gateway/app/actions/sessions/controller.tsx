@@ -11,7 +11,7 @@ import {
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { tryAsync } from "@openorb/result";
-import { validate as validateUuid } from "@std/uuid";
+import { validate as validateUuid } from "@jsr/std__uuid";
 import * as s from "remix/data-schema";
 import * as f from "remix/data-schema/form-data";
 import { Accept } from "remix/headers/accept";
@@ -20,42 +20,44 @@ import { getCsrfToken } from "remix/middleware/csrf";
 import { type ContextWithParams, createController, type MiddlewareContext } from "remix/router";
 import { redirect } from "remix/response/redirect";
 
-import { AppPage } from "@/app/actions/app/page.tsx";
-import { SessionDetailFrame, SessionDetailPage } from "@/app/actions/sessions/page.tsx";
-import type { Administrator } from "@/app/cells/workspace/api.ts";
-import { csrf } from "@/app/middleware/csrf.ts";
-import type { AppContext } from "@/app/router.ts";
-import { selectRunnerForWorkspace } from "@/app/cells/runners/runner-selection.ts";
-import type { SessionPlacement } from "@/app/cells/session/environment/provider.ts";
-import type { AppServices } from "@/app/middleware/services.ts";
-import { routes } from "@/app/routes.ts";
-import { loadSessionComposerData } from "@/app/session-composer-data.ts";
-import { isModelReference } from "@/app/model-provider-catalog.ts";
-import { resolveSessionModelRuntime } from "@/app/model-provider-runtime.ts";
-import type { SessionComposerValues } from "@/app/ui/public/session-composer.tsx";
-import { SessionWorkspaceLoadError } from "@/app/ui/public/shell.tsx";
-import { currentSessionRecovery } from "@/app/utils/session-recovery.ts";
+import { AppPage } from "../app/page.tsx";
+import { SessionDetailFrame, SessionDetailPage } from "./page.tsx";
+import type { Administrator } from "../../cells/workspace/api.ts";
+import { csrf } from "../../middleware/csrf.ts";
+import type { AppContext } from "../../router.ts";
+import { selectRunnerForWorkspace } from "../../cells/runners/runner-selection.ts";
+import type { SessionPlacement } from "../../cells/session/environment/provider.ts";
+import type { AppServices } from "../../middleware/services.ts";
+import { routes } from "../../routes.ts";
+import { loadSessionComposerData } from "../../session-composer-data.ts";
+import { isModelReference } from "../../model-provider-catalog.ts";
+import { resolveSessionModelRuntime } from "../../model-provider-runtime.ts";
+import type { SessionComposerValues } from "../../ui/public/session-composer.tsx";
+import { SessionWorkspaceLoadError } from "../../ui/public/shell.tsx";
+import { currentSessionRecovery } from "../../utils/session-recovery.ts";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
 /** Empty for a Session without a project. */
-const projectIdSchema = s.string().refine(
-  (value) => value === "" || s.parseSafe(sessionIdSchema, value).success,
-  "The project identifier is invalid.",
-);
-const sessionGitRefSchema = s.string().refine(
-  isSafeGitReference,
-  "Expected a valid Git branch or tag reference.",
-);
-const sessionBranchNameSchema = s.string().refine(
-  isSafeGitReference,
-  "Expected a valid Git branch name.",
-);
-const promptSchema = s.string().refine(
-  (value) =>
-    value.trim().length > 0 && new TextEncoder().encode(value).byteLength <=
-      MAX_RPC_INITIAL_PROMPT_BYTES,
-  `The prompt is required and must be at most ${MAX_RPC_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
-);
+const projectIdSchema = s
+  .string()
+  .refine(
+    (value) => value === "" || s.parseSafe(sessionIdSchema, value).success,
+    "The project identifier is invalid.",
+  );
+const sessionGitRefSchema = s
+  .string()
+  .refine(isSafeGitReference, "Expected a valid Git branch or tag reference.");
+const sessionBranchNameSchema = s
+  .string()
+  .refine(isSafeGitReference, "Expected a valid Git branch name.");
+const promptSchema = s
+  .string()
+  .refine(
+    (value) =>
+      value.trim().length > 0 &&
+      new TextEncoder().encode(value).byteLength <= MAX_RPC_INITIAL_PROMPT_BYTES,
+    `The prompt is required and must be at most ${MAX_RPC_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
+  );
 const thinkingLevelSchema = s.union([
   s.literal("off" as const),
   s.literal("minimal" as const),
@@ -86,10 +88,9 @@ const setThinkingLevelSchema = f.object({
   thinkingLevel: f.field(thinkingLevelSchema),
 });
 const retrySessionSchema = f.object({
-  recovery: f.field(s.union([
-    s.literal("retry-provisioning" as const),
-    s.literal("restart-environment" as const),
-  ])),
+  recovery: f.field(
+    s.union([s.literal("retry-provisioning" as const), s.literal("restart-environment" as const)]),
+  ),
 });
 
 type SessionsContext = MiddlewareContext<
@@ -121,10 +122,8 @@ export default createController(routes.app.sessions, {
       const workspaceId = context.auth.identity.workspaceId;
       // The Sandbox inspects untrusted content and never checks out a project (ADR 0007).
       const projectId = parsed.value.environment === "sandbox" ? "" : parsed.value.projectId;
-      const project = projectId === "" ? undefined : await workspace.getProject(
-        workspaceId,
-        projectId,
-      );
+      const project =
+        projectId === "" ? undefined : await workspace.getProject(workspaceId, projectId);
       if (project === null) {
         return await renderCreateError(
           context,
@@ -206,15 +205,17 @@ export default createController(routes.app.sessions, {
         context.services.sessions(sessionId).create({
           workspaceId,
           sessionId,
-          ...(project === undefined || gitAuthor === null ? {} : {
-            project: {
-              id: project.id,
-              repositoryUrl: project.repositoryUrl,
-              ref: parsed.value.ref,
-              branchName: parsed.value.branchName,
-              gitAuthor: { name: gitAuthor.authorName, email: gitAuthor.authorEmail },
-            },
-          }),
+          ...(project === undefined || gitAuthor === null
+            ? {}
+            : {
+                project: {
+                  id: project.id,
+                  repositoryUrl: project.repositoryUrl,
+                  ref: parsed.value.ref,
+                  branchName: parsed.value.branchName,
+                  gitAuthor: { name: gitAuthor.authorName, email: gitAuthor.authorEmail },
+                },
+              }),
           createdAt,
           placement,
           orbSize: parsed.value.orbSize,
@@ -288,13 +289,15 @@ export default createController(routes.app.sessions, {
           409,
         );
       }
-      const [, promptError] = await sessionCall(sessionApi.submit({
-        prompt: parsed.value.prompt,
-        requestId: crypto.randomUUID(),
-        ...(parsed.value.thinkingLevel === undefined
-          ? {}
-          : { thinkingLevel: parsed.value.thinkingLevel }),
-      }));
+      const [, promptError] = await sessionCall(
+        sessionApi.submit({
+          prompt: parsed.value.prompt,
+          requestId: crypto.randomUUID(),
+          ...(parsed.value.thinkingLevel === undefined
+            ? {}
+            : { thinkingLevel: parsed.value.thinkingLevel }),
+        }),
+      );
       if (promptError !== undefined) {
         return await sessionCommandError(context, promptError, 503);
       }
@@ -352,14 +355,11 @@ export default createController(routes.app.sessions, {
       const sessionApi = context.services.sessions(sessionId);
       const [snapshot] = await sessionCall(sessionApi.view());
       if (
-        snapshot === undefined || snapshot === null ||
-        snapshot.agentState === "paused" && snapshot.environmentState === "stopped"
+        snapshot === undefined ||
+        snapshot === null ||
+        (snapshot.agentState === "paused" && snapshot.environmentState === "stopped")
       ) {
-        return await sessionCommandError(
-          context,
-          "The session cannot be stopped right now.",
-          409,
-        );
+        return await sessionCommandError(context, "The session cannot be stopped right now.", 409);
       }
       const [, stopError] = await sessionCall(sessionApi.stop());
       if (stopError !== undefined) return await sessionCommandError(context, stopError, 503);
@@ -416,7 +416,8 @@ export default createController(routes.app.sessions, {
           409,
         );
       }
-      const recovery = currentSessionRecovery(snapshot.issues) ??
+      const recovery =
+        currentSessionRecovery(snapshot.issues) ??
         (snapshot.environmentState === "error" ? "restart-environment" : undefined);
       if (recovery === undefined) {
         return await renderDetailPage(
@@ -470,10 +471,7 @@ async function sessionCommandError(
   return await renderDetailPage(context, error, status);
 }
 
-function sessionCommandAccepted(
-  context: SessionDetailContext,
-  sessionId: string,
-): Response {
+function sessionCommandAccepted(context: SessionDetailContext, sessionId: string): Response {
   if (prefersJson(context.request)) {
     return Response.json({ status: "accepted" }, { status: 202 });
   }
@@ -481,17 +479,13 @@ function sessionCommandAccepted(
 }
 
 function prefersJson(request: Request): boolean {
-  return Accept.from(request.headers.get("Accept")).getPreferred([
-    "text/html",
-    "application/json",
-  ]) === "application/json";
+  return (
+    Accept.from(request.headers.get("Accept")).getPreferred(["text/html", "application/json"]) ===
+    "application/json"
+  );
 }
 
-async function renderDetailPage(
-  context: SessionDetailContext,
-  error?: string,
-  status = 200,
-) {
+async function renderDetailPage(context: SessionDetailContext, error?: string, status = 200) {
   const workspaceId = context.auth.identity.workspaceId;
   const sessionId = parseSessionId(context.params.sessionId);
   if (!sessionId) return new Response("Session not found.", { status: 404 });
@@ -517,10 +511,7 @@ async function renderDetailFrame(context: SessionDetailContext) {
   const workspaceId = context.auth.identity.workspaceId;
   const sessionId = parseSessionId(context.params.sessionId);
   if (!sessionId) return renderMissingSessionFrame(context);
-  const session = await context.services.workspace.getSessionCatalogEntry(
-    workspaceId,
-    sessionId,
-  );
+  const session = await context.services.workspace.getSessionCatalogEntry(workspaceId, sessionId);
   if (!session) return renderMissingSessionFrame(context);
   const error = new URL(context.request.url).searchParams.get("error") || undefined;
   const [view] = await sessionCall(context.services.sessions(sessionId).view());
@@ -597,8 +588,7 @@ function stringField(formData: FormData, name: string): string {
 
 /** Session Durable Object calls; their errors carry user-facing messages across native RPC. */
 async function sessionCall<T>(call: Promise<T>) {
-  return await tryAsync(
-    call,
-    (cause) => cause instanceof Error ? cause.message : "The session is unavailable.",
+  return await tryAsync(call, (cause) =>
+    cause instanceof Error ? cause.message : "The session is unavailable.",
   );
 }

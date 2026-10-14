@@ -6,8 +6,8 @@ export {
   modelReferenceSchema,
   type ParsedModelReference,
   parseModelReference,
-} from "@/src/model-provider.ts";
-export { SESSION_THINKING_LEVELS, type SessionThinkingLevel } from "@/src/thinking-level.ts";
+} from "./model-provider.ts";
+export { SESSION_THINKING_LEVELS, type SessionThinkingLevel } from "./thinking-level.ts";
 export {
   ENROLLMENT_PSK_PREFIX,
   enrollmentPskSchema,
@@ -19,7 +19,7 @@ export {
   runnerEnrollmentResponseSchema,
   runnerIdSchema,
   runnerTokenSchema,
-} from "@/src/runner-enrollment.ts";
+} from "./runner-enrollment.ts";
 export {
   DEFAULT_ORB_SIZE,
   ORB_SIZE_RESOURCES,
@@ -28,14 +28,14 @@ export {
   type OrbSizeResources,
   orbSizeResources,
   orbSizeSchema,
-} from "@/src/orb-size.ts";
+} from "./orb-size.ts";
 export {
   IdentifyBulkRunner,
   RunnerBulkApi,
   SessionGitPatchSection,
   SessionGitSnapshotId,
   WatchBulkRunner,
-} from "@/src/runner-bulk-api.ts";
+} from "./runner-bulk-api.ts";
 export {
   AttachEnvironment,
   ControlEnvironment,
@@ -44,4 +44,4 @@ export {
   IdentifyRunner,
   RunnerApi,
   WatchRunner,
-} from "@/src/runner-api.ts";
+} from "./runner-api.ts";

@@ -2,7 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { trySync } from "@openorb/result";
-import { parse } from "@std/yaml";
+import { parse } from "@jsr/std__yaml";
 import { Option, Schema } from "effect";
 
 // Repository skills (ADR 0006): the Session reads passive SKILL.md metadata from the guest over
@@ -47,13 +47,12 @@ export async function discoverRepositorySkills(
     const directory = directories[index]!;
     const listing = await env.listDir(directory.path, context);
     if (!listing.ok) continue;
-    const entries = listing.value.toSorted((a, b) => a.name < b.name ? -1 : 1);
+    const entries = listing.value.toSorted((a, b) => (a.name < b.name ? -1 : 1));
     const manifest = entries.find((entry) => entry.name === "SKILL.md" && entry.kind === "file");
     if (manifest !== undefined) {
       const path = `${directory.path}/SKILL.md`;
-      const skill = manifest.size <= MAX_SKILL_BYTES
-        ? await readSkill(env, path, context)
-        : undefined;
+      const skill =
+        manifest.size <= MAX_SKILL_BYTES ? await readSkill(env, path, context) : undefined;
       if (skill !== undefined && !skills.has(skill.name)) skills.set(skill.name, skill);
       // A skill owns its supporting directories; examples inside it are not extra skills.
       continue;
@@ -78,10 +77,15 @@ async function readSkill(
 }
 
 export function parseSkill(content: string, path: string): RepositorySkill | undefined {
-  const frontmatter = content.replace(/^\uFEFF/, "").replaceAll("\r\n", "\n")
+  const frontmatter = content
+    .replace(/^\uFEFF/, "")
+    .replaceAll("\r\n", "\n")
     .match(/^---\n([\s\S]*?)\n---(?:\n|$)/)?.[1];
   if (frontmatter === undefined) return undefined;
-  const [metadata, error] = trySync(() => parse(frontmatter, { schema: "core" }), () => true);
+  const [metadata, error] = trySync(
+    () => parse(frontmatter, { schema: "core" }),
+    () => true,
+  );
   if (error !== undefined) return undefined;
   const decoded = Schema.decodeUnknownOption(SkillMetadata)(metadata);
   if (Option.isNone(decoded)) return undefined;
@@ -108,15 +112,19 @@ export function repositorySkillsPrompt(skills: readonly RepositorySkill[]): stri
         `    <description>${escapeXml(skill.description)}</description>`,
         `    <location>${escapeXml(skill.path)}</location>`,
         "  </skill>",
-      ].join("\n")
+      ].join("\n"),
     ),
     "</available_skills>",
   ].join("\n");
 }
 
 function escapeXml(text: string): string {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 /**

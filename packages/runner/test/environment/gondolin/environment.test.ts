@@ -1,10 +1,14 @@
+import { test } from "vite-plus/test";
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   assert,
   assertEquals,
   AssertionError,
   assertRejects,
   assertStringIncludes,
-} from "@std/assert";
+} from "@jsr/std__assert";
 import { Effect, Exit, Scope } from "effect";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
@@ -13,43 +17,39 @@ import {
   createOpenOrbGondolinSandboxOptions,
   makeGondolinAgentEnvironmentProvider,
   OPENORB_GUEST_MARKER,
-} from "@/src/environment/gondolin/layer.ts";
+} from "../../../src/environment/gondolin/layer.ts";
 import { guestExecutionEnv, guestPathExists, guestTools, readGuestText } from "./guest-tools.ts";
-import {
-  gondolinTestEnvironmentOptions,
-  installLocalGuestImage,
-} from "@/test/environment/gondolin/local-guest-image.ts";
+import { gondolinTestEnvironmentOptions, installLocalGuestImage } from "./local-guest-image.ts";
 
-Deno.test("Linux Gondolin VMs expose host CPU virtualization through KVM", () => {
+test("Linux Gondolin VMs expose host CPU virtualization through KVM", () => {
   const options = createOpenOrbGondolinSandboxOptions("/guest-image");
 
   assertEquals(options.imagePath, "/guest-image");
-  if (Deno.build.os === "linux") {
+  if (process.platform === "linux") {
     assertEquals(options.vmm, "qemu");
     assertEquals(options.accel, "kvm");
     assertEquals(options.cpu, "host");
-  } else if (Deno.build.os === "darwin") {
+  } else if (process.platform === "darwin") {
     assertEquals(options.accel, "hvf");
     assertEquals(options.cpu, undefined);
   }
 });
 
-Deno.test("Linux Gondolin VMs can explicitly use QEMU software emulation", () => {
+test("Linux Gondolin VMs can explicitly use QEMU software emulation", () => {
   const options = createOpenOrbGondolinSandboxOptions("/guest-image", true);
 
   assertEquals(options.imagePath, "/guest-image");
-  if (Deno.build.os === "linux") {
+  if (process.platform === "linux") {
     assertEquals(options.vmm, "qemu");
     assertEquals(options.accel, "tcg");
     assertEquals(options.cpu, undefined);
   }
 });
 
-Deno.test({
-  name: "an output observer failure drains the command and retains the healthy VM",
-  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
-  async fn() {
-    const temporaryDirectory = await Deno.makeTempDir();
+test.skipIf(process.env.OPENORB_RUN_GONDOLIN_TESTS !== "1")(
+  "an output observer failure drains the command and retains the healthy VM",
+  async () => {
+    const temporaryDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const opened = await openRuntime({
       rootDiskPath,
@@ -62,44 +62,46 @@ Deno.test({
 
     try {
       let observerCalls = 0;
-      const observerError = await Effect.runPromise(Effect.flip(
-        runtime.run(
-          [
-            "/bin/sh",
-            "-lc",
-            "printf first; sleep 0.1; printf second; printf retained > /tmp/openorb-retained-vm",
-          ],
-          {
-            onOutput() {
-              observerCalls++;
-              return Effect.fail("event persistence failed");
+      const observerError = await Effect.runPromise(
+        Effect.flip(
+          runtime.run(
+            [
+              "/bin/sh",
+              "-lc",
+              "printf first; sleep 0.1; printf second; printf retained > /tmp/openorb-retained-vm",
+            ],
+            {
+              onOutput() {
+                observerCalls++;
+                return Effect.fail("event persistence failed");
+              },
             },
-          },
+          ),
         ),
-      ));
+      );
       assertStringIncludes(String(observerError.cause), "event persistence failed");
       assertEquals(observerCalls, 1);
 
       let output = "";
       const result = await Effect.runPromise(
         runtime.run(["/bin/cat", "/tmp/openorb-retained-vm"], {
-          onOutput: (chunk) => Effect.sync(() => output += chunk.text),
+          onOutput: (chunk) => Effect.sync(() => (output += chunk.text)),
         }),
       );
       assertEquals(result.exitCode, 0);
       assertEquals(output, "retained");
     } finally {
       await opened.close();
-      await Deno.remove(temporaryDirectory, { recursive: true });
+      await fs.rm(temporaryDirectory, { recursive: true });
     }
   },
-});
+  600_000,
+);
 
-Deno.test({
-  name: "the stable root disk survives explicit stop, scope close, and VM reopen",
-  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
-  async fn() {
-    const temporaryDirectory = await Deno.makeTempDir();
+test.skipIf(process.env.OPENORB_RUN_GONDOLIN_TESTS !== "1")(
+  "the stable root disk survives explicit stop, scope close, and VM reopen",
+  async () => {
+    const temporaryDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const runtimeOptions = {
       rootDiskPath,
@@ -113,44 +115,44 @@ Deno.test({
 
     try {
       let filesystemSizeOutput = "";
-      const filesystemSize = await Effect.runPromise(opened.runtime.run([
-        "/usr/bin/stat",
-        "-f",
-        "-c",
-        "%b %S",
-        "/",
-      ], {
-        onOutput: (chunk) => Effect.sync(() => filesystemSizeOutput += chunk.text),
-      }));
+      const filesystemSize = await Effect.runPromise(
+        opened.runtime.run(["/usr/bin/stat", "-f", "-c", "%b %S", "/"], {
+          onOutput: (chunk) => Effect.sync(() => (filesystemSizeOutput += chunk.text)),
+        }),
+      );
       assertEquals(filesystemSize.exitCode, 0);
-      const [blockCount = Number.NaN, blockSize = Number.NaN] = filesystemSizeOutput.trim()
+      const [blockCount = Number.NaN, blockSize = Number.NaN] = filesystemSizeOutput
+        .trim()
         .split(/\s+/)
         .map(Number);
       assert(
-        Number.isSafeInteger(blockCount) && Number.isSafeInteger(blockSize) &&
+        Number.isSafeInteger(blockCount) &&
+          Number.isSafeInteger(blockSize) &&
           blockCount * blockSize >= 39 * 1024 ** 3,
         `Expected at least 39 GiB of root filesystem capacity, got ${filesystemSizeOutput.trim()}`,
       );
 
-      const written = await Effect.runPromise(opened.runtime.run([
-        "/bin/bash",
-        "-lc",
-        [
-          "set -eu",
-          "printf persistent-root >/opt/persistent-root",
-          "printf persistent-workspace >/workspace/persistent-workspace",
-          "printf temporary >/tmp/persistent-tmpfs",
-          "printf root-tmpfs >/root/persistent-tmpfs",
-          "printf log-tmpfs >/var/log/persistent-tmpfs",
-          "bash -c 'exec -a openorb-persistent-process sleep 300' >/dev/null 2>&1 &",
-          "printf %s $! >/workspace/persistent-process-pid",
-          "sync -f /opt/persistent-root",
-          "sync -f /workspace/persistent-workspace",
-        ].join("\n"),
-      ]));
+      const written = await Effect.runPromise(
+        opened.runtime.run([
+          "/bin/bash",
+          "-lc",
+          [
+            "set -eu",
+            "printf persistent-root >/opt/persistent-root",
+            "printf persistent-workspace >/workspace/persistent-workspace",
+            "printf temporary >/tmp/persistent-tmpfs",
+            "printf root-tmpfs >/root/persistent-tmpfs",
+            "printf log-tmpfs >/var/log/persistent-tmpfs",
+            "bash -c 'exec -a openorb-persistent-process sleep 300' >/dev/null 2>&1 &",
+            "printf %s $! >/workspace/persistent-process-pid",
+            "sync -f /opt/persistent-root",
+            "sync -f /workspace/persistent-workspace",
+          ].join("\n"),
+        ]),
+      );
       assertEquals(written.exitCode, 0);
-      const rootDiskBeforeStop = await Deno.lstat(rootDiskPath);
-      assert(rootDiskBeforeStop.isFile && !rootDiskBeforeStop.isSymlink);
+      const rootDiskBeforeStop = await fs.lstat(rootDiskPath);
+      assert(rootDiskBeforeStop.isFile() && !rootDiskBeforeStop.isSymbolicLink());
 
       await Effect.runPromise(opened.runtime.stop);
       await Effect.runPromise(opened.runtime.stop);
@@ -160,27 +162,29 @@ Deno.test({
         "agent environment is closed",
       );
       await opened.close();
-      assertEquals((await Deno.lstat(rootDiskPath)).ino, rootDiskBeforeStop.ino);
+      assertEquals((await fs.lstat(rootDiskPath)).ino, rootDiskBeforeStop.ino);
 
       opened = await openRuntime(runtimeOptions);
-      assertEquals((await Deno.lstat(rootDiskPath)).ino, rootDiskBeforeStop.ino);
+      assertEquals((await fs.lstat(rootDiskPath)).ino, rootDiskBeforeStop.ino);
       assertEquals(await readGuestText(opened.runtime, "/opt/persistent-root"), "persistent-root");
       assertEquals(
         await readGuestText(opened.runtime, "/workspace/persistent-workspace"),
         "persistent-workspace",
       );
-      const reopened = await Effect.runPromise(opened.runtime.run([
-        "/bin/bash",
-        "-lc",
-        [
-          "set -eu",
-          "test ! -e /tmp/persistent-tmpfs",
-          "test ! -e /root/persistent-tmpfs",
-          "test ! -e /var/log/persistent-tmpfs",
-          "pid=$(cat /workspace/persistent-process-pid)",
-          "test ! -r /proc/$pid/cmdline || ! tr '\\0' ' ' </proc/$pid/cmdline | grep -q openorb-persistent-process",
-        ].join("\n"),
-      ]));
+      const reopened = await Effect.runPromise(
+        opened.runtime.run([
+          "/bin/bash",
+          "-lc",
+          [
+            "set -eu",
+            "test ! -e /tmp/persistent-tmpfs",
+            "test ! -e /root/persistent-tmpfs",
+            "test ! -e /var/log/persistent-tmpfs",
+            "pid=$(cat /workspace/persistent-process-pid)",
+            "test ! -r /proc/$pid/cmdline || ! tr '\\0' ' ' </proc/$pid/cmdline | grep -q openorb-persistent-process",
+          ].join("\n"),
+        ]),
+      );
       assertEquals(reopened.exitCode, 0);
       await opened.close();
       await assertRejects(
@@ -190,22 +194,22 @@ Deno.test({
       );
     } finally {
       await opened.close();
-      await Deno.remove(temporaryDirectory, { recursive: true });
+      await fs.rm(temporaryDirectory, { recursive: true });
     }
   },
-});
+  600_000,
+);
 
-Deno.test({
-  name: "Durable tools over the Environment Daemon execute only in Gondolin and recover",
-  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
-  async fn() {
-    const temporaryDirectory = await Deno.makeTempDir();
+test.skipIf(process.env.OPENORB_RUN_GONDOLIN_TESTS !== "1")(
+  "Durable tools over the Environment Daemon execute only in Gondolin and recover",
+  async () => {
+    const temporaryDirectory = await fs.mkdtemp(join(tmpdir(), "openorb-"));
     const rootDiskPath = `${temporaryDirectory}/root-disk.qcow2`;
     const hostSecretPath = `${temporaryDirectory}/host-secret`;
     const hostProcessMarker = `${temporaryDirectory}/host-process-marker`;
-    const originalHostMarker = Deno.env.get("OPENORB_HOST_PROCESS_MARKER");
-    await Deno.writeTextFile(hostSecretPath, "runner-host-secret");
-    Deno.env.set("OPENORB_HOST_PROCESS_MARKER", hostProcessMarker);
+    const originalHostMarker = process.env.OPENORB_HOST_PROCESS_MARKER;
+    await fs.writeFile(hostSecretPath, "runner-host-secret");
+    process.env.OPENORB_HOST_PROCESS_MARKER = hostProcessMarker;
 
     const guestImage = await installLocalGuestImage(temporaryDirectory);
     const opened = await openRuntime({
@@ -230,10 +234,12 @@ Deno.test({
           ". /etc/os-release",
           'test "$ID" = debian && test "$VERSION_ID" = 13',
           "test -x /usr/sbin/modprobe",
-          ...(softwareEmulation ? [] : [
-            'nested_kvm_module=; if grep -qw svm /proc/cpuinfo; then nested_kvm_module=kvm_amd; elif grep -qw vmx /proc/cpuinfo; then nested_kvm_module=kvm_intel; fi; if [ "$(uname -m)" = x86_64 ]; then test -n "$nested_kvm_module"; modprobe "$nested_kvm_module"; test -c /dev/kvm; fi',
-            "if test -c /dev/kvm; then python3 -c 'import fcntl, os; fd = os.open(\"/dev/kvm\", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12'; fi",
-          ]),
+          ...(softwareEmulation
+            ? []
+            : [
+                'nested_kvm_module=; if grep -qw svm /proc/cpuinfo; then nested_kvm_module=kvm_amd; elif grep -qw vmx /proc/cpuinfo; then nested_kvm_module=kvm_intel; fi; if [ "$(uname -m)" = x86_64 ]; then test -n "$nested_kvm_module"; modprobe "$nested_kvm_module"; test -c /dev/kvm; fi',
+                "if test -c /dev/kvm; then python3 -c 'import fcntl, os; fd = os.open(\"/dev/kvm\", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12'; fi",
+              ]),
           'for command in agent-browser apt-get autoconf automake bash bun bunx bzip2 certutil corepack curl dpkg-buildpackage ffmpeg file find fzf g++ gcc gh git hg ip jq less lsof magick make modprobe node npm npx openssl patch perl ping pip pip3 pkg-config pnpm pnpx python python3 resize2fs rg sed socat ssh svn tar time tmux unzip vim websocat wget xz yarn yarnpkg zstd sha256sum timeout; do command -v "$command" >/dev/null; done',
           "test -s /etc/ssl/certs/ca-certificates.crt",
           'for command in chromium chromium-browser google-chrome; do ! command -v "$command" >/dev/null; done',
@@ -299,7 +305,7 @@ Deno.test({
         command: "base64 -w0 /tmp/openorb-image-smoke.png",
         timeout: 30,
       });
-      assertEquals(screenshot.toBase64(), encoded.output.trim());
+      assertEquals(Buffer.from(screenshot).toString("base64"), encoded.output.trim());
 
       await execute("write", { path: "nested/message.txt", content: "before\n" });
       assertEquals(await readGuestText(runtime, "/workspace/nested/message.txt"), "before\n");
@@ -343,19 +349,13 @@ Deno.test({
       });
       assertEquals(traversalRead.text, "guest root\n");
 
-      for (
-        const [symlink, target] of [
-          ["absolute-guest-link", hostSecretPath],
-          ["relative-guest-link", `..${hostSecretPath}`],
-        ] as const
-      ) {
+      for (const [symlink, target] of [
+        ["absolute-guest-link", hostSecretPath],
+        ["relative-guest-link", `..${hostSecretPath}`],
+      ] as const) {
         assertEquals(
-          (await Effect.runPromise(runtime.run([
-            "/bin/ln",
-            "-s",
-            target,
-            `/workspace/${symlink}`,
-          ]))).exitCode,
+          (await Effect.runPromise(runtime.run(["/bin/ln", "-s", target, `/workspace/${symlink}`])))
+            .exitCode,
           0,
         );
       }
@@ -365,10 +365,7 @@ Deno.test({
           path: hostSecretPath,
           content: "guest before\n",
         });
-        assertEquals(
-          (await execute("read", { path: symlink })).text,
-          "guest before\n",
-        );
+        assertEquals((await execute("read", { path: symlink })).text, "guest before\n");
         await execute("write", {
           path: symlink,
           content: `${symlink} before\n`,
@@ -377,12 +374,9 @@ Deno.test({
           path: symlink,
           edits: [{ oldText: "before", newText: "after" }],
         });
-        assertEquals(
-          (await execute("read", { path: hostSecretPath })).text,
-          `${symlink} after\n`,
-        );
+        assertEquals((await execute("read", { path: hostSecretPath })).text, `${symlink} after\n`);
       }
-      assertEquals(await Deno.readTextFile(hostSecretPath), "runner-host-secret");
+      assertEquals(await fs.readFile(hostSecretPath, "utf8"), "runner-host-secret");
 
       const updates: string[] = [];
       const markerResult = await execute(
@@ -397,16 +391,16 @@ Deno.test({
         { onOutput: (text) => updates.push(text) },
       );
       assertStringIncludes(markerResult.output, "firstsecond:1");
-      assert(updates.some((update) => update.includes("first")), "Bash output did not stream");
-      assertEquals(await readGuestText(runtime, "/workspace/guest-process-marker"), "guest");
-      await assertRejects(() => Deno.stat(hostProcessMarker), Deno.errors.NotFound);
-
-      const linkResult = await execute(
-        "bash",
-        { command: "cat relative-guest-link", timeout: 10 },
+      assert(
+        updates.some((update) => update.includes("first")),
+        "Bash output did not stream",
       );
+      assertEquals(await readGuestText(runtime, "/workspace/guest-process-marker"), "guest");
+      await assertRejects(() => fs.stat(hostProcessMarker), Error, "ENOENT");
+
+      const linkResult = await execute("bash", { command: "cat relative-guest-link", timeout: 10 });
       assertStringIncludes(linkResult.output, "relative-guest-link after");
-      assertEquals(await Deno.readTextFile(hostSecretPath), "runner-host-secret");
+      assertEquals(await fs.readFile(hostSecretPath, "utf8"), "runner-host-secret");
 
       // The Environment Daemon owns command deadlines and kills the timed-out process group.
       const timedOut = await withWatchdog(
@@ -422,13 +416,13 @@ Deno.test({
         "Durable bash timeout did not settle",
       );
       assert(
-        timedOut.diagnostics.some((entry) =>
-          entry.message === "Command timed out after 0.1 seconds"
+        timedOut.diagnostics.some(
+          (entry) => entry.message === "Command timed out after 0.1 seconds",
         ),
         JSON.stringify(timedOut.diagnostics),
       );
       await new Promise((resolve) => setTimeout(resolve, 1_100));
-      assert(!await guestPathExists(runtime, "/workspace/timed-out-marker"));
+      assert(!(await guestPathExists(runtime, "/workspace/timed-out-marker")));
       const afterTimeout = await execute("bash", {
         command: "printf recovered",
         timeout: 10,
@@ -462,12 +456,13 @@ Deno.test({
     } finally {
       guest.close();
       await opened.close();
-      if (originalHostMarker === undefined) Deno.env.delete("OPENORB_HOST_PROCESS_MARKER");
-      else Deno.env.set("OPENORB_HOST_PROCESS_MARKER", originalHostMarker);
-      await Deno.remove(temporaryDirectory, { recursive: true });
+      if (originalHostMarker === undefined) delete process.env.OPENORB_HOST_PROCESS_MARKER;
+      else process.env.OPENORB_HOST_PROCESS_MARKER = originalHostMarker;
+      await fs.rm(temporaryDirectory, { recursive: true });
     }
   },
-});
+  600_000,
+);
 
 async function openRuntime(
   options: Parameters<ReturnType<typeof makeGondolinAgentEnvironmentProvider>["make"]>[0] & {

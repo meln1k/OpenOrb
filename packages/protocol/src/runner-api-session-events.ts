@@ -116,7 +116,7 @@ function boundedText(maximumBytes: number) {
     Schema.makeFilter((value) =>
       new TextEncoder().encode(value).byteLength <= maximumBytes
         ? undefined
-        : `Expected at most ${maximumBytes} UTF-8 bytes.`
+        : `Expected at most ${maximumBytes} UTF-8 bytes.`,
     ),
   );
 }

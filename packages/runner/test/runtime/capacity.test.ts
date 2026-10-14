@@ -1,8 +1,9 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertRejects } from "@jsr/std__assert";
 
-import { createRunnerCapacityReporter } from "@/src/runtime/capacity.ts";
+import { createRunnerCapacityReporter } from "../../src/runtime/capacity.ts";
 
-Deno.test("reports detected host capacity and current disk space without a session limit", async () => {
+test("reports detected host capacity and current disk space without a session limit", async () => {
   let activeSessions = 2;
   let inspectedPath = "";
   const getCapacity = createRunnerCapacityReporter({
@@ -28,7 +29,7 @@ Deno.test("reports detected host capacity and current disk space without a sessi
   assertEquals((await getCapacity()).activeSessions, 3);
 });
 
-Deno.test("explicit runner VM capacity overrides host detection", async () => {
+test("explicit runner VM capacity overrides host detection", async () => {
   const getCapacity = createRunnerCapacityReporter({
     path: "/runner",
     vmCpuCount: 2,
@@ -50,7 +51,7 @@ Deno.test("explicit runner VM capacity overrides host detection", async () => {
   });
 });
 
-Deno.test("rejects invalid runtime active-session counts", async () => {
+test("rejects invalid runtime active-session counts", async () => {
   const getCapacity = createRunnerCapacityReporter({
     path: "/runner",
     vmCpuCount: 2,

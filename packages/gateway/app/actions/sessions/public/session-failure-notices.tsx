@@ -1,10 +1,10 @@
 import type { SessionIssue, SessionRecoveryAction } from "@openorb/protocol/browser-session-events";
 import { css, type Handle } from "remix/component";
 
-import { routes } from "@/app/routes.ts";
-import { Button } from "@/app/ui/public/components/button.tsx";
-import { Icon } from "@/app/ui/public/components/icons.tsx";
-import { Marker, MarkerContent, MarkerIcon } from "@/app/ui/public/components/marker.tsx";
+import { routes } from "../../../routes.ts";
+import { Button } from "../../../ui/public/components/button.tsx";
+import { Icon } from "../../../ui/public/components/icons.tsx";
+import { Marker, MarkerContent, MarkerIcon } from "../../../ui/public/components/marker.tsx";
 
 interface SessionFailureNoticesProps {
   readonly connectionInterrupted: boolean;
@@ -17,33 +17,24 @@ interface SessionFailureNoticesProps {
 export function SessionFailureNotices(handle: Handle<SessionFailureNoticesProps>) {
   return () => (
     <>
-      {handle.props.connectionInterrupted
-        ? (
-          <Marker
-            role="alert"
-            data-runner-disconnected
-            mix={[noticeMarkerStyle, failureStyle]}
-          >
-            <MarkerIcon>
-              <Icon name="activity" />
-            </MarkerIcon>
-            <MarkerContent>
-              The pinned runner is disconnected. Conversation history and session actions are
-              unavailable until it reconnects.
-            </MarkerContent>
-          </Marker>
-        )
-        : null}
+      {handle.props.connectionInterrupted ? (
+        <Marker role="alert" data-runner-disconnected mix={[noticeMarkerStyle, failureStyle]}>
+          <MarkerIcon>
+            <Icon name="activity" />
+          </MarkerIcon>
+          <MarkerContent>
+            The pinned runner is disconnected. Conversation history and session actions are
+            unavailable until it reconnects.
+          </MarkerContent>
+        </Marker>
+      ) : null}
       {handle.props.issues.map((issue) => (
         <Marker
           key={`issue:${issue.category}:${issue.severity}`}
           role={issue.severity === "failure" ? "alert" : "status"}
           data-session-issue={issue.category}
           data-severity={issue.severity}
-          mix={[
-            noticeMarkerStyle,
-            issue.severity === "failure" ? failureStyle : warningStyle,
-          ]}
+          mix={[noticeMarkerStyle, issue.severity === "failure" ? failureStyle : warningStyle]}
         >
           <MarkerIcon>
             <Icon name="activity" />
@@ -51,14 +42,12 @@ export function SessionFailureNotices(handle: Handle<SessionFailureNoticesProps>
           <MarkerContent mix={issueDetailStyle}>
             <strong>{issueLabel(issue.category)}</strong>
             <p>{issue.message}</p>
-            {issue.diagnostics
-              ? (
-                <details>
-                  <summary>Safe diagnostics</summary>
-                  <pre data-session-issue-diagnostics>{issue.diagnostics}</pre>
-                </details>
-              )
-              : null}
+            {issue.diagnostics ? (
+              <details>
+                <summary>Safe diagnostics</summary>
+                <pre data-session-issue-diagnostics>{issue.diagnostics}</pre>
+              </details>
+            ) : null}
             {issue.recovery === "none" || !handle.props.recoveryAllowed ? null : (
               <form
                 method="post"
@@ -80,7 +69,10 @@ export function SessionFailureNotices(handle: Handle<SessionFailureNoticesProps>
 }
 
 function issueLabel(category: SessionIssue["category"]): string {
-  return category.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+  return category
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function recoveryLabel(recovery: Exclude<SessionRecoveryAction, "none">): string {

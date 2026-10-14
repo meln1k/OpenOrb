@@ -44,11 +44,11 @@ export class ScriptedSession extends Session {
     let state: EnvironmentState = "stopped";
     const sessionId = SessionId.make(crypto.randomUUID());
     const provider = sandboxProvider({
-      // SAFETY: Session's constructor receives this context; the Deno runtime shim types it unknown.
+      // SAFETY: Session's constructor receives this context; the test base class types it unknown.
       facets: (this.ctx as SessionContext).facets,
       sessionId,
       state: () => state,
-      recordState: (next) => state = next,
+      recordState: (next) => (state = next),
       onIdle: () => {},
       loader: {
         get: (...args) => {
@@ -95,37 +95,39 @@ export class ScriptedSession extends Session {
       ),
       fauxAssistantMessage("The guest answered."),
       // Later prompts report the repository skills section the model was given.
-      ...Array.from(
-        { length: 24 },
-        () => (context: TranscriptContext) => {
-          const prompt = context.messages.findLast((message) => message.role === "user");
-          const content = prompt?.content ?? "";
-          // Pi permits user content as either a string or content blocks.
-          // deno-lint-ignore openorb/no-runtime-typeof
-          const text = typeof content === "string" ? content : content
-            .filter((part) => part.type === "text").map((part) => part.text).join("");
-          if (text.startsWith("Codemode: ")) {
-            return context.messages.at(-1)?.role === "toolResult"
-              ? fauxAssistantMessage(`Codemode finished: ${text}`)
-              : fauxAssistantMessage(
+      ...Array.from({ length: 24 }, () => (context: TranscriptContext) => {
+        const prompt = context.messages.findLast((message) => message.role === "user");
+        const content = prompt?.content ?? "";
+        // Pi permits user content as either a string or content blocks.
+        const text =
+          // oxlint-disable-next-line openorb/no-runtime-typeof
+          typeof content === "string"
+            ? content
+            : content
+                .filter((part) => part.type === "text")
+                .map((part) => part.text)
+                .join("");
+        if (text.startsWith("Codemode: ")) {
+          return context.messages.at(-1)?.role === "toolResult"
+            ? fauxAssistantMessage(`Codemode finished: ${text}`)
+            : fauxAssistantMessage(
                 fauxToolCall("codemode", { code: text.slice("Codemode: ".length) }),
                 { stopReason: "toolUse" },
               );
-          }
-          if (JSON.stringify(prompt).includes("Check idle sandbox")) {
-            return context.messages.at(-1)?.role === "toolResult"
-              ? fauxAssistantMessage("Idle sandbox checked.")
-              : fauxAssistantMessage(
+        }
+        if (JSON.stringify(prompt).includes("Check idle sandbox")) {
+          return context.messages.at(-1)?.role === "toolResult"
+            ? fauxAssistantMessage("Idle sandbox checked.")
+            : fauxAssistantMessage(
                 fauxToolCall("bash", {
                   command:
                     "cat e2e.txt && (test -e /tmp/openorb-idle-marker && echo still-live || echo released)",
                 }),
                 { stopReason: "toolUse" },
               );
-          }
-          return fauxAssistantMessage(`Skills: ${repositorySkillsSection(context)}`);
-        },
-      ),
+        }
+        return fauxAssistantMessage(`Skills: ${repositorySkillsSection(context)}`);
+      }),
     ]);
     const models = createModels();
     models.setProvider(faux.provider);
@@ -135,7 +137,10 @@ export class ScriptedSession extends Session {
 
 /** The last `repository-skills` prompt section in effect for a model request. */
 function repositorySkillsSection(context: TranscriptContext): string {
-  return context.messages.filter((message) => message.role === "system")
-    .map((message) => message.sections?.["repository-skills"])
-    .findLast((section) => section !== undefined) ?? "";
+  return (
+    context.messages
+      .filter((message) => message.role === "system")
+      .map((message) => message.sections?.["repository-skills"])
+      .findLast((section) => section !== undefined) ?? ""
+  );
 }

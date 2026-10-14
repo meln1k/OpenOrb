@@ -27,17 +27,20 @@ export class MemoryStorage implements WorkspaceStorage {
       } else {
         // SAFETY: Native SQL accepts these scalar bindings, plus ArrayBuffer BLOBs.
         const values = bindings.map((value) =>
-          value instanceof ArrayBuffer ? new Uint8Array(value) : value
+          value instanceof ArrayBuffer ? new Uint8Array(value) : value,
         ) as SQLInputValue[];
         // SAFETY: node:sqlite returns integer numbers unless setReadBigInts(true) is used.
-        rows = this.#database.prepare(query).all(...values).map((row) =>
-          Object.fromEntries(
-            Object.entries(row).map(([key, value]) => [
-              key,
-              value instanceof Uint8Array ? Uint8Array.from(value).buffer : value,
-            ]),
-          )
-        ) as Record<string, SqlStorageValue>[];
+        rows = this.#database
+          .prepare(query)
+          .all(...values)
+          .map((row) =>
+            Object.fromEntries(
+              Object.entries(row).map(([key, value]) => [
+                key,
+                value instanceof Uint8Array ? Uint8Array.from(value).buffer : value,
+              ]),
+            ),
+          ) as Record<string, SqlStorageValue>[];
       }
       return { toArray: () => structuredClone(rows) };
     },
@@ -54,7 +57,7 @@ export class MemoryStorage implements WorkspaceStorage {
     );
     return JSON.stringify(
       Object.fromEntries(tables.map(({ name }) => [name, this.rows(`SELECT * FROM "${name}"`)])),
-      (_key, value) => value instanceof ArrayBuffer ? [...new Uint8Array(value)] : value,
+      (_key, value) => (value instanceof ArrayBuffer ? [...new Uint8Array(value)] : value),
     );
   }
 

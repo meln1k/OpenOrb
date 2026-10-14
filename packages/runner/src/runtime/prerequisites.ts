@@ -1,11 +1,15 @@
 import { statfs as readFileSystemStats } from "node:fs/promises";
+import * as fs from "node:fs/promises";
+import { availableParallelism, freemem, release, totalmem } from "node:os";
+import { execute } from "./process.ts";
+import { hasErrorCode } from "./errors.ts";
 
 import { tryAsync } from "@openorb/result";
 import { object, parse, string } from "@remix-run/data-schema";
 
-import { isSupportedDenoVersion, MINIMUM_DENO_VERSION } from "@/src/runtime/deno-version.ts";
+import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "./node-version.ts";
 
-export const MINIMUM_GLIBC_VERSION = "2.27";
+export const MINIMUM_GLIBC_VERSION = "2.28";
 const MIB_BYTES = 1024 * 1024;
 const MIB_BYTES_BIGINT = BigInt(MIB_BYTES);
 const GATEWAY_TIMEOUT_MS = 15_000;
@@ -49,15 +53,17 @@ export interface PrerequisiteReport {
   platform: RunnerPlatform;
   architecture: string;
   kernelRelease: string;
-  denoVersion: string;
+  nodeVersion: string;
   libc: RunnerLibc | undefined;
   glibcVersion: string | undefined;
   qemu: ExecutableReport | undefined;
   qemuImg: ExecutableReport | undefined;
-  kvm: {
-    device: string;
-    accessible: true;
-  } | undefined;
+  kvm:
+    | {
+        device: string;
+        accessible: true;
+      }
+    | undefined;
   resources: {
     cpuCount: number;
     memoryTotalMiB: number;
@@ -68,11 +74,13 @@ export interface PrerequisiteReport {
     path: string;
     writable: boolean;
   };
-  gateway: {
-    url: string;
-    healthUrl: string;
-    status: number;
-  } | undefined;
+  gateway:
+    | {
+        url: string;
+        healthUrl: string;
+        status: number;
+      }
+    | undefined;
   errors: string[];
   warnings: string[];
 }
@@ -86,7 +94,7 @@ export interface CheckPrerequisitesOptions {
   platform?: RunnerPlatform;
   architecture?: string;
   kernelRelease?: string;
-  denoVersion?: string;
+  nodeVersion?: string;
   libc?: RunnerLibc | undefined;
   glibcVersion?: string | undefined;
   workingDirectory?: string;
@@ -103,31 +111,32 @@ export interface CheckPrerequisitesOptions {
 export async function checkRunnerPrerequisites(
   options: CheckPrerequisitesOptions = {},
 ): Promise<PrerequisiteReport> {
-  const platform = options.platform ?? Deno.build.os;
-  const architecture = normalizeArchitecture(options.architecture ?? Deno.build.arch);
-  const kernelRelease = options.kernelRelease ?? Deno.osRelease();
-  const denoVersion = options.denoVersion ?? Deno.version.deno;
-  const detectedLibc = options.libc === undefined
-    ? await detectLibc(platform, architecture)
-    : { libc: options.libc, glibcVersion: options.glibcVersion };
+  const platform = options.platform ?? process.platform;
+  const architecture = normalizeArchitecture(options.architecture ?? process.arch);
+  const kernelRelease = options.kernelRelease ?? release();
+  const nodeVersion = options.nodeVersion ?? process.versions.node;
+  const detectedLibc =
+    options.libc === undefined
+      ? await detectLibc(platform, architecture)
+      : { libc: options.libc, glibcVersion: options.glibcVersion };
   const libc = options.libc ?? detectedLibc.libc;
-  const glibcVersion = options.glibcVersion ??
-    (libc === "glibc" ? detectedLibc.glibcVersion : undefined);
-  const workingDirectory = options.workingDirectory ?? Deno.cwd();
+  const glibcVersion =
+    options.glibcVersion ?? (libc === "glibc" ? detectedLibc.glibcVersion : undefined);
+  const workingDirectory = options.workingDirectory ?? process.cwd();
   const probeExecutable = options.probeExecutable ?? probe;
   const probeKvm = options.probeKvm ?? probeKvmAcceleration;
   const probeDataDirectory = options.probeDataDirectory ?? probeWritableDirectory;
-  const getHardwareConcurrency = options.getHardwareConcurrency ??
-    (() => navigator.hardwareConcurrency);
-  const getSystemMemoryInfo = options.getSystemMemoryInfo ?? Deno.systemMemoryInfo;
-  const getFileSystemStats = options.getFileSystemStats ??
-    ((path) => readFileSystemStats(path, { bigint: true }));
+  const getHardwareConcurrency = options.getHardwareConcurrency ?? availableParallelism;
+  const getSystemMemoryInfo =
+    options.getSystemMemoryInfo ?? (() => ({ total: totalmem(), available: freemem() }));
+  const getFileSystemStats =
+    options.getFileSystemStats ?? ((path) => readFileSystemStats(path, { bigint: true }));
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  if (!isSupportedDenoVersion(denoVersion)) {
+  if (!isSupportedNodeVersion(nodeVersion)) {
     errors.push(
-      `OpenOrb runner requires stable Deno ${MINIMUM_DENO_VERSION} or newer; found ${denoVersion}. Upgrade Deno or rebuild with a supported toolchain.`,
+      `OpenOrb runner requires stable Node ${MINIMUM_NODE_VERSION} or newer; found ${nodeVersion}. Upgrade Node or rebuild with a supported toolchain.`,
     );
   }
 
@@ -158,7 +167,9 @@ export async function checkRunnerPrerequisites(
     );
   } else if (platform === "linux" && libc === "glibc") {
     if (!glibcVersion || !/^\d+(?:\.\d+)+$/.test(glibcVersion)) {
-      errors.push("Unable to determine the host glibc version; glibc 2.27 or newer is required.");
+      errors.push(
+        `Unable to determine the host glibc version; glibc ${MINIMUM_GLIBC_VERSION} or newer is required.`,
+      );
     } else if (compareVersions(glibcVersion, MINIMUM_GLIBC_VERSION) < 0) {
       errors.push(
         `Unsupported glibc ${glibcVersion}. OpenOrb requires glibc ${MINIMUM_GLIBC_VERSION} or newer.`,
@@ -226,7 +237,7 @@ export async function checkRunnerPrerequisites(
     platform,
     architecture,
     kernelRelease,
-    denoVersion,
+    nodeVersion,
     libc,
     glibcVersion,
     qemu,
@@ -319,20 +330,19 @@ async function inspectGateway(
 }
 
 class RunnerPrerequisiteProbeError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
+  constructor(message: string, cause: unknown) {
     super(message, { cause });
     this.name = "RunnerPrerequisiteProbeError";
   }
 }
 
 async function probe(executable: string, args: string[]): Promise<string> {
-  const command = new Deno.Command(executable, {
+  const output = await execute(executable, {
     args,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
   });
-  const output = await command.output();
   if (!output.success) {
     const message = new TextDecoder().decode(output.stderr).trim();
     throw new RunnerPrerequisiteProbeError(
@@ -344,7 +354,7 @@ async function probe(executable: string, args: string[]): Promise<string> {
 }
 
 async function probeKvmAcceleration(executable: string): Promise<void> {
-  const command = new Deno.Command(executable, {
+  const output = await execute(executable, {
     args: [
       "-accel",
       "kvm",
@@ -360,12 +370,8 @@ async function probeKvmAcceleration(executable: string): Promise<void> {
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
+    input: QMP_QUIT_COMMANDS,
   });
-  await using child = command.spawn();
-  const writer = child.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(QMP_QUIT_COMMANDS));
-  await writer.close();
-  const output = await child.output();
   if (!output.success) {
     const message = new TextDecoder().decode(output.stderr).trim();
     throw new RunnerPrerequisiteProbeError(
@@ -379,12 +385,12 @@ async function probeWritableDirectory(directory: string): Promise<void> {
   const path = `${directory}/.openorb-doctor-${crypto.randomUUID()}`;
   await using cleanup = new AsyncDisposableStack();
   cleanup.defer(async () => {
-    await Deno.remove(path).catch((cause) => {
-      if (!(cause instanceof Deno.errors.NotFound)) throw cause;
+    await fs.rm(path).catch((cause) => {
+      if (!hasErrorCode(cause, "ENOENT")) throw cause;
     });
   });
-  await Deno.writeTextFile(path, "", { createNew: true, mode: 0o600 });
-  if (Deno.build.os !== "windows") await Deno.chmod(path, 0o600);
+  await fs.writeFile(path, "", { flag: "wx", mode: 0o600 });
+  if (process.platform !== "win32") await fs.chmod(path, 0o600);
 }
 
 async function probeGateway(
@@ -412,25 +418,30 @@ function normalizeArchitecture(value: string): string {
   return value;
 }
 
-async function detectLibc(
-  platform: RunnerPlatform,
-  architecture: string,
-): Promise<DetectedLibc> {
+async function detectLibc(platform: RunnerPlatform, architecture: string): Promise<DetectedLibc> {
   if (platform !== "linux") return { libc: undefined, glibcVersion: undefined };
-  if (Deno.build.env === "musl") return { libc: "musl", glibcVersion: undefined };
-  if (Deno.build.env !== "gnu" || !SUPPORTED_ARCHITECTURES.has(architecture)) {
+  const report = process.report.getReport();
+  const header = "header" in report ? report.header : undefined;
+  const glibcVersion =
+    // oxlint-disable-next-line openorb/no-runtime-typeof -- Validate Node's external diagnostic report before reading its optional libc field.
+    typeof header === "object" && header !== null && "glibcVersionRuntime" in header
+      ? String(header.glibcVersionRuntime)
+      : undefined;
+  if (glibcVersion) return { libc: "glibc", glibcVersion };
+  if (!SUPPORTED_ARCHITECTURES.has(architecture)) {
     return { libc: "unknown", glibcVersion: undefined };
   }
 
   const paths = architecture === "arm64" ? GLIBC_PATHS.arm64 : GLIBC_PATHS.x64;
   for (const path of paths) {
     const [bytes, readError] = await tryAsync(
-      Deno.readFile(path),
+      fs.readFile(path),
       (cause) => new RunnerPrerequisiteProbeError(`Could not inspect ${path}.`, cause),
     );
     if (readError !== undefined) continue;
-    const versions = [...new TextDecoder("latin1").decode(bytes).matchAll(/GLIBC_(\d+(?:\.\d+)+)/g)]
-      .map((match) => match[1]!);
+    const versions = [
+      ...new TextDecoder("latin1").decode(bytes).matchAll(/GLIBC_(\d+(?:\.\d+)+)/g),
+    ].map((match) => match[1]!);
     const glibcVersion = versions.sort(compareVersions).at(-1);
     if (glibcVersion) return { libc: "glibc", glibcVersion };
   }
@@ -439,26 +450,30 @@ async function detectLibc(
 }
 
 function qemuError(platform: RunnerPlatform, executable: string): string {
-  const install = platform === "darwin"
-    ? "Install it with `brew install qemu`"
-    : executable === "qemu-system-aarch64"
-    ? "Install it with `sudo apt install qemu-system-arm` on Debian/Ubuntu"
-    : "Install it with `sudo apt install qemu-system-x86` on Debian/Ubuntu";
+  const install =
+    platform === "darwin"
+      ? "Install it with `brew install qemu`"
+      : executable === "qemu-system-aarch64"
+        ? "Install it with `sudo apt install qemu-system-arm` on Debian/Ubuntu"
+        : "Install it with `sudo apt install qemu-system-x86` on Debian/Ubuntu";
   return `QEMU is unavailable. ${install} and ensure \`${executable}\` is on PATH.`;
 }
 
 function qemuImgError(platform: RunnerPlatform): string {
-  const install = platform === "darwin"
-    ? "Install it with `brew install qemu`"
-    : "Install the architecture-appropriate QEMU system package on Debian/Ubuntu";
+  const install =
+    platform === "darwin"
+      ? "Install it with `brew install qemu`"
+      : "Install the architecture-appropriate QEMU system package on Debian/Ubuntu";
   return `QEMU disk tooling is unavailable. ${install} and ensure \`qemu-img\` is on PATH.`;
 }
 
 function kvmUnavailableWarning(error: unknown): string {
-  return "KVM acceleration is unavailable at /dev/kvm; the runner will use slower QEMU TCG " +
+  return (
+    "KVM acceleration is unavailable at /dev/kvm; the runner will use slower QEMU TCG " +
     "software emulation. To enable KVM, enable hardware virtualization, load the host KVM " +
     "modules, and grant the openorb-runner service user read/write access through the kvm group." +
-    errorReason(error);
+    errorReason(error)
+  );
 }
 
 function errorReason(error: unknown): string {

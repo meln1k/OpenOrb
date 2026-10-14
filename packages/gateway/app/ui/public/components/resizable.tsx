@@ -9,13 +9,7 @@ export type ResizablePanelGroupProps = Props<"div"> & {
 
 export function ResizablePanelGroup(handle: Handle<ResizablePanelGroupProps>) {
   return () => {
-    const {
-      children,
-      id = handle.id,
-      mix,
-      orientation = "horizontal",
-      ...props
-    } = handle.props;
+    const { children, id = handle.id, mix, orientation = "horizontal", ...props } = handle.props;
 
     return (
       <div
@@ -239,10 +233,7 @@ class ResizableGroupController {
         this.#expandedSizes.set(pair.previous, previousSize);
         delta = collapsedSize - previousSize;
       } else {
-        const defaultSize = this.#sizeToPixels(
-          pair.previous.dataset.defaultSize,
-          panelSizes.total,
-        );
+        const defaultSize = this.#sizeToPixels(pair.previous.dataset.defaultSize, panelSizes.total);
         delta = (this.#expandedSizes.get(pair.previous) ?? defaultSize) - previousSize;
       }
     }
@@ -281,14 +272,16 @@ class ResizableGroupController {
   }
 
   #panels(): HTMLElement[] {
-    return Array.from(this.#group.children).filter((element): element is HTMLElement =>
-      element instanceof HTMLElement && element.dataset.slot === "resizable-panel"
+    return Array.from(this.#group.children).filter(
+      (element): element is HTMLElement =>
+        element instanceof HTMLElement && element.dataset.slot === "resizable-panel",
     );
   }
 
   #separators(): HTMLElement[] {
-    return Array.from(this.#group.children).filter((element): element is HTMLElement =>
-      element instanceof HTMLElement && element.dataset.slot === "resizable-handle"
+    return Array.from(this.#group.children).filter(
+      (element): element is HTMLElement =>
+        element instanceof HTMLElement && element.dataset.slot === "resizable-handle",
     );
   }
 
@@ -307,7 +300,7 @@ class ResizableGroupController {
 
     for (const index of changedIndices) {
       const panel = panels[index]!;
-      const percentage = sizes[index]! / total * 100;
+      const percentage = (sizes[index]! / total) * 100;
       panel.style.flexBasis = `${percentage}%`;
       panel.style.flexGrow = "0";
       panel.style.flexShrink = "1";
@@ -348,15 +341,15 @@ class ResizableGroupController {
     if (value === undefined || value === "") return 0;
     const amount = Number.parseFloat(value);
     if (!Number.isFinite(amount)) return 0;
-    if (value.endsWith("%")) return total * amount / 100;
+    if (value.endsWith("%")) return (total * amount) / 100;
     if (value.endsWith("rem")) {
       return amount * Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
     }
     if (value.endsWith("em")) {
       return amount * Number.parseFloat(getComputedStyle(this.#group).fontSize);
     }
-    if (value.endsWith("vh")) return globalThis.innerHeight * amount / 100;
-    if (value.endsWith("vw")) return globalThis.innerWidth * amount / 100;
+    if (value.endsWith("vh")) return (globalThis.innerHeight * amount) / 100;
+    if (value.endsWith("vw")) return (globalThis.innerWidth * amount) / 100;
     return amount;
   }
 
@@ -380,7 +373,7 @@ class ResizableGroupController {
         this.#maximumSize(pair.previous, panelSizes.total),
         previousSize + nextSize - this.#minimumSize(pair.next, panelSizes.total),
       );
-      const percentage = (value: number) => String(Math.round(value / panelSizes.total * 100));
+      const percentage = (value: number) => String(Math.round((value / panelSizes.total) * 100));
 
       separator.setAttribute(
         "aria-orientation",

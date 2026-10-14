@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertRejects } from "@jsr/std__assert";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type BinaryReader, type ExecutionEnv, FileError } from "@earendil-works/pi-durable/env";
 import { MAX_RUNNER_BULK_CHUNK_BYTES } from "@openorb/protocol/runner-api";
@@ -21,8 +22,8 @@ function guestWithPatch(path: string, patch: Uint8Array): ExecutionEnv {
     openBinaryReader: (requested) =>
       Promise.resolve(
         requested === path
-          // SAFETY: the chunk reader calls only read and close.
-          ? { ok: true, value: reader as BinaryReader }
+          ? // SAFETY: the chunk reader calls only read and close.
+            { ok: true, value: reader as BinaryReader }
           : { ok: false, error: new FileError("not_found", "missing", requested) },
       ),
   };
@@ -33,7 +34,7 @@ function guestWithPatch(path: string, patch: Uint8Array): ExecutionEnv {
 const encoder = new TextEncoder();
 const patchPath = `${GIT_SNAPSHOT_DIRECTORY}/snapshot-1/unstaged.patch`;
 
-Deno.test("patch chunks keep byte offsets while neutralizing terminal and bidi controls", async () => {
+test("patch chunks keep byte offsets while neutralizing terminal and bidi controls", async () => {
   const patch = encoder.encode("+a\x1b[31m‮b\u0085c\td\n");
   const chunk = await readGitPatchChunk(
     guestWithPatch(patchPath, patch),
@@ -49,7 +50,7 @@ Deno.test("patch chunks keep byte offsets while neutralizing terminal and bidi c
   assertEquals(chunk.done, true);
 });
 
-Deno.test("patch chunks end on UTF-8 boundaries so pages decode independently", async () => {
+test("patch chunks end on UTF-8 boundaries so pages decode independently", async () => {
   const filler = "x".repeat(MAX_RUNNER_BULK_CHUNK_BYTES - 1);
   const patch = encoder.encode(`${filler}é tail\n`);
   const env = guestWithPatch(patchPath, patch);
@@ -84,7 +85,7 @@ Deno.test("patch chunks end on UTF-8 boundaries so pages decode independently", 
   assertEquals(past, { bytes: new Uint8Array(), nextOffset: patch.length, done: true });
 });
 
-Deno.test("a replaced snapshot's patch is reported as gone", async () => {
+test("a replaced snapshot's patch is reported as gone", async () => {
   await assertRejects(
     () =>
       readGitPatchChunk(
@@ -100,7 +101,7 @@ Deno.test("a replaced snapshot's patch is reported as gone", async () => {
   );
 });
 
-Deno.test("snapshots before the checkout exists never reach the guest", async () => {
+test("snapshots before the checkout exists never reach the guest", async () => {
   const fake: Partial<ExecutionEnv> = {};
   // SAFETY: an incomplete checkout returns before any guest call; any call would throw.
   const snapshot = await generateGitSnapshot(
@@ -112,7 +113,7 @@ Deno.test("snapshots before the checkout exists never reach the guest", async ()
   assertEquals([snapshot.snapshotId, snapshot.sections.unstaged.files], [undefined, []]);
 });
 
-Deno.test("a failed refresh keeps the last snapshot, marked stale", () => {
+test("a failed refresh keeps the last snapshot, marked stale", () => {
   const stale = staleGitSnapshot();
   assertEquals([stale.stale, stale.completeness], [true, "incomplete"]);
   const again = staleGitSnapshot(stale);

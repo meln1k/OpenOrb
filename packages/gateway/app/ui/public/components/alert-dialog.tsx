@@ -64,43 +64,51 @@ export const DialogBehavior = clientEntry<DialogBehaviorProps>(
       if (!(dialog instanceof HTMLDialogElement)) return;
       const signal = handle.signal;
 
-      dialog.addEventListener("submit", (event) => {
-        if (handle.props.keepOpenWhileSubmitting && event.target instanceof HTMLFormElement) {
-          if (submittedAction !== undefined) {
-            event.preventDefault();
+      dialog.addEventListener(
+        "submit",
+        (event) => {
+          if (handle.props.keepOpenWhileSubmitting && event.target instanceof HTMLFormElement) {
+            if (submittedAction !== undefined) {
+              event.preventDefault();
+              return;
+            }
+            submittedAction = event.target.action;
+            const submitter =
+              event instanceof SubmitEvent && event.submitter instanceof HTMLButtonElement
+                ? event.submitter
+                : event.target.querySelector<HTMLButtonElement>("button[type='submit']");
+            if (submitter) {
+              submittedButton = submitter;
+              submitter.disabled = true;
+              submitter.setAttribute("aria-busy", "true");
+              const pendingLabel = submitter.dataset.submitPendingLabel;
+              if (pendingLabel) submitter.setAttribute("aria-label", pendingLabel);
+              submitter.querySelector("[data-slot='submit-idle']")?.setAttribute("hidden", "");
+              submitter.querySelector("[data-slot='spinner']")?.removeAttribute("hidden");
+            }
+            setTimeout(() => {
+              if (!signal.aborted && event.defaultPrevented) settleSubmission();
+            }, 0);
             return;
           }
-          submittedAction = event.target.action;
-          const submitter = event instanceof SubmitEvent &&
-              event.submitter instanceof HTMLButtonElement
-            ? event.submitter
-            : event.target.querySelector<HTMLButtonElement>("button[type='submit']");
-          if (submitter) {
-            submittedButton = submitter;
-            submitter.disabled = true;
-            submitter.setAttribute("aria-busy", "true");
-            const pendingLabel = submitter.dataset.submitPendingLabel;
-            if (pendingLabel) submitter.setAttribute("aria-label", pendingLabel);
-            submitter.querySelector("[data-slot='submit-idle']")?.setAttribute("hidden", "");
-            submitter.querySelector("[data-slot='spinner']")?.removeAttribute("hidden");
-          }
+
           setTimeout(() => {
-            if (!signal.aborted && event.defaultPrevented) settleSubmission();
+            if (!signal.aborted && !event.defaultPrevented && dialog.open) dialog.close();
           }, 0);
-          return;
-        }
+        },
+        { signal },
+      );
 
-        setTimeout(() => {
-          if (!signal.aborted && !event.defaultPrevented && dialog.open) dialog.close();
-        }, 0);
-      }, { signal });
-
-      globalThis.navigation.addEventListener("navigate", (event) => {
-        if (event.downloadRequest !== null) return;
-        if (submittedAction === event.destination.url) return;
-        settleSubmission();
-        if (dialog.open) dialog.close();
-      }, { signal });
+      globalThis.navigation.addEventListener(
+        "navigate",
+        (event) => {
+          if (event.downloadRequest !== null) return;
+          if (submittedAction === event.destination.url) return;
+          settleSubmission();
+          if (dialog.open) dialog.close();
+        },
+        { signal },
+      );
       globalThis.navigation.addEventListener("navigatesuccess", settleSubmission, { signal });
       globalThis.navigation.addEventListener("navigateerror", settleSubmission, { signal });
     });
@@ -139,13 +147,7 @@ export function AlertDialogTitle(handle: Handle<Props<"h2">>) {
 export function AlertDialogDescription(handle: Handle<Props<"p">>) {
   return () => {
     const { mix, ...props } = handle.props;
-    return (
-      <p
-        {...props}
-        data-slot="alert-dialog-description"
-        mix={[descriptionStyle, mix]}
-      />
-    );
+    return <p {...props} data-slot="alert-dialog-description" mix={[descriptionStyle, mix]} />;
   };
 }
 

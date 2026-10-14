@@ -1,8 +1,11 @@
 import { createAssetServer } from "remix/assets";
 import type { ScriptEntry } from "remix/assets";
-import { dirname, fromFileUrl, join, relative } from "@std/path";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath as fromFileUrl } from "node:url";
+import { realpathSync } from "node:fs";
+import { copyFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 
-const rootDir = Deno.realPathSync(new URL("../../", import.meta.url));
+const rootDir = realpathSync(new URL("../../", import.meta.url));
 
 export function createBuildAssetServer(development = false) {
   return createAssetServer({
@@ -11,15 +14,11 @@ export function createBuildAssetServer(development = false) {
     mounts: {
       app: "packages/gateway/app",
       npm: "node_modules",
+      gatewayNpm: "packages/gateway/node_modules",
       protocol: "packages/protocol/src",
       result: "packages/result/src",
     },
-    allowPackages: [
-      "@pierre/diffs",
-      "@remix-run/data-schema",
-      "lucide",
-      "marked",
-    ],
+    allowPackages: ["@pierre/diffs", "@remix-run/data-schema", "lucide", "marked"],
     allowFiles: [
       "packages/gateway/app/**/public/**",
       "packages/gateway/app/routes.ts",
@@ -31,24 +30,24 @@ export function createBuildAssetServer(development = false) {
       "packages/protocol/src/runner-api-limits.ts",
       "packages/protocol/src/thinking-level.ts",
       "packages/result/src/index.ts",
-      "node_modules/.deno/@remix-run+data-schema@1.0.0/node_modules/@remix-run/data-schema/dist/**/*.js",
-      "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/data-schema.js",
-      "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/fetch-router/routes.js",
-      "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/multiple-import-maps-polyfill.js",
-      "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/{component.js,component/*.js}",
-      "node_modules/.deno/@remix-run+fetch-router@1.0.0/node_modules/@remix-run/fetch-router/dist/**/*.js",
-      "node_modules/.deno/@remix-run+multiple-import-maps-polyfill@1.0.0/node_modules/@remix-run/multiple-import-maps-polyfill/dist/**/*.js",
-      "node_modules/.deno/@remix-run+route-pattern@1.0.0/node_modules/@remix-run/route-pattern/dist/**/*.js",
-      "node_modules/.deno/@remix-run+component@1.0.0/node_modules/@remix-run/component/dist/**/*.js",
-      "node_modules/.deno/@remix-run+ui@0.12.1/node_modules/@remix-run/ui/dist/**/*.js",
-      "node_modules/.deno/es-module-lexer@2.3.2/node_modules/es-module-lexer/dist/lexer.js",
-      "node_modules/.deno/@earendil-works+chord@1.2.0/node_modules/@earendil-works/chord/dist/delta/*.js",
-      "node_modules/.deno/@earendil-works+chord@1.2.0/node_modules/@earendil-works/chord/dist/json.js",
+      "**/node_modules/@remix-run/data-schema/dist/**/*.js",
+      "**/node_modules/remix/dist/data-schema.js",
+      "**/node_modules/remix/dist/fetch-router/routes.js",
+      "**/node_modules/remix/dist/multiple-import-maps-polyfill.js",
+      "**/node_modules/remix/dist/{component.js,component/*.js}",
+      "**/node_modules/@remix-run/fetch-router/dist/**/*.js",
+      "**/node_modules/@remix-run/multiple-import-maps-polyfill/dist/**/*.js",
+      "**/node_modules/@remix-run/route-pattern/dist/**/*.js",
+      "**/node_modules/@remix-run/component/dist/**/*.js",
+      "**/node_modules/@remix-run/ui/dist/**/*.js",
+      "**/node_modules/es-module-lexer/dist/lexer.js",
+      "**/node_modules/@earendil-works/chord/dist/delta/*.js",
+      "**/node_modules/@earendil-works/chord/dist/json.js",
     ],
     denyFiles: [
       "packages/gateway/app/**/*.test.*",
-      "node_modules/.deno/remix@3.0.0/node_modules/remix/dist/component/{server,test}.js",
-      "node_modules/.deno/@remix-run+component@1.0.0/node_modules/@remix-run/component/dist/{server/**,test.js}",
+      "**/node_modules/remix/dist/component/{server,test}.js",
+      "**/node_modules/@remix-run/component/dist/{server/**,test.js}",
     ],
     scripts: {
       loaders: [
@@ -102,9 +101,10 @@ export async function buildGatewayAssets(
   // new Worker(new URL(..., import.meta.resolve(...))) is outside Remix's import graph.
   // Pierre's portable bundle also has hashed dynamic wasm chunks. Export those as roots, since
   // Remix's optimized import map for this self-contained bundle does not list the chunks.
-  const workerAssets = assets.filter((asset) =>
-    asset.filePath?.includes("/node_modules/@pierre/diffs/dist/worker/") &&
-    /\/(?:worker-portable|wasm-[^/]+)\.js$/.test(asset.filePath)
+  const workerAssets = assets.filter(
+    (asset) =>
+      asset.filePath?.includes("/node_modules/@pierre/diffs/dist/worker/") &&
+      /\/(?:worker-portable|wasm-[^/]+)\.js$/.test(asset.filePath),
   );
   if (!workerAssets.some((asset) => asset.filePath?.endsWith("/worker-portable.js"))) {
     throw new Error("Pierre portable worker is not browser-reachable");
@@ -126,11 +126,9 @@ export async function buildGatewayAssets(
   }
 
   // This directory is dedicated to deployable public bytes; metadata stays outside it.
-  await Deno.mkdir(outputDir, { recursive: true });
-  await Deno.remove(directory, { recursive: true }).catch((error: unknown) => {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-  });
-  await Deno.mkdir(directory, { recursive: true });
+  await mkdir(outputDir, { recursive: true });
+  await rm(directory, { recursive: true, force: true });
+  await mkdir(directory, { recursive: true });
   for (const href of [...urls].sort()) {
     const response = await server.fetch(new Request(new URL(href, "http://assets.build")));
     if (!response?.ok) throw new Error(`Asset export failed: ${href} (${response?.status})`);
@@ -138,31 +136,29 @@ export async function buildGatewayAssets(
       styleUrls.push(href);
     }
     const destination = join(directory, decodeURIComponent(href));
-    await Deno.mkdir(dirname(destination), { recursive: true });
-    await Deno.writeFile(destination, new Uint8Array(await response.arrayBuffer()));
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(destination, new Uint8Array(await response.arrayBuffer()));
     if (development) {
       const map = await server.fetch(new Request(new URL(`${href}.map`, "http://assets.build")));
       if (map?.ok) {
-        await Deno.writeFile(`${destination}.map`, new Uint8Array(await map.arrayBuffer()));
+        await writeFile(`${destination}.map`, new Uint8Array(await map.arrayBuffer()));
         urls.add(`${href}.map`);
       }
     }
   }
 
   const copyPublic = async (source: string, prefix = "") => {
-    for await (const file of Deno.readDir(source)) {
+    for (const file of await readdir(source, { withFileTypes: true })) {
       const path = `${prefix}/${file.name}`;
-      if (file.isDirectory) {
+      if (file.isDirectory()) {
         await copyPublic(join(source, file.name), path);
-      } else if (file.isFile) {
+      } else if (file.isFile()) {
         if (path.startsWith("/assets/") || path === "/_headers" || path === "/_redirects") {
-          throw new Error(
-            `Static public file collides with the compiled asset namespace: ${path}`,
-          );
+          throw new Error(`Static public file collides with the compiled asset namespace: ${path}`);
         }
         const destination = join(directory, path);
-        await Deno.mkdir(dirname(destination), { recursive: true });
-        await Deno.copyFile(join(source, file.name), destination);
+        await mkdir(dirname(destination), { recursive: true });
+        await copyFile(join(source, file.name), destination);
         publicFiles.push(path);
       } else {
         throw new Error(`Static public files must be regular files: ${path}`);
@@ -173,13 +169,14 @@ export async function buildGatewayAssets(
 
   // celld does not infer JavaScript MIME for .ts/.tsx. Worker and direct asset routes both
   // consume _headers, so browser entry URLs can retain their original extensions.
-  await Deno.writeTextFile(
+  await writeFile(
     join(directory, "_headers"),
     `/assets/*\n  Content-Type: text/javascript; charset=utf-8\n  Cache-Control: no-cache\n  X-Content-Type-Options: nosniff\n` +
       (development ? `/assets/*.map\n  Content-Type: application/json\n` : "") +
-      styleUrls.sort().map((href) => `${href}\n  Content-Type: text/css; charset=utf-8\n`).join(
-        "",
-      ),
+      styleUrls
+        .sort()
+        .map((href) => `${href}\n  Content-Type: text/css; charset=utf-8\n`)
+        .join(""),
   );
   const metadata = {
     entries,
@@ -187,12 +184,12 @@ export async function buildGatewayAssets(
     assetUrls: [...urls].sort(),
     publicFiles: publicFiles.sort(),
   };
-  await Deno.writeTextFile(join(outputDir, "asset-manifest.json"), JSON.stringify(metadata));
+  await writeFile(join(outputDir, "asset-manifest.json"), JSON.stringify(metadata));
   return metadata;
 }
 
 if (import.meta.main) {
-  const metadata = await buildGatewayAssets(undefined, Deno.args.includes("--development"));
+  const metadata = await buildGatewayAssets(undefined, process.argv.includes("--development"));
   console.log(
     `Exported ${metadata.assetUrls.length} browser assets and ${metadata.publicFiles.length} public files`,
   );

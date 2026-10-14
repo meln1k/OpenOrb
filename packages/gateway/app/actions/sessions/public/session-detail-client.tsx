@@ -6,15 +6,15 @@ import type {
   SessionThinkingLevel,
 } from "@openorb/protocol/browser-session-events";
 
-import { routes } from "@/app/routes.ts";
-import { media } from "@/app/ui/public/responsive.ts";
+import { routes } from "../../../routes.ts";
+import { media } from "../../../ui/public/responsive.ts";
 import { SessionChangesPanel } from "./session-changes-panel.tsx";
 import { SessionChangesScope } from "./session-changes-resource.tsx";
 import { SessionPageScope } from "./session-page-controller.tsx";
 import { SessionTranscript } from "./session-transcript.tsx";
 import type { SessionState } from "./session-transcript-state.ts";
 import { SessionVmControl } from "./session-vm-control.tsx";
-import { AppWorkspaceLayout } from "@/app/ui/public/shell.tsx";
+import { AppWorkspaceLayout } from "../../../ui/public/shell.tsx";
 import {
   AlertDialog,
   AlertDialogDescription,
@@ -23,7 +23,7 @@ import {
   AlertDialogTitle,
   Button,
   Icon,
-} from "@/app/ui/public/components/index.ts";
+} from "../../../ui/public/components/index.ts";
 
 type SessionMobileView = "agent" | "changes";
 
@@ -76,11 +76,12 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
           void selectMobileView(view, false);
         }),
         on<HTMLButtonElement, "keydown">("keydown", (event) => {
-          const next = event.key === "ArrowLeft" || event.key === "Home"
-            ? "agent"
-            : event.key === "ArrowRight" || event.key === "End"
-            ? "changes"
-            : undefined;
+          const next =
+            event.key === "ArrowLeft" || event.key === "Home"
+              ? "agent"
+              : event.key === "ArrowRight" || event.key === "End"
+                ? "changes"
+                : undefined;
           if (next === undefined) return;
           event.preventDefault();
           void selectMobileView(next, true);
@@ -115,46 +116,44 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
           rightSidebar={changes ? <SessionChangesPanel sessionId={handle.props.sessionId} /> : null}
         >
           <div data-session-mobile-layout mix={mobileLayoutStyle}>
-            {changes
-              ? (
-                <nav aria-label="Session views" mix={mobileTabsStyle}>
-                  <div role="tablist" aria-label="Session views" mix={mobileTabListStyle}>
-                    <button
-                      id={agentTabId}
-                      type="button"
-                      role="tab"
-                      aria-selected={mobileView === "agent" ? "true" : "false"}
-                      aria-controls={agentPanelId}
-                      tabIndex={mobileView === "agent" ? 0 : -1}
-                      mix={[
-                        mobileTabStyle,
-                        mobileView === "agent" && mobileTabSelectedStyle,
-                        ...mobileTabInteraction("agent"),
-                      ]}
-                    >
-                      <Icon name="message" size={18} />
-                      Agent
-                    </button>
-                    <button
-                      id={changesTabId}
-                      type="button"
-                      role="tab"
-                      aria-selected={mobileView === "changes" ? "true" : "false"}
-                      aria-controls={changesPanelId}
-                      tabIndex={mobileView === "changes" ? 0 : -1}
-                      mix={[
-                        mobileTabStyle,
-                        mobileView === "changes" && mobileTabSelectedStyle,
-                        ...mobileTabInteraction("changes"),
-                      ]}
-                    >
-                      <Icon name="file-diff" size={18} />
-                      Changes
-                    </button>
-                  </div>
-                </nav>
-              )
-              : null}
+            {changes ? (
+              <nav aria-label="Session views" mix={mobileTabsStyle}>
+                <div role="tablist" aria-label="Session views" mix={mobileTabListStyle}>
+                  <button
+                    id={agentTabId}
+                    type="button"
+                    role="tab"
+                    aria-selected={mobileView === "agent" ? "true" : "false"}
+                    aria-controls={agentPanelId}
+                    tabIndex={mobileView === "agent" ? 0 : -1}
+                    mix={[
+                      mobileTabStyle,
+                      mobileView === "agent" && mobileTabSelectedStyle,
+                      ...mobileTabInteraction("agent"),
+                    ]}
+                  >
+                    <Icon name="message" size={18} />
+                    Agent
+                  </button>
+                  <button
+                    id={changesTabId}
+                    type="button"
+                    role="tab"
+                    aria-selected={mobileView === "changes" ? "true" : "false"}
+                    aria-controls={changesPanelId}
+                    tabIndex={mobileView === "changes" ? 0 : -1}
+                    mix={[
+                      mobileTabStyle,
+                      mobileView === "changes" && mobileTabSelectedStyle,
+                      ...mobileTabInteraction("changes"),
+                    ]}
+                  >
+                    <Icon name="file-diff" size={18} />
+                    Changes
+                  </button>
+                </div>
+              </nav>
+            ) : null}
             <section
               id={agentPanelId}
               {
@@ -166,9 +165,11 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
               data-active={!changes || mobileView === "agent" ? "true" : "false"}
               mix={mobileAgentPanelStyle}
             >
-              {handle.props.error
-                ? <p role="alert" mix={errorStyle}>{handle.props.error}</p>
-                : null}
+              {handle.props.error ? (
+                <p role="alert" mix={errorStyle}>
+                  {handle.props.error}
+                </p>
+              ) : null}
               <SessionTranscript
                 contextWindow={handle.props.contextWindow}
                 csrfToken={handle.props.csrfToken}
@@ -177,21 +178,19 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
                 thinkingLevels={handle.props.thinkingLevels}
               />
             </section>
-            {changes
-              ? (
-                <section
-                  id={changesPanelId}
-                  role="tabpanel"
-                  aria-labelledby={changesTabId}
-                  data-active={mobileView === "changes" ? "true" : "false"}
-                  mix={mobileChangesPanelStyle}
-                >
-                  {mobileView === "changes"
-                    ? <SessionChangesPanel sessionId={handle.props.sessionId} variant="content" />
-                    : null}
-                </section>
-              )
-              : null}
+            {changes ? (
+              <section
+                id={changesPanelId}
+                role="tabpanel"
+                aria-labelledby={changesTabId}
+                data-active={mobileView === "changes" ? "true" : "false"}
+                mix={mobileChangesPanelStyle}
+              >
+                {mobileView === "changes" ? (
+                  <SessionChangesPanel sessionId={handle.props.sessionId} variant="content" />
+                ) : null}
+              </section>
+            ) : null}
           </div>
         </AppWorkspaceLayout>
       );
@@ -205,16 +204,16 @@ export const SessionDetailClient = clientEntry<SessionDetailClientProps>(
           initialIssues={handle.props.initialIssues}
           sessionId={handle.props.sessionId}
         >
-          {changes
-            ? (
-              <SessionChangesScope
-                csrfToken={handle.props.csrfToken}
-                sessionId={handle.props.sessionId}
-              >
-                {layout}
-              </SessionChangesScope>
-            )
-            : layout}
+          {changes ? (
+            <SessionChangesScope
+              csrfToken={handle.props.csrfToken}
+              sessionId={handle.props.sessionId}
+            >
+              {layout}
+            </SessionChangesScope>
+          ) : (
+            layout
+          )}
         </SessionPageScope>
       );
       return <>{sessionPage}</>;
@@ -259,7 +258,9 @@ function SessionDeletionControl(
             <Button type="button" variant="outline" commandFor={dialogId} command="close">
               Cancel
             </Button>
-            <Button type="submit" variant="destructive">Delete session</Button>
+            <Button type="submit" variant="destructive">
+              Delete session
+            </Button>
           </AlertDialogFooter>
         </form>
       </AlertDialog>

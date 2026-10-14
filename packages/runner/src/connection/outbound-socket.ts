@@ -6,11 +6,13 @@ import type * as SocketServer from "effect/socket/SocketServer";
 export const PERMANENT_REJECTION_CLOSE_CODE = 4401;
 const ABNORMAL_CLOSE_CODE = 1006;
 
-export class RunnerRpcStartupError
-  extends Schema.TaggedError<RunnerRpcStartupError>()("RunnerRpcStartupError", {
+export class RunnerRpcStartupError extends Schema.TaggedError<RunnerRpcStartupError>()(
+  "RunnerRpcStartupError",
+  {
     code: Schema.Int,
     message: Schema.String,
-  }) {}
+  },
+) {}
 
 export function makeOutboundSocketServer(
   socket: Socket.Socket,
@@ -55,7 +57,7 @@ export function makeOutboundSocketServer(
           Effect.repeat(
             Schedule.exponential("1 second").pipe(
               Schedule.modifyDelay(({ duration }) =>
-                Effect.succeed(Duration.min(duration, Duration.seconds(30)))
+                Effect.succeed(Duration.min(duration, Duration.seconds(30))),
               ),
               Schedule.jittered,
               Schedule.modifyDelay(({ duration }) =>
@@ -66,7 +68,7 @@ export function makeOutboundSocketServer(
                     delayMs: Duration.toMillis(duration),
                   }),
                   Effect.as(duration),
-                )
+                ),
               ),
             ),
           ),
@@ -85,17 +87,19 @@ function observeCloseCode(
       Effect.tapError((error) =>
         Socket.isSocketError(error) && error.reason._tag === "SocketCloseError"
           ? Deferred.succeed(closeCode, error.reason.code)
-          : Effect.void
+          : Effect.void,
       ),
     );
   return Socket.make({
-    reader: observe(Effect.gen(function* () {
-      const reader = yield* socket.reader;
-      yield* Effect.logInfo("connection.connected").pipe(
-        Effect.annotateLogs({ component: "openorb-runner" }),
-      );
-      return { ...reader, pull: observe(reader.pull) };
-    })),
+    reader: observe(
+      Effect.gen(function* () {
+        const reader = yield* socket.reader;
+        yield* Effect.logInfo("connection.connected").pipe(
+          Effect.annotateLogs({ component: "openorb-runner" }),
+        );
+        return { ...reader, pull: observe(reader.pull) };
+      }),
+    ),
     writer: socket.writer,
   });
 }

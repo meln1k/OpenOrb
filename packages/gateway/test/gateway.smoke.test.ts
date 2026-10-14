@@ -1,11 +1,12 @@
-import { assert, assertEquals, assertMatch } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertMatch } from "@jsr/std__assert";
 
-import { createAppRouter } from "@/test/workspace-test.ts";
-import { routes } from "@/app/routes.ts";
-import { createTestServer } from "@/test/http-test-server.ts";
-import { activate, createAppServices } from "@/test/workspace-test.ts";
+import { createAppRouter } from "./workspace-test.ts";
+import { routes } from "../app/routes.ts";
+import { createTestServer } from "./http-test-server.ts";
+import { activate, createAppServices } from "./workspace-test.ts";
 
-Deno.test("serves process health and the gateway shell over HTTP", async () => {
+test("serves process health and the gateway shell over HTTP", async () => {
   const { workspace: store, storage } = activate();
   const router = createAppRouter(createAppServices(store));
   const server = await createTestServer((request) => router.fetch(request));

@@ -5,8 +5,8 @@ mode:
 
 | Mode                | Use it when                                     | Runner-host requirements           |
 | ------------------- | ----------------------------------------------- | ---------------------------------- |
-| Standalone artifact | You want the smallest production dependency set | QEMU; no Deno, Node.js, or Git     |
-| Source checkout     | You want to update by pulling the repository    | QEMU, Git, and Deno 2.9.5 or newer |
+| Standalone artifact | You want the smallest production dependency set | QEMU; no installed Node.js or Git  |
+| Source checkout     | You want to update by pulling the repository    | QEMU, Git, Node.js 26.11.1 and npm |
 
 Both modes use the same hardened `openorb-runner.service`, persistent state directory, identity, and
 session files. Switching modes does not require re-enrollment because state remains under
@@ -14,7 +14,7 @@ session files. Switching modes does not require re-enrollment because state rema
 
 ## 1. Prepare the host
 
-OpenOrb requires glibc 2.27 or newer; musl distributions, including Alpine Linux, are unsupported.
+OpenOrb requires glibc 2.28 or newer; musl distributions, including Alpine Linux, are unsupported.
 Install QEMU on Debian or Ubuntu:
 
 ```sh
@@ -82,21 +82,16 @@ Continue with [Doctor and enrollment](#3-doctor-and-enrollment).
 
 ## 2B. Install from a source checkout
 
-Install Git and stable Deno 2.9.5 or newer, with the Deno executable at `/usr/local/bin/deno`. Then
-clone OpenOrb to the fixed, root-owned production path and prepare its frozen runner dependency
-graph:
+Install Git and Node.js 26.11.1 from the official Node distribution, with Node at
+`/usr/local/bin/node` and npm on PATH. Clone OpenOrb to the fixed, root-owned production path and
+install its locked npm workspace graph (including Vite+ 1.1.0):
 
 ```sh
-/usr/local/bin/deno --version # requires stable Deno 2.9.5 or newer
+/usr/local/bin/node --version # v26.11.1
 
 sudo git clone https://github.com/meln1k/openorb.git /opt/openorb
-sudo install -d -o root -g root -m 0755 /var/cache/openorb-runner/deno
-sudo env DENO_DIR=/var/cache/openorb-runner/deno \
-  /usr/local/bin/deno install --frozen \
-  --config=/opt/openorb/deno.json \
-  --lock=/opt/openorb/deno.lock \
-  --entrypoint /opt/openorb/packages/runner/src/standalone.ts
-sudo chmod -R a+rX /opt/openorb /var/cache/openorb-runner/deno
+sudo npm --prefix /opt/openorb ci
+sudo chmod -R a+rX /opt/openorb
 ```
 
 Install the same base service plus the checked-in source override matching the host architecture:
@@ -119,10 +114,10 @@ sudo ln -s "/opt/openorb/packages/runner/systemd/$source_override" \
 sudo systemctl daemon-reload
 ```
 
-The override directly executes Deno with `--frozen` and `--cached-only`; it does not use a shell
-wrapper. The checkout and dependency cache are root-owned and read-only to the service. Deno may
-write only runner state, and may execute only `qemu-img` and the host architecture's QEMU system
-binary.
+The override directly executes Node's TypeScript entrypoint; it does not use a shell wrapper.
+The checkout and dependencies are root-owned and read-only to the service. Host isolation comes
+from the reviewed systemd/OS sandbox, not Node runtime permission flags. Untrusted code remains
+inside Gondolin VMs. Do not put provider keys or unrelated host secrets in the service environment.
 
 Continue with [Doctor and enrollment](#3-doctor-and-enrollment).
 
@@ -133,19 +128,15 @@ Stop the runner before changing its source or dependency graph:
 ```sh
 sudo systemctl stop openorb-runner.service
 sudo git -C /opt/openorb pull --ff-only
-sudo env DENO_DIR=/var/cache/openorb-runner/deno \
-  /usr/local/bin/deno install --frozen \
-  --config=/opt/openorb/deno.json \
-  --lock=/opt/openorb/deno.lock \
-  --entrypoint /opt/openorb/packages/runner/src/standalone.ts
-sudo chmod -R a+rX /opt/openorb /var/cache/openorb-runner/deno
+sudo npm --prefix /opt/openorb ci
+sudo chmod -R a+rX /opt/openorb
 sudo systemctl daemon-reload
 sudo systemctl start openorb-runner.service
 sudo systemctl status openorb-runner.service
 ```
 
 For reproducible deployments, check out a reviewed tag or commit instead of pulling a moving branch.
-If that revision changes the required Deno version in `.tool-versions`, install and review the new
+If that revision changes the required Node version in `.tool-versions`, install and review the new
 runtime before restarting; the runner rejects an unreviewed version.
 
 ## 3. Doctor and enrollment
@@ -160,41 +151,29 @@ For a standalone installation:
 
 ```sh
 sudo --user=openorb-runner /usr/bin/env \
-  --chdir=/var/lib/openorb-runner PWD=/var/lib/openorb-runner \
+  --ignore-environment --chdir=/var/lib/openorb-runner PATH=/usr/bin PWD=/var/lib/openorb-runner \
   /usr/local/bin/openorb-runner doctor --gateway "$gateway"
 ```
 
-For a source installation, this Bash array invokes Deno directly with the same permission profile as
-the systemd override:
+For a source installation, this Bash array invokes Node directly. These foreground administration
+commands do not reproduce the systemd filesystem/device sandbox; use only on a trusted host with
+the service stopped, and start the hardened service after enrollment:
 
 ```sh
-case "$(uname -m)" in
-  x86_64) qemu=/usr/bin/qemu-system-x86_64 ;;
-  aarch64|arm64) qemu=/usr/bin/qemu-system-aarch64 ;;
-  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
 source_runner=(
   sudo --user=openorb-runner
-  /usr/bin/env --chdir=/var/lib/openorb-runner
+  /usr/bin/env --ignore-environment --chdir=/var/lib/openorb-runner
   PATH=/usr/bin PWD=/var/lib/openorb-runner
-  DENO_DIR=/var/cache/openorb-runner/deno
-  /usr/local/bin/deno run --cached-only --frozen
-  --config=/opt/openorb/deno.json --lock=/opt/openorb/deno.lock
-  --allow-read=/opt/openorb,/var/cache/openorb-runner/deno,/var/lib/openorb-runner,/lib,/lib64,/usr/lib,/usr/lib64
-  --allow-write=/var/lib/openorb-runner --allow-net
-  --allow-env=PATH,PWD,NODE_V8_COVERAGE,TF_BUILD
-  --allow-sys=cpus,gid,homedir,hostname,networkInterfaces,osRelease,statfs,systemMemoryInfo,uid
-  "--allow-run=$qemu,/usr/bin/qemu-img"
+  /usr/local/bin/node
   /opt/openorb/packages/runner/src/standalone.ts
 )
 
 "${source_runner[@]}" doctor --gateway "$gateway"
 ```
 
-`doctor` checks architecture, kernel, the exact Deno/denort version, glibc, QEMU, optional KVM
+`doctor` checks architecture, kernel, the Node version, glibc, QEMU, optional KVM
 initialization, host resources, gateway health, data-directory ownership and free space, and the
-pinned guest image used by persistent session root disks. QEMU—not Deno—opens `/dev/kvm`. Fix every
+pinned guest image used by persistent session root disks. QEMU—not Node—opens `/dev/kvm`. Fix every
 reported error before continuing; a KVM warning means sessions will use slower TCG software
 emulation.
 
@@ -206,7 +185,7 @@ read -rsp 'Enrollment PSK: ' enrollment_psk; printf '\n'
 
 # Standalone installation:
 sudo --user=openorb-runner /usr/bin/env \
-  --chdir=/var/lib/openorb-runner PWD=/var/lib/openorb-runner \
+  --ignore-environment --chdir=/var/lib/openorb-runner PATH=/usr/bin PWD=/var/lib/openorb-runner \
   /usr/local/bin/openorb-runner \
   --gateway "$gateway" --enrollment-token "$enrollment_psk"
 

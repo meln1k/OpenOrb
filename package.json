@@ -1,11 +1,32 @@
 {
   "name": "openorb",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "type": "module",
   "scripts": {
-    "prepare": "deno run -A npm:@effect/language-service patch",
-    "typecheck": "deno check",
-    "typecheck:effect": "deno run -A npm:@effect/language-service diagnostics --project tsconfig.json --strict"
+    "prepare": "node --max-old-space-size=1024 node_modules/@effect/language-service/cli.js patch",
+    "dev:gateway": "npm run dev --workspace @openorb/gateway",
+    "dev:runner": "npm run dev --workspace @openorb/runner",
+    "build": "npm run build --workspace @openorb/gateway",
+    "check": "npm run generate-types --workspace @openorb/gateway -- --check && vp check && npm run typecheck && npm run typecheck:effect",
+    "check:docs": "vp test run scripts/documentation.test.ts",
+    "test": "NODE_ENV=test vp test run",
+    "test:pi-env": "OPENORB_RUN_PI_ENV_TESTS=1 npm test -- packages/pi-env/test",
+    "test:security": "npm test -- scripts/security-boundaries.test.ts packages/gateway/test/auth.test.ts packages/gateway/test/credentials.test.ts packages/gateway/test/tenant-isolation.test.ts packages/runner/test/environment/gondolin/github-mediation.test.ts",
+    "test:gondolin": "GONDOLIN_START_TIMEOUT_MS=300000 OPENORB_RUN_GONDOLIN_TESTS=1 npm test -- packages/runner/test/environment/gondolin",
+    "test:e2e:session": "GONDOLIN_START_TIMEOUT_MS=600000 OPENORB_RUN_GONDOLIN_TESTS=1 npm test -- packages/gateway/test/celld-session-e2e.test.ts",
+    "test:gondolin:published-images": "GONDOLIN_START_TIMEOUT_MS=600000 OPENORB_RUN_PUBLISHED_IMAGE_TESTS=1 npm test -- packages/runner/test/environment/gondolin/published-images.integration.test.ts",
+    "test:gondolin:published-mvp6": "npm run test:gondolin:published-images -- --testNamePattern='published MVP-6'",
+    "test:browser": "npm test -- packages/gateway/test/combobox-browser.test.ts packages/gateway/test/session-transcript-browser.test.ts packages/gateway/test/session-composer-browser.test.ts packages/gateway/test/session-changes-browser.test.ts packages/gateway/test/sidebar-browser.test.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:effect": "effect-language-service diagnostics --project tsconfig.json --strict",
+    "release:acceptance": "node scripts/release-acceptance.ts",
+    "build:image": "node scripts/build-guest-image.ts",
+    "compile:runner:linux-x64": "node scripts/build-runner.ts x64",
+    "compile:runner:linux-arm64": "node scripts/build-runner.ts arm64",
+    "release:runner": "node scripts/build-runner.ts && node scripts/runner-artifact-metadata.ts"
   },
   "dependencies": {
     "@earendil-works/chord": "1.2.0",
@@ -16,10 +37,32 @@
     "quickjs-wasi": "3.6.2"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261005.1",
+    "@cloudflare/workers-types": "5.20261006.1",
     "@effect/language-service": "^0.87.2",
+    "@effect/platform-node": "4.0.0",
+    "@jsr/std__assert": "1.0.19",
+    "@jsr/std__crypto": "1.1.0",
+    "@jsr/std__encoding": "1.0.11",
+    "@jsr/std__path": "1.1.6",
+    "@jsr/std__streams": "1.1.2",
+    "@jsr/std__tar": "0.1.10",
+    "@jsr/std__uuid": "1.1.1",
+    "@jsr/std__yaml": "1.3.0",
+    "@types/node": "26.6.5",
+    "@typescript-eslint/parser": "8.71.2",
+    "@typescript-eslint/utils": "8.71.2",
+    "eslint": "9.39.5",
     "playwright": "1.55.0",
+    "rolldown": "1.2.13",
+    "tsdown": "0.23.1",
     "typescript": "^6.0.3",
+    "vite-plus": "1.1.0",
     "wrangler": "4.148.0"
+  },
+  "overrides": {
+    "effect": "4.0.0"
+  },
+  "engines": {
+    "node": ">=26.11.1"
   }
 }

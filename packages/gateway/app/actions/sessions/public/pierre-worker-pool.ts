@@ -6,10 +6,9 @@ export function getPierreWorkerPool(): worker.WorkerPoolManager {
     poolOptions: {
       poolSize: 2,
       workerFactory: () =>
-        new Worker(
-          new URL("./worker-portable.js", import.meta.resolve("@pierre/diffs/worker")),
-          { type: "module" },
-        ),
+        new Worker(new URL("./worker-portable.js", import.meta.resolve("@pierre/diffs/worker")), {
+          type: "module",
+        }),
     },
     highlighterOptions: {
       theme: { light: "pierre-light", dark: "pierre-dark" },

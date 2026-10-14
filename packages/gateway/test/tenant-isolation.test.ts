@@ -1,14 +1,18 @@
-import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertNotEquals, assertRejects } from "@jsr/std__assert";
 import { UserId } from "@openorb/protocol/runner-api";
-import { selectRunnerForWorkspace } from "@/app/cells/runners/runner-selection.ts";
-import { activate, createWorkspace } from "@/test/workspace-test.ts";
+import { selectRunnerForWorkspace } from "../app/cells/runners/runner-selection.ts";
+import { activate, createWorkspace } from "./workspace-test.ts";
 
-Deno.test("separate Workspace objects isolate configuration, identity, runners, and catalog", async () => {
+test("separate Workspace objects isolate configuration, identity, runners, and catalog", async () => {
   const first = await createWorkspace();
   const second = await createWorkspace();
   assertNotEquals(first.workspaceId, second.workspaceId);
   assertNotEquals(first.administrator.userId, second.administrator.userId);
-  for (const [owner, other] of [[first, second], [second, first]] as const) {
+  for (const [owner, other] of [
+    [first, second],
+    [second, first],
+  ] as const) {
     const { workspace, workspaceId, administrator } = owner;
     const foreignId = other.workspaceId;
     const author = { authorName: "Workspace author", authorEmail: "author@example.com" };
@@ -16,7 +20,7 @@ Deno.test("separate Workspace objects isolate configuration, identity, runners, 
     assertEquals(await workspace.getGitAuthorConfiguration(other.administrator.userId), null);
     assertEquals(await workspace.getGitAuthorConfiguration(UserId.make(workspaceId)), null);
     await assertRejects(() =>
-      workspace.saveGitAuthorConfiguration(other.administrator.userId, author)
+      workspace.saveGitAuthorConfiguration(other.administrator.userId, author),
     );
     assertEquals(await workspace.getAdministrator(other.administrator.userId), null);
 
@@ -65,11 +69,14 @@ Deno.test("separate Workspace objects isolate configuration, identity, runners, 
       createdAt: "2026-09-20T10:00:00Z",
       initialPromptPreview: "Same ID, separate objects",
     };
-    assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [entry]), [{
-      acceptedSessionIds: [entry.id],
-      tombstonedSessionIds: [],
-      rejected: [],
-    }, undefined]);
+    assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [entry]), [
+      {
+        acceptedSessionIds: [entry.id],
+        tombstonedSessionIds: [],
+        rejected: [],
+      },
+      undefined,
+    ]);
     assertEquals(await workspace.getSessionCatalogEntry(foreignId, entry.id), null);
     assertEquals(await workspace.listSessionNavigationEntries(foreignId), []);
     assertEquals(await workspace.deleteSessionCatalogEntry(foreignId, entry.id, entry.createdAt), [

@@ -1,4 +1,4 @@
-import { encodeBase64Url } from "@std/encoding/base64url";
+import { encodeBase64Url } from "@jsr/std__encoding/base64url";
 
 export function generateRunnerSecret(prefix: string): string {
   return `${prefix}${encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)))}`;

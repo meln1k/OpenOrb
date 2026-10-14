@@ -15,8 +15,8 @@ import {
   FieldGroup,
   FieldLabel,
   Input,
-} from "@/app/ui/public/components/index.ts";
-import { Document } from "@/app/ui/document.tsx";
+} from "../../ui/public/components/index.ts";
+import { Document } from "../../ui/document.tsx";
 
 export interface AuthPageProps {
   csrfToken: string;
@@ -108,13 +108,11 @@ function AuthBrand() {
 
 function AuthError(handle: Handle<{ message: string | undefined }>) {
   return () =>
-    handle.props.message
-      ? (
-        <Alert variant="destructive">
-          <AlertDescription>{handle.props.message}</AlertDescription>
-        </Alert>
-      )
-      : null;
+    handle.props.message ? (
+      <Alert variant="destructive">
+        <AlertDescription>{handle.props.message}</AlertDescription>
+      </Alert>
+    ) : null;
 }
 
 const pageStyle = css({

@@ -1,4 +1,5 @@
-import { assertEquals, assertFalse } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertFalse } from "@jsr/std__assert";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type ExecutionEnv,
@@ -59,7 +60,7 @@ function memoryGuest(files: Map<string, string>, symlinks: ReadonlySet<string> =
   return { env: fake as ExecutionEnv, reads };
 }
 
-Deno.test("repository skills read only guest metadata, support YAML, and exclude bodies", async () => {
+test("repository skills read only guest metadata, support YAML, and exclude bodies", async () => {
   const first = `${ROOT}/alpha/SKILL.md`;
   const nested = `${ROOT}/group/beta/SKILL.md`;
   const files = new Map([
@@ -108,22 +109,21 @@ Deno.test("repository skills read only guest metadata, support YAML, and exclude
   assertFalse(prompt.includes("BODY MUST NOT"));
 });
 
-Deno.test("malformed, disabled, oversized and duplicate skills cannot replace valid skills", async () => {
+test("malformed, disabled, oversized and duplicate skills cannot replace valid skills", async () => {
   const files = new Map<string, string>();
-  for (
-    const [directory, metadata] of [
-      ["a-valid", "name: valid\ndescription: accepted"],
-      ["b-duplicate", "name: valid\ndescription: must not win"],
-      ["disabled", "description: hidden\ndisable-model-invocation: true"],
-      ["missing", "name: missing"],
-      ["blank", 'description: "   "'],
-      ["invalid-name", "name: ../escape\ndescription: no"],
-      ["wrong-type", "description: [not, text]"],
-      ["invalid-yaml", "description: ["],
-      ["alias", "description: &cycle [*cycle]"],
-      ["oversized", `description: ${"x".repeat(64 * 1024)}`],
-    ]
-  ) files.set(`${ROOT}/${directory}/SKILL.md`, `---\n${metadata}\n---\nbody`);
+  for (const [directory, metadata] of [
+    ["a-valid", "name: valid\ndescription: accepted"],
+    ["b-duplicate", "name: valid\ndescription: must not win"],
+    ["disabled", "description: hidden\ndisable-model-invocation: true"],
+    ["missing", "name: missing"],
+    ["blank", 'description: "   "'],
+    ["invalid-name", "name: ../escape\ndescription: no"],
+    ["wrong-type", "description: [not, text]"],
+    ["invalid-yaml", "description: ["],
+    ["alias", "description: &cycle [*cycle]"],
+    ["oversized", `description: ${"x".repeat(64 * 1024)}`],
+  ])
+    files.set(`${ROOT}/${directory}/SKILL.md`, `---\n${metadata}\n---\nbody`);
   const guest = memoryGuest(files);
   assertEquals(await discoverRepositorySkills(guest.env, BACKGROUND_CONTEXT), [
     { name: "valid", description: "accepted", path: `${ROOT}/a-valid/SKILL.md` },
@@ -132,7 +132,7 @@ Deno.test("malformed, disabled, oversized and duplicate skills cannot replace va
   assertEquals(await discoverRepositorySkills(memoryGuest(new Map()).env, BACKGROUND_CONTEXT), []);
 });
 
-Deno.test("discovery skips symlinks, bounds depth, and never truncates wide trees", async () => {
+test("discovery skips symlinks, bounds depth, and never truncates wide trees", async () => {
   const deep = `${ROOT}/${Array.from({ length: 9 }, (_, index) => `d${index}`).join("/")}`;
   const linked = memoryGuest(
     new Map([
@@ -159,7 +159,7 @@ Deno.test("discovery skips symlinks, bounds depth, and never truncates wide tree
   assertEquals(wide.reads.length, 600);
 });
 
-Deno.test("the shown catalog is replayed from the transcript's system messages", () => {
+test("the shown catalog is replayed from the transcript's system messages", () => {
   const system = (sections: Record<string, string | null>): Message => ({
     role: "system",
     content: "",

@@ -2,7 +2,7 @@ import { css, type Handle, on } from "remix/component";
 import * as combobox from "@remix-run/ui/combobox";
 import * as popover from "@remix-run/ui/popover";
 
-import type { SessionComposerData } from "@/app/session-composer-data.ts";
+import type { SessionComposerData } from "../../session-composer-data.ts";
 import { Icon } from "./components/icons.tsx";
 import { media } from "./responsive.ts";
 import {
@@ -41,7 +41,8 @@ export function SessionModelPicker(handle: Handle<SessionModelPickerProps>) {
     open = false;
     await handle.update();
 
-    root.closest("dialog")
+    root
+      .closest("dialog")
       ?.querySelector<HTMLButtonElement>('button[aria-label="Thinking level"]')
       ?.dispatchEvent(
         new CustomEvent("openorb:update-thinking-levels", { detail: model.thinkingLevels }),
@@ -135,12 +136,11 @@ function ModelPickerControl(
             <button
               type="button"
               aria-label="Back to session"
-              mix={[
-                sessionSelectorPopoverBackStyle,
-                on("click", close),
-              ]}
+              mix={[sessionSelectorPopoverBackStyle, on("click", close)]}
             >
-              <span aria-hidden="true" mix={sessionSelectorPopoverBackIconStyle}>←</span>
+              <span aria-hidden="true" mix={sessionSelectorPopoverBackIconStyle}>
+                ←
+              </span>
               Back
             </button>
             <h3 mix={sessionSelectorPopoverTitleStyle}>Choose a model</h3>
@@ -160,7 +160,9 @@ function ModelPickerControl(
               ]}
             />
           </div>
-          <p hidden={!noMatches} mix={modelEmptyStyle}>No models found.</p>
+          <p hidden={!noMatches} mix={modelEmptyStyle}>
+            No models found.
+          </p>
           <div hidden={noMatches} mix={[combobox.list(), sessionSelectorListStyle]}>
             {handle.props.models.map((model) => (
               <div
@@ -174,7 +176,9 @@ function ModelPickerControl(
                   sessionSelectorOptionStyle,
                 ]}
               >
-                <span>{model.providerName} · {model.name}</span>
+                <span>
+                  {model.providerName} · {model.name}
+                </span>
                 <span
                   aria-hidden="true"
                   data-slot="selector-option-indicator"
@@ -192,15 +196,10 @@ function ModelPickerControl(
 }
 
 function modelSearchValues(model: SessionComposerData["models"][number]): string[] {
-  const nameSuffixes = model.name.split(/\s+/).map((_, index, words) =>
-    words.slice(index).join(" ")
-  );
-  return [
-    ...nameSuffixes,
-    model.providerName,
-    `${model.providerName} · ${model.name}`,
-    model.id,
-  ];
+  const nameSuffixes = model.name
+    .split(/\s+/)
+    .map((_, index, words) => words.slice(index).join(" "));
+  return [...nameSuffixes, model.providerName, `${model.providerName} · ${model.name}`, model.id];
 }
 
 const modelTriggerStyle = css({

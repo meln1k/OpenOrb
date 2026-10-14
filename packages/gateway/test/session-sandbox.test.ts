@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertObjectMatch, assertStringIncludes } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertObjectMatch, assertStringIncludes } from "@jsr/std__assert";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createEnvConformance } from "@earendil-works/pi-durable/testing";
 import { Harness } from "@earendil-works/pi-durable";
@@ -46,7 +47,10 @@ function memorySql(written = { bytes: 0 }): SandboxSql {
         }
         written.bytes += binding.byteLength;
       }
-      const rows = database.prepare(query).all(...bindings).map((row) => ({ ...row }));
+      const rows = database
+        .prepare(query)
+        .all(...bindings)
+        .map((row) => ({ ...row }));
       return { [Symbol.iterator]: () => rows.values(), toArray: () => rows };
     },
   };
@@ -87,49 +91,48 @@ async function gzipTar(entries: Parameters<typeof packTar>[0]): Promise<Uint8Arr
 
 async function run(env: ExecutionEnv, command: string | readonly string[]) {
   let output = "";
-  const result = await env.exec(command, {
-    onOutput: (text) => {
-      output += text;
+  const result = await env.exec(
+    command,
+    {
+      onOutput: (text) => {
+        output += text;
+      },
     },
-  }, context);
+    context,
+  );
   assert(result.ok, result.ok ? undefined : result.error.message);
   return { exitCode: result.value.exitCode, output };
 }
 
 // The virtual filesystem reports no changes; the sandbox declares watch unsupported.
-for (
-  const conformance of createEnvConformance({
-    assertions,
-    withEnv: async (use) => {
-      const env = sandboxEnv();
-      const cwd = `/workspace/case-${crypto.randomUUID()}`;
-      const created = await env.createDir(cwd, { recursive: true }, context);
-      assert(created.ok);
-      env.cwd = cwd;
-      await use(env);
-    },
-  }).filter((conformance) => !conformance.name.startsWith("watch "))
-) {
-  Deno.test({
-    name: `sandbox ExecutionEnv over its RPC relay: ${conformance.name}`,
-    sanitizeOps: false,
-    sanitizeResources: false,
-    fn: () => conformance.run(),
-  });
+for (const conformance of createEnvConformance({
+  assertions,
+  withEnv: async (use) => {
+    const env = sandboxEnv();
+    const cwd = `/workspace/case-${crypto.randomUUID()}`;
+    const created = await env.createDir(cwd, { recursive: true }, context);
+    assert(created.ok);
+    env.cwd = cwd;
+    await use(env);
+  },
+}).filter((conformance) => !conformance.name.startsWith("watch "))) {
+  test(`sandbox ExecutionEnv over its RPC relay: ${conformance.name}`, {}, () => conformance.run());
 }
 
-Deno.test("the sandbox filesystem survives a restart from its SQLite database", async () => {
+test("the sandbox filesystem survives a restart from its SQLite database", async () => {
   const sql = memorySql();
   const env = sandboxEnv(sql);
   assertEquals(
-    (await run(
-      env,
-      [
-        "mkdir -p src/nested && echo kept > src/nested/a.txt && echo gone > b.txt",
-        "ln -s nested/a.txt src/link && mv b.txt src/moved.txt && rm src/moved.txt",
-        "cp -r src copy && chmod 0755 copy/nested/a.txt && echo temporary > /tmp/scratch",
-      ].join(" && "),
-    )).exitCode,
+    (
+      await run(
+        env,
+        [
+          "mkdir -p src/nested && echo kept > src/nested/a.txt && echo gone > b.txt",
+          "ln -s nested/a.txt src/link && mv b.txt src/moved.txt && rm src/moved.txt",
+          "cp -r src copy && chmod 0755 copy/nested/a.txt && echo temporary > /tmp/scratch",
+        ].join(" && "),
+      )
+    ).exitCode,
     0,
   );
   const restarted = sandboxEnv(sql);
@@ -147,7 +150,7 @@ Deno.test("the sandbox filesystem survives a restart from its SQLite database", 
   assertEquals(info.value.kind, "symlink");
 });
 
-Deno.test("sandbox tar unpacks archives without escaping the target directory", async () => {
+test("sandbox tar unpacks archives without escaping the target directory", async () => {
   const env = sandboxEnv();
   const gzipped = await gzipTar([
     { header: { name: "repo-abc/README.md", size: 5, type: "file" }, body: "hello" },
@@ -169,8 +172,9 @@ Deno.test("sandbox tar unpacks archives without escaping the target directory", 
   assertEquals(unpacked.exitCode, 0);
   assertEquals((await run(env, "cat checkout/README.md checkout/bin/run")).output, "hellook");
   assertEquals(
-    (await run(env, "ls -A /workspace /workspace/checkout; ls /absolute.txt 2>&1 || true")).output
-      .includes("escape.txt"),
+    (
+      await run(env, "ls -A /workspace /workspace/checkout; ls /absolute.txt 2>&1 || true")
+    ).output.includes("escape.txt"),
     false,
   );
   assertEquals((await run(env, "test -e /absolute.txt || echo safe")).output, "safe\n");
@@ -180,7 +184,7 @@ Deno.test("sandbox tar unpacks archives without escaping the target directory", 
   );
 });
 
-Deno.test("sandbox commands accept login shells and argv words unparsed", async () => {
+test("sandbox commands accept login shells and argv words unparsed", async () => {
   const env = sandboxEnv();
   assertEquals((await run(env, ["/bin/sh", "-lc", "echo login"])).output, "login\n");
   assertEquals(
@@ -191,7 +195,7 @@ Deno.test("sandbox commands accept login shells and argv words unparsed", async 
   assertEquals((await run(env, "curl https://example.com")).exitCode, 127);
 });
 
-Deno.test("a stopped sandbox fails guest operations immediately and keeps its files", async () => {
+test("a stopped sandbox fails guest operations immediately and keeps its files", async () => {
   using fixture = providerFixture();
   const { provider } = fixture;
   assertObjectMatch(provider.capabilities, {
@@ -241,10 +245,10 @@ function providerFixture(wrap: (rpc: SandboxRpc) => SandboxRpc = (rpc) => rpc) {
   const options: SandboxProviderOptions = {
     sessionId: "test",
     state: () => state,
-    recordState: (next) => state = next,
+    recordState: (next) => (state = next),
     onIdle: () => reconcile(),
     // SAFETY: fixture supplies the facet and loader methods used by the production provider.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     facets: {
       get: (_name: string, factory: Parameters<DurableObjectFacets["get"]>[1]) => {
         const dispatch = () => {
@@ -260,11 +264,11 @@ function providerFixture(wrap: (rpc: SandboxRpc) => SandboxRpc = (rpc) => rpc) {
           cancel: (id: string) => dispatch().cancel(id),
         };
       },
-      abort: () => facet = undefined,
-      delete: () => sql = memorySql(),
+      abort: () => (facet = undefined),
+      delete: () => (sql = memorySql()),
     } as unknown as DurableObjectFacets,
     // SAFETY: the fake WorkerStub supplies only class acquisition and celld's disposal extension.
-    // deno-lint-ignore openorb/no-chained-type-assertions
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
     loader: {
       get: () => ({ getDurableObjectClass: () => ({}), dispose: () => {} }),
     } as unknown as WorkerLoader,
@@ -279,12 +283,12 @@ function providerFixture(wrap: (rpc: SandboxRpc) => SandboxRpc = (rpc) => rpc) {
     facets: options.facets,
     loader: options.loader,
     bind: () => provider.bind(binding),
-    reconcile: (callback: () => void) => reconcile = callback,
-    [Symbol.dispose]: () => SANDBOX_WORKER.code = previousCode,
+    reconcile: (callback: () => void) => (reconcile = callback),
+    [Symbol.dispose]: () => (SANDBOX_WORKER.code = previousCode),
   };
 }
 
-Deno.test("sandbox lifecycle is ordered across bindings and deletion cannot be undone", async () => {
+test("sandbox lifecycle is ordered across bindings and deletion cannot be undone", async () => {
   const entered = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();
   using fixture = providerFixture((rpc) => ({
@@ -322,7 +326,7 @@ Deno.test("sandbox lifecycle is ordered across bindings and deletion cannot be u
   assert(!(await first.env.exists("durable.txt", context)).ok);
 });
 
-Deno.test("idle release waits for cancellation and rechecks activity before retirement", async () => {
+test("idle release waits for cancellation and rechecks activity before retirement", async () => {
   const entered = Promise.withResolvers<void>();
   const cancelled = Promise.withResolvers<void>();
   const execSettled = Promise.withResolvers<void>();
@@ -345,10 +349,14 @@ Deno.test("idle release waits for cancellation and rechecks activity before reti
   const environment = fixture.bind();
   await environment.control("start");
   const abort = new AbortController();
-  const execution = environment.env.exec("echo done", {}, {
-    ...context,
-    abortSignal: abort.signal,
-  });
+  const execution = environment.env.exec(
+    "echo done",
+    {},
+    {
+      ...context,
+      abortSignal: abort.signal,
+    },
+  );
   await entered.promise;
   environment.close();
   abort.abort();
@@ -396,29 +404,32 @@ function sessionFixture(
     }
   };
   const pending = new Set<Promise<unknown>>();
-  const session = new ModelOnlySession({
-    storage,
-    facets: fixture.facets,
-    blockConcurrencyWhile: (callback) => callback(),
-    acceptWebSocket: () => {},
-    getWebSockets: () => [],
-    waitUntil: (promise) => {
-      pending.add(promise);
-      void promise.finally(() => pending.delete(promise));
+  const session = new ModelOnlySession(
+    {
+      storage,
+      facets: fixture.facets,
+      blockConcurrencyWhile: (callback) => callback(),
+      acceptWebSocket: () => {},
+      getWebSockets: () => [],
+      waitUntil: (promise) => {
+        pending.add(promise);
+        void promise.finally(() => pending.delete(promise));
+      },
     },
     // SAFETY: model-only Sessions need only these empty credentials and the supplied runner RPCs.
-    // deno-lint-ignore openorb/no-chained-type-assertions
-  }, {
-    WORKSPACE: {
-      getByName: () => ({
-        getGitHubToken: () => Promise.resolve([null, undefined]),
-        getEnvironmentSecrets: () => Promise.resolve([[], undefined]),
-      }),
-    },
-    RUNNERS: { getByName: () => runners },
-    MEDIA: {},
-    LOADER: fixture.loader,
-  } as unknown as Env);
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
+    {
+      WORKSPACE: {
+        getByName: () => ({
+          getGitHubToken: () => Promise.resolve([null, undefined]),
+          getEnvironmentSecrets: () => Promise.resolve([[], undefined]),
+        }),
+      },
+      RUNNERS: { getByName: () => runners },
+      MEDIA: {},
+      LOADER: fixture.loader,
+    } as unknown as Env,
+  );
   return {
     session,
     harness: opened.promise,
@@ -440,7 +451,7 @@ function sessionFixture(
   };
 }
 
-Deno.test("concurrent admission persists recovery despite a held idle inspection", async () => {
+test("concurrent admission persists recovery despite a held idle inspection", async () => {
   using fixture = providerFixture();
   const { session, storage, create, drain, harness: opened } = sessionFixture(fixture);
   await create();
@@ -488,7 +499,7 @@ Deno.test("concurrent admission persists recovery despite a held idle inspection
   await drain();
 });
 
-Deno.test("admission during a runner idle stop resumes only after its acknowledgement", async () => {
+test("admission during a runner idle stop resumes only after its acknowledgement", async () => {
   using fixture = providerFixture();
   const initial = sessionFixture(fixture);
   await initial.create();
@@ -543,7 +554,7 @@ Deno.test("admission during a runner idle stop resumes only after its acknowledg
   await runner.drain();
 });
 
-Deno.test("idle stop rechecks provisioning that starts during inspection", async () => {
+test("idle stop rechecks provisioning that starts during inspection", async () => {
   let holdProvisioning = false;
   const provisioning = Promise.withResolvers<void>();
   const finishProvisioning = Promise.withResolvers<void>();
@@ -604,7 +615,7 @@ Deno.test("idle stop rechecks provisioning that starts during inspection", async
   await test.drain();
 });
 
-Deno.test("provisioning completion releases sandbox after a model-only turn", async () => {
+test("provisioning completion releases sandbox after a model-only turn", async () => {
   const entered = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();
   using fixture = providerFixture((rpc) => ({
@@ -638,7 +649,7 @@ Deno.test("provisioning completion releases sandbox after a model-only turn", as
   await drain();
 });
 
-Deno.test("files larger than one SQLite value survive a restart, appends included", async () => {
+test("files larger than one SQLite value survive a restart, appends included", async () => {
   const sql = memorySql();
   const env = sandboxEnv(sql);
   const large = new Uint8Array(5 * 1024 * 1024).map((_, index) => index % 251);
@@ -659,7 +670,7 @@ Deno.test("files larger than one SQLite value survive a restart, appends include
   assertEquals(log.value, "one\ntwo\nthree\n");
 });
 
-Deno.test("recursive moves and copies write each file to SQLite once", async () => {
+test("recursive moves and copies write each file to SQLite once", async () => {
   const written = { bytes: 0 };
   const sql = memorySql(written);
   const env = sandboxEnv(sql);
@@ -684,7 +695,7 @@ Deno.test("recursive moves and copies write each file to SQLite once", async () 
   assertEquals(read.value, data);
 });
 
-Deno.test("appends store only their new bytes and survive compaction", async () => {
+test("appends store only their new bytes and survive compaction", async () => {
   const written = { bytes: 0 };
   const sql = memorySql(written);
   const env = sandboxEnv(sql);
@@ -692,17 +703,16 @@ Deno.test("appends store only their new bytes and survive compaction", async () 
   const expected = Array.from({ length: 300 }, (_, index) => `${index + 1}\n`).join("");
   // Without compaction this is the log's size; each compaction rewrites at most what precedes it.
   assert(written.bytes < 6 * expected.length, `${written.bytes} bytes written`);
-  const [rows] = sql.exec(
-    "SELECT COUNT(*) AS count FROM sandbox_chunks WHERE path = ?",
-    "/workspace/log.txt",
-  ).toArray();
+  const [rows] = sql
+    .exec("SELECT COUNT(*) AS count FROM sandbox_chunks WHERE path = ?", "/workspace/log.txt")
+    .toArray();
   assert(Number(rows?.count) <= 65, `${rows?.count} rows`);
   const log = await sandboxEnv(sql).readTextFile("log.txt", context);
   assert(log.ok);
   assertEquals(log.value, expected);
 });
 
-Deno.test("a reader from before a sandbox restart cannot read another file", async () => {
+test("a reader from before a sandbox restart cannot read another file", async () => {
   const sql = memorySql();
   let sandbox = openSandbox(sql);
   const env = sandboxExecutionEnv("openorb-sandbox:test", "/workspace", (work) => work(sandbox));
@@ -718,7 +728,7 @@ Deno.test("a reader from before a sandbox restart cannot read another file", asy
   assertEquals(stale.error.code, "invalid");
 });
 
-Deno.test("a cancel that overtakes its command still stops it", async () => {
+test("a cancel that overtakes its command still stops it", async () => {
   const sandbox = openSandbox(memorySql());
   sandbox.cancel("early");
   const { result } = await sandbox.exec("early", "/workspace", "echo ran", {});
@@ -726,7 +736,7 @@ Deno.test("a cancel that overtakes its command still stops it", async () => {
   assertEquals(result.error.code, "aborted");
 });
 
-Deno.test("sandbox file errors carry their code and path, and joinPath stays pure", async () => {
+test("sandbox file errors carry their code and path, and joinPath stays pure", async () => {
   const env = sandboxEnv();
   const missing = await env.readTextFile("no/ENOENT-in-name.txt", context);
   assert(!missing.ok);
@@ -736,7 +746,7 @@ Deno.test("sandbox file errors carry their code and path, and joinPath stays pur
   assertEquals(joined.value, "lib/a.ts");
 });
 
-Deno.test("sandbox tar enforces archive limits and never writes through its own links", async () => {
+test("sandbox tar enforces archive limits and never writes through its own links", async () => {
   const env = sandboxEnv();
   const extract = async (entries: Parameters<typeof packTar>[0]) => {
     assert((await env.writeFile("/tmp/a.tgz", await gzipTar(entries), context)).ok);

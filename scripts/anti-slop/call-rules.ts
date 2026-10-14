@@ -1,10 +1,10 @@
-/// <reference lib="deno.unstable" />
+import type { TSESLint, TSESTree } from "@typescript-eslint/utils";
 
 // Behavior adapted from dmmulroy/anti-slop at
 // 446268e5d15baa968eaec669ff65358d36ae6259 (MIT licensed).
 
 function addPatternBindings(
-  pattern: Deno.lint.Parameter | Deno.lint.VariableDeclarator["id"],
+  pattern: TSESTree.Parameter | TSESTree.VariableDeclarator["id"],
   bindings: Set<string>,
 ): void {
   switch (pattern.type) {
@@ -35,8 +35,10 @@ function addPatternBindings(
         } else {
           const value = property.value;
           if (
-            value.type === "Identifier" || value.type === "AssignmentPattern" ||
-            value.type === "ArrayPattern" || value.type === "ObjectPattern"
+            value.type === "Identifier" ||
+            value.type === "AssignmentPattern" ||
+            value.type === "ArrayPattern" ||
+            value.type === "ObjectPattern"
           ) {
             addPatternBindings(value, bindings);
           }
@@ -49,14 +51,11 @@ function addPatternBindings(
   }
 }
 
-function addStatementBindings(
-  statement: Deno.lint.Statement,
-  bindings: Set<string>,
-): void {
-  const declaration = statement.type === "ExportNamedDeclaration" ||
-      statement.type === "ExportDefaultDeclaration"
-    ? statement.declaration
-    : statement;
+function addStatementBindings(statement: TSESTree.Statement, bindings: Set<string>): void {
+  const declaration =
+    statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration"
+      ? statement.declaration
+      : statement;
   if (declaration === null) return;
 
   if (declaration.type === "VariableDeclaration") {
@@ -64,13 +63,14 @@ function addStatementBindings(
       addPatternBindings(declarator.id, bindings);
     }
   } else if (
-    declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration"
+    declaration.type === "FunctionDeclaration" ||
+    declaration.type === "ClassDeclaration"
   ) {
     if (declaration.id !== null) bindings.add(declaration.id.name);
   }
 }
 
-function scopeBindings(scope: Deno.lint.Node): Set<string> | null {
+function scopeBindings(scope: TSESTree.Node): Set<string> | null {
   const bindings = new Set<string>();
   if (scope.type === "Program") {
     for (const statement of scope.body) {
@@ -95,7 +95,8 @@ function scopeBindings(scope: Deno.lint.Node): Set<string> | null {
     return bindings;
   }
   if (
-    scope.type === "FunctionDeclaration" || scope.type === "FunctionExpression" ||
+    scope.type === "FunctionDeclaration" ||
+    scope.type === "FunctionExpression" ||
     scope.type === "ArrowFunctionExpression"
   ) {
     for (const parameter of scope.params) addPatternBindings(parameter, bindings);
@@ -112,8 +113,8 @@ function scopeBindings(scope: Deno.lint.Node): Set<string> | null {
 }
 
 function hasBinding(
-  context: Deno.lint.RuleContext,
-  node: Deno.lint.Node,
+  context: TSESLint.RuleContext<string, []>,
+  node: TSESTree.Node,
   name: string,
 ): boolean {
   const ancestors = context.sourceCode.getAncestors(node);
@@ -126,31 +127,36 @@ function hasBinding(
 }
 
 function calledMethod(
-  node: Deno.lint.CallExpression,
-): { object: Deno.lint.Identifier; name: string } | null {
+  node: TSESTree.CallExpression,
+): { object: TSESTree.Identifier; name: string } | null {
   if (node.callee.type !== "MemberExpression" || node.callee.object.type !== "Identifier") {
     return null;
   }
   const property = node.callee.property;
   const name = node.callee.computed
-    ? property.type === "Literal" && typeof property.value === "string" ? property.value : null
+    ? property.type === "Literal" && typeof property.value === "string"
+      ? property.value
+      : null
     : property.type === "Identifier"
-    ? property.name
-    : null;
+      ? property.name
+      : null;
   return name === null ? null : { object: node.callee.object, name };
 }
 
-function reflectRule(method: "apply" | "get", message: string): Deno.lint.Rule {
+function reflectRule(method: "apply" | "get", message: string): TSESLint.RuleModule<string, []> {
   return {
+    meta: { type: "problem", schema: [], messages: { reflect: message } },
+    defaultOptions: [],
     create(context) {
       return {
         CallExpression(node) {
           const call = calledMethod(node);
           if (
-            call?.object.name === "Reflect" && call.name === method &&
+            call?.object.name === "Reflect" &&
+            call.name === method &&
             !hasBinding(context, call.object, "Reflect")
           ) {
-            context.report({ node, message });
+            context.report({ node, messageId: "reflect" });
           }
         },
       };
@@ -158,7 +164,7 @@ function reflectRule(method: "apply" | "get", message: string): Deno.lint.Rule {
   };
 }
 
-export const callAntiSlopRules: Record<string, Deno.lint.Rule> = {
+export const callAntiSlopRules: Record<string, TSESLint.RuleModule<string, []>> = {
   "no-reflect-apply": reflectRule(
     "apply",
     "Replace `Reflect.apply` with a typed function call. Model dynamic dispatch behind a named interface.",

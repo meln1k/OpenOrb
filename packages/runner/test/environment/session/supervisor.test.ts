@@ -1,6 +1,12 @@
-import { assert, assertEquals, assertInstanceOf } from "@std/assert";
-import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
-import * as DenoPath from "@effect/platform-deno/DenoPath";
+import { test } from "vite-plus/test";
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { once } from "node:events";
+import WebSocket, { WebSocketServer } from "ws";
+import { assert, assertEquals, assertInstanceOf } from "@jsr/std__assert";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { ok } from "@openorb/result";
 import {
   CapacityExceeded,
@@ -112,13 +118,13 @@ interface Fixture {
 }
 
 async function withFixture(test: (fixture: Fixture) => Promise<void>) {
-  const directory = await Deno.makeTempDir({ prefix: "openorb-environments-" });
+  const directory = await fs.mkdtemp(join(tmpdir(), "openorb-environments-"));
   const environments: DaemonEnvironment[] = [];
   const made: AgentEnvironmentOptions[] = [];
   const provider = Layer.succeed(
     AgentEnvironmentProvider,
     AgentEnvironmentProvider.of({
-      initializeRootDisk: (path) => Effect.promise(() => Deno.writeFile(path, new Uint8Array())),
+      initializeRootDisk: (path) => Effect.promise(() => fs.writeFile(path, new Uint8Array())),
       make: (options) =>
         Effect.sync(() => {
           made.push(options);
@@ -141,7 +147,7 @@ async function withFixture(test: (fixture: Fixture) => Promise<void>) {
       }).pipe(
         Effect.provide(
           Layer.merge(provider, environmentStoreLayer(directory)).pipe(
-            Layer.provide(Layer.merge(DenoFileSystem.layer, DenoPath.layer)),
+            Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)),
           ),
         ),
         Effect.provideService(Scope.Scope, scope),
@@ -152,11 +158,11 @@ async function withFixture(test: (fixture: Fixture) => Promise<void>) {
   try {
     await test({ directory, environments, made, open });
   } finally {
-    await Deno.remove(directory, { recursive: true });
+    await fs.rm(directory, { recursive: true });
   }
 }
 
-Deno.test("creating an environment is idempotent and checks capacity and conflicts", () =>
+test("creating an environment is idempotent and checks capacity and conflicts", () =>
   withFixture(async ({ open }) => {
     const { supervisor, close } = await open();
     try {
@@ -171,7 +177,7 @@ Deno.test("creating an environment is idempotent and checks capacity and conflic
     }
   }));
 
-Deno.test("start passes mediation inputs to the provider and stop records a clean stop", () =>
+test("start passes mediation inputs to the provider and stop records a clean stop", () =>
   withFixture(async ({ open, made, environments }) => {
     const { supervisor, close } = await open();
     try {
@@ -195,7 +201,7 @@ Deno.test("start passes mediation inputs to the provider and stop records a clea
     }
   }));
 
-Deno.test("an environment without a project gets no GitHub mediation, even with a token", () =>
+test("an environment without a project gets no GitHub mediation, even with a token", () =>
   withFixture(async ({ open, made }) => {
     const { supervisor, close } = await open();
     try {
@@ -211,7 +217,7 @@ Deno.test("an environment without a project gets no GitHub mediation, even with 
     }
   }));
 
-Deno.test("an interrupted environment restores as failed and requires an explicit restart", () =>
+test("an interrupted environment restores as failed and requires an explicit restart", () =>
   withFixture(async ({ open, directory }) => {
     const first = await open();
     await Effect.runPromise(first.supervisor.create(create()));
@@ -228,7 +234,7 @@ Deno.test("an interrupted environment restores as failed and requires an explici
       }).pipe(
         Effect.provide(
           environmentStoreLayer(directory).pipe(
-            Layer.provide(Layer.merge(DenoFileSystem.layer, DenoPath.layer)),
+            Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)),
           ),
         ),
       ),
@@ -249,7 +255,7 @@ Deno.test("an interrupted environment restores as failed and requires an explici
     }
   }));
 
-Deno.test("attaching a stopped environment fails immediately", () =>
+test("attaching a stopped environment fails immediately", () =>
   withFixture(async ({ open }) => {
     const { supervisor, close } = await open();
     try {
@@ -262,18 +268,18 @@ Deno.test("attaching a stopped environment fails immediately", () =>
     }
   }));
 
-Deno.test("attach dials the link, authenticates in-band and relays daemon frames", () =>
+test("attach dials the link, authenticates in-band and relays daemon frames", () =>
   withFixture(async ({ open, environments }) => {
     // SAFETY: every field of ReceivedFrames is optional; the server fills them as frames arrive.
     const received = {} as ReceivedFrames;
     let gatewaySocket: WebSocket | undefined;
     const replied = Promise.withResolvers<void>();
-    const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, (request) => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (socket, request) => {
       assertEquals(
-        new URL(request.url).pathname,
+        new URL(request.url!, "http://127.0.0.1").pathname,
         `/api/runners/environments/${SESSION_ID}/link`,
       );
-      const { socket, response } = Deno.upgradeWebSocket(request);
       socket.binaryType = "arraybuffer";
       gatewaySocket = socket;
       socket.onmessage = (event) => {
@@ -289,12 +295,19 @@ Deno.test("attach dials the link, authenticates in-band and relays daemon frames
           socket.send(frame(1, 41, { op: "hello", protocol: 1 }));
           return;
         }
-        received.reply = new Uint8Array(event.data);
+        const data = event.data;
+        received.reply =
+          data instanceof ArrayBuffer
+            ? new Uint8Array(data)
+            : new Uint8Array(Array.isArray(data) ? Buffer.concat(data) : data);
         replied.resolve();
       };
-      return response;
     });
-    const { supervisor, close } = await open(`http://127.0.0.1:${server.addr.port}`);
+    await once(server, "listening");
+    const address = server.address();
+    // oxlint-disable-next-line openorb/no-runtime-typeof -- Validate Node's socket address union at the listener I/O boundary.
+    assert(typeof address === "object" && address !== null);
+    const { supervisor, close } = await open(`http://127.0.0.1:${address.port}`);
     try {
       await Effect.runPromise(supervisor.create(create()));
       await Effect.runPromise(supervisor.control(control("start")));
@@ -312,11 +325,13 @@ Deno.test("attach dials the link, authenticates in-band and relays daemon frames
       assert(daemon.closed);
     } finally {
       await close();
-      await server.shutdown();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
     }
   }));
 
-Deno.test("deleting an environment stops compute and removes its storage", () =>
+test("deleting an environment stops compute and removes its storage", () =>
   withFixture(async ({ open, directory, environments }) => {
     const { supervisor, close } = await open();
     try {
@@ -325,7 +340,7 @@ Deno.test("deleting an environment stops compute and removes its storage", () =>
       await Effect.runPromise(supervisor.delete(SESSION_ID));
       assertEquals(supervisor.snapshots(), []);
       assertEquals(environments[0]?.stops, 1);
-      const entries = [...Deno.readDirSync(`${directory}/environments`)];
+      const entries = await fs.readdir(`${directory}/environments`);
       assertEquals(entries, []);
       const recreated = await Effect.runPromise(Effect.flip(supervisor.attach(SESSION_ID, NONCE)));
       assertEquals(recreated._tag, "EnvironmentNotFound");

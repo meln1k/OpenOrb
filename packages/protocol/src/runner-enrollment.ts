@@ -1,14 +1,11 @@
 import { literal, object, string, union } from "@remix-run/data-schema";
 import type { InferOutput } from "@remix-run/data-schema";
-import { validate as validateUuid } from "@std/uuid";
+import { validate as validateUuid } from "@jsr/std__uuid";
 
 export const ENROLLMENT_PSK_PREFIX = "openorb_enroll_";
 export const RUNNER_TOKEN_PREFIX = "openorb_runner_";
 
-export const runnerIdSchema = string().refine(
-  validateUuid,
-  "Expected a UUID.",
-);
+export const runnerIdSchema = string().refine(validateUuid, "Expected a UUID.");
 
 export const enrollmentPskSchema = string().refine(
   (value) =>
@@ -31,10 +28,7 @@ const runnerNameSchema = string().refine(
   "Runner name must contain between 1 and 100 characters.",
 );
 
-const runnerArchitectureSchema = union([
-  literal("x64" as const),
-  literal("arm64" as const),
-]);
+const runnerArchitectureSchema = union([literal("x64" as const), literal("arm64" as const)]);
 
 export const runnerEnrollmentRequestSchema = object(
   {

@@ -29,7 +29,8 @@ function sourceId(input: string): string {
 
 function getEntry(input: string): ScriptEntry {
   const id = sourceId(input);
-  const entry = (Object.hasOwn(metadata.entries, id) ? metadata.entries[id] : undefined) ??
+  const entry =
+    (Object.hasOwn(metadata.entries, id) ? metadata.entries[id] : undefined) ??
     Object.values(metadata.entries).find((entry) => entry.href === input.split(/[?#]/, 1)[0]);
   if (!entry) throw new TypeError(`Browser entry was not built: ${input}`);
   return structuredClone(entry);

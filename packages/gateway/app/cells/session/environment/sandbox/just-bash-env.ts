@@ -18,7 +18,7 @@ import {
 } from "@earendil-works/pi-durable/env";
 import { tryAsync, trySync } from "@openorb/result";
 import type { Bash } from "just-bash/browser";
-import { join } from "@std/path/posix";
+import { join } from "@jsr/std__path/posix";
 
 const ERROR_CODES = {
   ENOENT: "not_found",
@@ -69,18 +69,15 @@ export class JustBashEnv implements ExecutionEnv {
     path?: string,
   ): Promise<Result<T, FileError>> {
     if (context.abortSignal?.aborted) return err(new FileError("aborted", "Operation aborted"));
-    const [value, failure] = await tryAsync(
-      (async () => await work())(),
-      (cause) => {
-        if (cause instanceof FileError) return cause;
-        if (cause instanceof RangeError) return new FileError("invalid", cause.message);
-        const message = cause instanceof Error ? cause.message : String(cause);
-        // just-bash reports filesystem errors as "ENOENT: no such file or directory, …".
-        const name = /^(E[A-Z]+):/.exec(message)?.[1];
-        const code = Object.entries(ERROR_CODES).find(([known]) => known === name)?.[1];
-        return new FileError(code ?? "unknown", message, path);
-      },
-    );
+    const [value, failure] = await tryAsync((async () => await work())(), (cause) => {
+      if (cause instanceof FileError) return cause;
+      if (cause instanceof RangeError) return new FileError("invalid", cause.message);
+      const message = cause instanceof Error ? cause.message : String(cause);
+      // just-bash reports filesystem errors as "ENOENT: no such file or directory, …".
+      const name = /^(E[A-Z]+):/.exec(message)?.[1];
+      const code = Object.entries(ERROR_CODES).find(([known]) => known === name)?.[1];
+      return new FileError(code ?? "unknown", message, path);
+    });
     if (failure !== undefined) return err(failure);
     return ok(value);
   }
@@ -111,29 +108,36 @@ export class JustBashEnv implements ExecutionEnv {
   }
 
   truncateFile(path: string, size: number, context: Context) {
-    return this.#file(context, async () => {
-      if (!Number.isSafeInteger(size) || size < 0) {
-        throw new FileError("invalid", "Invalid size", path);
-      }
-      const absolute = this.#path(path);
-      const bytes = await this.#fs.readFileBuffer(absolute);
-      const resized = new Uint8Array(size);
-      resized.set(bytes.subarray(0, size));
-      await this.#fs.writeFile(absolute, resized);
-    }, path);
+    return this.#file(
+      context,
+      async () => {
+        if (!Number.isSafeInteger(size) || size < 0) {
+          throw new FileError("invalid", "Invalid size", path);
+        }
+        const absolute = this.#path(path);
+        const bytes = await this.#fs.readFileBuffer(absolute);
+        const resized = new Uint8Array(size);
+        resized.set(bytes.subarray(0, size));
+        await this.#fs.writeFile(absolute, resized);
+      },
+      path,
+    );
   }
 
   flushFile(path: string, context: Context) {
     // Every write is already in the sandbox's SQLite database when it returns.
-    return this.#file(context, async () => {
-      await this.#fs.stat(this.#path(path));
-    }, path);
+    return this.#file(
+      context,
+      async () => {
+        await this.#fs.stat(this.#path(path));
+      },
+      path,
+    );
   }
 
   renameFile(sourcePath: string, destinationPath: string, context: Context) {
-    return this.#file(
-      context,
-      () => this.#fs.mv(this.#path(sourcePath), this.#path(destinationPath)),
+    return this.#file(context, () =>
+      this.#fs.mv(this.#path(sourcePath), this.#path(destinationPath)),
     );
   }
 
@@ -153,106 +157,132 @@ export class JustBashEnv implements ExecutionEnv {
   }
 
   listDir(path: string, context: Context) {
-    return this.#file(context, async () => {
-      const directory = this.#path(path);
-      const names = await this.#fs.readdir(directory);
-      return await Promise.all(
-        names.map((name) => this.#info(this.#fs.resolvePath(directory, name))),
-      );
-    }, path);
+    return this.#file(
+      context,
+      async () => {
+        const directory = this.#path(path);
+        const names = await this.#fs.readdir(directory);
+        return await Promise.all(
+          names.map((name) => this.#info(this.#fs.resolvePath(directory, name))),
+        );
+      },
+      path,
+    );
   }
 
   openDirReader(path: string, context: Context) {
-    return this.#file(context, async (): Promise<DirReader> => {
-      const directory = this.#path(path);
-      const names = await this.#fs.readdir(directory);
-      let offset = 0;
-      let closed = false;
-      return {
-        next: (maxEntries, nextContext) =>
-          this.#file(nextContext, async () => {
-            if (closed || !Number.isSafeInteger(maxEntries) || maxEntries < 1) {
-              throw new FileError("invalid", "The directory reader is closed or the page empty.");
-            }
-            const entries: FileInfo[] = [];
-            while (entries.length < maxEntries && offset < names.length) {
-              // Entries removed since the reader opened are skipped.
-              const entry = this.#fs.resolvePath(directory, names[offset++]!);
-              const info = await this.#info(entry).then((value) => value, () => undefined);
-              if (info !== undefined) entries.push(info);
-            }
-            return { entries, done: offset >= names.length };
-          }),
-        close: () => {
-          closed = true;
-          return Promise.resolve();
-        },
-      };
-    }, path);
+    return this.#file(
+      context,
+      async (): Promise<DirReader> => {
+        const directory = this.#path(path);
+        const names = await this.#fs.readdir(directory);
+        let offset = 0;
+        let closed = false;
+        return {
+          next: (maxEntries, nextContext) =>
+            this.#file(nextContext, async () => {
+              if (closed || !Number.isSafeInteger(maxEntries) || maxEntries < 1) {
+                throw new FileError("invalid", "The directory reader is closed or the page empty.");
+              }
+              const entries: FileInfo[] = [];
+              while (entries.length < maxEntries && offset < names.length) {
+                // Entries removed since the reader opened are skipped.
+                const entry = this.#fs.resolvePath(directory, names[offset++]!);
+                const info = await this.#info(entry).then(
+                  (value) => value,
+                  () => undefined,
+                );
+                if (info !== undefined) entries.push(info);
+              }
+              return { entries, done: offset >= names.length };
+            }),
+          close: () => {
+            closed = true;
+            return Promise.resolve();
+          },
+        };
+      },
+      path,
+    );
   }
 
   openBinaryReader(path: string, options: { noFollow?: boolean } | undefined, context: Context) {
-    return this.#file(context, async (): Promise<BinaryReader> => {
-      const absolute = this.#path(path);
-      const link = await this.#fs.lstat(absolute);
-      if (options?.noFollow && link.isSymbolicLink) {
-        throw new FileError("invalid", "The path is a symbolic link.", path);
-      }
-      const stat = await this.#fs.stat(absolute);
-      if (stat.isDirectory) throw new FileError("is_directory", "The path is a directory.", path);
-      if (!stat.isFile) throw new FileError("invalid", "The path is not a regular file.", path);
-      const bytes = await this.#fs.readFileBuffer(absolute);
-      const info: FileInfo = {
-        ...await this.#info(absolute),
-        kind: "file",
-        size: bytes.byteLength,
-      };
-      return {
-        info: (infoContext) => this.#file(infoContext, () => info),
-        read: (offset, length, readContext) =>
-          this.#file(readContext, () => {
-            if (
-              !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) ||
-              length < 0
-            ) throw new FileError("invalid", "Invalid read range.", path);
-            return bytes.slice(offset, offset + length);
-          }),
-        scanLines: (range, scanContext) =>
-          this.#file(scanContext, () => {
-            const scanner = new LineScanner(range.startLine, range.endLine);
-            scanner.push(bytes);
-            return scanner.finish();
-          }),
-        close: () => Promise.resolve(),
-      };
-    }, path);
+    return this.#file(
+      context,
+      async (): Promise<BinaryReader> => {
+        const absolute = this.#path(path);
+        const link = await this.#fs.lstat(absolute);
+        if (options?.noFollow && link.isSymbolicLink) {
+          throw new FileError("invalid", "The path is a symbolic link.", path);
+        }
+        const stat = await this.#fs.stat(absolute);
+        if (stat.isDirectory) throw new FileError("is_directory", "The path is a directory.", path);
+        if (!stat.isFile) throw new FileError("invalid", "The path is not a regular file.", path);
+        const bytes = await this.#fs.readFileBuffer(absolute);
+        const info: FileInfo = {
+          ...(await this.#info(absolute)),
+          kind: "file",
+          size: bytes.byteLength,
+        };
+        return {
+          info: (infoContext) => this.#file(infoContext, () => info),
+          read: (offset, length, readContext) =>
+            this.#file(readContext, () => {
+              if (
+                !Number.isSafeInteger(offset) ||
+                offset < 0 ||
+                !Number.isSafeInteger(length) ||
+                length < 0
+              )
+                throw new FileError("invalid", "Invalid read range.", path);
+              return bytes.slice(offset, offset + length);
+            }),
+          scanLines: (range, scanContext) =>
+            this.#file(scanContext, () => {
+              const scanner = new LineScanner(range.startLine, range.endLine);
+              scanner.push(bytes);
+              return scanner.finish();
+            }),
+          close: () => Promise.resolve(),
+        };
+      },
+      path,
+    );
   }
 
   openTextLineReader(path: string, context: Context) {
-    return this.#file(context, async (): Promise<TextLineReader> => {
-      const text = await this.#fs.readFile(this.#path(path));
-      let offset = 0;
-      return {
-        readLine: (lineContext) =>
-          this.#file(lineContext, () => {
-            if (offset >= text.length) return undefined;
-            const end = text.indexOf("\n", offset);
-            const terminated = end !== -1;
-            const line = text.slice(offset, terminated ? end : text.length);
-            offset = terminated ? end + 1 : text.length;
-            return { text: line, terminated };
-          }),
-        close: () => Promise.resolve(),
-      };
-    }, path);
+    return this.#file(
+      context,
+      async (): Promise<TextLineReader> => {
+        const text = await this.#fs.readFile(this.#path(path));
+        let offset = 0;
+        return {
+          readLine: (lineContext) =>
+            this.#file(lineContext, () => {
+              if (offset >= text.length) return undefined;
+              const end = text.indexOf("\n", offset);
+              const terminated = end !== -1;
+              const line = text.slice(offset, terminated ? end : text.length);
+              offset = terminated ? end + 1 : text.length;
+              return { text: line, terminated };
+            }),
+          close: () => Promise.resolve(),
+        };
+      },
+      path,
+    );
   }
 
   readTextLines(path: string, options: { maxLines?: number } | undefined, context: Context) {
-    return this.#file(context, async () => {
-      const lines = (await this.#fs.readFile(this.#path(path))).split("\n");
-      if (lines.at(-1) === "") lines.pop();
-      return lines.slice(0, options?.maxLines ?? lines.length);
-    }, path);
+    return this.#file(
+      context,
+      async () => {
+        const lines = (await this.#fs.readFile(this.#path(path))).split("\n");
+        if (lines.at(-1) === "") lines.pop();
+        return lines.slice(0, options?.maxLines ?? lines.length);
+      },
+      path,
+    );
   }
 
   watch(): Promise<Result<FileWatcher, FileError>> {
@@ -314,9 +344,8 @@ export class JustBashEnv implements ExecutionEnv {
     const controller = new AbortController();
     this.#active.add(controller);
     using _active = { [Symbol.dispose]: () => this.#active.delete(controller) };
-    const timeout = options?.timeout === undefined
-      ? undefined
-      : AbortSignal.timeout(options.timeout * 1000);
+    const timeout =
+      options?.timeout === undefined ? undefined : AbortSignal.timeout(options.timeout * 1000);
     const signal = AbortSignal.any([
       controller.signal,
       ...(context.abortSignal ? [context.abortSignal] : []),
@@ -365,7 +394,8 @@ export class JustBashEnv implements ExecutionEnv {
     if (spill === undefined) return undefined;
     const lines = (output.match(/\n/g)?.length ?? 0) + (output.endsWith("\n") ? 0 : 1);
     if (
-      new TextEncoder().encode(output).byteLength <= spill.afterBytes && lines <= spill.afterLines
+      new TextEncoder().encode(output).byteLength <= spill.afterBytes &&
+      lines <= spill.afterLines
     ) {
       return undefined;
     }
@@ -383,7 +413,8 @@ export class JustBashEnv implements ExecutionEnv {
  */
 function shellWords(argv: readonly string[]): string {
   const [program, flag, ...rest] = argv;
-  const login = /^(?:\/bin\/|\/usr\/bin\/)?(?:ba)?sh$/.test(program ?? "") &&
+  const login =
+    /^(?:\/bin\/|\/usr\/bin\/)?(?:ba)?sh$/.test(program ?? "") &&
     (flag === "-lc" || flag === "-cl");
   const words = login ? [program!, "-c", ...rest] : argv;
   return words.map((word) => `'${word.replaceAll("'", "'\\''")}'`).join(" ");

@@ -1,5 +1,5 @@
-import * as DenoFileSystem from "@effect/platform-deno/DenoFileSystem";
-import * as DenoPath from "@effect/platform-deno/DenoPath";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as NodePath from "@effect/platform-node/NodePath";
 import type { RunnerId } from "@openorb/protocol/runner-api";
 import { Layer } from "effect";
 import type { GuestImage } from "../environment/gondolin/guest-image/installer.ts";
@@ -20,7 +20,7 @@ export interface RunnerServicesOptions {
 
 /** Every service the runner RPC handlers need, over one Gondolin provider. */
 export function runnerServicesLayer(options: RunnerServicesOptions) {
-  const platformLive = Layer.merge(DenoFileSystem.layer, DenoPath.layer);
+  const platformLive = Layer.merge(NodeFileSystem.layer, NodePath.layer);
   return environmentSupervisorLayer({
     runnerId: options.runnerId,
     cpuCount: options.vmCpuCount,

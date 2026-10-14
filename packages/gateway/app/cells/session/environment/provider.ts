@@ -102,8 +102,10 @@ export function receivesCredentials(
   capabilities: AgentEnvironmentCapabilities,
   guestCredentialOptIn: boolean,
 ): boolean {
-  return capabilities.credentials === "mediated" ||
-    (capabilities.credentials === "opt-in" && guestCredentialOptIn);
+  return (
+    capabilities.credentials === "mediated" ||
+    (capabilities.credentials === "opt-in" && guestCredentialOptIn)
+  );
 }
 
 export interface AgentEnvironmentProvider {

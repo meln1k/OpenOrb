@@ -21,8 +21,7 @@ export const MVP_7: GuestImageRelease = {
       gondolinArchitecture: "aarch64",
       gondolinBuildId: "afff4c38-c758-5afa-af40-6842ffd0445f",
       manifestSha256: "4718872688e1c96e9d0c774c2267f44b07d98df89ac748679f17e500001a989d",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-7/gondolin-image-openorb-guest-mvp-7-aarch64.tar.gz",
+      url: "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-7/gondolin-image-openorb-guest-mvp-7-aarch64.tar.gz",
       sizeBytes: 819_511_832,
       sha256: "147900b6b91cce3a210037b34215d8272de052972f930616a6418bc28527a96f",
     },
@@ -30,8 +29,7 @@ export const MVP_7: GuestImageRelease = {
       gondolinArchitecture: "x86_64",
       gondolinBuildId: "637428c8-97a1-5e0e-8a6d-52545c7529b6",
       manifestSha256: "a9b5e6787ad96c0b30a834f3b54e12e5e7c7f70a3b9f6ec0077c5ebe29c9492f",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-7/gondolin-image-openorb-guest-mvp-7-x86_64.tar.gz",
+      url: "https://github.com/meln1k/openorb/releases/download/guest-image-mvp-7/gondolin-image-openorb-guest-mvp-7-x86_64.tar.gz",
       sizeBytes: 839_344_878,
       sha256: "ec628308b30315d968a931d43a2c1139a66c5341b615c11b1122800401a344f4",
     },
@@ -45,8 +43,7 @@ export const RELEASE_1: GuestImageRelease = {
       gondolinArchitecture: "aarch64",
       gondolinBuildId: "7ebace0a-2463-56b4-8b7e-806c28e754e7",
       manifestSha256: "f496ff7a727ed968e3bffddf1ffe20b3eb4221e26fbd9b6c8104e2900d0ed86a",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-release-1/gondolin-image-openorb-guest-release-1-aarch64.tar.gz",
+      url: "https://github.com/meln1k/openorb/releases/download/guest-image-release-1/gondolin-image-openorb-guest-release-1-aarch64.tar.gz",
       sizeBytes: 776_922_835,
       sha256: "e0d0ebc27bc06f6b4dfb7dd2a00c2087775ff733f8ea744b311bdb442e310e9e",
     },
@@ -54,8 +51,7 @@ export const RELEASE_1: GuestImageRelease = {
       gondolinArchitecture: "x86_64",
       gondolinBuildId: "5e6d58f2-2f50-527a-aaa0-13511ad4b001",
       manifestSha256: "7dac33ac65e848724235b588df9e79e9855e1d8aae97b28844350632f0bd7330",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-release-1/gondolin-image-openorb-guest-release-1-x86_64.tar.gz",
+      url: "https://github.com/meln1k/openorb/releases/download/guest-image-release-1/gondolin-image-openorb-guest-release-1-x86_64.tar.gz",
       sizeBytes: 796_290_881,
       sha256: "e192e5747bff805d92e7c2b81c45a2ce2a0de54509f01c98512f4be1f2f885bf",
     },
@@ -69,8 +65,7 @@ export const RELEASE_2: GuestImageRelease = {
       gondolinArchitecture: "aarch64",
       gondolinBuildId: "76d0056e-a2d0-584b-8e3a-70f7b9f08cdc",
       manifestSha256: "ad41fed90eee1715f16cb49dbd134a8d5c75511bd0251b0396b7d4c007e388f5",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-release-2/gondolin-image-openorb-guest-release-2-aarch64.tar.gz",
+      url: "https://github.com/meln1k/openorb/releases/download/guest-image-release-2/gondolin-image-openorb-guest-release-2-aarch64.tar.gz",
       sizeBytes: 777_685_974,
       sha256: "b01200ece37340a1dff964a18d448b7971cc8e8725e4a37d55aec1ae7c41a62a",
     },
@@ -78,8 +73,7 @@ export const RELEASE_2: GuestImageRelease = {
       gondolinArchitecture: "x86_64",
       gondolinBuildId: "698ff874-dc85-5d79-94cf-0403eb974946",
       manifestSha256: "f358bb309353bbe616433322bdf164beae665bcadb344d991db300159467ea2d",
-      url:
-        "https://github.com/meln1k/openorb/releases/download/guest-image-release-2/gondolin-image-openorb-guest-release-2-x86_64.tar.gz",
+      url: "https://github.com/meln1k/openorb/releases/download/guest-image-release-2/gondolin-image-openorb-guest-release-2-x86_64.tar.gz",
       sizeBytes: 797_123_515,
       sha256: "7cfe13b1c4178b4fb2cba61684cb7a9e8b7a893098096247623a863abaa6ad16",
     },

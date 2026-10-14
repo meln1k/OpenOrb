@@ -1,16 +1,16 @@
 # OpenOrb Agent Guide
 
 This Remix 3 app is the public native celld Worker. `server.ts` exports the fetch handler and
-the `Workspace` and `Runners` Durable Object classes; it is not a Deno HTTP entrypoint.
+the `Workspace` and `Runners` Durable Object classes; it is not a Node HTTP entrypoint.
 
 ## Commands
 
 ```sh
-deno install --frozen
-deno task --filter @openorb/gateway build
-deno task dev:gateway
-deno task check
-deno task test
+npm ci
+npm run build --workspace @openorb/gateway
+npm run dev:gateway
+npm run check
+npm test
 ```
 
 `start` runs celld using already-built bytes and prepared bindings. `dev` prepares the private

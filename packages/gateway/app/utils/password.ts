@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "@std/crypto/timing-safe-equal";
+import { timingSafeEqual } from "@jsr/std__crypto/timing-safe-equal";
 import { tryAsync } from "@openorb/result";
 
 export const PASSWORD_ALGORITHM = "PBKDF2" as const;
@@ -28,10 +28,7 @@ export async function hashPassword(password: string): Promise<PasswordHash> {
   };
 }
 
-export async function verifyPassword(
-  password: string,
-  stored: PasswordHash,
-): Promise<boolean> {
+export async function verifyPassword(password: string, stored: PasswordHash): Promise<boolean> {
   const [derivedKey, deriveError] = await tryAsync(derive(password, stored.salt), () => false);
   if (deriveError !== undefined) return false;
 

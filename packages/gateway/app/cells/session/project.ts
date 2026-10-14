@@ -131,9 +131,12 @@ export class ProjectIntegration {
   loadSkills(): Promise<void> {
     const record = this.#host.record();
     if (
-      this.#skills !== undefined || this.#skillsScan !== undefined ||
-      record?.checkoutState !== "available" || record.environmentState !== "running"
-    ) return this.#skillsScan ?? Promise.resolve();
+      this.#skills !== undefined ||
+      this.#skillsScan !== undefined ||
+      record?.checkoutState !== "available" ||
+      record.environmentState !== "running"
+    )
+      return this.#skillsScan ?? Promise.resolve();
     this.#skillsScan = (async () => {
       const [skills, failure] = await tryAsync(
         discoverRepositorySkills(
@@ -169,10 +172,13 @@ export class ProjectIntegration {
   async refresh(): Promise<void> {
     const record = this.#host.record();
     if (
-      record === undefined || record.checkoutState !== "available" ||
-      record.environmentState !== "running" || !record.environmentReachable ||
+      record === undefined ||
+      record.checkoutState !== "available" ||
+      record.environmentState !== "running" ||
+      !record.environmentReachable ||
       record.operation !== undefined
-    ) return;
+    )
+      return;
     const previous = readGitSnapshot(this.#host.storage);
     const [snapshot, failure] = await tryAsync(
       generateGitSnapshot(this.#host.env, record, context),
@@ -186,9 +192,11 @@ export class ProjectIntegration {
   }
 
   /** One byte range of a full patch, read from the guest; needs a running environment. */
-  async patchChunk(
-    input: { snapshotId: string; section: SessionGitPatchSection; offset: number },
-  ): Promise<GitPatchChunk> {
+  async patchChunk(input: {
+    snapshotId: string;
+    section: SessionGitPatchSection;
+    offset: number;
+  }): Promise<GitPatchChunk> {
     const snapshot = readGitSnapshot(this.#host.storage);
     if (snapshot?.snapshotId !== input.snapshotId) {
       throw new SessionError("This Git Snapshot was replaced; refresh the changes view.");
@@ -208,9 +216,11 @@ export class ProjectIntegration {
   }
 
   /** Stages or unstages one file and returns the new mutation revision. */
-  async updateFile(
-    input: { action: SessionGitFileAction; path: string; previousPath?: string },
-  ): Promise<number> {
+  async updateFile(input: {
+    action: SessionGitFileAction;
+    path: string;
+    previousPath?: string;
+  }): Promise<number> {
     const record = this.#host.record()!;
     const result = await updateGitFile(this.#host.env, record, input, context);
     if (!result.ok) {

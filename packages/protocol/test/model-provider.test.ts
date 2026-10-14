@@ -1,8 +1,9 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 
-import { modelReference, parseModelReference } from "@/src/index.ts";
+import { modelReference, parseModelReference } from "../src/index.ts";
 
-Deno.test("treats provider and model as one reference split only at the first slash", () => {
+test("treats provider and model as one reference split only at the first slash", () => {
   const reference = modelReference("openai", "organization/model/version");
 
   assertEquals(reference, "openai/organization/model/version");

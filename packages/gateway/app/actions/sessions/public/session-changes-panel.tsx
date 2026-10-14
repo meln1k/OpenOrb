@@ -1,7 +1,7 @@
 import { css, type Handle } from "remix/component";
 
-import { Icon } from "@/app/ui/public/components/icons.tsx";
-import { screens } from "@/app/ui/public/responsive.ts";
+import { Icon } from "../../../ui/public/components/icons.tsx";
+import { screens } from "../../../ui/public/responsive.ts";
 import { SessionChangeFiles } from "./session-change-files.tsx";
 import { SessionChangesScope } from "./session-changes-resource.tsx";
 
@@ -29,9 +29,8 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
     }
 
     const reconcileActivation = () => {
-      const next = variant === "sidebar"
-        ? desktop.matches && sidebar?.open === true
-        : !desktop.matches;
+      const next =
+        variant === "sidebar" ? desktop.matches && sidebar?.open === true : !desktop.matches;
       if (active === next) return;
       active = next;
       changes.setViewActive(activation, active);
@@ -43,19 +42,22 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
     changes.addEventListener("change", updateActiveView, { signal: handle.signal });
     desktop.addEventListener("change", reconcileActivation);
     sidebar?.addEventListener("toggle", reconcileActivation);
-    handle.signal.addEventListener("abort", () => {
-      desktop.removeEventListener("change", reconcileActivation);
-      sidebar?.removeEventListener("toggle", reconcileActivation);
-      changes.setViewActive(activation, false);
-    }, { once: true });
+    handle.signal.addEventListener(
+      "abort",
+      () => {
+        desktop.removeEventListener("change", reconcileActivation);
+        sidebar?.removeEventListener("toggle", reconcileActivation);
+        changes.setViewActive(activation, false);
+      },
+      { once: true },
+    );
     reconcileActivation();
   });
 
   return () => {
     const { loaded, loadError, operationError } = changes.projection;
-    const displayedFileCount = loaded === undefined
-      ? 0
-      : new Set(loaded.changes.rows.map((row) => row.file.path)).size;
+    const displayedFileCount =
+      loaded === undefined ? 0 : new Set(loaded.changes.rows.map((row) => row.file.path)).size;
     return (
       <section
         id={panelId}
@@ -63,79 +65,81 @@ export function SessionChangesPanel(handle: Handle<SessionChangesPanelProps>) {
         data-variant={variant}
         mix={changesPanelStyle}
       >
-        {variant === "sidebar"
-          ? (
-            <header mix={panelHeaderStyle}>
-              <span mix={panelTitleStyle}>
-                <Icon name="file-diff" size={18} />
-                <strong data-slot="changes-tab">Changes</strong>
-              </span>
-              {loaded ? <span mix={changedCountStyle}>{displayedFileCount}</span> : null}
-            </header>
-          )
-          : null}
+        {variant === "sidebar" ? (
+          <header mix={panelHeaderStyle}>
+            <span mix={panelTitleStyle}>
+              <Icon name="file-diff" size={18} />
+              <strong data-slot="changes-tab">Changes</strong>
+            </span>
+            {loaded ? <span mix={changedCountStyle}>{displayedFileCount}</span> : null}
+          </header>
+        ) : null}
         <div mix={panelContentStyle}>
-          {!loaded && !loadError
-            ? <p role="status" mix={panelMessageStyle}>Loading changes…</p>
-            : loadError && !loaded
-            ? <p role="alert" mix={panelMessageStyle}>{loadError}</p>
-            : loaded
-            ? (
-              <>
-                {loadError ? <p role="alert" mix={operationErrorStyle}>{loadError}</p> : null}
-                {loaded.snapshot.stale || loaded.snapshot.completeness === "incomplete" ||
-                    loaded.snapshot.truncated
-                  ? (
-                    <div mix={snapshotWarningsStyle}>
-                      {loaded.snapshot.stale ? <span>Stale</span> : null}
-                      {loaded.snapshot.completeness === "incomplete"
-                        ? <span>Incomplete</span>
-                        : null}
-                      {loaded.snapshot.truncated ? <span>Truncated</span> : null}
-                    </div>
-                  )
-                  : null}
-                {loaded.snapshot.branch || loaded.snapshot.head
-                  ? (
-                    <div data-slot="git-revision" mix={gitRevisionStyle}>
-                      {loaded.snapshot.branch
-                        ? <span title={loaded.snapshot.branch}>{loaded.snapshot.branch}</span>
-                        : <span>Detached HEAD</span>}
-                      {loaded.snapshot.head
-                        ? (
-                          <code title={loaded.snapshot.head}>
-                            {loaded.snapshot.head.slice(0, 12)}
-                          </code>
-                        )
-                        : null}
-                    </div>
-                  )
-                  : null}
-                {loaded.snapshot.message
-                  ? <p role="status" mix={snapshotNoticeStyle}>{loaded.snapshot.message}</p>
-                  : null}
-                {operationError
-                  ? <p role="alert" mix={operationErrorStyle}>{operationError}</p>
-                  : null}
-                {loaded.renderError
-                  ? <p role="alert" mix={operationErrorStyle}>{loaded.renderError}</p>
-                  : null}
-                {loaded.changes.rows.length === 0
-                  ? <p mix={panelMessageStyle}>No staged or unstaged changes.</p>
-                  : active
-                  ? (
-                    <SessionChangeFiles
-                      key={String(changes.canMutate)}
-                      {...loaded.changes}
-                      mutationsDisabled={!changes.canMutate}
-                      onUpdate={(action, path, previousPath) =>
-                        changes.updateFile(action, path, previousPath)}
-                    />
-                  )
-                  : null}
-              </>
-            )
-            : null}
+          {!loaded && !loadError ? (
+            <p role="status" mix={panelMessageStyle}>
+              Loading changes…
+            </p>
+          ) : loadError && !loaded ? (
+            <p role="alert" mix={panelMessageStyle}>
+              {loadError}
+            </p>
+          ) : loaded ? (
+            <>
+              {loadError ? (
+                <p role="alert" mix={operationErrorStyle}>
+                  {loadError}
+                </p>
+              ) : null}
+              {loaded.snapshot.stale ||
+              loaded.snapshot.completeness === "incomplete" ||
+              loaded.snapshot.truncated ? (
+                <div mix={snapshotWarningsStyle}>
+                  {loaded.snapshot.stale ? <span>Stale</span> : null}
+                  {loaded.snapshot.completeness === "incomplete" ? <span>Incomplete</span> : null}
+                  {loaded.snapshot.truncated ? <span>Truncated</span> : null}
+                </div>
+              ) : null}
+              {loaded.snapshot.branch || loaded.snapshot.head ? (
+                <div data-slot="git-revision" mix={gitRevisionStyle}>
+                  {loaded.snapshot.branch ? (
+                    <span title={loaded.snapshot.branch}>{loaded.snapshot.branch}</span>
+                  ) : (
+                    <span>Detached HEAD</span>
+                  )}
+                  {loaded.snapshot.head ? (
+                    <code title={loaded.snapshot.head}>{loaded.snapshot.head.slice(0, 12)}</code>
+                  ) : null}
+                </div>
+              ) : null}
+              {loaded.snapshot.message ? (
+                <p role="status" mix={snapshotNoticeStyle}>
+                  {loaded.snapshot.message}
+                </p>
+              ) : null}
+              {operationError ? (
+                <p role="alert" mix={operationErrorStyle}>
+                  {operationError}
+                </p>
+              ) : null}
+              {loaded.renderError ? (
+                <p role="alert" mix={operationErrorStyle}>
+                  {loaded.renderError}
+                </p>
+              ) : null}
+              {loaded.changes.rows.length === 0 ? (
+                <p mix={panelMessageStyle}>No staged or unstaged changes.</p>
+              ) : active ? (
+                <SessionChangeFiles
+                  key={String(changes.canMutate)}
+                  {...loaded.changes}
+                  mutationsDisabled={!changes.canMutate}
+                  onUpdate={(action, path, previousPath) =>
+                    changes.updateFile(action, path, previousPath)
+                  }
+                />
+              ) : null}
+            </>
+          ) : null}
         </div>
       </section>
     );

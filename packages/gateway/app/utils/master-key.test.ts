@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertRejects } from "@jsr/std__assert";
 
 import {
   decodeMasterKey,
@@ -6,12 +7,12 @@ import {
   loadMasterKey,
   MASTER_KEY_BYTE_LENGTH,
   MasterKeyError,
-} from "@/app/utils/master-key.ts";
+} from "./master-key.ts";
 
 const HEX = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 const BASE64 = Uint8Array.fromHex(HEX).toBase64();
 
-Deno.test("loads a 256-bit master key from hex or base64", async () => {
+test("loads a 256-bit master key from hex or base64", async () => {
   for (const source of [HEX, BASE64]) {
     const masterKey = await loadMasterKey(source);
     assertEquals(masterKey.version, 1);
@@ -21,7 +22,7 @@ Deno.test("loads a 256-bit master key from hex or base64", async () => {
   }
 });
 
-Deno.test("fails visibly when the master key is missing or malformed", async () => {
+test("fails visibly when the master key is missing or malformed", async () => {
   await assertRejects(() => loadMasterKey(undefined), MasterKeyError);
   await assertRejects(() => loadMasterKey(""), MasterKeyError);
   await assertRejects(() => loadMasterKey("   "), MasterKeyError);
@@ -32,14 +33,14 @@ Deno.test("fails visibly when the master key is missing or malformed", async () 
   await assertRejects(() => loadMasterKey(HEX.repeat(2)), MasterKeyError);
 });
 
-Deno.test("rejects imported keys of the wrong length", async () => {
+test("rejects imported keys of the wrong length", async () => {
   await assertRejects(() => importMasterKey(new Uint8Array(31)), MasterKeyError);
   await assertRejects(() => importMasterKey(new Uint8Array(33)), MasterKeyError);
   const masterKey = await importMasterKey(new Uint8Array(MASTER_KEY_BYTE_LENGTH).fill(1));
   assertEquals(masterKey.version, 1);
 });
 
-Deno.test("error messages never include the submitted key material", async () => {
+test("error messages never include the submitted key material", async () => {
   const attempts = ["short", "not-a-valid-key-0000000000000000000000000000", "00".repeat(31)];
   for (const attempt of attempts) {
     let message = "";
@@ -54,7 +55,7 @@ Deno.test("error messages never include the submitted key material", async () =>
   }
 });
 
-Deno.test("decodeMasterKey parses exactly 32 bytes from hex and base64", () => {
+test("decodeMasterKey parses exactly 32 bytes from hex and base64", () => {
   const fromHex = decodeMasterKey(HEX);
   assertEquals(fromHex.byteLength, 32);
   assertEquals(fromHex[0], 0x00);

@@ -156,7 +156,10 @@ export async function generateGitSnapshot(
   const directory = await createSnapshotDirectory(env, context);
   const write = await capture(
     env,
-    writePatchesCommand(directory, untracked.map((file) => file.path)),
+    writePatchesCommand(
+      directory,
+      untracked.map((file) => file.path),
+    ),
     MAX_STATUS_BYTES,
     context,
   );
@@ -170,17 +173,21 @@ export async function generateGitSnapshot(
     unstaged: boundedFiles.value.unstaged.map((file) =>
       file.kind === "untracked"
         ? { ...file, diffState: written.untrackedStates.get(file.path) ?? "truncated" }
-        : file
+        : file,
     ),
   };
   const previews = boundPatches(staged?.preview ?? "", unstaged?.preview ?? "");
   const stagedTruncated = staged?.truncated ?? true;
   const unstagedTruncated = (unstaged?.truncated ?? true) || written.untrackedTruncated;
-  const commandFailed = status.exitCode !== 0 || stagedStat.exitCode !== 0 ||
-    unstagedStat.exitCode !== 0 || write.exitCode !== 0 || staged === undefined ||
+  const commandFailed =
+    status.exitCode !== 0 ||
+    stagedStat.exitCode !== 0 ||
+    unstagedStat.exitCode !== 0 ||
+    write.exitCode !== 0 ||
+    staged === undefined ||
     unstaged === undefined;
-  const truncated = status.truncated || boundedFiles.truncated || stagedTruncated ||
-    unstagedTruncated;
+  const truncated =
+    status.truncated || boundedFiles.truncated || stagedTruncated || unstagedTruncated;
   const snapshotId = await hashSnapshot(parsedStatus, files_, staged, unstaged);
   // Keep only this snapshot's patches; a viewer of an older snapshot refreshes.
   await capture(env, publishPatchesCommand(directory, snapshotId), 4_096, context);
@@ -196,8 +203,8 @@ export async function generateGitSnapshot(
     ...(commandFailed
       ? { message: "Some Git changes could not be read. This snapshot may be incomplete." }
       : truncated
-      ? { message: "The Git Snapshot was truncated to its safety limits." }
-      : {}),
+        ? { message: "The Git Snapshot was truncated to its safety limits." }
+        : {}),
     sections: {
       staged: {
         files: files_.staged,
@@ -242,9 +249,8 @@ export async function readGitPatchChunk(
   if (!read.ok || read.value.length === 0) {
     throw new GitSnapshotError("The full patch could not be read from the environment.");
   }
-  const end = offset + read.value.length >= fullPatchBytes
-    ? read.value.length
-    : utf8Boundary(read.value);
+  const end =
+    offset + read.value.length >= fullPatchBytes ? read.value.length : utf8Boundary(read.value);
   const bytes = sanitizeSameLength(read.value.subarray(0, end));
   const nextOffset = offset + bytes.length;
   return { bytes, nextOffset, done: nextOffset >= fullPatchBytes };
@@ -266,19 +272,22 @@ export async function updateGitFile(
       message: "Git changes are unavailable because the session checkout is incomplete.",
     };
   }
-  const paths = input.previousPath === undefined || input.previousPath === input.path
-    ? [input.path]
-    : [input.path, input.previousPath];
-  const args = input.action === "stage"
-    ? ["add", "-A", "--", ...paths]
-    : ["restore", "--staged", "--", ...paths];
+  const paths =
+    input.previousPath === undefined || input.previousPath === input.path
+      ? [input.path]
+      : [input.path, input.previousPath];
+  const args =
+    input.action === "stage"
+      ? ["add", "-A", "--", ...paths]
+      : ["restore", "--staged", "--", ...paths];
   const result = await capture(env, mutationGitCommand(args), 4_096, context);
   if (result.exitCode === 0) return { ok: true };
   return {
     ok: false,
-    message: input.action === "stage"
-      ? "The file could not be staged. Git changes are being refreshed."
-      : "The file could not be unstaged. Git changes are being refreshed.",
+    message:
+      input.action === "stage"
+        ? "The file could not be staged. Git changes are being refreshed."
+        : "The file could not be unstaged. Git changes are being refreshed.",
   };
 }
 
@@ -312,21 +321,25 @@ async function capture(
   let stdout = "";
   let bytes = 0;
   let truncated = false;
-  const result = await env.exec(argv, {
-    cwd: WORKSPACE,
-    onOutput: (text, _context, info) => {
-      if (info.stream !== "stdout") return;
-      const remaining = limit - bytes;
-      if (remaining <= 0) {
-        truncated = true;
-        return;
-      }
-      const captured = takeUtf8(text, remaining);
-      stdout += captured.value;
-      bytes += byteLength(captured.value);
-      truncated ||= captured.truncated;
+  const result = await env.exec(
+    argv,
+    {
+      cwd: WORKSPACE,
+      onOutput: (text, _context, info) => {
+        if (info.stream !== "stdout") return;
+        const remaining = limit - bytes;
+        if (remaining <= 0) {
+          truncated = true;
+          return;
+        }
+        const captured = takeUtf8(text, remaining);
+        stdout += captured.value;
+        bytes += byteLength(captured.value);
+        truncated ||= captured.truncated;
+      },
     },
-  }, context);
+    context,
+  );
   return { exitCode: result.ok ? result.value.exitCode : -1, stdout, truncated };
 }
 
@@ -415,10 +428,7 @@ interface WrittenPatches {
   readonly untrackedTruncated: boolean;
 }
 
-function parseWrittenPatches(
-  output: string,
-  untracked: readonly SessionGitFile[],
-): WrittenPatches {
+function parseWrittenPatches(output: string, untracked: readonly SessionGitFile[]): WrittenPatches {
   const fields = output.split("\0");
   const sections: Record<string, { bytes: number; sha256: string }> = {};
   const numstats: string[] = [];
@@ -561,7 +571,8 @@ function sanitizeSameLength(input: Uint8Array): Uint8Array {
     } else if (byte === 0xe2 && index + 2 < bytes.length) {
       const second = bytes[index + 1]!;
       const third = bytes[index + 2]!;
-      const bidi = (second === 0x80 && third >= 0xaa && third <= 0xae) ||
+      const bidi =
+        (second === 0x80 && third >= 0xaa && third <= 0xae) ||
         (second === 0x81 && third >= 0xa6 && third <= 0xa9);
       if (bidi) bytes.set([0xef, 0xbf, 0xbd], index);
     }
@@ -591,7 +602,8 @@ function binaryPathsFromNumstat(value: string): ReadonlySet<string> {
     const additionsEnd = value.indexOf("\t", cursor);
     const deletionsEnd = additionsEnd < 0 ? -1 : value.indexOf("\t", additionsEnd + 1);
     if (additionsEnd < 0 || deletionsEnd < 0) break;
-    const isBinary = value.slice(cursor, additionsEnd) === "-" &&
+    const isBinary =
+      value.slice(cursor, additionsEnd) === "-" &&
       value.slice(additionsEnd + 1, deletionsEnd) === "-";
     const pathStart = deletionsEnd + 1;
     if (value[pathStart] === "\0") {
@@ -657,9 +669,9 @@ function parsePorcelain(output: string): ParsedGitStatus {
       displayPath: sanitizePathForDisplay(path),
       ...(previousPath
         ? {
-          previousPath,
-          previousDisplayPath: sanitizePathForDisplay(previousPath),
-        }
+            previousPath,
+            previousDisplayPath: sanitizePathForDisplay(previousPath),
+          }
         : {}),
       ...(staged ? { staged } : {}),
       ...(unstaged ? { unstaged } : {}),
@@ -833,8 +845,12 @@ function sanitizeControls(value: string, preserveWhitespace: boolean): string {
 }
 
 function isUnsafeControl(code: number): boolean {
-  return code < 32 || (code >= 127 && code <= 159) ||
-    (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+  return (
+    code < 32 ||
+    (code >= 127 && code <= 159) ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069)
+  );
 }
 
 function takeUtf8(value: string, maxBytes: number): Utf8Capture {

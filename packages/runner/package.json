@@ -1,0 +1,47 @@
+{
+  "name": "@openorb/runner",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./agent-environment": "./src/environment/agent-environment.ts",
+    "./guest-image": "./src/environment/gondolin/guest-image/installer.ts",
+    "./guest-image-release": "./src/environment/gondolin/guest-image/release.ts",
+    "./enrollment": "./src/runtime/enrollment.ts",
+    "./gondolin": "./src/environment/gondolin/layer.ts",
+    "./identity": "./src/runtime/identity.ts",
+    "./runner-services": "./src/runtime/services.ts",
+    "./prerequisites": "./src/runtime/prerequisites.ts",
+    "./rpc-transport": "./src/connection/rpc.ts"
+  },
+  "scripts": {
+    "dev": "MSGPACKR_NATIVE_ACCELERATION_DISABLED=true node --watch ../../scripts/run-development-runner.ts",
+    "start": "MSGPACKR_NATIVE_ACCELERATION_DISABLED=true node ../../scripts/run-development-runner.ts",
+    "build": "node ../../scripts/build-runner.ts"
+  },
+  "dependencies": {
+    "@earendil-works/gondolin": "0.12.0",
+    "@effect/platform-node": "4.0.0",
+    "@jsr/std__cli": "1.0.32",
+    "@jsr/std__tar": "0.1.10",
+    "@openorb/protocol": "*",
+    "@openorb/result": "*",
+    "@opentelemetry/api": "1.9.0",
+    "@remix-run/data-schema": "1.0.0",
+    "effect": "4.0.0"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.2.0",
+    "@earendil-works/pi-durable": "1.2.0",
+    "@jsr/std__assert": "1.0.19",
+    "@openorb/pi-env": "*",
+    "@tsdown/exe": "0.23.1",
+    "@types/ws": "8.18.1",
+    "ws": "8.22.0"
+  },
+  "engines": {
+    "node": ">=26.11.1"
+  }
+}

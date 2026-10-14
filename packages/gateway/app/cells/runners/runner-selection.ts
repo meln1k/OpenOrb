@@ -3,20 +3,20 @@ import type { WorkspaceId } from "@openorb/protocol/runner-api";
 
 import type { RunnerRecord, WorkspaceApi } from "../workspace/api.ts";
 import type { RunnerLiveState } from "./runner-registry.ts";
-import type { AppServices } from "@/app/middleware/services.ts";
+import type { AppServices } from "../../middleware/services.ts";
 
 export const MIN_RUNNER_DISK_FREE_MIB = 10 * 1024;
 
 export type RunnerSelectionResult =
   | {
-    status: "selected";
-    runner: RunnerRecord;
-    liveState: RunnerLiveState;
-  }
+      status: "selected";
+      runner: RunnerRecord;
+      liveState: RunnerLiveState;
+    }
   | {
-    status: "rejected";
-    message: string;
-  };
+      status: "rejected";
+      message: string;
+    };
 
 export async function selectRunnerForWorkspace(
   workspaceId: WorkspaceId,
@@ -38,13 +38,17 @@ export async function selectRunnerForWorkspace(
     const assessed = await assessRunner(workspaceId, runner, orbSize, connections);
     if (assessed.status === "selected") available.push(assessed);
   }
-  available.sort((left, right) =>
-    left.liveState.capacity.activeSessions - right.liveState.capacity.activeSessions ||
-    left.runner.id.localeCompare(right.runner.id)
+  available.sort(
+    (left, right) =>
+      left.liveState.capacity.activeSessions - right.liveState.capacity.activeSessions ||
+      left.runner.id.localeCompare(right.runner.id),
   );
 
-  return available[0] ?? rejected(
-    `No connected runner has available capacity and at least ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,
+  return (
+    available[0] ??
+    rejected(
+      `No connected runner has available capacity and at least ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,
+    )
   );
 }
 
@@ -60,9 +64,7 @@ async function assessRunner(
 
   const { diskFreeMiB } = liveState.capacity;
   if (diskFreeMiB < MIN_RUNNER_DISK_FREE_MIB) {
-    return rejected(
-      `Runner has less than ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`,
-    );
+    return rejected(`Runner has less than ${MIN_RUNNER_DISK_FREE_MIB} MiB of free disk space.`);
   }
   const resources = orbSizeResources(orbSize);
   if (

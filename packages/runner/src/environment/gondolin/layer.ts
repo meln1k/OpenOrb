@@ -14,7 +14,6 @@ import {
   createOpenOrbNetworkVmOptions,
   type OpenOrbGitHubMediationOptions,
 } from "./network-mediation.ts";
-import { installGondolinTlsCompatibility } from "./tls-compatibility.ts";
 import {
   assertPersistentRootDiskDetached,
   initializePersistentRootDisk,
@@ -158,16 +157,20 @@ function makeGondolinEnvironment(
         prepareGuestImageForVm(guestImage),
         (cause) => new AgentEnvironmentError("The guest image could not be prepared.", cause),
       );
-      const networkOptions = github !== undefined || environmentSecrets !== undefined
-        ? yield* fromLegacyResult(
-          Promise.resolve(createOpenOrbNetworkVmOptions({
-            ...(github === undefined ? {} : { github }),
-            ...(environmentSecrets === undefined ? {} : { environmentSecrets }),
-          })),
-          (cause) => new AgentEnvironmentError("Network mediation could not be configured.", cause),
-        )
-        : undefined;
-      if (softwareEmulation && Deno.build.os === "linux") {
+      const networkOptions =
+        github !== undefined || environmentSecrets !== undefined
+          ? yield* fromLegacyResult(
+              Promise.resolve(
+                createOpenOrbNetworkVmOptions({
+                  ...(github === undefined ? {} : { github }),
+                  ...(environmentSecrets === undefined ? {} : { environmentSecrets }),
+                }),
+              ),
+              (cause) =>
+                new AgentEnvironmentError("Network mediation could not be configured.", cause),
+            )
+          : undefined;
+      if (softwareEmulation && process.platform === "linux") {
         yield* Effect.logWarning("gondolin.software-emulation").pipe(
           Effect.annotateLogs({
             ...logAnnotations,
@@ -177,7 +180,6 @@ function makeGondolinEnvironment(
       }
       const vm = yield* Effect.tryPromise({
         try: async () => {
-          installGondolinTlsCompatibility();
           const [, rootDiskError] = await validatePersistentRootDisk(rootDiskPath, {
             backingPath: imagePath.rootfsPath,
             backingFormat: "raw",
@@ -203,92 +205,91 @@ function makeGondolinEnvironment(
         },
         catch: (cause) => new AgentEnvironmentError("The Gondolin VM could not be created.", cause),
       });
-      const probe = yield* Effect.exit(Effect.tryPromise({
-        try: async () => {
-          const workspace = await vm.exec([
-            "/usr/bin/mkdir",
-            "-p",
-            "-m",
-            "0700",
-            "--",
-            AGENT_WORKSPACE,
-          ]);
-          if (!workspace.ok) {
-            throw new AgentEnvironmentError(
-              "The persistent guest workspace could not be prepared.",
-              undefined,
-            );
-          }
-          const workspacePermissions = await vm.exec([
-            "/usr/bin/chmod",
-            "0700",
-            "--",
-            AGENT_WORKSPACE,
-          ]);
-          if (!workspacePermissions.ok) {
-            throw new AgentEnvironmentError(
-              "The persistent guest workspace permissions could not be set.",
-              undefined,
-            );
-          }
-          let nestedKvmWarning: string | undefined;
-          if (Deno.build.os === "linux" && !softwareEmulation) {
-            const nestedKvmProbe = await vm.exec([
-              "/bin/sh",
-              "-lc",
-              [
-                "set -eu",
-                'case "$(uname -m)" in',
-                "  x86_64)",
-                "    if grep -qw vmx /proc/cpuinfo; then",
-                "      modprobe kvm_intel",
-                "    elif grep -qw svm /proc/cpuinfo; then",
-                "      modprobe kvm_amd",
-                "    else",
-                '      echo "the guest CPU does not expose VMX or SVM" >&2',
-                "      exit 1",
-                "    fi",
-                "    ;;",
-                "  aarch64)",
-                "    ;;",
-                "  *)",
-                '    echo "unsupported nested-KVM guest architecture: $(uname -m)" >&2',
-                "    exit 1",
-                "    ;;",
-                "esac",
-                'test -c /dev/kvm || { echo "nested KVM did not create /dev/kvm" >&2; exit 1; }',
-                '/usr/bin/python3 -c \'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12\' || { echo "nested KVM rejected KVM_GET_API_VERSION" >&2; exit 1; }',
-              ].join("\n"),
+      const probe = yield* Effect.exit(
+        Effect.tryPromise({
+          try: async () => {
+            const workspace = await vm.exec([
+              "/usr/bin/mkdir",
+              "-p",
+              "-m",
+              "0700",
+              "--",
+              AGENT_WORKSPACE,
             ]);
-            if (!nestedKvmProbe.ok) {
-              const detail = nestedKvmProbe.stderr.trim() ||
-                `initialization exited with status ${nestedKvmProbe.exitCode}`;
-              nestedKvmWarning = `Nested KVM is unavailable in the Gondolin guest: ${detail}`;
+            if (!workspace.ok) {
+              throw new AgentEnvironmentError(
+                "The persistent guest workspace could not be prepared.",
+                undefined,
+              );
             }
-          }
-          const shellProbe = await vm.exec(["/bin/sh", "-lc", "command -v bash || true"]);
-          if (closed) {
-            throw new AgentEnvironmentError(
-              "The agent environment was closed during startup.",
-              undefined,
-            );
-          }
-          return {
-            running: { vm, shellPath: shellProbe.stdout.trim() || "/bin/sh" },
-            nestedKvmWarning,
-          };
-        },
-        catch: (cause) =>
-          cause instanceof AgentEnvironmentError
-            ? cause
-            : new AgentEnvironmentError("The Gondolin VM startup probe failed.", cause),
-      }));
+            const workspacePermissions = await vm.exec([
+              "/usr/bin/chmod",
+              "0700",
+              "--",
+              AGENT_WORKSPACE,
+            ]);
+            if (!workspacePermissions.ok) {
+              throw new AgentEnvironmentError(
+                "The persistent guest workspace permissions could not be set.",
+                undefined,
+              );
+            }
+            let nestedKvmWarning: string | undefined;
+            if (process.platform === "linux" && !softwareEmulation) {
+              const nestedKvmProbe = await vm.exec([
+                "/bin/sh",
+                "-lc",
+                [
+                  "set -eu",
+                  'case "$(uname -m)" in',
+                  "  x86_64)",
+                  "    if grep -qw vmx /proc/cpuinfo; then",
+                  "      modprobe kvm_intel",
+                  "    elif grep -qw svm /proc/cpuinfo; then",
+                  "      modprobe kvm_amd",
+                  "    else",
+                  '      echo "the guest CPU does not expose VMX or SVM" >&2',
+                  "      exit 1",
+                  "    fi",
+                  "    ;;",
+                  "  aarch64)",
+                  "    ;;",
+                  "  *)",
+                  '    echo "unsupported nested-KVM guest architecture: $(uname -m)" >&2',
+                  "    exit 1",
+                  "    ;;",
+                  "esac",
+                  'test -c /dev/kvm || { echo "nested KVM did not create /dev/kvm" >&2; exit 1; }',
+                  '/usr/bin/python3 -c \'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); assert fcntl.ioctl(fd, 0xAE00) == 12\' || { echo "nested KVM rejected KVM_GET_API_VERSION" >&2; exit 1; }',
+                ].join("\n"),
+              ]);
+              if (!nestedKvmProbe.ok) {
+                const detail =
+                  nestedKvmProbe.stderr.trim() ||
+                  `initialization exited with status ${nestedKvmProbe.exitCode}`;
+                nestedKvmWarning = `Nested KVM is unavailable in the Gondolin guest: ${detail}`;
+              }
+            }
+            const shellProbe = await vm.exec(["/bin/sh", "-lc", "command -v bash || true"]);
+            if (closed) {
+              throw new AgentEnvironmentError(
+                "The agent environment was closed during startup.",
+                undefined,
+              );
+            }
+            return {
+              running: { vm, shellPath: shellProbe.stdout.trim() || "/bin/sh" },
+              nestedKvmWarning,
+            };
+          },
+          catch: (cause) =>
+            cause instanceof AgentEnvironmentError
+              ? cause
+              : new AgentEnvironmentError("The Gondolin VM startup probe failed.", cause),
+        }),
+      );
       if (probe._tag === "Failure") {
-        yield* closeVm(
-          vm,
-          rootDiskPath,
-          "The failed Gondolin VM could not be closed.",
-        );
+        yield* closeVm(vm, rootDiskPath, "The failed Gondolin VM could not be closed.");
         return yield* Effect.failCause(probe.cause);
       }
       if (probe.value.nestedKvmWarning) {
@@ -314,7 +315,7 @@ function makeGondolinEnvironment(
           );
         }
         if (running) return Effect.succeed(running);
-        return startVm.pipe(Effect.tap((started) => Effect.sync(() => running = started)));
+        return startVm.pipe(Effect.tap((started) => Effect.sync(() => (running = started))));
       }),
     );
 
@@ -335,28 +336,30 @@ function makeGondolinEnvironment(
       if (options.signal?.aborted) {
         return yield* aborted(options.signal.reason);
       }
-      const execution = yield* Effect.exit(Effect.tryPromise({
-        try: async () => {
-          let observerError: AgentEnvironmentError | undefined;
-          const process = activeVm.vm.exec([...command], {
-            cwd: options.cwd ?? AGENT_WORKSPACE,
-            env: { [OPENORB_GUEST_MARKER]: "1" },
-            ...(options.signal === undefined ? {} : { signal: options.signal }),
-            stdout: "pipe",
-            stderr: "pipe",
-          });
-          for await (const chunk of process.output()) {
-            if (!observerError && options.onOutput) {
-              observerError = await runObserver(
-                options.onOutput({ stream: chunk.stream, text: chunk.text }),
-              );
+      const execution = yield* Effect.exit(
+        Effect.tryPromise({
+          try: async () => {
+            let observerError: AgentEnvironmentError | undefined;
+            const process = activeVm.vm.exec([...command], {
+              cwd: options.cwd ?? AGENT_WORKSPACE,
+              env: { [OPENORB_GUEST_MARKER]: "1" },
+              ...(options.signal === undefined ? {} : { signal: options.signal }),
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            for await (const chunk of process.output()) {
+              if (!observerError && options.onOutput) {
+                observerError = await runObserver(
+                  options.onOutput({ stream: chunk.stream, text: chunk.text }),
+                );
+              }
             }
-          }
-          const exitCode = (await process).exitCode;
-          return { exitCode, observerError };
-        },
-        catch: (cause) => new AgentEnvironmentError("Guest command execution failed.", cause),
-      }));
+            const exitCode = (await process).exitCode;
+            return { exitCode, observerError };
+          },
+          catch: (cause) => new AgentEnvironmentError("Guest command execution failed.", cause),
+        }),
+      );
       if (execution._tag === "Failure") {
         if (options.signal?.aborted) return yield* aborted(options.signal.reason);
         return yield* Effect.failCause(execution.cause);
@@ -367,33 +370,38 @@ function makeGondolinEnvironment(
 
     const startDaemon: AgentEnvironment["startDaemon"] = Effect.gen(function* () {
       const activeVm = yield* getVm;
-      const token = Array.from(
-        crypto.getRandomValues(new Uint8Array(16)),
-        (byte) => byte.toString(16).padStart(2, "0"),
+      const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+        byte.toString(16).padStart(2, "0"),
       ).join("");
       const controller = new AbortController();
       const process = yield* Effect.try({
         // A login shell gives the daemon's commands the guest profile environment; anything the
         // profile prints arrives before the daemon's sync line and is discarded as noise.
         try: () =>
-          activeVm.vm.exec([
-            activeVm.shellPath,
-            "-lc",
-            `exec ${ENVIRONMENT_DAEMON_PATH} serve --token "$1"`,
-            "pi-env",
-            token,
-          ], {
-            cwd: "/",
-            env: { [OPENORB_GUEST_MARKER]: "1" },
-            signal: controller.signal,
-            stdin: true,
-            stdout: "pipe",
-            stderr: "pipe",
-          }),
+          activeVm.vm.exec(
+            [
+              activeVm.shellPath,
+              "-lc",
+              `exec ${ENVIRONMENT_DAEMON_PATH} serve --token "$1"`,
+              "pi-env",
+              token,
+            ],
+            {
+              cwd: "/",
+              env: { [OPENORB_GUEST_MARKER]: "1" },
+              signal: controller.signal,
+              stdin: true,
+              stdout: "pipe",
+              stderr: "pipe",
+            },
+          ),
         catch: (cause) =>
           new AgentEnvironmentError("The Environment Daemon could not be started.", cause),
       });
-      const exited = process.result.then(() => undefined, () => undefined);
+      const exited = process.result.then(
+        () => undefined,
+        () => undefined,
+      );
       async function* stdout(): AsyncGenerator<Uint8Array> {
         for await (const chunk of process.output()) {
           if (chunk.stream === "stdout") yield new Uint8Array(chunk.data);
@@ -405,14 +413,18 @@ function makeGondolinEnvironment(
         token,
         write: (bytes) => process.write(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length)),
         stdout: stdout(),
-        close: Effect.promise(() =>
-          closing ??= (async () => {
-            // Ending stdin fails only when the daemon already exited.
-            trySync(() => process.end(), () => undefined);
-            const timer = setTimeout(() => controller.abort(), ENVIRONMENT_DAEMON_EXIT_GRACE_MS);
-            await exited;
-            clearTimeout(timer);
-          })()
+        close: Effect.promise(
+          () =>
+            (closing ??= (async () => {
+              // Ending stdin fails only when the daemon already exited.
+              trySync(
+                () => process.end(),
+                () => undefined,
+              );
+              const timer = setTimeout(() => controller.abort(), ENVIRONMENT_DAEMON_EXIT_GRACE_MS);
+              await exited;
+              clearTimeout(timer);
+            })()),
         ),
       };
       return daemon;
@@ -432,7 +444,7 @@ function makeGondolinEnvironment(
             Effect.sync(() => {
               closed = true;
               running = undefined;
-            })
+            }),
           ),
         );
       }),
@@ -457,13 +469,13 @@ export function createOpenOrbGondolinSandboxOptions(
     imagePath,
     // Pin Linux guests to host CPU features so VMX/SVM reaches the guest when host KVM nesting is
     // enabled. The temporary macOS harness continues to use HVF without nested virtualization.
-    ...(Deno.build.os === "linux"
+    ...(process.platform === "linux"
       ? softwareEmulation
         ? { vmm: "qemu" as const, accel: "tcg" }
         : { vmm: "qemu" as const, accel: "kvm", cpu: "host" }
-      : Deno.build.os === "darwin"
-      ? { accel: "hvf" }
-      : {}),
+      : process.platform === "darwin"
+        ? { accel: "hvf" }
+        : {}),
   };
 }
 
@@ -496,7 +508,7 @@ function fromLegacyResult<A, E>(
   return Effect.promise(() => result).pipe(
     Effect.flatMap(([value, error]) =>
       // SAFETY: Result guarantees a value when its error slot is undefined.
-      error === undefined ? Effect.succeed(value as A) : Effect.fail(onError(error))
+      error === undefined ? Effect.succeed(value as A) : Effect.fail(onError(error)),
     ),
   );
 }

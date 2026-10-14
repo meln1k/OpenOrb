@@ -1,6 +1,6 @@
 // Vendored from @earendil-works/pi-env 1.1.0 (MIT, see ../LICENSE); OpenOrb changes are in README.md.
 // Upstream protocol code keeps its own idioms instead of OpenOrb boundary-parsing conventions.
-// deno-lint-ignore-file openorb/no-chained-type-assertions openorb/no-runtime-typeof openorb/prefer-disposable-stack openorb/require-safety-comment-for-type-assertion require-await
+// oxlint-disable openorb/no-chained-type-assertions, openorb/no-runtime-typeof, openorb/prefer-disposable-stack, openorb/require-safety-comment-for-type-assertion, typescript/require-await
 import type { Context } from "@earendil-works/chord";
 import {
   type BinaryReader,
@@ -150,10 +150,14 @@ class Handle {
     json: Json = {},
     options: { signal?: AbortSignal; payload?: Uint8Array } = {},
   ) {
-    return this.env.connection.request(op, { ...json, handle: this.id }, {
-      ...options,
-      session: this.session,
-    });
+    return this.env.connection.request(
+      op,
+      { ...json, handle: this.id },
+      {
+        ...options,
+        session: this.session,
+      },
+    );
   }
 
   async pread(offset: number | undefined, length: number): Promise<Uint8Array> {
@@ -185,8 +189,8 @@ class RemoteBinaryReader implements BinaryReader {
   }
 
   async info(context: Context): Promise<Result<FileInfo, FileError>> {
-    const early = abortResult<FileInfo>(context.abortSignal, this.#path) ??
-      this.#closedResult<FileInfo>();
+    const early =
+      abortResult<FileInfo>(context.abortSignal, this.#path) ?? this.#closedResult<FileInfo>();
     if (early) return early;
     try {
       const { json } = await this.#handle.request("fstat");
@@ -201,11 +205,14 @@ class RemoteBinaryReader implements BinaryReader {
     length: number,
     context: Context,
   ): Promise<Result<Uint8Array, FileError>> {
-    const early = abortResult<Uint8Array>(context.abortSignal, this.#path) ??
-      this.#closedResult<Uint8Array>();
+    const early =
+      abortResult<Uint8Array>(context.abortSignal, this.#path) ?? this.#closedResult<Uint8Array>();
     if (early) return early;
     if (
-      !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !Number.isSafeInteger(length) ||
+      length < 0
     ) {
       return err(
         new FileError(
@@ -234,8 +241,8 @@ class RemoteBinaryReader implements BinaryReader {
     options: { startLine: number; endLine?: number },
     context: Context,
   ): Promise<Result<LineScan, FileError>> {
-    const early = abortResult<LineScan>(context.abortSignal, this.#path) ??
-      this.#closedResult<LineScan>();
+    const early =
+      abortResult<LineScan>(context.abortSignal, this.#path) ?? this.#closedResult<LineScan>();
     if (early) return early;
     const { startLine, endLine } = options;
     if (
@@ -624,9 +631,13 @@ export class RemoteExecutionEnv implements ExecutionEnv {
       async (resolved) => {
         const first = bytes.subarray(0, WRITE_CHUNK);
         const keep = bytes.length > WRITE_CHUNK;
-        const reply = await this.connection.request("write", { path: resolved, append, keep }, {
-          payload: first,
-        });
+        const reply = await this.connection.request(
+          "write",
+          { path: resolved, append, keep },
+          {
+            payload: first,
+          },
+        );
         if (!keep) return;
         const handle = new Handle(this, reply.json.handle as number, reply.session, resolved);
         const inFlight: Promise<unknown>[] = [];
@@ -634,8 +645,8 @@ export class RemoteExecutionEnv implements ExecutionEnv {
           for (let offset = WRITE_CHUNK; offset < bytes.length; offset += WRITE_CHUNK) {
             if (signal?.aborted) {
               // A chunk that failed before this check fails the write, as it would have in sequence.
-              const failed = (await Promise.allSettled(inFlight)).find((result) =>
-                result.status === "rejected"
+              const failed = (await Promise.allSettled(inFlight)).find(
+                (result) => result.status === "rejected",
               );
               if (failed !== undefined) throw failed.reason;
               throw new FileError("aborted", "The operation was aborted", resolved);
@@ -750,9 +761,8 @@ export class RemoteExecutionEnv implements ExecutionEnv {
         await handle.close();
       }
       // Node's `readdir` fails on any entry it cannot lstat. libuv sorts names by their bytes on POSIX.
-      const key = (
-        entry: RemoteDirEntry,
-      ) => (entry.raw ? Uint8Array.from(entry.raw) : encoder.encode(entry.name));
+      const key = (entry: RemoteDirEntry) =>
+        entry.raw ? Uint8Array.from(entry.raw) : encoder.encode(entry.name);
       entries.sort((a, b) => paths.compareBytes(key(a), key(b)));
       const infos: FileInfo[] = [];
       for (const entry of entries) {
@@ -932,11 +942,9 @@ export class RemoteExecutionEnv implements ExecutionEnv {
     }
     if (signal?.aborted) return err(new ExecutionError("aborted", "aborted"));
     const env: Record<string, string> = {};
-    for (
-      const [key, value] of Object.entries(
-        inheritEnv ? { ...this.#shellEnv, ...options?.env } : { ...options?.env },
-      )
-    ) {
+    for (const [key, value] of Object.entries(
+      inheritEnv ? { ...this.#shellEnv, ...options?.env } : { ...options?.env },
+    )) {
       if (value !== undefined) env[key.toWellFormed()] = value;
     }
     let callbackError: ExecutionError | undefined;
@@ -994,13 +1002,14 @@ export class RemoteExecutionEnv implements ExecutionEnv {
           new ExecutionError("unknown", error instanceof Error ? error.message : String(error)),
         );
       }
-      const failure = error.code === "timeout"
-        ? new ExecutionError("timeout", `timeout:${timeout}`)
-        : error.code === "aborted"
-        ? new ExecutionError("aborted", "aborted")
-        : error.code === "shell_unavailable" || error.code === "spawn_error"
-        ? new ExecutionError(error.code, error.message)
-        : new ExecutionError("unknown", error.message);
+      const failure =
+        error.code === "timeout"
+          ? new ExecutionError("timeout", `timeout:${timeout}`)
+          : error.code === "aborted"
+            ? new ExecutionError("aborted", "aborted")
+            : error.code === "shell_unavailable" || error.code === "spawn_error"
+              ? new ExecutionError(error.code, error.message)
+              : new ExecutionError("unknown", error.message);
       if (typeof error.fields.spillPath === "string") failure.spillPath = error.fields.spillPath;
       return err(failure);
     } finally {

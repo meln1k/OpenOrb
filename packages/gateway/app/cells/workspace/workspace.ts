@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { SqlStorageValue } from "@cloudflare/workers-types";
 import { Schema } from "effect";
-import { v7 } from "@std/uuid";
+import { v7 } from "@jsr/std__uuid";
 import { ENROLLMENT_PSK_PREFIX, RUNNER_TOKEN_PREFIX } from "@openorb/protocol";
 import {
   MAX_SESSION_ENVIRONMENT_SECRETS,
@@ -144,10 +144,12 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
 
   #serialize<T>(operation: () => T | Promise<T>): Promise<T> {
     // ponytail: one configuration queue; split hot session/runner traffic into their own DOs later.
-    const result = this.#tail.catch(() => {}).then(async () => {
-      await this.#ready;
-      return operation();
-    });
+    const result = this.#tail
+      .catch(() => {})
+      .then(async () => {
+        await this.#ready;
+        return operation();
+      });
     this.#tail = result.catch(() => {});
     return result;
   }
@@ -189,19 +191,21 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       SELECT u.id AS userId, u.workspaceId, p.* FROM users u
       JOIN password_credentials p ON p.userId = u.id WHERE u.isAdministrator = 1
     `)[0];
-    return row && {
-      userId: row.userId,
-      workspaceId: WorkspaceIdSchema.make(row.workspaceId),
-      // SAFETY: Only hashPassword writes the algorithm parameters of this private row.
-      password: {
-        salt: new Uint8Array(row.salt),
-        derivedKey: new Uint8Array(row.derivedKey),
-        algorithm: row.algorithm,
-        hash: row.hash,
-        iterations: row.iterations,
-        keyLengthBits: row.keyLengthBits,
-      } as PasswordHash,
-    };
+    return (
+      row && {
+        userId: row.userId,
+        workspaceId: WorkspaceIdSchema.make(row.workspaceId),
+        // SAFETY: Only hashPassword writes the algorithm parameters of this private row.
+        password: {
+          salt: new Uint8Array(row.salt),
+          derivedKey: new Uint8Array(row.derivedKey),
+          algorithm: row.algorithm,
+          hash: row.hash,
+          iterations: row.iterations,
+          keyLengthBits: row.keyLengthBits,
+        } as PasswordHash,
+      }
+    );
   }
 
   #secrets(workspaceId: WorkspaceId): Secret[] {
@@ -211,7 +215,9 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       FROM encrypted_secrets WHERE workspaceId = ? AND purpose = 'generic-secret'
     `,
       workspaceId,
-    ).map(secretFromRow).sort((a, b) => a.key.localeCompare(b.key));
+    )
+      .map(secretFromRow)
+      .sort((a, b) => a.key.localeCompare(b.key));
   }
 
   #secret(workspaceId: WorkspaceId, key: string): Secret | undefined {
@@ -402,11 +408,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
           await storage.setAlarm(result.login.nextPollAt);
         } else {
           if (result.status === "complete") {
-            await this.#saveProvider(
-              administrator.workspaceId,
-              "openai-codex",
-              result.credential,
-            );
+            await this.#saveProvider(administrator.workspaceId, "openai-codex", result.credential);
           }
           this.#writeLogin(administrator.workspaceId, {
             status: result.status,
@@ -419,18 +421,20 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   }
 
   hasAdministrator(): ReturnType<WorkspaceApi["hasAdministrator"]> {
-    return this.#serialize(() =>
-      this.#rows("SELECT id FROM users WHERE isAdministrator = 1").length !== 0
+    return this.#serialize(
+      () => this.#rows("SELECT id FROM users WHERE isAdministrator = 1").length !== 0,
     );
   }
 
   getAdministrator(userId: UserId): ReturnType<WorkspaceApi["getAdministrator"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("getAdministrator", [userId]);
-      return this.#rows<{ userId: UserId; workspaceId: WorkspaceId }>(
-        "SELECT id AS userId, workspaceId FROM users WHERE id = ? AND isAdministrator = 1",
-        userId,
-      )[0] ?? null;
+      return (
+        this.#rows<{ userId: UserId; workspaceId: WorkspaceId }>(
+          "SELECT id AS userId, workspaceId FROM users WHERE id = ? AND isAdministrator = 1",
+          userId,
+        )[0] ?? null
+      );
     });
   }
 
@@ -479,9 +483,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     return this.#serialize(async () => {
       decodeWorkspaceArguments("verifyAdministratorPassword", [password]);
       const administrator = this.#administrator();
-      if (
-        !administrator || !await verifyPassword(password, administrator.password)
-      ) return null;
+      if (!administrator || !(await verifyPassword(password, administrator.password))) return null;
       return { userId: UserId.make(administrator.userId), workspaceId: administrator.workspaceId };
     });
   }
@@ -502,14 +504,16 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   getProject(workspaceId: WorkspaceId, id: string): ReturnType<WorkspaceApi["getProject"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("getProject", [workspaceId, id]);
-      return this.#rows<Project>(
-        `
+      return (
+        this.#rows<Project>(
+          `
         SELECT id, name, repositoryUrl, defaultRef, defaultBranchPattern, createdAt, updatedAt
         FROM projects WHERE workspaceId = ? AND id = ?
       `,
-        workspaceId,
-        id,
-      )[0] ?? null;
+          workspaceId,
+          id,
+        )[0] ?? null
+      );
     });
   }
 
@@ -522,10 +526,10 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       this.#requireWorkspace(workspaceId);
       const existing = input.id
         ? this.#rows<Pick<ProjectRow, "id" | "createdAt">>(
-          "SELECT id, createdAt FROM projects WHERE workspaceId = ? AND id = ?",
-          workspaceId,
-          input.id,
-        )[0]
+            "SELECT id, createdAt FROM projects WHERE workspaceId = ? AND id = ?",
+            workspaceId,
+            input.id,
+          )[0]
         : undefined;
       if (input.id && !existing) return { status: "not-found" };
       if (
@@ -576,14 +580,16 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       if (
         !this.#rows("SELECT id FROM projects WHERE workspaceId = ? AND id = ?", workspaceId, id)
           .length
-      ) return ok("not-found");
+      )
+        return ok("not-found");
       if (
         this.#rows(
           "SELECT id FROM sessions WHERE workspaceId = ? AND projectId = ? LIMIT 1",
           workspaceId,
           id,
         ).length
-      ) return ok("in-use");
+      )
+        return ok("in-use");
       this.#rows("DELETE FROM projects WHERE workspaceId = ? AND id = ?", workspaceId, id);
       return ok("deleted");
     });
@@ -650,8 +656,9 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       );
       if (
         Schema.decodeUnknownResult(SessionEnvironmentSecrets)([...values, candidate])._tag ===
-          "Failure"
-      ) return { status: "rpc-frame-limit-exceeded" };
+        "Failure"
+      )
+        return { status: "rpc-frame-limit-exceeded" };
       const secret = await this.#encrypt(workspaceId, id, candidate.value, existing);
       if (candidate.allowedHosts !== undefined) secret.allowedHosts = candidate.allowedHosts;
       this.#writeSecret(secret, "generic-secret");
@@ -662,12 +669,14 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   deleteSecret(workspaceId: WorkspaceId, id: string): ReturnType<WorkspaceApi["deleteSecret"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("deleteSecret", [workspaceId, id]);
-      return this.#rows(
-        `DELETE FROM encrypted_secrets
+      return (
+        this.#rows(
+          `DELETE FROM encrypted_secrets
         WHERE workspaceId = ? AND key = ? AND purpose = 'generic-secret' RETURNING key`,
-        workspaceId,
-        id,
-      ).length !== 0;
+          workspaceId,
+          id,
+        ).length !== 0
+      );
     });
   }
 
@@ -692,14 +701,16 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   ): ReturnType<WorkspaceApi["getModelProviderCredential"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("getModelProviderCredential", [workspaceId, id]);
-      return this.#rows<Omit<Provider, "secret">>(
-        `
+      return (
+        this.#rows<Omit<Provider, "secret">>(
+          `
         SELECT id, providerId, credentialType, createdAt, updatedAt
         FROM model_provider_credentials WHERE workspaceId = ? AND providerId = ?
       `,
-        workspaceId,
-        id,
-      )[0] ?? null;
+          workspaceId,
+          id,
+        )[0] ?? null
+      );
     });
   }
 
@@ -744,14 +755,14 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
         if (id === "openai-codex") await this.#clearLogin(workspaceId);
         return {
           status: this.#rows(
-              `DELETE FROM encrypted_secrets
+            `DELETE FROM encrypted_secrets
           WHERE workspaceId = ? AND key = (
             SELECT secretKey FROM model_provider_credentials WHERE workspaceId = ? AND providerId = ?
           ) RETURNING key`,
-              workspaceId,
-              workspaceId,
-              id,
-            ).length
+            workspaceId,
+            workspaceId,
+            id,
+          ).length
             ? "deleted"
             : "not-found",
         };
@@ -762,12 +773,14 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   getGitAuthorConfiguration(userId: UserId): ReturnType<WorkspaceApi["getGitAuthorConfiguration"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("getGitAuthorConfiguration", [userId]);
-      return this.#rows<GitAuthorConfiguration>(
-        `
+      return (
+        this.#rows<GitAuthorConfiguration>(
+          `
         SELECT authorName, authorEmail, updatedAt FROM git_author_configuration WHERE userId = ?
       `,
-        userId,
-      )[0] ?? null;
+          userId,
+        )[0] ?? null
+      );
     });
   }
 
@@ -798,12 +811,14 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   getGitHubCredential(workspaceId: WorkspaceId): ReturnType<WorkspaceApi["getGitHubCredential"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("getGitHubCredential", [workspaceId]);
-      return this.#rows<{ id: string; host: "github.com"; createdAt: string; updatedAt: string }>(
-        `
+      return (
+        this.#rows<{ id: string; host: "github.com"; createdAt: string; updatedAt: string }>(
+          `
         SELECT id, host, createdAt, updatedAt FROM git_credentials WHERE workspaceId = ? AND host = 'github.com'
       `,
-        workspaceId,
-      )[0] ?? null;
+          workspaceId,
+        )[0] ?? null
+      );
     });
   }
 
@@ -868,13 +883,13 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       decodeWorkspaceArguments("deleteGitHubCredential", [workspaceId]);
       return {
         status: this.#rows(
-            `DELETE FROM encrypted_secrets
+          `DELETE FROM encrypted_secrets
           WHERE workspaceId = ? AND key = (
             SELECT secretKey FROM git_credentials WHERE workspaceId = ? AND host = 'github.com'
           ) RETURNING key`,
-            workspaceId,
-            workspaceId,
-          ).length
+          workspaceId,
+          workspaceId,
+        ).length
           ? "deleted"
           : "not-found",
       };
@@ -968,10 +983,12 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     return this.#serialize(async () => {
       decodeWorkspaceArguments("authenticateRunner", [token]);
       const hash = await hashRunnerSecret(token);
-      return this.#rows<{ id: string; workspaceId: WorkspaceId }>(
-        "SELECT id, workspaceId FROM runners WHERE tokenHash = ? AND revokedAt IS NULL",
-        hash,
-      )[0] ?? null;
+      return (
+        this.#rows<{ id: string; workspaceId: WorkspaceId }>(
+          "SELECT id, workspaceId FROM runners WHERE tokenHash = ? AND revokedAt IS NULL",
+          hash,
+        )[0] ?? null
+      );
     });
   }
 
@@ -992,12 +1009,12 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     return this.#serialize(() => {
       decodeWorkspaceArguments("revokeRunner", [workspaceId, id]);
       return this.#rows(
-          `UPDATE runners SET revokedAt = COALESCE(revokedAt, ?)
+        `UPDATE runners SET revokedAt = COALESCE(revokedAt, ?)
         WHERE workspaceId = ? AND id = ? RETURNING id`,
-          new Date().toISOString(),
-          workspaceId,
-          id,
-        ).length
+        new Date().toISOString(),
+        workspaceId,
+        id,
+      ).length
         ? "revoked"
         : "not-found";
     });
@@ -1061,7 +1078,8 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
             workspaceId,
             id,
           ).length
-        ) return ok("not-found");
+        )
+          return ok("not-found");
         this.#rows(
           "INSERT INTO deleted_sessions (workspaceId, sessionId, deletedAt) VALUES (?, ?, ?)",
           workspaceId,
@@ -1099,7 +1117,8 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
         const existing = this.#catalogEntry(workspaceId, entry.id) ?? pending.get(entry.id);
         if (
           existing &&
-          (existing.projectId !== entry.projectId || existing.createdAt !== entry.createdAt ||
+          (existing.projectId !== entry.projectId ||
+            existing.createdAt !== entry.createdAt ||
             existing.initialPromptPreview !== entry.initialPromptPreview)
         ) {
           result.rejected.push({ sessionId: entry.id, reason: "catalog-conflict" });
@@ -1269,7 +1288,8 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       if (
         identity.userId !== administrator?.userId ||
         identity.workspaceId !== administrator.workspaceId
-      ) throw new WorkspaceInputError("Unknown session identity");
+      )
+        throw new WorkspaceInputError("Unknown session identity");
     }
     const record: BrowserSessionRecord = {
       data: input.data,
@@ -1281,16 +1301,18 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       this.#rows("DELETE FROM browser_sessions WHERE expiresAt <= ?", Date.now());
       if (input.mode === "update" || input.mode === "rotate") {
         const previousId = input.mode === "rotate" ? input.previousId : input.id;
-        const previous =
-          this.#rows<Pick<BrowserSessionRow, "userId" | "workspaceId" | "expiresAt">>(
-            "SELECT userId, workspaceId, expiresAt FROM browser_sessions WHERE id = ?",
-            previousId,
-          )[0];
+        const previous = this.#rows<
+          Pick<BrowserSessionRow, "userId" | "workspaceId" | "expiresAt">
+        >(
+          "SELECT userId, workspaceId, expiresAt FROM browser_sessions WHERE id = ?",
+          previousId,
+        )[0];
         if (!previous || previous.expiresAt <= Date.now()) return false;
         if (
           input.mode === "update" &&
           (previous.userId !== record.userId || previous.workspaceId !== record.workspaceId)
-        ) return false;
+        )
+          return false;
         if (input.mode === "rotate") {
           this.#rows("DELETE FROM browser_sessions WHERE id = ?", previousId);
         }

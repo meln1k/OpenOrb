@@ -1,13 +1,14 @@
-import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertNotEquals, assertRejects } from "@jsr/std__assert";
 import { runnerEnrollmentResponseSchema } from "@openorb/protocol";
 import { parse } from "remix/data-schema";
 
-import { createAppServices } from "@/test/workspace-test.ts";
-import { createAppRouter } from "@/test/workspace-test.ts";
-import { routes } from "@/app/routes.ts";
-import { activate, createWorkspace } from "@/test/workspace-test.ts";
+import { createAppServices } from "./workspace-test.ts";
+import { createAppRouter } from "./workspace-test.ts";
+import { routes } from "../app/routes.ts";
+import { activate, createWorkspace } from "./workspace-test.ts";
 
-Deno.test("always provides one PSK and serializes concurrent regeneration", async () => {
+test("always provides one PSK and serializes concurrent regeneration", async () => {
   const { workspace: store, workspaceId, storage } = await createWorkspace();
 
   const provisioned = await Promise.all(
@@ -31,7 +32,7 @@ Deno.test("always provides one PSK and serializes concurrent regeneration", asyn
       enrollmentPsk: "",
       name: "Empty token",
       architecture: "x64",
-    })
+    }),
   );
   for (const token of ["invalid-enrollment-token", provisioned[0]!.token]) {
     assertEquals(
@@ -45,26 +46,23 @@ Deno.test("always provides one PSK and serializes concurrent regeneration", asyn
   }
 });
 
-Deno.test("enrollment derives Workspace ownership from the PSK, never malicious request ownership", async () => {
+test("enrollment derives Workspace ownership from the PSK, never malicious request ownership", async () => {
   const { workspace: store, workspaceId } = await createWorkspace();
   const router = createAppRouter(createAppServices(store));
   const { workspaceId: foreignWorkspaceId } = await createWorkspace();
   const enrollment = await store.getRunnerEnrollmentToken(workspaceId);
   const enroll = (enrollmentPsk: string, ownership: Record<string, string> = {}) =>
     router.fetch(
-      new Request(
-        new URL(routes.api.runners.enroll.href(), "http://gateway.test"),
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            enrollmentPsk,
-            name: "Token-owned runner",
-            architecture: "x64",
-            ...ownership,
-          }),
-        },
-      ),
+      new Request(new URL(routes.api.runners.enroll.href(), "http://gateway.test"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          enrollmentPsk,
+          name: "Token-owned runner",
+          architecture: "x64",
+          ...ownership,
+        }),
+      }),
     );
   const malicious = await enroll(enrollment.token, { workspaceId: foreignWorkspaceId });
   assertEquals(malicious.status, 400);

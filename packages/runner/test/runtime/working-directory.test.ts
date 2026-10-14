@@ -1,8 +1,9 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertRejects } from "@jsr/std__assert";
 
-import { validateRunnerWorkingDirectory } from "@/src/runtime/working-directory.ts";
+import { validateRunnerWorkingDirectory } from "../../src/runtime/working-directory.ts";
 
-Deno.test("accepts a canonical runner working directory", async () => {
+test("accepts a canonical runner working directory", async () => {
   const result = await validateRunnerWorkingDirectory({
     cwd: "/var/lib/openorb-runner",
     logicalCwd: "/var/lib/openorb-runner",
@@ -11,7 +12,7 @@ Deno.test("accepts a canonical runner working directory", async () => {
   assertEquals(result, "/var/lib/openorb-runner");
 });
 
-Deno.test("rejects a mismatched PWD", async () => {
+test("rejects a mismatched PWD", async () => {
   await assertRejects(
     () =>
       validateRunnerWorkingDirectory({
@@ -24,7 +25,7 @@ Deno.test("rejects a mismatched PWD", async () => {
   );
 });
 
-Deno.test("rejects a symlinked runner working directory", async () => {
+test("rejects a symlinked runner working directory", async () => {
   await assertRejects(
     () =>
       validateRunnerWorkingDirectory({

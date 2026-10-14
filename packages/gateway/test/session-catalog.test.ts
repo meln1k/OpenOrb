@@ -1,7 +1,8 @@
-import { assert, assertEquals } from "@std/assert";
-import { createWorkspace } from "@/test/workspace-test.ts";
+import { test } from "vite-plus/test";
+import { assert, assertEquals } from "@jsr/std__assert";
+import { createWorkspace } from "./workspace-test.ts";
 
-Deno.test("session navigation joins project names in catalog order and isolates Workspace objects", async () => {
+test("session navigation joins project names in catalog order and isolates Workspace objects", async () => {
   const { workspace, workspaceId } = await createWorkspace();
   const foreign = await createWorkspace();
   const alpha = await workspace.saveProject(workspaceId, {
@@ -37,11 +38,14 @@ Deno.test("session navigation joins project names in catalog order and isolates 
   };
   assertEquals(
     await workspace.reconcileSessionManifestEntries(workspaceId, [alphaSession, betaSession]),
-    [{
-      acceptedSessionIds: [alphaSession.id, betaSession.id],
-      tombstonedSessionIds: [],
-      rejected: [],
-    }, undefined],
+    [
+      {
+        acceptedSessionIds: [alphaSession.id, betaSession.id],
+        tombstonedSessionIds: [],
+        rejected: [],
+      },
+      undefined,
+    ],
   );
   assertEquals(
     await foreign.workspace.reconcileSessionManifestEntries(foreign.workspaceId, [foreignSession]),

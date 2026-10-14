@@ -1,0 +1,11 @@
+{
+  "name": "@openorb/pi-env",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@openorb/result": "*"
+  }
+}

@@ -60,10 +60,8 @@ export interface EnvironmentSupervisor {
   ) => Effect.Effect<void, EnvironmentRejected | DeleteFailed>;
 }
 
-export const EnvironmentSupervisor: Context.Service<
-  EnvironmentSupervisor,
-  EnvironmentSupervisor
-> = Context.Service("@openorb/runner/EnvironmentSupervisor");
+export const EnvironmentSupervisor: Context.Service<EnvironmentSupervisor, EnvironmentSupervisor> =
+  Context.Service("@openorb/runner/EnvironmentSupervisor");
 
 export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(function* (
   options: EnvironmentSupervisorOptions,
@@ -76,11 +74,8 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
   const deleting = new Set<SessionId>();
 
   const spawn = (replayed: ReplayedEnvironment) =>
-    makeEnvironmentActor(
-      replayed,
-      options,
-      (environment) =>
-        PubSub.publish(published, { type: "updated", environment }).pipe(Effect.asVoid),
+    makeEnvironmentActor(replayed, options, (environment) =>
+      PubSub.publish(published, { type: "updated", environment }).pipe(Effect.asVoid),
     ).pipe(
       Effect.provide(dependencies),
       Effect.tap((actor) => Effect.sync(() => actors.set(actor.sessionId, actor))),
@@ -90,7 +85,7 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
     Effect.forEach([...actors.values()], (actor) => actor.shutdown, {
       concurrency: "unbounded",
       discard: true,
-    })
+    }),
   );
 
   // Every environment is restored eagerly: an actor holds no VM until it is started.
@@ -106,114 +101,121 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
     yield* spawn(replayed.value);
   }
 
-  const find = (
-    sessionId: SessionId,
-  ): Effect.Effect<EnvironmentActor, EnvironmentNotFound> => {
+  const find = (sessionId: SessionId): Effect.Effect<EnvironmentActor, EnvironmentNotFound> => {
     const actor = actors.get(sessionId);
     return actor === undefined || deleting.has(sessionId)
       ? Effect.fail(
-        new EnvironmentNotFound({ sessionId, message: "The environment does not exist." }),
-      )
+          new EnvironmentNotFound({ sessionId, message: "The environment does not exist." }),
+        )
       : Effect.succeed(actor);
   };
 
   const create = (payload: CreateEnvironmentPayload) =>
-    admission.withPermit(Effect.gen(function* () {
-      const sessionId = payload.sessionId;
-      const resources = orbSizeResources(payload.orbSize);
-      if (resources.cpuCount > options.cpuCount || resources.memoryMiB > options.memoryMiB) {
-        return yield* new CapacityExceeded({
-          message: `This runner cannot host a ${payload.orbSize} environment.`,
-        });
-      }
-      const existing = actors.get(sessionId);
-      if (existing !== undefined) {
-        // An uncertain delivery may repeat creation; the same definition is the same environment.
-        const snapshot = existing.snapshot();
-        if (
-          snapshot.workspaceId === payload.workspaceId && snapshot.orbSize === payload.orbSize &&
-          !deleting.has(sessionId)
-        ) return snapshot;
-        return yield* new SessionConflict({
-          sessionId,
-          message: "Another environment already uses this session.",
-        });
-      }
-      const rejected = (message: string) => () => new EnvironmentRejected({ sessionId, message });
-      const disposition = yield* store.ensure(sessionId).pipe(
-        Effect.mapError(rejected("Environment storage could not be created.")),
-      );
-      if (disposition === "existing") {
-        return yield* new SessionConflict({
-          sessionId,
-          message: "Storage for this session already exists on the runner.",
-        });
-      }
-      const definition = new EnvironmentDefinition({
-        sessionId,
-        workspaceId: payload.workspaceId,
-        runnerId: options.runnerId,
-        createdAt: new Date().toISOString(),
-        orbSize: payload.orbSize,
-        ...(payload.repository === undefined ? {} : { repository: payload.repository }),
-      });
-      yield* store.append(sessionId, 0, { type: "environment.created", definition }).pipe(
-        Effect.flatMap(() => store.replay(sessionId)),
-        Effect.flatMap((replayed) =>
-          replayed === undefined ? Effect.die("The created environment vanished.") : spawn(replayed)
-        ),
-        Effect.onError(() => store.remove(sessionId).pipe(Effect.ignore)),
-        Effect.mapError(rejected("The environment could not be recorded.")),
-      );
-      const snapshot = actors.get(sessionId)!.snapshot();
-      yield* PubSub.publish(published, { type: "updated", environment: snapshot });
-      return snapshot;
-    }));
-
-  const remove = (sessionId: SessionId) =>
-    admission.withPermit(Effect.gen(function* () {
-      const actor = actors.get(sessionId);
-      if (actor === undefined) {
-        // Already gone, or an interrupted deletion: finishing it is idempotent.
-        yield* store.remove(sessionId).pipe(Effect.ignore);
-        return;
-      }
-      deleting.add(sessionId);
-      yield* actor.stopForDeletion.pipe(
-        Effect.tapError(() => Effect.sync(() => deleting.delete(sessionId))),
-      );
-      const rootDiskPath = yield* store.rootDiskPath(sessionId).pipe(Effect.option);
-      if (rootDiskPath._tag === "Some") {
-        const assertDetached = options.assertDetached ?? assertPersistentRootDiskDetached;
-        const [, attached] = yield* Effect.promise(() => assertDetached(rootDiskPath.value));
-        if (attached !== undefined) {
-          deleting.delete(sessionId);
-          return yield* new EnvironmentRejected({
-            sessionId,
-            message: "The root disk may still be attached to a VM, so its storage was preserved.",
+    admission.withPermit(
+      Effect.gen(function* () {
+        const sessionId = payload.sessionId;
+        const resources = orbSizeResources(payload.orbSize);
+        if (resources.cpuCount > options.cpuCount || resources.memoryMiB > options.memoryMiB) {
+          return yield* new CapacityExceeded({
+            message: `This runner cannot host a ${payload.orbSize} environment.`,
           });
         }
-      }
-      yield* actor.shutdown;
-      actors.delete(sessionId);
-      yield* store.remove(sessionId).pipe(
-        Effect.mapError(() =>
-          new DeleteFailed({
+        const existing = actors.get(sessionId);
+        if (existing !== undefined) {
+          // An uncertain delivery may repeat creation; the same definition is the same environment.
+          const snapshot = existing.snapshot();
+          if (
+            snapshot.workspaceId === payload.workspaceId &&
+            snapshot.orbSize === payload.orbSize &&
+            !deleting.has(sessionId)
+          )
+            return snapshot;
+          return yield* new SessionConflict({
             sessionId,
-            message: "Environment storage cleanup failed and can be retried.",
-          })
-        ),
-      );
-      deleting.delete(sessionId);
-      yield* PubSub.publish(published, { type: "removed", sessionId });
-    }));
+            message: "Another environment already uses this session.",
+          });
+        }
+        const rejected = (message: string) => () => new EnvironmentRejected({ sessionId, message });
+        const disposition = yield* store
+          .ensure(sessionId)
+          .pipe(Effect.mapError(rejected("Environment storage could not be created.")));
+        if (disposition === "existing") {
+          return yield* new SessionConflict({
+            sessionId,
+            message: "Storage for this session already exists on the runner.",
+          });
+        }
+        const definition = new EnvironmentDefinition({
+          sessionId,
+          workspaceId: payload.workspaceId,
+          runnerId: options.runnerId,
+          createdAt: new Date().toISOString(),
+          orbSize: payload.orbSize,
+          ...(payload.repository === undefined ? {} : { repository: payload.repository }),
+        });
+        yield* store.append(sessionId, 0, { type: "environment.created", definition }).pipe(
+          Effect.flatMap(() => store.replay(sessionId)),
+          Effect.flatMap((replayed) =>
+            replayed === undefined
+              ? Effect.die("The created environment vanished.")
+              : spawn(replayed),
+          ),
+          Effect.onError(() => store.remove(sessionId).pipe(Effect.ignore)),
+          Effect.mapError(rejected("The environment could not be recorded.")),
+        );
+        const snapshot = actors.get(sessionId)!.snapshot();
+        yield* PubSub.publish(published, { type: "updated", environment: snapshot });
+        return snapshot;
+      }),
+    );
+
+  const remove = (sessionId: SessionId) =>
+    admission.withPermit(
+      Effect.gen(function* () {
+        const actor = actors.get(sessionId);
+        if (actor === undefined) {
+          // Already gone, or an interrupted deletion: finishing it is idempotent.
+          yield* store.remove(sessionId).pipe(Effect.ignore);
+          return;
+        }
+        deleting.add(sessionId);
+        yield* actor.stopForDeletion.pipe(
+          Effect.tapError(() => Effect.sync(() => deleting.delete(sessionId))),
+        );
+        const rootDiskPath = yield* store.rootDiskPath(sessionId).pipe(Effect.option);
+        if (rootDiskPath._tag === "Some") {
+          const assertDetached = options.assertDetached ?? assertPersistentRootDiskDetached;
+          const [, attached] = yield* Effect.promise(() => assertDetached(rootDiskPath.value));
+          if (attached !== undefined) {
+            deleting.delete(sessionId);
+            return yield* new EnvironmentRejected({
+              sessionId,
+              message: "The root disk may still be attached to a VM, so its storage was preserved.",
+            });
+          }
+        }
+        yield* actor.shutdown;
+        actors.delete(sessionId);
+        yield* store.remove(sessionId).pipe(
+          Effect.mapError(
+            () =>
+              new DeleteFailed({
+                sessionId,
+                message: "Environment storage cleanup failed and can be retried.",
+              }),
+          ),
+        );
+        deleting.delete(sessionId);
+        yield* PubSub.publish(published, { type: "removed", sessionId });
+      }),
+    );
 
   return EnvironmentSupervisor.of({
     activeCount: () => [...actors.values()].filter((actor) => actor.active).length,
     snapshots: () =>
-      [...actors.values()].filter((actor) => !deleting.has(actor.sessionId)).map((actor) =>
-        actor.snapshot()
-      ),
+      [...actors.values()]
+        .filter((actor) => !deleting.has(actor.sessionId))
+        .map((actor) => actor.snapshot()),
     changes: PubSub.subscribe(published).pipe(Effect.map(Stream.fromSubscription)),
     create,
     control: (payload) =>

@@ -35,7 +35,7 @@ Agent work runs in the Session DOs, not on runners. Pi AI, Pi Durable, Pi Env, a
 to 1.2.0; the Workspace configuration object does not create a Pi harness.
 
 Orb setup installs celld 0.6.2 and esbuild 0.28.2. Run `amp orb services ensure`, or outside an orb
-`deno task dev:gateway`, to build and start the single public gateway Worker. Dev state lives in
+`npm run dev:gateway`, to build and start the single public gateway Worker. Dev state lives in
 `packages/gateway/.celld/dev` and persists across restarts. The former
 `packages/workspace/.celld/dev` is not migrated or deleted; the relocated config starts fresh. The
 gateway's local `.env` supplies `OPENORB_MASTER_KEY` and `SESSION_SECRET`; `PUBLIC_URL` and
@@ -49,10 +49,10 @@ binding and need no filesystem/compiler. The build writes `dist/worker.js` and `
 directory. Gateway/registry logs use the runtime console. The former Deno OTLP exporter is no longer
 initialized; GoTel remains available for runner telemetry.
 
-After changing Worker bindings, run `deno task --filter @openorb/gateway generate-types` and commit
+After changing Worker bindings, run `npm run generate-types --workspace @openorb/gateway` and commit
 `packages/gateway/worker-configuration.d.ts`. Wrangler generates `Env`, including the typed
 `WORKSPACE`, `RUNNERS`, and `SESSIONS` namespaces and environment binding names, without recording
-secret values. `deno task check` checks that the generated types are current. Deno uses a test base
+secret values. `npm run check` checks that the generated types are current. Vitest uses a test base
 class; bundles retain the native `cloudflare:workers` import.
 
 Back up the original secrets and `packages/gateway/.celld/dev` together after stopping celld. Never
@@ -81,7 +81,8 @@ The exact runtime and application pins in this release graph are:
 
 | Component                           | Pin                                              |
 | ----------------------------------- | ------------------------------------------------ |
-| Deno / standalone runner denort     | 2.9.5                                            |
+| Node.js / standalone runner SEA     | 26.11.1                                          |
+| Vite+                               | 1.1.0                                            |
 | celld / esbuild                     | 0.6.2 / 0.28.2                                   |
 | Gondolin                            | 0.12.0                                           |
 | OpenOrb guest image                 | `release-2` (Debian snapshot `20260803T000000Z`) |
@@ -120,21 +121,20 @@ Session's conversation and leaves its environment running.
 
 ## Build and run the native gateway locally
 
-Install Deno 2.9.5, then run `bash scripts/install-celld.sh` for the reviewed celld/esbuild pins and
-`deno install --frozen` for the build graph. Orb setup handles these prerequisites automatically and
-preserves existing `packages/gateway/.env`. For a fresh local checkout, copy
+Install Node.js 26.11.1, then run `bash scripts/install-celld.sh` for the reviewed celld/esbuild pins and
+`npm ci` for the locked npm workspace build graph (including Vite+ 1.1.0). Orb setup handles these
+prerequisites automatically and preserves existing `packages/gateway/.env`. For a fresh local checkout, copy
 `packages/gateway/.env.example` only if `.env` is absent, restrict it to mode 0600, and edit the two
 secrets. Generate them independently with `openssl rand -hex 32`; never regenerate either for wanted
 state. `.env` is preparation input, while `.dev.vars` contains the actual celld dev bindings.
 
-Outside an orb, `deno task dev:gateway` prepares bindings, builds, and runs celld on loopback port
-44100. In an orb, use `amp orb services ensure` for supervised GoTel/gateway services and the
+Outside an orb, `npm run dev:gateway` prepares bindings, builds, and runs celld on loopback port 44100. In an orb, use `amp orb services ensure` for supervised GoTel/gateway services and the
 gateway portal URL. The gateway package's `start` task uses already-built bytes and prepared
-bindings; `deno run packages/gateway/server.ts` is not a server startup command. A build alone does
+bindings; `node packages/gateway/server.ts` is not a server startup command. A build alone does
 not start celld or rewrite `.dev.vars`:
 
 ```sh
-deno task --filter @openorb/gateway build
+npm run build --workspace @openorb/gateway
 ```
 
 `packages/gateway/wrangler.jsonc` declares `WORKSPACE`, `RUNNERS`, `SESSIONS`, `ASSETS`, the `MEDIA`
@@ -228,7 +228,7 @@ Wake request.
 
 - **Gateway will not start:** inspect the supervised gateway's logs (`amp orb service logs gateway`
   in an orb) or celld's console. Verify the celld/esbuild pins, built `dist/worker.js` and assets,
-  private `.dev.vars`, and both secrets. Build errors belong to the Deno build, not Worker requests.
+  private `.dev.vars`, and both secrets. Build errors belong to the Node/Rolldown build, not Worker requests.
   Do not generate a replacement master key or remove `.celld` to fix a startup error.
 - **HTTPS or runner connection fails:** check `curl https://…/healthz`, the HTTPS front end's
   certificate and logs, DNS, that `PUBLIC_URL` is the public HTTPS origin, and that the proxy
@@ -252,10 +252,10 @@ Wake request.
 
 Never upgrade a production host by following a moving branch. Back up gateway state/keys and runner
 state under the applicable reviewed recovery contract. Review the candidate commit and lockfile
-diff, and every Deno, celld, esbuild, Gondolin, guest image, Pi, Remix, protocol, Worker binding,
+diff, and every Node, Vite+, celld, esbuild, Gondolin, guest image, Pi, Remix, protocol, Worker binding,
 SQLite migration, and runner systemd change. Follow the Gondolin TLS compatibility gate in the
 [runner release process](runner-release.md) and the separate guest-image publication process. Run
-`deno install --frozen`, `deno task check`, `deno task test`, `deno task test:gondolin`, and native
+`npm ci`, `npm run check`, `npm test`, `npm run test:gondolin`, and native
 x86-64/ARM64 release smoke checks as applicable. Exercise backup restoration and the complete
 private-repository stop/resume/delete path in the [release acceptance guide](release-acceptance.md)
 before promotion.

@@ -1,21 +1,21 @@
-/// <reference lib="deno.unstable" />
+import type { TSESLint, TSESTree } from "@typescript-eslint/utils";
 
 // Syntax behavior adapted from dmmulroy/anti-slop (revision
 // 446268e5d15baa968eaec669ff65358d36ae6259), under its MIT license.
 
-type Node = Deno.lint.Node;
-type TypeNode = Deno.lint.TSTypeAnnotation["typeAnnotation"];
-type Alias = Deno.lint.TSTypeAliasDeclaration;
+type Node = TSESTree.Node;
+type TypeNode = TSESTree.TypeNode;
+type Alias = TSESTree.TSTypeAliasDeclaration;
 interface UnknownObject {
   readonly [key: string]: unknown;
 }
 type FunctionNode = Node & {
   readonly params: readonly Node[];
-  readonly returnType?: Deno.lint.TSTypeAnnotation | null;
+  readonly returnType?: TSESTree.TSTypeAnnotation | null;
 };
 type Environment = {
   aliases: Map<string, Alias>;
-  interfaces: Map<string, Deno.lint.TSInterfaceDeclaration[]>;
+  interfaces: Map<string, TSESTree.TSInterfaceDeclaration[]>;
   shadowedBuiltIns: Set<string>;
 };
 type Substitutions = ReadonlyMap<string, TypeNode>;
@@ -34,11 +34,12 @@ const BUILT_INS = new Set([
 const WRAPPERS = new Set(["Readonly", "Partial", "Required", "NonNullable"]);
 
 function isNode(value: unknown): value is Node {
-  return typeof value === "object" && value !== null && "type" in value &&
-    typeof value.type === "string";
+  return (
+    typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
+  );
 }
 
-/** Deno exposes no visitor keys. Only AST-shaped property values are followed; `parent` is not. */
+/** Only AST-shaped property values are followed; `parent` is not. */
 function children(node: Node): Node[] {
   const result: Node[] = [];
   const record = node as unknown as UnknownObject;
@@ -65,16 +66,17 @@ function walk(
 
 function declaration(statement: Node): Node | null {
   if (
-    statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration"
+    statement.type === "ExportNamedDeclaration" ||
+    statement.type === "ExportDefaultDeclaration"
   ) {
     return statement.declaration ?? null;
   }
   return statement;
 }
 
-function environment(program: Deno.lint.Program): Environment {
+function environment(program: TSESTree.Program): Environment {
   const aliases = new Map<string, Alias>();
-  const interfaces = new Map<string, Deno.lint.TSInterfaceDeclaration[]>();
+  const interfaces = new Map<string, TSESTree.TSInterfaceDeclaration[]>();
   const shadowedBuiltIns = new Set<string>();
   for (const statement of program.body) {
     const item = declaration(statement);
@@ -92,7 +94,8 @@ function environment(program: Deno.lint.Program): Environment {
       interfaces.set(item.id.name, values);
       if (BUILT_INS.has(item.id.name)) shadowedBuiltIns.add(item.id.name);
     } else if (
-      item?.type === "TSEnumDeclaration" || item?.type === "ClassDeclaration" ||
+      item?.type === "TSEnumDeclaration" ||
+      item?.type === "ClassDeclaration" ||
       item?.type === "FunctionDeclaration"
     ) {
       if (item.id && BUILT_INS.has(item.id.name)) shadowedBuiltIns.add(item.id.name);
@@ -109,7 +112,7 @@ function referenceName(type: TypeNode): string | null {
 
 function unwrap(type: TypeNode): TypeNode {
   let value = type;
-  while (value.type === "TSTypeOperator" && value.operator === "readonly") {
+  while (value.type === "TSTypeOperator" && value.operator === "readonly" && value.typeAnnotation) {
     value = value.typeAnnotation;
   }
   return value;
@@ -124,7 +127,9 @@ function lexicalNames(ancestors: readonly Node[], node: Node): Set<string> {
     if ("typeParameters" in current) {
       const parameters = current.typeParameters;
       if (
-        parameters && typeof parameters === "object" && "params" in parameters &&
+        parameters &&
+        typeof parameters === "object" &&
+        "params" in parameters &&
         Array.isArray(parameters.params)
       ) {
         for (const parameter of parameters.params) {
@@ -160,7 +165,8 @@ function resolvesKeyword(
     return value.types.some((member) => resolvesKeyword(member, keyword, env, shadowed, visited));
   }
   if (
-    keyword === "TSUnknownKeyword" && value.type === "TSTypeReference" &&
+    keyword === "TSUnknownKeyword" &&
+    value.type === "TSTypeReference" &&
     value.typeName.type === "Identifier" &&
     (value.typeName.name === "Promise" || value.typeName.name === "PromiseLike")
   ) {
@@ -169,9 +175,13 @@ function resolvesKeyword(
   }
   const name = referenceName(value);
   if (
-    name === null || value.type !== "TSTypeReference" || value.typeArguments?.params.length ||
-    shadowed.has(name) || visited.has(name)
-  ) return false;
+    name === null ||
+    value.type !== "TSTypeReference" ||
+    value.typeArguments?.params.length ||
+    shadowed.has(name) ||
+    visited.has(name)
+  )
+    return false;
   const alias = env.aliases.get(name);
   if (!alias || alias.typeParameters) return false;
   const next = new Set(visited);
@@ -179,7 +189,7 @@ function resolvesKeyword(
   return resolvesKeyword(alias.typeAnnotation, keyword, env, shadowed, next);
 }
 
-function parameterAnnotation(node: Node): Deno.lint.TSTypeAnnotation | null {
+function parameterAnnotation(node: Node): TSESTree.TSTypeAnnotation | null {
   const record = node as unknown as UnknownObject;
   if (node.type === "RestElement") return node.typeAnnotation ?? parameterAnnotation(node.argument);
   if (node.type === "AssignmentPattern") return parameterAnnotation(node.left);
@@ -190,15 +200,21 @@ function parameterAnnotation(node: Node): Deno.lint.TSTypeAnnotation | null {
 
 function isFunctionType(node: Node): node is FunctionNode {
   const record = node as unknown as UnknownObject;
-  return Array.isArray(record.params) &&
-    (node.type === "ArrowFunctionExpression" || node.type === "FunctionDeclaration" ||
-      node.type === "FunctionExpression" || node.type === "TSCallSignatureDeclaration" ||
-      node.type === "TSConstructSignatureDeclaration" || node.type === "TSDeclareFunction" ||
-      node.type === "TSEmptyBodyFunctionExpression" || node.type === "TSFunctionType" ||
-      node.type === "TSMethodSignature");
+  return (
+    Array.isArray(record.params) &&
+    (node.type === "ArrowFunctionExpression" ||
+      node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "TSCallSignatureDeclaration" ||
+      node.type === "TSConstructSignatureDeclaration" ||
+      node.type === "TSDeclareFunction" ||
+      node.type === "TSEmptyBodyFunctionExpression" ||
+      node.type === "TSFunctionType" ||
+      node.type === "TSMethodSignature")
+  );
 }
 
-function substitutions(alias: Alias, reference: Deno.lint.TSTypeReference, base: Substitutions) {
+function substitutions(alias: Alias, reference: TSESTree.TSTypeReference, base: Substitutions) {
   const next = new Map(base);
   const parameters = alias.typeParameters?.params ?? [];
   const arguments_ = reference.typeArguments?.params ?? [];
@@ -227,32 +243,41 @@ function resolveSubstitution(
 
 function isUnappliedReferenceTo(type: TypeNode, name: string): boolean {
   const value = unwrap(type);
-  return value.type === "TSTypeReference" && value.typeName.type === "Identifier" &&
-    value.typeName.name === name && !value.typeArguments?.params.length;
+  return (
+    value.type === "TSTypeReference" &&
+    value.typeName.type === "Identifier" &&
+    value.typeName.name === name &&
+    !value.typeArguments?.params.length
+  );
 }
 
-function emptyLiteral(type: Deno.lint.TSTypeLiteral): boolean {
-  return type.members.length === 0 ||
-    type.members.every(isEffectivelyEmptyMember);
+function emptyLiteral(type: TSESTree.TSTypeLiteral): boolean {
+  return type.members.length === 0 || type.members.every(isEffectivelyEmptyMember);
 }
 
 function isEffectivelyEmptyMember(
   member:
-    | Deno.lint.TSCallSignatureDeclaration
-    | Deno.lint.TSConstructSignatureDeclaration
-    | Deno.lint.TSIndexSignature
-    | Deno.lint.TSMethodSignature
-    | Deno.lint.TSPropertySignature,
+    | TSESTree.TSCallSignatureDeclaration
+    | TSESTree.TSConstructSignatureDeclaration
+    | TSESTree.TSIndexSignature
+    | TSESTree.TSMethodSignature
+    | TSESTree.TSPropertySignature,
 ): boolean {
-  return member.type === "TSPropertySignature" && member.optional &&
-    member.typeAnnotation?.typeAnnotation.type === "TSNeverKeyword";
+  return (
+    member.type === "TSPropertySignature" &&
+    member.optional &&
+    member.typeAnnotation?.typeAnnotation.type === "TSNeverKeyword"
+  );
 }
 
-function emptyInterface(declarations: readonly Deno.lint.TSInterfaceDeclaration[]): boolean {
+function emptyInterface(declarations: readonly TSESTree.TSInterfaceDeclaration[]): boolean {
   if (declarations.length !== 1) return false;
   const [declaration] = declarations;
-  return declaration !== undefined && declaration.extends.length === 0 &&
-    (declaration.body.body.length === 0 || declaration.body.body.every(isEffectivelyEmptyMember));
+  return (
+    declaration !== undefined &&
+    declaration.extends.length === 0 &&
+    (declaration.body.body.length === 0 || declaration.body.body.every(isEffectivelyEmptyMember))
+  );
 }
 
 function unsafeValue(
@@ -272,7 +297,7 @@ function unsafeValue(
   if (value.type === "TSIntersectionType") {
     const results = value.types.map((item) => unsafeValue(item, env, subs, resolving));
     if (results.includes("any")) return "any";
-    return results.length && results.every((item) => item !== null) ? results[0] ?? null : null;
+    return results.length && results.every((item) => item !== null) ? (results[0] ?? null) : null;
   }
   if (value.type !== "TSTypeReference") return null;
   const name = referenceName(value);
@@ -309,7 +334,7 @@ function dictionaryValues(
     return value.members.flatMap((member) =>
       member.type === "TSIndexSignature" && member.typeAnnotation
         ? [{ type: member.typeAnnotation.typeAnnotation, subs }]
-        : []
+        : [],
     );
   }
   if (value.type === "TSMappedType") {
@@ -352,24 +377,37 @@ function classifyDictionary(type: TypeNode, env: Environment): Unsafe | null {
   return null;
 }
 
-function isInsideTypeAlias(context: Deno.lint.RuleContext, node: Node): boolean {
-  return context.sourceCode.getAncestors(node).some((ancestor) =>
-    ancestor.type === "TSTypeAliasDeclaration"
-  );
+function isInsideTypeAlias(context: TSESLint.RuleContext<string, []>, node: Node): boolean {
+  return context.sourceCode
+    .getAncestors(node)
+    .some((ancestor) => ancestor.type === "TSTypeAliasDeclaration");
 }
 
 function isPlainAliasConsumer(
-  context: Deno.lint.RuleContext,
+  context: TSESLint.RuleContext<string, []>,
   node: TypeNode,
   env: Environment,
 ): boolean {
-  return node.type === "TSTypeReference" && node.typeName.type === "Identifier" &&
-    !node.typeArguments?.params.length && env.aliases.has(node.typeName.name) &&
-    !isInsideTypeAlias(context, node);
+  return (
+    node.type === "TSTypeReference" &&
+    node.typeName.type === "Identifier" &&
+    !node.typeArguments?.params.length &&
+    env.aliases.has(node.typeName.name) &&
+    !isInsideTypeAlias(context, node)
+  );
 }
 
-function typeRule(kind: "object" | "returns"): Deno.lint.Rule {
+function typeRule(kind: "object" | "returns"): TSESLint.RuleModule<string, []> {
   return {
+    meta: {
+      type: "problem",
+      schema: [],
+      messages: {
+        object: "Do not use broad `object` parameters; use a named owner type.",
+        returns: "Do not expose `unknown` to callers; return a parsed owner type.",
+      },
+    },
+    defaultOptions: [],
     create(context) {
       let env: Environment | null = null;
       const check = (node: FunctionNode) => {
@@ -384,7 +422,7 @@ function typeRule(kind: "object" | "returns"): Deno.lint.Rule {
             ) {
               context.report({
                 node: annotation.typeAnnotation,
-                message: "Do not use broad `object` parameters; use a named owner type.",
+                messageId: "object",
               });
             }
           }
@@ -394,7 +432,7 @@ function typeRule(kind: "object" | "returns"): Deno.lint.Rule {
         ) {
           context.report({
             node: node.returnType.typeAnnotation,
-            message: "Do not expose `unknown` to callers; return a parsed owner type.",
+            messageId: "returns",
           });
         }
       };
@@ -434,7 +472,13 @@ function typeRule(kind: "object" | "returns"): Deno.lint.Rule {
   };
 }
 
-const noUnknownAliases: Deno.lint.Rule = {
+const noUnknownAliases: TSESLint.RuleModule<string, []> = {
+  meta: {
+    type: "problem",
+    schema: [],
+    messages: { alias: "Type alias `{{name}}` hides `unknown`." },
+  },
+  defaultOptions: [],
   create(context) {
     return {
       Program(program) {
@@ -452,7 +496,8 @@ const noUnknownAliases: Deno.lint.Rule = {
           ) {
             context.report({
               node: alias.id,
-              message: `Type alias \`${alias.id.name}\` hides \`unknown\`.`,
+              messageId: "alias",
+              data: { name: alias.id.name },
             });
           }
         }
@@ -461,7 +506,13 @@ const noUnknownAliases: Deno.lint.Rule = {
   },
 };
 
-const noUnsafeDictionary: Deno.lint.Rule = {
+const noUnsafeDictionary: TSESLint.RuleModule<string, []> = {
+  meta: {
+    type: "problem",
+    schema: [],
+    messages: { dictionary: "This dictionary's {{unsafe}} value type is unsafe." },
+  },
+  defaultOptions: [],
   create(context) {
     let env: Environment | null = null;
     const reported = new Set<string>();
@@ -472,16 +523,19 @@ const noUnsafeDictionary: Deno.lint.Rule = {
       if (!unsafe) return;
       const ancestors = context.sourceCode.getAncestors(node);
       if (
-        ancestors.some((item) =>
-          (item.type === "TSTypeReference" || item.type === "TSTypeLiteral" ||
-            item.type === "TSMappedType") &&
-          classifyDictionary(item, currentEnvironment) !== null
+        ancestors.some(
+          (item) =>
+            (item.type === "TSTypeReference" ||
+              item.type === "TSTypeLiteral" ||
+              item.type === "TSMappedType") &&
+            classifyDictionary(item, currentEnvironment) !== null,
         )
-      ) return;
+      )
+        return;
       const key = node.range.join(":");
       if (!reported.has(key)) {
         reported.add(key);
-        context.report({ node, message: `This dictionary's ${unsafe} value type is unsafe.` });
+        context.report({ node, messageId: "dictionary", data: { unsafe } });
       }
     };
     return {
@@ -493,9 +547,8 @@ const noUnsafeDictionary: Deno.lint.Rule = {
       TSMappedType: check,
       TSIndexSignature(node) {
         const currentEnvironment = env;
-        if (
-          !currentEnvironment || node.parent.type === "TSTypeLiteral" || !node.typeAnnotation
-        ) return;
+        if (!currentEnvironment || node.parent.type === "TSTypeLiteral" || !node.typeAnnotation)
+          return;
         const unsafe = unsafeValue(
           node.typeAnnotation.typeAnnotation,
           currentEnvironment,
@@ -503,14 +556,14 @@ const noUnsafeDictionary: Deno.lint.Rule = {
           new Set(),
         );
         if (unsafe) {
-          context.report({ node, message: `This dictionary's ${unsafe} value type is unsafe.` });
+          context.report({ node, messageId: "dictionary", data: { unsafe } });
         }
       },
     };
   },
 };
 
-export const typeAntiSlopRules: Record<string, Deno.lint.Rule> = {
+export const typeAntiSlopRules: Record<string, TSESLint.RuleModule<string, []>> = {
   "no-object-parameters": typeRule("object"),
   "no-unknown-returns": typeRule("returns"),
   "no-unknown-type-aliases": noUnknownAliases,

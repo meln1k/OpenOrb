@@ -1,14 +1,15 @@
-import { assertEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals } from "@jsr/std__assert";
 
 import { type RunnerCapacity, WorkspaceId } from "@openorb/protocol/runner-api";
-import type { RunnerRecord } from "@/app/cells/workspace/api.ts";
-import type { AppServices } from "@/app/middleware/services.ts";
-import type { TestRunnerConnections } from "@/test/workspace-test.ts";
+import type { RunnerRecord } from "../app/cells/workspace/api.ts";
+import type { AppServices } from "../app/middleware/services.ts";
+import type { TestRunnerConnections } from "./workspace-test.ts";
 import {
   MIN_RUNNER_DISK_FREE_MIB,
   type RunnerSelectionResult,
   selectRunnerForWorkspace,
-} from "@/app/cells/runners/runner-selection.ts";
+} from "../app/cells/runners/runner-selection.ts";
 
 const WORKSPACE_ID = WorkspaceId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
 
@@ -19,7 +20,7 @@ const AVAILABLE_CAPACITY: RunnerCapacity = {
   diskFreeMiB: MIN_RUNNER_DISK_FREE_MIB,
 };
 
-Deno.test("selects deterministically by active sessions and runner id", async () => {
+test("selects deterministically by active sessions and runner id", async () => {
   const runners = [runnerRecord("runner-b"), runnerRecord("runner-a"), runnerRecord("runner-c")];
   const capacities = new Map([
     ["runner-a", { ...AVAILABLE_CAPACITY, activeSessions: 1 }],
@@ -38,7 +39,7 @@ Deno.test("selects deterministically by active sessions and runner id", async ()
   if (result.status === "selected") assertEquals(result.runner.id, "runner-a");
 });
 
-Deno.test("manual selection allows busy runners and reports unavailable runners clearly", async () => {
+test("manual selection allows busy runners and reports unavailable runners clearly", async () => {
   const available = runnerRecord("available");
   const busy = runnerRecord("busy");
   const lowDisk = runnerRecord("low-disk");
@@ -82,9 +83,15 @@ Deno.test("manual selection allows busy runners and reports unavailable runners 
     "Runner is unavailable or does not exist.",
   );
   assertSelectionRejected(
-    await selectRunnerForWorkspace(WORKSPACE_ID, "offline", "medium", {
-      listRunners: () => Promise.resolve([...runners, runnerRecord("offline")]),
-    }, connections),
+    await selectRunnerForWorkspace(
+      WORKSPACE_ID,
+      "offline",
+      "medium",
+      {
+        listRunners: () => Promise.resolve([...runners, runnerRecord("offline")]),
+      },
+      connections,
+    ),
     "Runner is offline.",
   );
   assertSelectionRejected(
@@ -93,10 +100,7 @@ Deno.test("manual selection allows busy runners and reports unavailable runners 
   );
 });
 
-function assertSelectionRejected(
-  result: RunnerSelectionResult,
-  message: string,
-): void {
+function assertSelectionRejected(result: RunnerSelectionResult, message: string): void {
   assertEquals(result, { status: "rejected", message });
 }
 
@@ -120,14 +124,14 @@ function liveConnections(
       return Promise.resolve(
         capacity
           ? {
-            capacity,
-            lastObservedAt: Date.now(),
-          }
+              capacity,
+              lastObservedAt: Date.now(),
+            }
           : null,
       );
     },
   };
   // SAFETY: selection awaits fixture results; it does not use native RPC pipelining or disposal.
-  // deno-lint-ignore openorb/no-chained-type-assertions
+  // oxlint-disable-next-line openorb/no-chained-type-assertions
   return connections as unknown as Pick<AppServices["runnerConnections"], "getRunnerLiveState">;
 }

@@ -1,9 +1,9 @@
-/// <reference lib="deno.unstable" />
+import type { TSESLint, TSESTree } from "@typescript-eslint/utils";
 
 // Adapted from dmmulroy/anti-slop, revision 446268e5d15baa968eaec669ff65358d36ae6259.
 
-type Node = Deno.lint.Node;
-type Expression = Deno.lint.Expression;
+type Node = TSESTree.Node;
+type Expression = TSESTree.Expression;
 type TypeNode = Extract<Node, { type: `TS${string}` }>;
 type Declarator = Extract<Node, { type: "VariableDeclarator" }>;
 type FunctionNode = Extract<
@@ -20,15 +20,22 @@ const BUILT_INS = new Set(["Record", "Readonly", "Partial", "Required", "Propert
 function unwrapExpression(expression: Expression): Expression {
   let current = expression;
   while (
-    current.type === "TSAsExpression" || current.type === "TSTypeAssertion" ||
-    current.type === "TSSatisfiesExpression" || current.type === "TSNonNullExpression"
-  ) current = current.expression;
+    current.type === "TSAsExpression" ||
+    current.type === "TSTypeAssertion" ||
+    current.type === "TSSatisfiesExpression" ||
+    current.type === "TSNonNullExpression"
+  )
+    current = current.expression;
   return current;
 }
 
 function unwrapType(type: TypeNode): TypeNode {
   let current = type;
-  while (current.type === "TSTypeOperator" && current.operator === "readonly") {
+  while (
+    current.type === "TSTypeOperator" &&
+    current.operator === "readonly" &&
+    current.typeAnnotation
+  ) {
     current = current.typeAnnotation;
   }
   return current;
@@ -45,20 +52,26 @@ function referenceName(type: TypeNode): string | null {
     : null;
 }
 
-function declaredStatement(statement: Deno.lint.Statement): Node | null {
+function declaredStatement(statement: TSESTree.Statement): Node | null {
   return statement.type === "ExportNamedDeclaration" ||
-      statement.type === "ExportDefaultDeclaration"
-    ? statement.declaration ?? null
+    statement.type === "ExportDefaultDeclaration"
+    ? (statement.declaration ?? null)
     : statement;
 }
 
 function knownSyntax(expression: Expression): boolean {
   const value = unwrapExpression(expression);
-  return value.type === "ObjectExpression" || value.type === "ArrayExpression" ||
-    value.type === "ArrowFunctionExpression" || value.type === "ClassExpression" ||
-    value.type === "FunctionExpression" || value.type === "NewExpression" ||
-    value.type === "Literal" || value.type === "TemplateLiteral" ||
-    value.type === "UnaryExpression";
+  return (
+    value.type === "ObjectExpression" ||
+    value.type === "ArrayExpression" ||
+    value.type === "ArrowFunctionExpression" ||
+    value.type === "ClassExpression" ||
+    value.type === "FunctionExpression" ||
+    value.type === "NewExpression" ||
+    value.type === "Literal" ||
+    value.type === "TemplateLiteral" ||
+    value.type === "UnaryExpression"
+  );
 }
 
 function boundary(node: Node): FunctionNode | null {
@@ -100,9 +113,11 @@ function isEmptyObject(expression: Expression): boolean {
 function isBroadMappedKey(type: TypeNode, shadowedBuiltIns: ReadonlySet<string>): boolean {
   const value = unwrapType(type);
   if (
-    value.type === "TSStringKeyword" || value.type === "TSNumberKeyword" ||
+    value.type === "TSStringKeyword" ||
+    value.type === "TSNumberKeyword" ||
     value.type === "TSSymbolKeyword"
-  ) return true;
+  )
+    return true;
   if (value.type === "TSUnionType") {
     return value.types.every((member) => isBroadMappedKey(member, shadowedBuiltIns));
   }
@@ -125,19 +140,22 @@ function launderingBroadKind(type: TypeNode): BroadKind | null {
     }
     if (value.typeName.name !== "Record") return null;
     const [key, item] = value.typeArguments?.params ?? [];
-    return key !== undefined && item !== undefined && isBroadMappedKey(key, new Set()) &&
-        isUnknownOrAny(item)
+    return key !== undefined &&
+      item !== undefined &&
+      isBroadMappedKey(key, new Set()) &&
+      isUnknownOrAny(item)
       ? "record"
       : null;
   }
   if (value.type !== "TSTypeLiteral" || value.members.length !== 1) return null;
   const [member] = value.members;
   const [parameter] = member?.type === "TSIndexSignature" ? member.parameters : [];
-  return member?.type === "TSIndexSignature" && parameter?.type === "Identifier" &&
-      parameter.typeAnnotation !== undefined &&
-      member.typeAnnotation !== undefined &&
-      isBroadMappedKey(parameter.typeAnnotation.typeAnnotation, new Set()) &&
-      isUnknownOrAny(member.typeAnnotation.typeAnnotation)
+  return member?.type === "TSIndexSignature" &&
+    parameter?.type === "Identifier" &&
+    parameter.typeAnnotation !== undefined &&
+    member.typeAnnotation !== undefined &&
+    isBroadMappedKey(parameter.typeAnnotation.typeAnnotation, new Set()) &&
+    isUnknownOrAny(member.typeAnnotation.typeAnnotation)
     ? "record"
     : null;
 }
@@ -181,8 +199,18 @@ function assertionFromExpression(expression: Expression): Assertion | null {
     : null;
 }
 
-function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
+function makeRule(widenThenAssert: boolean): TSESLint.RuleModule<string, []> {
   return {
+    meta: {
+      type: "problem",
+      schema: [],
+      messages: {
+        flow: "The explicit {{target}} type on {{subject}} discards known type evidence. Keep inference, validate with `satisfies`, or use a named owner contract.",
+        assertion:
+          'Binding "{{name}}" discards type evidence and later recreates it with an assertion. Keep the precise type from initialization through use; parse boundary input once.',
+      },
+    },
+    defaultOptions: [],
     create(context) {
       const aliases = new Map<string, Extract<Node, { type: "TSTypeAliasDeclaration" }>>();
       const shadowedBuiltIns = new Set<string>();
@@ -207,9 +235,8 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
           (name === "Readonly" || name === "Partial" || name === "Required") &&
           !shadowedBuiltIns.has(name)
         ) {
-          const inner = value.type === "TSTypeReference"
-            ? value.typeArguments?.params[0]
-            : undefined;
+          const inner =
+            value.type === "TSTypeReference" ? value.typeArguments?.params[0] : undefined;
           return inner === undefined ? null : classifyAlias(inner, resolving);
         }
         if (name === "Record" && !shadowedBuiltIns.has(name)) return "open dictionary";
@@ -228,8 +255,8 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
           return value.members.some((member) => member.type === "TSIndexSignature")
             ? "open dictionary"
             : value.members.length > 0
-            ? "anonymous object"
-            : null;
+              ? "anonymous object"
+              : null;
         }
         if (value.type === "TSMappedType") return "open dictionary";
         const name = referenceName(value);
@@ -238,9 +265,8 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
           (name === "Readonly" || name === "Partial" || name === "Required") &&
           !shadowedBuiltIns.has(name)
         ) {
-          const inner = value.type === "TSTypeReference"
-            ? value.typeArguments?.params[0]
-            : undefined;
+          const inner =
+            value.type === "TSTypeReference" ? value.typeArguments?.params[0] : undefined;
           return inner === undefined ? null : classify(inner);
         }
         if (name === "Record" && !shadowedBuiltIns.has(name)) return "open dictionary";
@@ -254,13 +280,15 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
 
       function bindingFor(identifier: Extract<Node, { type: "Identifier" }>): Declarator | null {
         const usePath = blockPath(identifier);
-        const candidates = declarations.filter((candidate) =>
-          candidate.id.type === "Identifier" && candidate.id.name === identifier.name &&
-          candidate.range[0] < identifier.range[0] &&
-          boundaryKey(candidate) === boundaryKey(identifier) &&
-          pathContains(blockPath(candidate), usePath)
+        const candidates = declarations.filter(
+          (candidate) =>
+            candidate.id.type === "Identifier" &&
+            candidate.id.name === identifier.name &&
+            candidate.range[0] < identifier.range[0] &&
+            boundaryKey(candidate) === boundaryKey(identifier) &&
+            pathContains(blockPath(candidate), usePath),
         );
-        return candidates.length === 0 ? null : candidates[candidates.length - 1] ?? null;
+        return candidates.length === 0 ? null : (candidates[candidates.length - 1] ?? null);
       }
 
       function hasKnown(
@@ -273,12 +301,15 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
         if (value.type !== "Identifier") return false;
         const declaration = bindingFor(value);
         if (
-          declaration === null || visited.has(declaration) || declaration.init === null ||
+          declaration === null ||
+          visited.has(declaration) ||
+          declaration.init === null ||
           declaration.parent.type !== "VariableDeclaration" ||
           declaration.parent.kind !== "const" ||
           boundaryKey(declaration) !== boundaryKey(use) ||
           reassigned.has(`${boundaryKey(declaration)}:${value.name}`)
-        ) return false;
+        )
+          return false;
         visited.add(declaration);
         return hasKnown(declaration.init, declaration, visited);
       }
@@ -291,14 +322,16 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
         if (type === undefined) return;
         const target = classify(type);
         if (
-          target === null || ((target === "open dictionary" || target === "generic container") &&
+          target === null ||
+          ((target === "open dictionary" || target === "generic container") &&
             isEmptyObject(expression)) ||
           !hasKnown(expression, expression)
-        ) return;
+        )
+          return;
         context.report({
           node: expression,
-          message:
-            `The explicit ${target} type on ${subject} discards known type evidence. Keep inference, validate with \`satisfies\`, or use a named owner contract.`,
+          messageId: "flow",
+          data: { target, subject },
         });
       }
 
@@ -307,33 +340,39 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
         if (expression.type !== "Identifier") return;
         const declaration = bindingFor(expression);
         if (
-          declaration === null || declaration.init === null ||
+          declaration === null ||
+          declaration.init === null ||
           declaration.parent.type !== "VariableDeclaration" ||
           declaration.parent.kind !== "const" ||
           declaration.id.type !== "Identifier" ||
           reassigned.has(`${boundaryKey(declaration)}:${expression.name}`)
-        ) return;
+        )
+          return;
         const initializerAssertion = assertionFromExpression(declaration.init);
-        const declaredBroadKind = declaration.id.typeAnnotation === undefined
-          ? null
-          : launderingBroadKind(declaration.id.typeAnnotation.typeAnnotation);
-        const initializerBroadKind = initializerAssertion === null
-          ? null
-          : launderingBroadKind(initializerAssertion.typeAnnotation);
+        const declaredBroadKind =
+          declaration.id.typeAnnotation == null
+            ? null
+            : launderingBroadKind(declaration.id.typeAnnotation.typeAnnotation);
+        const initializerBroadKind =
+          initializerAssertion === null
+            ? null
+            : launderingBroadKind(initializerAssertion.typeAnnotation);
         const kind = declaredBroadKind ?? initializerBroadKind;
         if (kind === null || launderingBroadKind(node.typeAnnotation) !== null) return;
-        const evidence = initializerAssertion !== null && initializerBroadKind !== null
-          ? initializerAssertion.expression
-          : declaration.init;
+        const evidence =
+          initializerAssertion !== null && initializerBroadKind !== null
+            ? initializerAssertion.expression
+            : declaration.init;
         if (!hasKnown(evidence, declaration)) return;
-        const narrower = kind === "top" ||
+        const narrower =
+          kind === "top" ||
           (kind === "object" && isDefinitelyObjectType(node.typeAnnotation)) ||
           (kind === "record" && isDefinitelyNarrowerRecord(node.typeAnnotation));
         if (!narrower) return;
         context.report({
           node,
-          message:
-            `Binding "${expression.name}" discards type evidence and later recreates it with an assertion. Keep the precise type from initialization through use; parse boundary input once.`,
+          messageId: "assertion",
+          data: { name: expression.name },
         });
       }
 
@@ -409,7 +448,8 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
         TSAsExpression(node) {
           if (widenThenAssert) checkAssertion(node);
           else if (
-            node.parent.type !== "TSAsExpression" && node.parent.type !== "TSTypeAssertion"
+            node.parent.type !== "TSAsExpression" &&
+            node.parent.type !== "TSTypeAssertion"
           ) {
             reportFlow(node.expression, node.typeAnnotation, "assertion");
           }
@@ -417,7 +457,8 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
         TSTypeAssertion(node) {
           if (widenThenAssert) checkAssertion(node);
           else if (
-            node.parent.type !== "TSAsExpression" && node.parent.type !== "TSTypeAssertion"
+            node.parent.type !== "TSAsExpression" &&
+            node.parent.type !== "TSTypeAssertion"
           ) {
             reportFlow(node.expression, node.typeAnnotation, "assertion");
           }
@@ -427,7 +468,7 @@ function makeRule(widenThenAssert: boolean): Deno.lint.Rule {
   };
 }
 
-export const flowAntiSlopRules: Record<string, Deno.lint.Rule> = {
+export const flowAntiSlopRules: Record<string, TSESLint.RuleModule<string, []>> = {
   "no-known-value-widening": makeRule(false),
   "no-widen-then-assert": makeRule(true),
 };

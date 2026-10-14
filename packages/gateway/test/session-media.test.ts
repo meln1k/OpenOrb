@@ -1,10 +1,11 @@
+import { test } from "vite-plus/test";
 import {
   assert,
   assertEquals,
   assertMatch,
   assertNotStrictEquals,
   assertStrictEquals,
-} from "@std/assert";
+} from "@jsr/std__assert";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import type { ConversationView, JsonObject } from "@earendil-works/pi-durable";
@@ -24,20 +25,20 @@ function view(
 ): ConversationView {
   // SAFETY: fixtures build the JSON shape of Conversation Views; projection reads only JSON, and
   // branded Durable identifiers cannot be constructed outside a Harness.
-  // deno-lint-ignore openorb/no-chained-type-assertions
+  // oxlint-disable-next-line openorb/no-chained-type-assertions
   return { conversation: {}, entries, docs } as unknown as ConversationView;
 }
 
 const image = { type: "image", mimeType: "image/png", data: SCRIPTED_PNG_BASE64 };
 
-Deno.test("inline image identifiers are content-derived UUIDs", async () => {
+test("inline image identifiers are content-derived UUIDs", async () => {
   const id = await inlineImageId("image/png", SCRIPTED_PNG_BASE64);
   assertMatch(id, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assertEquals(await inlineImageId("image/png", SCRIPTED_PNG_BASE64), id);
-  assert(await inlineImageId("image/jpeg", SCRIPTED_PNG_BASE64) !== id);
+  assert((await inlineImageId("image/jpeg", SCRIPTED_PNG_BASE64)) !== id);
 });
 
-Deno.test("projection replaces inline images with references and records where they live", async () => {
+test("projection replaces inline images with references and records where they live", async () => {
   const found: [string, string, number | undefined][] = [];
   const projection = new ConversationProjection({
     found: (id, mediaType, entryId) => found.push([id, mediaType, entryId]),
@@ -49,10 +50,13 @@ Deno.test("projection replaces inline images with references and records where t
   const id = await inlineImageId("image/png", SCRIPTED_PNG_BASE64);
   assert(!JSON.stringify(projected).includes(SCRIPTED_PNG_BASE64), "image bytes leaked");
   assert(JSON.stringify(projected).includes(`"artifactId":"${id}"`));
-  assertEquals(found, [[id, "image/png", 7], [id, "image/png", undefined]]);
+  assertEquals(found, [
+    [id, "image/png", 7],
+    [id, "image/png", undefined],
+  ]);
 });
 
-Deno.test("projection rejects unsupported image types and reuses unchanged subtrees", async () => {
+test("projection rejects unsupported image types and reuses unchanged subtrees", async () => {
   const projection = new ConversationProjection({ found: () => {} });
   const entry = { id: 1, model: [{ content: [{ ...image, mimeType: "image/svg+xml" }] }] };
   const first = await projection.project(view([entry]));
@@ -65,7 +69,7 @@ Deno.test("projection rejects unsupported image types and reuses unchanged subtr
   assertEquals(diffRevisions(first, second).length > 0, true);
 });
 
-Deno.test("inline images are found again in Harness State by identifier", async () => {
+test("inline images are found again in Harness State by identifier", async () => {
   const id = await inlineImageId("image/png", SCRIPTED_PNG_BASE64);
   const found = await findInlineImage({ model: [{ content: [{ type: "text" }, image] }] }, id);
   assertEquals(found?.mediaType, "image/png");
@@ -73,12 +77,12 @@ Deno.test("inline images are found again in Harness State by identifier", async 
   assertEquals(await findInlineImage({ content: [image] }, crypto.randomUUID()), undefined);
 });
 
-Deno.test("published media types come from content signatures, not names", () => {
+test("published media types come from content signatures, not names", () => {
   assertEquals(detectMediaType(Uint8Array.fromBase64(SCRIPTED_PNG_BASE64)), "image/png");
   assertEquals(detectMediaType(new TextEncoder().encode("<svg/>")), null);
 });
 
-Deno.test("guest operations wait for project setup, then reach the provider", async () => {
+test("guest operations wait for project setup, then reach the provider", async () => {
   const calls: string[] = [];
   const fake: Partial<ExecutionEnv> = {
     id: "fake",
@@ -91,7 +95,7 @@ Deno.test("guest operations wait for project setup, then reach the provider", as
   // SAFETY: the gate forwards only `exists` here; no other provider method is called.
   const env = fake as ExecutionEnv;
   let release!: () => void;
-  let readiness: Promise<void> | undefined = new Promise<void>((resolve) => release = resolve);
+  let readiness: Promise<void> | undefined = new Promise<void>((resolve) => (release = resolve));
   const gated = gatedExecutionEnv(env, () => readiness);
   const pending = gated.exists("/workspace/a", BACKGROUND_CONTEXT);
   await new Promise((resolve) => setTimeout(resolve, 10));

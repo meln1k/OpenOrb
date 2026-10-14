@@ -113,8 +113,8 @@ export interface EnvironmentStore {
   readonly syncRootDisk: (sessionId: SessionId) => Effect.Effect<void, EnvironmentStoreError>;
 }
 
-export const EnvironmentStore: Context.Service<EnvironmentStore, EnvironmentStore> = Context
-  .Service("@openorb/runner/EnvironmentStore");
+export const EnvironmentStore: Context.Service<EnvironmentStore, EnvironmentStore> =
+  Context.Service("@openorb/runner/EnvironmentStore");
 
 export const makeEnvironmentStore = Effect.fn("makeEnvironmentStore")(function* (
   workingDirectory: string,
@@ -132,25 +132,25 @@ export const makeEnvironmentStore = Effect.fn("makeEnvironmentStore")(function* 
   const syncDirectory = (path: string) =>
     Effect.scoped(fs.open(path, { flag: "r" }).pipe(Effect.flatMap((file) => file.sync)));
   const privateDirectory = (path: string) =>
-    fs.makeDirectory(path, { mode: 0o700, recursive: true }).pipe(
-      Effect.andThen(fs.chmod(path, 0o700)),
-    );
+    fs
+      .makeDirectory(path, { mode: 0o700, recursive: true })
+      .pipe(Effect.andThen(fs.chmod(path, 0o700)));
 
   yield* Effect.all([privateDirectory(root), privateDirectory(deletions)]).pipe(
     Effect.andThen(syncDirectory(workingDirectory)),
     Effect.mapError(fail("Runner environment storage could not be initialized.")),
   );
   const purgeQueued = (sessionId: SessionId) =>
-    fs.remove(paths.join(deletions, sessionId), { recursive: true, force: true }).pipe(
-      Effect.andThen(syncDirectory(deletions)),
-    );
+    fs
+      .remove(paths.join(deletions, sessionId), { recursive: true, force: true })
+      .pipe(Effect.andThen(syncDirectory(deletions)));
   yield* fs.readDirectory(deletions).pipe(
     Effect.flatMap((entries) =>
       Effect.forEach(
         entries,
         (entry) => Schema.decodeUnknownEffect(SessionId)(entry).pipe(Effect.flatMap(purgeQueued)),
         { discard: true },
-      )
+      ),
     ),
     Effect.mapError(fail("Interrupted environment deletions could not be finished.")),
   );
@@ -163,7 +163,8 @@ export const makeEnvironmentStore = Effect.fn("makeEnvironmentStore")(function* 
         Effect.catchTag("PlatformError", (error) =>
           error.reason._tag === "AlreadyExists"
             ? Effect.succeed("existing" as const)
-            : Effect.fail(error)),
+            : Effect.fail(error),
+        ),
         Effect.mapError(fail(`Environment ${sessionId} storage could not be created.`)),
       ),
     remove: (sessionId) =>
@@ -178,10 +179,12 @@ export const makeEnvironmentStore = Effect.fn("makeEnvironmentStore")(function* 
       }).pipe(Effect.mapError(fail(`Environment ${sessionId} storage could not be removed.`))),
     list: fs.readDirectory(root).pipe(
       Effect.map((entries) =>
-        entries.flatMap((entry) => {
-          const decoded = Schema.decodeUnknownOption(SessionId)(entry);
-          return decoded._tag === "Some" ? [decoded.value] : [];
-        }).sort()
+        entries
+          .flatMap((entry) => {
+            const decoded = Schema.decodeUnknownOption(SessionId)(entry);
+            return decoded._tag === "Some" ? [decoded.value] : [];
+          })
+          .sort(),
       ),
       Effect.mapError(fail("Runner environments could not be listed.")),
     ),
@@ -199,7 +202,7 @@ export const makeEnvironmentStore = Effect.fn("makeEnvironmentStore")(function* 
                 : { record, sequence: entries.at(-1)?.sequence ?? 0 };
             },
             catch: fail(`Environment ${sessionId} journal is inconsistent.`),
-          })
+          }),
         ),
       ),
     append: (sessionId, expectedSequence, event) =>
@@ -214,9 +217,9 @@ export const makeEnvironmentStore = Effect.fn("makeEnvironmentStore")(function* 
       ),
     syncRootDisk: (sessionId) =>
       Effect.scoped(
-        fs.open(paths.join(directory(sessionId), ROOT_DISK_FILE), { flag: "r" }).pipe(
-          Effect.flatMap((file) => file.sync),
-        ),
+        fs
+          .open(paths.join(directory(sessionId), ROOT_DISK_FILE), { flag: "r" })
+          .pipe(Effect.flatMap((file) => file.sync)),
       ).pipe(
         Effect.andThen(syncDirectory(directory(sessionId))),
         Effect.mapError(fail(`Environment ${sessionId} root disk could not be synced.`)),

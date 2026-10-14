@@ -1,4 +1,6 @@
 import { dirname, join } from "node:path";
+import * as fs from "node:fs/promises";
+import { hasErrorCode } from "../../../runtime/errors.ts";
 import { Schema } from "effect";
 import { type Result, tryAsync } from "@openorb/result";
 
@@ -10,12 +12,14 @@ import {
 } from "./installer.ts";
 import { GUEST_IMAGE_RELEASES, type GuestImageRelease } from "./release.ts";
 
-const Runtime = Schema.fromJsonString(Schema.Struct({
-  version: Schema.Literal(1),
-  releaseId: Schema.String,
-  architecture: Schema.Literals(["x64", "arm64"]),
-  manifestSha256: Schema.String,
-}));
+const Runtime = Schema.fromJsonString(
+  Schema.Struct({
+    version: Schema.Literal(1),
+    releaseId: Schema.String,
+    architecture: Schema.Literals(["x64", "arm64"]),
+    manifestSha256: Schema.String,
+  }),
+);
 
 export interface SessionRuntimeOptions {
   readonly releases?: readonly GuestImageRelease[];
@@ -39,8 +43,8 @@ export async function initializeSessionRuntime(
       }
       const candidate = `${path}.${crypto.randomUUID()}.candidate`;
       await using cleanup = new AsyncDisposableStack();
-      cleanup.defer(() => Deno.remove(candidate));
-      await Deno.writeTextFile(
+      cleanup.defer(() => fs.rm(candidate));
+      await fs.writeFile(
         candidate,
         JSON.stringify({
           version: 1,
@@ -48,16 +52,16 @@ export async function initializeSessionRuntime(
           architecture: defaultImage.architecture,
           manifestSha256: defaultImage.manifestSha256,
         }),
-        { mode: 0o600, createNew: true },
+        { mode: 0o600, flag: "wx" },
       );
-      using file = await Deno.open(candidate, { read: true });
+      await using file = await fs.open(candidate, "r");
       await file.sync();
-      const [, publishError] = await tryAsync(Deno.link(candidate, path), (cause) => cause);
+      const [, publishError] = await tryAsync(fs.link(candidate, path), (cause) => cause);
       if (publishError !== undefined) {
-        if (publishError instanceof Deno.errors.AlreadyExists) return;
+        if (hasErrorCode(publishError, "EEXIST")) return;
         throw publishError;
       }
-      using directory = await Deno.open(dirname(path), { read: true });
+      await using directory = await fs.open(dirname(path), "r");
       await directory.sync();
     })(),
     (cause) => new GuestImageError("The session runtime could not be recorded.", cause),
@@ -73,11 +77,11 @@ export async function readSessionGuestImage(
   return await tryAsync(
     (async () => {
       const path = join(dirname(rootDiskPath), "runtime.json");
-      const info = await Deno.lstat(path);
-      if (!info.isFile || info.isSymlink) {
+      const info = await fs.lstat(path);
+      if (!info.isFile() || info.isSymbolicLink()) {
         throw new GuestImageError("The session runtime must be a regular file.", undefined);
       }
-      const runtime = Schema.decodeUnknownSync(Runtime)(await Deno.readTextFile(path));
+      const runtime = Schema.decodeUnknownSync(Runtime)(await fs.readFile(path, "utf8"));
       if (runtime.architecture !== defaultImage.architecture) {
         throw new GuestImageError(
           "The session runtime architecture does not match this runner.",
@@ -87,10 +91,12 @@ export async function readSessionGuestImage(
       if (
         runtime.releaseId === defaultImage.releaseId &&
         runtime.manifestSha256 === defaultImage.manifestSha256
-      ) return defaultImage;
-      const release = (options.releases ?? GUEST_IMAGE_RELEASES).find((entry) =>
-        entry.id === runtime.releaseId &&
-        entry.assets[runtime.architecture].manifestSha256 === runtime.manifestSha256
+      )
+        return defaultImage;
+      const release = (options.releases ?? GUEST_IMAGE_RELEASES).find(
+        (entry) =>
+          entry.id === runtime.releaseId &&
+          entry.assets[runtime.architecture].manifestSha256 === runtime.manifestSha256,
       );
       if (!release) {
         throw new GuestImageError(`Unsupported session runtime: ${runtime.releaseId}.`, undefined);
@@ -110,9 +116,9 @@ export async function readSessionGuestImage(
 }
 
 async function exists(path: string): Promise<boolean> {
-  const [, error] = await tryAsync(Deno.lstat(path), (cause) => cause);
+  const [, error] = await tryAsync(fs.lstat(path), (cause) => cause);
   if (error !== undefined) {
-    if (error instanceof Deno.errors.NotFound) return false;
+    if (hasErrorCode(error, "ENOENT")) return false;
     throw error;
   }
   return true;

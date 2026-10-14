@@ -1,4 +1,7 @@
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import * as fs from "node:fs/promises";
+import { execute } from "../../runtime/process.ts";
+import { hasErrorCode } from "../../runtime/errors.ts";
 
 import { type Result, tryAsync } from "@openorb/result";
 import { Schema } from "effect";
@@ -6,11 +9,13 @@ import { Schema } from "effect";
 export const OPENORB_ROOT_DISK_SIZE = "40G";
 const ROOT_DISK_DETACH_TIMEOUT_MS = 15_000;
 const ROOT_DISK_DETACH_RETRY_MS = 100;
-const ImageInfo = Schema.fromJsonString(Schema.Struct({
-  format: Schema.String,
-  "backing-filename": Schema.optionalKey(Schema.String),
-  "backing-filename-format": Schema.optionalKey(Schema.String),
-}));
+const ImageInfo = Schema.fromJsonString(
+  Schema.Struct({
+    format: Schema.String,
+    "backing-filename": Schema.optionalKey(Schema.String),
+    "backing-filename-format": Schema.optionalKey(Schema.String),
+  }),
+);
 
 export interface PersistentRootDiskDetachmentOptions {
   readonly timeoutMs?: number;
@@ -34,7 +39,7 @@ interface PersistentRootDiskOptions extends PersistentRootDiskBacking {
 }
 
 export class PersistentRootDiskError extends Error {
-  constructor(message: string, override readonly cause?: unknown) {
+  constructor(message: string, cause?: unknown) {
     super(message, { cause });
     this.name = "PersistentRootDiskError";
   }
@@ -48,12 +53,10 @@ export class PersistentRootDiskError extends Error {
 export async function initializePersistentRootDisk(
   options: PersistentRootDiskOptions,
 ): Promise<Result<void, PersistentRootDiskError>> {
-  return await tryAsync(
-    initializePersistentRootDiskValue(options),
-    (cause) =>
-      cause instanceof PersistentRootDiskError
-        ? cause
-        : new PersistentRootDiskError("The persistent root disk could not be prepared.", cause),
+  return await tryAsync(initializePersistentRootDiskValue(options), (cause) =>
+    cause instanceof PersistentRootDiskError
+      ? cause
+      : new PersistentRootDiskError("The persistent root disk could not be prepared.", cause),
   );
 }
 
@@ -66,9 +69,7 @@ async function initializePersistentRootDiskValue(
   const rootDiskPath = resolve(options.path);
   const backingPath = resolve(options.backingPath);
   if (rootDiskPath === backingPath) {
-    throw new PersistentRootDiskError(
-      "The persistent root disk cannot replace its backing image.",
-    );
+    throw new PersistentRootDiskError("The persistent root disk cannot replace its backing image.");
   }
 
   const directoryPath = dirname(rootDiskPath);
@@ -76,16 +77,16 @@ async function initializePersistentRootDiskValue(
   await cleanupCandidates(directoryPath, basename(rootDiskPath));
   if (await assertRegularFileIfPresent(rootDiskPath)) {
     await assertBackingImage(rootDiskPath, options);
-    await Deno.chmod(rootDiskPath, 0o600);
+    await fs.chmod(rootDiskPath, 0o600);
     return;
   }
 
   const candidatePath = `${rootDiskPath}.candidate-${crypto.randomUUID()}`;
   await using cleanup = new AsyncDisposableStack();
   cleanup.defer(async () => {
-    const [, cleanupError] = await tryAsync(Deno.remove(candidatePath), (cause) => cause);
+    const [, cleanupError] = await tryAsync(fs.rm(candidatePath), (cause) => cause);
     if (cleanupError !== undefined) {
-      if (cleanupError instanceof Deno.errors.NotFound) return;
+      if (hasErrorCode(cleanupError, "ENOENT")) return;
       throw cleanupError;
     }
   });
@@ -95,14 +96,14 @@ async function initializePersistentRootDiskValue(
     options.backingFormat,
   );
   await assertRegularFile(candidatePath);
-  await Deno.chmod(candidatePath, 0o600);
+  await fs.chmod(candidatePath, 0o600);
   await syncFile(candidatePath);
   const [, publicationError] = await tryAsync(
-    Deno.link(candidatePath, rootDiskPath),
+    fs.link(candidatePath, rootDiskPath),
     (cause) => cause,
   );
   if (publicationError !== undefined) {
-    if (!(publicationError instanceof Deno.errors.AlreadyExists)) throw publicationError;
+    if (!hasErrorCode(publicationError, "EEXIST")) throw publicationError;
     await assertRegularFile(rootDiskPath);
     await assertBackingImage(rootDiskPath, options);
     return;
@@ -147,12 +148,12 @@ async function assertBackingImage(path: string, backing: PersistentRootDiskBacki
 }
 
 async function readImageInfo(path: string): Promise<string> {
-  const output = await new Deno.Command("qemu-img", {
+  const output = await execute("qemu-img", {
     args: ["info", "--output=json", path],
     stdin: "null",
     stdout: "piped",
     stderr: "null",
-  }).output();
+  });
   if (!output.success) {
     throw new PersistentRootDiskError(
       `qemu-img could not inspect the persistent root disk (status ${output.code}).`,
@@ -169,7 +170,7 @@ export async function assertPersistentRootDiskDetached(
     (async () => {
       const [, validationError] = await validatePersistentRootDisk(path);
       if (validationError !== undefined) {
-        if (validationError.cause instanceof Deno.errors.NotFound) return;
+        if (hasErrorCode(validationError.cause, "ENOENT")) return;
         throw validationError;
       }
       const resolvedPath = resolve(path);
@@ -181,25 +182,25 @@ export async function assertPersistentRootDiskDetached(
         if (await inspectImage(resolvedPath)) return;
         await new Promise((resolve) => setTimeout(resolve, retryMs));
       } while (Date.now() < deadline);
-      throw new PersistentRootDiskError(
-        "The persistent root disk may still be attached to a VM.",
-      );
+      throw new PersistentRootDiskError("The persistent root disk may still be attached to a VM.");
     })(),
     (cause) =>
-      cause instanceof PersistentRootDiskError ? cause : new PersistentRootDiskError(
-        "The persistent root disk attachment state could not be confirmed.",
-        cause,
-      ),
+      cause instanceof PersistentRootDiskError
+        ? cause
+        : new PersistentRootDiskError(
+            "The persistent root disk attachment state could not be confirmed.",
+            cause,
+          ),
   );
 }
 
 async function inspectQcow2Image(path: string): Promise<boolean> {
-  const output = await new Deno.Command("qemu-img", {
+  const output = await execute("qemu-img", {
     args: ["info", "--output=json", path],
     stdin: "null",
     stdout: "null",
     stderr: "null",
-  }).output();
+  });
   return output.success;
 }
 
@@ -208,7 +209,7 @@ async function createQcow2Overlay(
   backingPath: string,
   backingFormat: "raw" | "qcow2",
 ): Promise<void> {
-  const output = await new Deno.Command("qemu-img", {
+  const output = await execute("qemu-img", {
     args: [
       "create",
       "-f",
@@ -223,7 +224,7 @@ async function createQcow2Overlay(
     stdin: "null",
     stdout: "null",
     stderr: "null",
-  }).output();
+  });
   if (!output.success) {
     throw new PersistentRootDiskError(
       `qemu-img could not create the persistent root disk (status ${output.code}).`,
@@ -234,17 +235,17 @@ async function createQcow2Overlay(
 async function cleanupCandidates(directoryPath: string, rootDiskFile: string): Promise<void> {
   const prefix = `${rootDiskFile}.candidate-`;
   let removed = false;
-  for await (const entry of Deno.readDir(directoryPath)) {
+  for (const entry of await fs.readdir(directoryPath, { withFileTypes: true })) {
     if (!entry.name.startsWith(prefix)) continue;
-    await Deno.remove(join(directoryPath, entry.name), { recursive: entry.isDirectory });
+    await fs.rm(join(directoryPath, entry.name), { recursive: entry.isDirectory() });
     removed = true;
   }
   if (removed) await syncDirectory(directoryPath);
 }
 
 async function assertRealDirectory(path: string): Promise<void> {
-  const info = await Deno.lstat(path);
-  if (!info.isDirectory || info.isSymlink) {
+  const info = await fs.lstat(path);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
     throw new PersistentRootDiskError(
       "The persistent root disk directory must be a real directory.",
     );
@@ -254,25 +255,25 @@ async function assertRealDirectory(path: string): Promise<void> {
 async function assertRegularFileIfPresent(path: string): Promise<boolean> {
   const [, inspectionError] = await tryAsync(assertRegularFile(path), (cause) => cause);
   if (inspectionError !== undefined) {
-    if (inspectionError instanceof Deno.errors.NotFound) return false;
+    if (hasErrorCode(inspectionError, "ENOENT")) return false;
     throw inspectionError;
   }
   return true;
 }
 
 async function assertRegularFile(path: string): Promise<void> {
-  const info = await Deno.lstat(path);
-  if (!info.isFile || info.isSymlink) {
+  const info = await fs.lstat(path);
+  if (!info.isFile() || info.isSymbolicLink()) {
     throw new PersistentRootDiskError("The persistent root disk must be a regular file.");
   }
 }
 
 async function syncFile(path: string): Promise<void> {
-  using file = await Deno.open(path, { read: true });
+  await using file = await fs.open(path, "r");
   await file.sync();
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  using directory = await Deno.open(path, { read: true });
+  await using directory = await fs.open(path, "r");
   await directory.sync();
 }

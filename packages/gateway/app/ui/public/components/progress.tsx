@@ -19,7 +19,7 @@ export function Progress(handle: Handle<ProgressProps>) {
     const { max = 100, mix, value, ...props } = handle.props;
     const safeMax = max > 0 ? max : 100;
     const safeValue = Math.min(Math.max(value, 0), safeMax);
-    const percentage = safeValue / safeMax * 100;
+    const percentage = (safeValue / safeMax) * 100;
 
     return (
       <div

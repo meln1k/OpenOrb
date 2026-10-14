@@ -1,23 +1,27 @@
-import { assert, assertEquals, assertGreater, assertObjectMatch, assertRejects } from "@std/assert";
+import { test } from "vite-plus/test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  assert,
+  assertEquals,
+  assertGreater,
+  assertObjectMatch,
+  assertRejects,
+} from "@jsr/std__assert";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createEnvConformance } from "@earendil-works/pi-durable/testing";
 import { RemoteExecutionEnv } from "@openorb/pi-env";
 import { Effect, Exit, Scope } from "effect";
-import { makeGondolinAgentEnvironmentProvider } from "@/src/environment/gondolin/layer.ts";
+import { makeGondolinAgentEnvironmentProvider } from "../../../src/environment/gondolin/layer.ts";
 import { relayedConnection } from "./guest-tools.ts";
-import {
-  gondolinTestEnvironmentOptions,
-  installLocalGuestImage,
-} from "@/test/environment/gondolin/local-guest-image.ts";
+import { gondolinTestEnvironmentOptions, installLocalGuestImage } from "./local-guest-image.ts";
 
-Deno.test({
-  name: "the guest Environment Daemon conforms to ExecutionEnv over a relayed link",
-  ignore: Deno.env.get("OPENORB_RUN_GONDOLIN_TESTS") !== "1",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn(t) {
-    const directory = await Deno.makeTempDir();
+test.skipIf(process.env.OPENORB_RUN_GONDOLIN_TESTS !== "1")(
+  "the guest Environment Daemon conforms to ExecutionEnv over a relayed link",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openorb-"));
     const scope = await Effect.runPromise(Scope.make());
     try {
       const options = gondolinTestEnvironmentOptions();
@@ -28,12 +32,14 @@ Deno.test({
       const rootDiskPath = `${directory}/root-disk.qcow2`;
       await Effect.runPromise(provider.initializeRootDisk(rootDiskPath));
       const environment = await Effect.runPromise(
-        provider.make({
-          rootDiskPath,
-          sessionLabel: "openorb environment daemon test",
-          cpuCount: 2,
-          memoryMiB: 2 * 1024,
-        }).pipe(Effect.provideService(Scope.Scope, scope)),
+        provider
+          .make({
+            rootDiskPath,
+            sessionLabel: "openorb environment daemon test",
+            cpuCount: 2,
+            memoryMiB: 2 * 1024,
+          })
+          .pipe(Effect.provideService(Scope.Scope, scope)),
       );
       const connection = relayedConnection(environment);
       const root = new RemoteExecutionEnv({ connection, id: "guest", cwd: "/" });
@@ -46,10 +52,10 @@ Deno.test({
           partialDeepEqual: (actual, expected) =>
             assertObjectMatch(
               // SAFETY: conformance cases only compare record-shaped results partially.
-              // deno-lint-ignore openorb/no-unsafe-dictionary-type
+              // oxlint-disable-next-line openorb/no-unsafe-dictionary-type
               actual as Record<PropertyKey, unknown>,
               // SAFETY: as above; `assertObjectMatch` accepts only records.
-              // deno-lint-ignore openorb/no-unsafe-dictionary-type
+              // oxlint-disable-next-line openorb/no-unsafe-dictionary-type
               expected as Record<PropertyKey, unknown>,
             ),
           greaterThan: (actual, expected) => assertGreater(actual, expected),
@@ -67,21 +73,25 @@ Deno.test({
         },
       });
       for (const conformance of cases) {
-        await t.step(conformance.name, () => conformance.run());
+        await conformance.run();
       }
 
-      await t.step("commands inherit the guest command environment", async () => {
+      {
         let output = "";
         const result = getOrThrow(
-          await root.exec('printf %s "$OPENORB_GUEST"', {
-            onOutput: (text) => void (output += text),
-          }, context),
+          await root.exec(
+            'printf %s "$OPENORB_GUEST"',
+            {
+              onOutput: (text) => void (output += text),
+            },
+            context,
+          ),
         );
         assertEquals(result.exitCode, 0);
         assertEquals(output, "1");
-      });
+      }
 
-      await t.step("losing the link kills the commands the daemon started", async () => {
+      {
         const marker = "/tmp/openorb-link-loss.pid";
         const running = root.exec(`echo $$ > ${marker}; exec sleep 600`, {}, context);
         for (let attempt = 0; attempt < 100; attempt++) {
@@ -100,10 +110,11 @@ Deno.test({
           if (alive) await new Promise((resolve) => setTimeout(resolve, 100));
         }
         assert(!alive, "the command survived the lost link");
-      });
+      }
     } finally {
       await Effect.runPromise(Scope.close(scope, Exit.void));
-      await Deno.remove(directory, { recursive: true });
+      await rm(directory, { recursive: true });
     }
   },
-});
+  600_000,
+);

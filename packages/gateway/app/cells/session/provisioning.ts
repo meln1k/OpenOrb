@@ -69,15 +69,19 @@ class GuestCommands {
   async run(argv: readonly string[]): Promise<CommandOutput> {
     let stdout = "";
     let stderr = "";
-    const result = await this.env.exec(argv, {
-      cwd: WORKSPACE,
-      onOutput: (text, _context, info) => {
-        const clean = this.#redact(sanitizeOutput(text));
-        if (info.stream === "stdout") stdout = appendBounded(stdout, clean);
-        else stderr = appendBounded(stderr, clean);
-        this.#emit(info.stream, clean);
+    const result = await this.env.exec(
+      argv,
+      {
+        cwd: WORKSPACE,
+        onOutput: (text, _context, info) => {
+          const clean = this.#redact(sanitizeOutput(text));
+          if (info.stream === "stdout") stdout = appendBounded(stdout, clean);
+          else stderr = appendBounded(stderr, clean);
+          this.#emit(info.stream, clean);
+        },
       },
-    }, this.context);
+      this.context,
+    );
     if (!result.ok) {
       return { exitCode: -1, stdout, stderr: appendBounded(stderr, result.error.message) };
     }
@@ -134,13 +138,15 @@ export async function provisionCheckout(
   await createWorkspace(env, context);
   const cleared = await commands.run(["/usr/bin/find", WORKSPACE, "-mindepth", "1", "-delete"]);
   if (cleared.exitCode !== 0) {
-    throw new ProvisioningFailure(sessionIssue({
-      category: "environment-storage",
-      severity: "failure",
-      message: "The session workspace could not be prepared for cloning.",
-      diagnostics: commands.diagnostics(cleared),
-      recovery: "retry-provisioning",
-    }));
+    throw new ProvisioningFailure(
+      sessionIssue({
+        category: "environment-storage",
+        severity: "failure",
+        message: "The session workspace could not be prepared for cloning.",
+        diagnostics: commands.diagnostics(cleared),
+        recovery: "retry-provisioning",
+      }),
+    );
   }
   reporter.stage("cloning");
   const clone = await commands.run([
@@ -155,15 +161,18 @@ export async function provisionCheckout(
   ]);
   if (clone.exitCode !== 0) {
     const category = gitFailureCategory(`${clone.stdout}\n${clone.stderr}`);
-    issues.push(sessionIssue({
-      category,
-      severity: "warning",
-      message: category === "github-authentication"
-        ? "GitHub authentication failed while cloning. The checkout is unavailable, but the stored prompt will still run."
-        : "Repository cloning failed. The checkout is unavailable, but the stored prompt will still run.",
-      diagnostics: commands.diagnostics(clone),
-      recovery: "none",
-    }));
+    issues.push(
+      sessionIssue({
+        category,
+        severity: "warning",
+        message:
+          category === "github-authentication"
+            ? "GitHub authentication failed while cloning. The checkout is unavailable, but the stored prompt will still run."
+            : "Repository cloning failed. The checkout is unavailable, but the stored prompt will still run.",
+        diagnostics: commands.diagnostics(clone),
+        recovery: "none",
+      }),
+    );
     commands.note(
       "stderr",
       "Repository clone failed. The checkout is unavailable; the stored prompt remains ready for Pi.\n",
@@ -172,24 +181,28 @@ export async function provisionCheckout(
   }
   const revision = await commands.run(["/usr/bin/git", "rev-parse", "HEAD"]);
   if (revision.exitCode !== 0) {
-    throw new ProvisioningFailure(sessionIssue({
-      category: "report",
-      severity: "failure",
-      message: "Git could not report the cloned base commit.",
-      diagnostics: commands.diagnostics(revision),
-      recovery: "retry-provisioning",
-    }));
+    throw new ProvisioningFailure(
+      sessionIssue({
+        category: "report",
+        severity: "failure",
+        message: "Git could not report the cloned base commit.",
+        diagnostics: commands.diagnostics(revision),
+        recovery: "retry-provisioning",
+      }),
+    );
   }
   reporter.stage("creating-branch");
   const branch = await commands.run(["/usr/bin/git", "switch", "-C", definition.branchName]);
   if (branch.exitCode !== 0) {
-    throw new ProvisioningFailure(sessionIssue({
-      category: "clone",
-      severity: "failure",
-      message: "Git could not create the session branch.",
-      diagnostics: commands.diagnostics(branch),
-      recovery: "retry-provisioning",
-    }));
+    throw new ProvisioningFailure(
+      sessionIssue({
+        category: "clone",
+        severity: "failure",
+        message: "Git could not create the session branch.",
+        diagnostics: commands.diagnostics(branch),
+        recovery: "retry-provisioning",
+      }),
+    );
   }
   const baseCommit = revision.stdout.trim();
   reporter.checkedOut?.(baseCommit);
@@ -200,14 +213,16 @@ export async function provisionCheckout(
     "if [ -x .agents/setup ]; then exec ./.agents/setup; fi",
   ]);
   if (setup.exitCode !== 0) {
-    issues.push(sessionIssue({
-      category: "setup",
-      severity: "warning",
-      message:
-        ".agents/setup failed, but the stored prompt will still run so Pi can diagnose or repair the project.",
-      diagnostics: commands.diagnostics(setup),
-      recovery: "none",
-    }));
+    issues.push(
+      sessionIssue({
+        category: "setup",
+        severity: "warning",
+        message:
+          ".agents/setup failed, but the stored prompt will still run so Pi can diagnose or repair the project.",
+        diagnostics: commands.diagnostics(setup),
+        recovery: "none",
+      }),
+    );
     commands.note(
       "stderr",
       `.agents/setup exited with status ${setup.exitCode}; continuing to Pi so it can repair the project.\n`,
@@ -231,13 +246,15 @@ export function redactedValues(credentials: EnvironmentCredentials): readonly st
 export async function createWorkspace(env: ExecutionEnv, context: Context): Promise<void> {
   const created = await env.createDir(WORKSPACE, { recursive: true }, context);
   if (!created.ok) {
-    throw new ProvisioningFailure(sessionIssue({
-      category: "environment-storage",
-      severity: "failure",
-      message: "The session workspace could not be created.",
-      diagnostics: created.error.message,
-      recovery: "retry-provisioning",
-    }));
+    throw new ProvisioningFailure(
+      sessionIssue({
+        category: "environment-storage",
+        severity: "failure",
+        message: "The session workspace could not be created.",
+        diagnostics: created.error.message,
+        recovery: "retry-provisioning",
+      }),
+    );
   }
 }
 
@@ -260,14 +277,16 @@ export async function resumeCheckout(
     "stderr",
     `.agents/resume exited with status ${resume.exitCode}; continuing to Pi so it can repair the project.\n`,
   );
-  return [sessionIssue({
-    category: "resume-hook",
-    severity: "warning",
-    message:
-      ".agents/resume failed, but the prompt can still run so Pi can diagnose or repair the project.",
-    diagnostics: commands.diagnostics(resume),
-    recovery: "none",
-  })];
+  return [
+    sessionIssue({
+      category: "resume-hook",
+      severity: "warning",
+      message:
+        ".agents/resume failed, but the prompt can still run so Pi can diagnose or repair the project.",
+      diagnostics: commands.diagnostics(resume),
+      recovery: "none",
+    }),
+  ];
 }
 
 export function sessionIssue(input: {
@@ -294,9 +313,10 @@ export function appendIssues(
 ): readonly SessionIssue[] {
   let next = [...current];
   for (const issue of additions) {
-    next = next.filter((existing) =>
-      existing.category !== issue.category &&
-      !(issue.severity === "failure" && existing.severity === "failure")
+    next = next.filter(
+      (existing) =>
+        existing.category !== issue.category &&
+        !(issue.severity === "failure" && existing.severity === "failure"),
     );
     next.push(issue);
   }
@@ -308,8 +328,9 @@ export function clearFailures(issues: readonly SessionIssue[]): readonly Session
 }
 
 function gitFailureCategory(diagnostics: string): "github-authentication" | "clone" {
-  return /authentication failed|bad credentials|could not read username|http (?:401|403)|access denied/iu
-      .test(diagnostics)
+  return /authentication failed|bad credentials|could not read username|http (?:401|403)|access denied/iu.test(
+    diagnostics,
+  )
     ? "github-authentication"
     : "clone";
 }

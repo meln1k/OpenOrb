@@ -1,6 +1,8 @@
-import { assert, assertEquals } from "@std/assert";
-import * as DenoHttpServer from "@effect/platform-deno/DenoHttpServer";
-import * as DenoSocket from "@effect/platform-deno/DenoSocket";
+import { createServer } from "node:http";
+import { test } from "vite-plus/test";
+import { assert, assertEquals } from "@jsr/std__assert";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   AttachEnvironmentPayload,
   ControlEnvironmentPayload,
@@ -51,8 +53,8 @@ import {
   type EnvironmentObserver,
   makeRunnerRegistry,
   PERMANENT_REJECTION_CLOSE_CODE,
-} from "@/app/cells/runners/runner-registry.ts";
-import type { WorkspaceApi } from "@/app/cells/workspace/api.ts";
+} from "../app/cells/runners/runner-registry.ts";
+import type { WorkspaceApi } from "../app/cells/workspace/api.ts";
 
 const WORKSPACE_ID = WorkspaceId.make("018f47f2-39b1-7b30-8000-000000000000");
 const FOREIGN_WORKSPACE_ID = WorkspaceId.make("018f47f2-39b1-7b30-8000-000000000099");
@@ -115,10 +117,7 @@ interface Probe {
   closeCode: Deferred.Deferred<number>;
 }
 
-const makeProbe = Effect.fn(function* (
-  token = TOKEN,
-  protocolVersion = RUNNER_PROTOCOL_VERSION,
-) {
+const makeProbe = Effect.fn(function* (token = TOKEN, protocolVersion = RUNNER_PROTOCOL_VERSION) {
   const probe: Probe = {
     identity: decode(RunnerIdentity)({
       token,
@@ -148,15 +147,17 @@ type Repository = Pick<WorkspaceApi, "authenticateRunner">;
 function fakeRepository(authentication?: AuthenticationProbe): Repository {
   return {
     authenticateRunner: (token: string) =>
-      Effect.runPromise(Effect.gen(function* () {
-        const block = authentication?.block;
-        if (block) {
-          authentication.block = null;
-          yield* Deferred.succeed(block.started, undefined);
-          yield* Deferred.await(block.release);
-        }
-        return token === TOKEN ? { id: RUNNER_ID, workspaceId: WORKSPACE_ID } : null;
-      })),
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const block = authentication?.block;
+          if (block) {
+            authentication.block = null;
+            yield* Deferred.succeed(block.started, undefined);
+            yield* Deferred.await(block.release);
+          }
+          return token === TOKEN ? { id: RUNNER_ID, workspaceId: WORKSPACE_ID } : null;
+        }),
+      ),
   };
 }
 
@@ -220,44 +221,58 @@ function environmentCommand<A>(
 }
 
 function handlers(probe: Probe) {
-  return RunnerApi.toLayer(RunnerApi.of({
-    "runner.identify": () => Effect.sync(() => (probe.identifyCalls++, probe.identity)),
-    "runner.watch": () => {
-      probe.watchCalls++;
-      return Stream.fromQueue(probe.runnerEvents);
-    },
-    "environment.create": (payload) =>
-      environmentCommand(probe, "create", payload, () =>
-        new EnvironmentCreated({
-          environment: new RunnerEnvironmentSnapshot({
-            sessionId: payload.sessionId,
-            workspaceId: payload.workspaceId,
-            createdAt: "2026-10-11T00:00:00.000Z",
-            orbSize: payload.orbSize,
-            state: "stopped",
-          }),
-        })),
-    "environment.control": (payload) =>
-      environmentCommand(probe, "control", payload, () =>
-        new EnvironmentControlled({
-          state: payload.action === "stop" ? "stopped" : "running",
-          forced: false,
-        })),
-    "environment.attach": (payload) =>
-      environmentCommand(probe, "attach", payload, () => new EnvironmentAttachAccepted({})),
-    "environment.delete": (payload) =>
-      environmentCommand(probe, "delete", payload, () => new EnvironmentDeleted({})),
-  }));
+  return RunnerApi.toLayer(
+    RunnerApi.of({
+      "runner.identify": () => Effect.sync(() => (probe.identifyCalls++, probe.identity)),
+      "runner.watch": () => {
+        probe.watchCalls++;
+        return Stream.fromQueue(probe.runnerEvents);
+      },
+      "environment.create": (payload) =>
+        environmentCommand(
+          probe,
+          "create",
+          payload,
+          () =>
+            new EnvironmentCreated({
+              environment: new RunnerEnvironmentSnapshot({
+                sessionId: payload.sessionId,
+                workspaceId: payload.workspaceId,
+                createdAt: "2026-10-11T00:00:00.000Z",
+                orbSize: payload.orbSize,
+                state: "stopped",
+              }),
+            }),
+        ),
+      "environment.control": (payload) =>
+        environmentCommand(
+          probe,
+          "control",
+          payload,
+          () =>
+            new EnvironmentControlled({
+              state: payload.action === "stop" ? "stopped" : "running",
+              forced: false,
+            }),
+        ),
+      "environment.attach": (payload) =>
+        environmentCommand(probe, "attach", payload, () => new EnvironmentAttachAccepted({})),
+      "environment.delete": (payload) =>
+        environmentCommand(probe, "delete", payload, () => new EnvironmentDeleted({})),
+    }),
+  );
 }
 
 function bulkHandlers(probe: Probe) {
-  return RunnerBulkApi.toLayer(RunnerBulkApi.of({
-    "runner.bulk.identify": () => Effect.sync(() => (probe.identifyCalls++, probe.identity)),
-    "runner.bulk.watch": () => {
-      probe.bulkWatchCalls++;
-      return Stream.make({ observedAt: 1 }).pipe(Stream.concat(Stream.never));
-    },
-  }));
+  return RunnerBulkApi.toLayer(
+    RunnerBulkApi.of({
+      "runner.bulk.identify": () => Effect.sync(() => (probe.identifyCalls++, probe.identity)),
+      "runner.bulk.watch": () => {
+        probe.bulkWatchCalls++;
+        return Stream.make({ observedAt: 1 }).pipe(Stream.concat(Stream.never));
+      },
+    }),
+  );
 }
 
 function observeClose(socket: Socket.Socket, probe: Probe): Socket.Socket {
@@ -266,28 +281,32 @@ function observeClose(socket: Socket.Socket, probe: Probe): Socket.Socket {
       Effect.tapError((error) =>
         Socket.isSocketError(error) && error.reason._tag === "SocketCloseError"
           ? Deferred.succeed(probe.closeCode, error.reason.code)
-          : Effect.void
+          : Effect.void,
       ),
     );
   return Socket.make({
-    reader: observe(Effect.map(socket.reader, (reader) => ({
-      ...reader,
-      pull: observe(reader.pull),
-    }))),
+    reader: observe(
+      Effect.map(socket.reader, (reader) => ({
+        ...reader,
+        pull: observe(reader.pull),
+      })),
+    ),
     writer: socket.writer,
   });
 }
 
 /** Runs the runner side: an RPC server on an outbound WebSocket, as the real runner does. */
 const connectRunner = Effect.fn(function* (url: string, probe: Probe, bulk = false) {
-  const socketLayer = DenoSocket.layerWebSocket(bulk ? `${url}/bulk` : url);
+  const socketLayer = NodeSocket.layerWebSocket(bulk ? `${url}/bulk` : url);
   const socketServer = Layer.effect(
     SocketServer.SocketServer,
     Effect.map(Socket.Socket, (socket) => {
       const observed = observeClose(socket, probe);
       return {
         address: NetAddress.socketAddressFromInputUnsafe({ address: "127.0.0.1", port: 0 }),
-        run: (handler) =>
+        run: <R, E, A>(
+          handler: (socket: Socket.Socket) => Effect.Effect<A, E, R>,
+        ): Effect.Effect<never, SocketServer.SocketServerError, R> =>
           handler(bulk ? observed : runnerControlWebSocket(observed)).pipe(
             Effect.ensuring(Deferred.succeed(probe.connectionFinalized, undefined)),
             Effect.exit,
@@ -311,19 +330,24 @@ const makeHarness = Effect.fn(function* (
   observer?: EnvironmentObserver,
 ) {
   const gateway = yield* makeRunnerRegistry(repository, observer);
-  const gatewayScope = yield* Effect.scope;
   const app = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const socket = yield* request.upgrade;
     const accept = request.url.endsWith("/bulk") ? gateway.acceptBulk : gateway.accept;
-    yield* Effect.forkIn(accept(socket), gatewayScope);
+    // Node performs the upgrade when the socket reader is acquired. Returning
+    // after a fork can send an HTTP response before that handshake happens.
+    // Keep the request alive for the entire upgraded connection, too.
+    yield* accept(socket);
     return HttpServerResponse.empty();
   });
-  const layer = HttpServer.serve(app).pipe(Layer.provideMerge(DenoHttpServer.layer({
-    hostname: "127.0.0.1",
-    port: 0,
-    onListen: () => {},
-  })));
+  const layer = HttpServer.serve(app).pipe(
+    Layer.provideMerge(
+      NodeHttpServer.layer(createServer, {
+        host: "127.0.0.1",
+        port: 0,
+      }),
+    ),
+  );
   const context = yield* Layer.build(layer);
   const server = Context.get(context, HttpServer.HttpServer);
   if (server.address._tag !== "InetAddressV4") return yield* Effect.die("Expected IPv4 server");
@@ -355,53 +379,55 @@ function recordingObserver() {
   return { notices, observer };
 }
 
-Deno.test("gateway lifecycle logs admission, operations, revocation and offline routing without secrets", async () => {
+test("gateway lifecycle logs admission, operations, revocation and offline routing without secrets", async () => {
   const logs: ReturnType<typeof Logger.formatStructured.log>[] = [];
   const logger = Logger.make((options) => logs.push(Logger.formatStructured.log(options)));
   await Effect.runPromise(
-    Effect.scoped(Effect.gen(function* () {
-      const { gateway, url } = yield* makeHarness();
-      const probe = yield* makeProbe();
-      yield* connectRunner(url, probe);
-      yield* waitUntil(() => Effect.sync(() => probe.watchCalls === 1), "watch not started");
-      assertEquals(logs.filter((log) => log.message === "connection.connected").length, 0);
-      yield* publishSnapshot(probe, [environment(SESSION_1, "stopped")], 1);
-      yield* waitUntil(
-        () => Effect.sync(() => logs.some((log) => log.message === "connection.connected")),
-        "admission not logged",
-      );
-      assertEquals(
-        logs.find((log) => log.message === "snapshot.accepted")?.annotations.environmentCount,
-        1,
-      );
-      const started = yield* gateway.controlEnvironment({
-        workspaceId: WORKSPACE_ID,
-        sessionId: SESSION_1,
-        payload: { action: "start", githubToken: GITHUB_TOKEN },
-      });
-      assertEquals(started.status, "accepted");
-      assert(logs.some((log) => log.message === "environment.control.accepted"));
-      assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
-      assert(logs.some((log) => log.message === "connection.revoked"));
-      yield* waitUntil(
-        () =>
-          gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID).pipe(
-            Effect.map((state) => state === null),
-          ),
-        "runner still online",
-      );
-      const offline = yield* gateway.controlEnvironment({
-        workspaceId: WORKSPACE_ID,
-        sessionId: SESSION_1,
-        payload: { action: "stop" },
-      });
-      assertEquals(offline.status, "unavailable");
-      assert(logs.some((log) => log.message === "environment.control.unavailable"));
-      const invalid = yield* makeProbe("openorb_runner_secret-invalid-token");
-      yield* connectRunner(url, invalid);
-      yield* Deferred.await(invalid.closeCode);
-      assert(logs.some((log) => log.message === "connection.rejected"));
-    })).pipe(Effect.provide(Logger.layer([logger]))),
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* waitUntil(() => Effect.sync(() => probe.watchCalls === 1), "watch not started");
+        assertEquals(logs.filter((log) => log.message === "connection.connected").length, 0);
+        yield* publishSnapshot(probe, [environment(SESSION_1, "stopped")], 1);
+        yield* waitUntil(
+          () => Effect.sync(() => logs.some((log) => log.message === "connection.connected")),
+          "admission not logged",
+        );
+        assertEquals(
+          logs.find((log) => log.message === "snapshot.accepted")?.annotations.environmentCount,
+          1,
+        );
+        const started = yield* gateway.controlEnvironment({
+          workspaceId: WORKSPACE_ID,
+          sessionId: SESSION_1,
+          payload: { action: "start", githubToken: GITHUB_TOKEN },
+        });
+        assertEquals(started.status, "accepted");
+        assert(logs.some((log) => log.message === "environment.control.accepted"));
+        assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
+        assert(logs.some((log) => log.message === "connection.revoked"));
+        yield* waitUntil(
+          () =>
+            gateway
+              .getRunnerLiveState(WORKSPACE_ID, RUNNER_ID)
+              .pipe(Effect.map((state) => state === null)),
+          "runner still online",
+        );
+        const offline = yield* gateway.controlEnvironment({
+          workspaceId: WORKSPACE_ID,
+          sessionId: SESSION_1,
+          payload: { action: "stop" },
+        });
+        assertEquals(offline.status, "unavailable");
+        assert(logs.some((log) => log.message === "environment.control.unavailable"));
+        const invalid = yield* makeProbe("openorb_runner_secret-invalid-token");
+        yield* connectRunner(url, invalid);
+        yield* Deferred.await(invalid.closeCode);
+        assert(logs.some((log) => log.message === "connection.rejected"));
+      }),
+    ).pipe(Effect.provide(Logger.layer([logger]))),
   );
   assert(logs.some((log) => log.message === "connection.disconnected"));
   const serialized = JSON.stringify(logs);
@@ -411,565 +437,685 @@ Deno.test("gateway lifecycle logs admission, operations, revocation and offline 
   assert(logs.every((log) => log.annotations.component === "openorb-gateway"));
 });
 
-Deno.test("valid identity admits; invalid token and previous protocol close 4401 without watch", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const harness = yield* makeHarness();
-    const valid = yield* makeProbe();
-    yield* connectRunner(harness.url, valid);
-    yield* publishSnapshot(valid, [environment()]);
-    yield* routed(harness.gateway);
-    assertEquals(valid.identifyCalls, 1);
-    assertEquals(valid.watchCalls, 1);
-    assertEquals(
-      (yield* harness.gateway.getEnvironment(WORKSPACE_ID, SESSION_1))?.runnerId,
-      RUNNER_ID,
-    );
+test("valid identity admits; invalid token and previous protocol close 4401 without watch", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const valid = yield* makeProbe();
+        yield* connectRunner(harness.url, valid);
+        yield* publishSnapshot(valid, [environment()]);
+        yield* routed(harness.gateway);
+        assertEquals(valid.identifyCalls, 1);
+        assertEquals(valid.watchCalls, 1);
+        assertEquals(
+          (yield* harness.gateway.getEnvironment(WORKSPACE_ID, SESSION_1))?.runnerId,
+          RUNNER_ID,
+        );
 
-    // Tenant isolation: another Workspace can neither see nor command this runner.
-    assertEquals(yield* harness.gateway.getEnvironment(FOREIGN_WORKSPACE_ID, SESSION_1), null);
-    assertEquals(yield* harness.gateway.getRunnerLiveState(FOREIGN_WORKSPACE_ID, RUNNER_ID), null);
-    assertEquals(
-      (yield* harness.gateway.controlEnvironment({
-        workspaceId: FOREIGN_WORKSPACE_ID,
-        sessionId: SESSION_1,
-        payload: { action: "stop" },
-      })).status,
-      "unavailable",
-    );
-    assertEquals(
-      (yield* harness.gateway.deleteEnvironment({
-        workspaceId: FOREIGN_WORKSPACE_ID,
-        sessionId: SESSION_1,
-      })).status,
-      "unavailable",
-    );
-    assertEquals(
-      (yield* harness.gateway.createEnvironment({
-        workspaceId: FOREIGN_WORKSPACE_ID,
-        runnerId: RUNNER_ID,
-        sessionId: SESSION_2,
-        payload: { orbSize: "small", repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR } },
-      })).status,
-      "unavailable",
-    );
-    assertEquals(valid.environmentRequests, []);
-    assertEquals(yield* harness.gateway.disconnectRunner(FOREIGN_WORKSPACE_ID, RUNNER_ID), false);
-    assertEquals(
-      (yield* harness.gateway.getEnvironment(WORKSPACE_ID, SESSION_1))?.runnerId,
-      RUNNER_ID,
-    );
+        // Tenant isolation: another Workspace can neither see nor command this runner.
+        assertEquals(yield* harness.gateway.getEnvironment(FOREIGN_WORKSPACE_ID, SESSION_1), null);
+        assertEquals(
+          yield* harness.gateway.getRunnerLiveState(FOREIGN_WORKSPACE_ID, RUNNER_ID),
+          null,
+        );
+        assertEquals(
+          (yield* harness.gateway.controlEnvironment({
+            workspaceId: FOREIGN_WORKSPACE_ID,
+            sessionId: SESSION_1,
+            payload: { action: "stop" },
+          })).status,
+          "unavailable",
+        );
+        assertEquals(
+          (yield* harness.gateway.deleteEnvironment({
+            workspaceId: FOREIGN_WORKSPACE_ID,
+            sessionId: SESSION_1,
+          })).status,
+          "unavailable",
+        );
+        assertEquals(
+          (yield* harness.gateway.createEnvironment({
+            workspaceId: FOREIGN_WORKSPACE_ID,
+            runnerId: RUNNER_ID,
+            sessionId: SESSION_2,
+            payload: {
+              orbSize: "small",
+              repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+            },
+          })).status,
+          "unavailable",
+        );
+        assertEquals(valid.environmentRequests, []);
+        assertEquals(
+          yield* harness.gateway.disconnectRunner(FOREIGN_WORKSPACE_ID, RUNNER_ID),
+          false,
+        );
+        assertEquals(
+          (yield* harness.gateway.getEnvironment(WORKSPACE_ID, SESSION_1))?.runnerId,
+          RUNNER_ID,
+        );
 
-    const invalid = yield* makeProbe("openorb_runner_invalid");
-    yield* connectRunner(harness.url, invalid);
-    assertEquals(yield* Deferred.await(invalid.closeCode), PERMANENT_REJECTION_CLOSE_CODE);
-    assertEquals(invalid.watchCalls, 0);
+        const invalid = yield* makeProbe("openorb_runner_invalid");
+        yield* connectRunner(harness.url, invalid);
+        assertEquals(yield* Deferred.await(invalid.closeCode), PERMANENT_REJECTION_CLOSE_CODE);
+        assertEquals(invalid.watchCalls, 0);
 
-    const previousProtocol = yield* makeProbe(TOKEN, RUNNER_PROTOCOL_VERSION - 1);
-    yield* connectRunner(harness.url, previousProtocol);
-    assertEquals(
-      yield* Deferred.await(previousProtocol.closeCode),
-      PERMANENT_REJECTION_CLOSE_CODE,
-    );
-    assertEquals(previousProtocol.watchCalls, 0);
-  }))));
-
-Deno.test("revocation during authentication rejects the runner before it watches", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const block = yield* makeBlock();
-    const harness = yield* makeHarness(fakeRepository({ block }));
-    const probe = yield* makeProbe();
-    yield* connectRunner(harness.url, probe);
-    yield* Deferred.await(block.started);
-
-    assertEquals(yield* harness.gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID), false);
-    yield* Deferred.succeed(block.release, undefined);
-    assertEquals(
-      yield* Deferred.await(probe.closeCode).pipe(Effect.timeout("2 seconds")),
-      PERMANENT_REJECTION_CLOSE_CODE,
-    );
-    assertEquals(probe.watchCalls, 0);
-    assertEquals(yield* harness.gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
-  }))));
-
-Deno.test("revocation wins atomically over in-flight snapshot admission", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const harness = yield* makeHarness();
-    const probe = yield* makeProbe();
-    yield* connectRunner(harness.url, probe);
-    yield* waitUntil(() => Effect.sync(() => probe.watchCalls === 1), "watch not started");
-
-    // Authenticated and watching, but not yet admitted: there is no connection to close.
-    assertEquals(yield* harness.gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID), false);
-    yield* publishSnapshot(probe, [environment()]);
-    assertEquals(
-      yield* Deferred.await(probe.closeCode).pipe(Effect.timeout("2 seconds")),
-      PERMANENT_REJECTION_CLOSE_CODE,
-    );
-    assertEquals(yield* harness.gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
-    assertEquals(yield* harness.gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
-
-    const rejected = yield* makeProbe();
-    yield* connectRunner(harness.url, rejected);
-    assertEquals(
-      yield* Deferred.await(rejected.closeCode).pipe(Effect.timeout("2 seconds")),
-      PERMANENT_REJECTION_CLOSE_CODE,
-    );
-    assertEquals(rejected.watchCalls, 0);
-  }))));
-
-Deno.test("a runner snapshot with duplicate, miscounted or out-of-order environments is rejected", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const cases: { name: string; publish: (probe: Probe) => Effect.Effect<void> }[] = [
-      {
-        name: "duplicate",
-        publish: (probe) => publishSnapshot(probe, [environment(), environment()]),
-      },
-      { name: "miscounted", publish: (probe) => publishSnapshot(probe, [environment()], 1, 2) },
-      {
-        name: "out-of-order",
-        publish: (probe) =>
-          Effect.andThen(
-            emit(probe, { type: "environment.updated", revision: 1, environment: environment() }),
-            publishSnapshot(probe, []),
-          ),
-      },
-    ];
-    for (const { name, publish } of cases) {
-      const probe = yield* makeProbe();
-      yield* connectRunner(url, probe);
-      yield* publish(probe);
-      assertEquals(
-        yield* Deferred.await(probe.closeCode).pipe(Effect.timeout("2 seconds")),
-        PERMANENT_REJECTION_CLOSE_CODE,
-        name,
-      );
-      assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null, name);
-      assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null, name);
-    }
-  }))));
-
-Deno.test("partial replacement stays hidden until make-before-break admission completes", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const first = yield* makeProbe();
-    yield* connectRunner(url, first);
-    yield* publishSnapshot(first, [environment(SESSION_1)], 1);
-    yield* routed(gateway, SESSION_1);
-
-    const second = yield* makeProbe();
-    yield* connectRunner(url, second);
-    yield* waitUntil(
-      () => Effect.sync(() => second.watchCalls === 1),
-      "replacement did not begin watching",
-    );
-    assertEquals((yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1))?.runnerId, RUNNER_ID);
-    assertEquals((yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID))?.lastObservedAt, 1);
-    yield* publishSnapshot(second, [environment(SESSION_2)], 10);
-    yield* Deferred.await(first.connectionFinalized);
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
-    assertEquals((yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_2))?.runnerId, RUNNER_ID);
-    assertEquals((yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID))?.lastObservedAt, 10);
-
-    // The replaced generation can no longer publish routes.
-    yield* emit(first, { type: "environment.updated", revision: 99, environment: environment() });
-    yield* Effect.sleep(30);
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
-
-    const controlled = yield* gateway.controlEnvironment({
-      workspaceId: WORKSPACE_ID,
-      sessionId: SESSION_2,
-      payload: { action: "stop" },
-    });
-    assertEquals(controlled.status, "accepted");
-    assertEquals(first.environmentRequests, []);
-    assertEquals(second.environmentRequests.map((request) => request.procedure), ["control"]);
-  }))));
-
-Deno.test("runner.observed updates live capacity only for newer revisions", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [], 5);
-    yield* live(gateway);
-    assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), {
-      capacity,
-      lastObservedAt: 5,
-    });
-
-    const observed = (revision: number, activeSessions: number) =>
-      emit(probe, {
-        type: "runner.observed",
-        revision,
-        observedAt: revision * 10,
-        capacity: { ...capacity, activeSessions },
-      });
-    yield* observed(6, 3);
-    yield* waitUntil(
-      () =>
-        gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID).pipe(
-          Effect.map((state) => state?.capacity.activeSessions === 3),
-        ),
-      "newer capacity not observed",
-    );
-    yield* observed(4, 7);
-    // Events apply in order, so this route proves the stale observation was already handled.
-    yield* emit(probe, { type: "environment.updated", revision: 7, environment: environment() });
-    yield* routed(gateway);
-    const state = yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID);
-    assertEquals(state?.capacity.activeSessions, 3);
-    assertEquals(state?.lastObservedAt, 60);
-  }))));
-
-Deno.test("bulk connections require a valid identity, replace by runner and close on revocation", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    for (
-      const rejected of [
-        yield* makeProbe("openorb_runner_invalid"),
-        yield* makeProbe(TOKEN, RUNNER_PROTOCOL_VERSION - 1),
-      ]
-    ) {
-      yield* connectRunner(url, rejected, true);
-      assertEquals(
-        yield* Deferred.await(rejected.closeCode).pipe(Effect.timeout("2 seconds")),
-        PERMANENT_REJECTION_CLOSE_CODE,
-      );
-      assertEquals(rejected.bulkWatchCalls, 0);
-    }
-
-    const control = yield* makeProbe();
-    yield* connectRunner(url, control);
-    yield* publishSnapshot(control, [environment()]);
-    yield* routed(gateway);
-    const firstBulk = yield* makeProbe();
-    yield* connectRunner(url, firstBulk, true);
-    yield* waitUntil(() => Effect.sync(() => firstBulk.bulkWatchCalls === 1), "bulk not watching");
-
-    const secondBulk = yield* makeProbe();
-    yield* connectRunner(url, secondBulk, true);
-    yield* waitUntil(
-      () => Effect.sync(() => secondBulk.bulkWatchCalls === 1),
-      "replacement bulk not watching",
-    );
-    yield* Deferred.await(firstBulk.connectionFinalized).pipe(Effect.timeout("2 seconds"));
-    // Replacing the bulk connection leaves the control connection and its routes alone.
-    assertEquals((yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1))?.runnerId, RUNNER_ID);
-
-    assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
-    yield* Deferred.await(secondBulk.connectionFinalized).pipe(Effect.timeout("2 seconds"));
-    yield* Deferred.await(control.connectionFinalized).pipe(Effect.timeout("2 seconds"));
-    assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
-
-    const revoked = yield* makeProbe();
-    yield* connectRunner(url, revoked, true);
-    assertEquals(
-      yield* Deferred.await(revoked.closeCode).pipe(Effect.timeout("2 seconds")),
-      PERMANENT_REJECTION_CLOSE_CODE,
-    );
-    assertEquals(revoked.bulkWatchCalls, 0);
-  }))));
-
-Deno.test("environment commands preserve typed rejection and delivery uncertainty", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [environment(SESSION_1, "stopped")]);
-    yield* routed(gateway);
-
-    probe.rejectEnvironment = true;
-    assertEquals(
-      yield* gateway.controlEnvironment({
-        workspaceId: WORKSPACE_ID,
-        sessionId: SESSION_1,
-        payload: { action: "start" },
+        const previousProtocol = yield* makeProbe(TOKEN, RUNNER_PROTOCOL_VERSION - 1);
+        yield* connectRunner(harness.url, previousProtocol);
+        assertEquals(
+          yield* Deferred.await(previousProtocol.closeCode),
+          PERMANENT_REJECTION_CLOSE_CODE,
+        );
+        assertEquals(previousProtocol.watchCalls, 0);
       }),
-      { status: "rejected", message: "Injected environment rejection." },
-    );
+    ),
+  ));
 
-    probe.rejectEnvironment = false;
-    const block = yield* makeBlock();
-    probe.environmentBlock = block;
-    const starting = yield* gateway.controlEnvironment({
-      workspaceId: WORKSPACE_ID,
-      sessionId: SESSION_1,
-      payload: { action: "start" },
-    }).pipe(Effect.forkChild({ startImmediately: true }));
-    yield* Deferred.await(block.started);
-    assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
+test("revocation during authentication rejects the runner before it watches", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const block = yield* makeBlock();
+        const harness = yield* makeHarness(fakeRepository({ block }));
+        const probe = yield* makeProbe();
+        yield* connectRunner(harness.url, probe);
+        yield* Deferred.await(block.started);
 
-    assertEquals((yield* Fiber.join(starting)).status, "delivery-uncertain");
-    assertEquals(probe.environmentRequests.length, 2);
-  }))));
-
-Deno.test("disconnect after environment create dispatch reports uncertain delivery", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const probe = yield* makeProbe();
-    const block = yield* makeBlock();
-    probe.environmentBlock = block;
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, []);
-    yield* live(gateway);
-
-    const create = yield* gateway.createEnvironment({
-      workspaceId: WORKSPACE_ID,
-      runnerId: RUNNER_ID,
-      sessionId: SESSION_2,
-      payload: { orbSize: "small", repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR } },
-    }).pipe(Effect.forkChild({ startImmediately: true }));
-    yield* Deferred.await(block.started);
-    assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
-
-    assertEquals((yield* Fiber.join(create)).status, "delivery-uncertain");
-    assertEquals(probe.environmentRequests.length, 1);
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_2), null);
-  }))));
-
-Deno.test("environment creation checks the runner is online and can host the orb size", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const input = {
-      workspaceId: WORKSPACE_ID,
-      runnerId: RUNNER_ID,
-      sessionId: SESSION_1,
-      payload: {
-        orbSize: "small" as const,
-        repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
-      },
-    };
-    assertEquals((yield* gateway.createEnvironment(input)).status, "unavailable");
-
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, []);
-    yield* live(gateway);
-    assertEquals(
-      yield* gateway.createEnvironment({
-        ...input,
-        payload: { ...input.payload, orbSize: "xxlarge" },
+        assertEquals(yield* harness.gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID), false);
+        yield* Deferred.succeed(block.release, undefined);
+        assertEquals(
+          yield* Deferred.await(probe.closeCode).pipe(Effect.timeout("2 seconds")),
+          PERMANENT_REJECTION_CLOSE_CODE,
+        );
+        assertEquals(probe.watchCalls, 0);
+        assertEquals(yield* harness.gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
       }),
-      { status: "rejected", message: "The runner cannot host this orb size." },
-    );
-    assertEquals(probe.environmentRequests, []);
-    assertEquals((yield* gateway.createEnvironment(input)).status, "accepted");
-  }))));
+    ),
+  ));
 
-Deno.test("typed environment commands carry Workspace-scoped payloads and disconnect finalizes the connection", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, []);
-    yield* live(gateway);
+test("revocation wins atomically over in-flight snapshot admission", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const probe = yield* makeProbe();
+        yield* connectRunner(harness.url, probe);
+        yield* waitUntil(() => Effect.sync(() => probe.watchCalls === 1), "watch not started");
 
-    const input = { workspaceId: WORKSPACE_ID, sessionId: SESSION_2 };
-    const results = [
-      yield* gateway.createEnvironment({
-        ...input,
-        runnerId: RUNNER_ID,
-        payload: { orbSize: "small", repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR } },
+        // Authenticated and watching, but not yet admitted: there is no connection to close.
+        assertEquals(yield* harness.gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID), false);
+        yield* publishSnapshot(probe, [environment()]);
+        assertEquals(
+          yield* Deferred.await(probe.closeCode).pipe(Effect.timeout("2 seconds")),
+          PERMANENT_REJECTION_CLOSE_CODE,
+        );
+        assertEquals(yield* harness.gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
+        assertEquals(yield* harness.gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
+
+        const rejected = yield* makeProbe();
+        yield* connectRunner(harness.url, rejected);
+        assertEquals(
+          yield* Deferred.await(rejected.closeCode).pipe(Effect.timeout("2 seconds")),
+          PERMANENT_REJECTION_CLOSE_CODE,
+        );
+        assertEquals(rejected.watchCalls, 0);
       }),
-      yield* gateway.controlEnvironment({
-        ...input,
-        payload: { action: "start", githubToken: GITHUB_TOKEN },
+    ),
+  ));
+
+test("a runner snapshot with duplicate, miscounted or out-of-order environments is rejected", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const cases: { name: string; publish: (probe: Probe) => Effect.Effect<void> }[] = [
+          {
+            name: "duplicate",
+            publish: (probe) => publishSnapshot(probe, [environment(), environment()]),
+          },
+          { name: "miscounted", publish: (probe) => publishSnapshot(probe, [environment()], 1, 2) },
+          {
+            name: "out-of-order",
+            publish: (probe) =>
+              Effect.andThen(
+                emit(probe, {
+                  type: "environment.updated",
+                  revision: 1,
+                  environment: environment(),
+                }),
+                publishSnapshot(probe, []),
+              ),
+          },
+        ];
+        for (const { name, publish } of cases) {
+          const probe = yield* makeProbe();
+          yield* connectRunner(url, probe);
+          yield* publish(probe);
+          assertEquals(
+            yield* Deferred.await(probe.closeCode).pipe(Effect.timeout("2 seconds")),
+            PERMANENT_REJECTION_CLOSE_CODE,
+            name,
+          );
+          assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null, name);
+          assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null, name);
+        }
       }),
-      yield* gateway.attachEnvironment({ ...input, nonce: NONCE }),
-      yield* gateway.deleteEnvironment(input),
-    ];
-    assertEquals(results.map((result) => result.status), [
-      "accepted",
-      "accepted",
-      "accepted",
-      "accepted",
-    ]);
-    assertEquals(probe.environmentRequests, [
-      {
-        procedure: "create",
-        payload: decode(CreateEnvironmentPayload)({
-          sessionId: SESSION_2,
+    ),
+  ));
+
+test("partial replacement stays hidden until make-before-break admission completes", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const first = yield* makeProbe();
+        yield* connectRunner(url, first);
+        yield* publishSnapshot(first, [environment(SESSION_1)], 1);
+        yield* routed(gateway, SESSION_1);
+
+        const second = yield* makeProbe();
+        yield* connectRunner(url, second);
+        yield* waitUntil(
+          () => Effect.sync(() => second.watchCalls === 1),
+          "replacement did not begin watching",
+        );
+        assertEquals((yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1))?.runnerId, RUNNER_ID);
+        assertEquals(
+          (yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID))?.lastObservedAt,
+          1,
+        );
+        yield* publishSnapshot(second, [environment(SESSION_2)], 10);
+        yield* Deferred.await(first.connectionFinalized);
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
+        assertEquals((yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_2))?.runnerId, RUNNER_ID);
+        assertEquals(
+          (yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID))?.lastObservedAt,
+          10,
+        );
+
+        // The replaced generation can no longer publish routes.
+        yield* emit(first, {
+          type: "environment.updated",
+          revision: 99,
+          environment: environment(),
+        });
+        yield* Effect.sleep(30);
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
+
+        const controlled = yield* gateway.controlEnvironment({
           workspaceId: WORKSPACE_ID,
-          orbSize: "small",
-          repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
-        }),
-      },
-      {
-        procedure: "control",
-        payload: decode(ControlEnvironmentPayload)({
           sessionId: SESSION_2,
-          action: "start",
-          githubToken: GITHUB_TOKEN,
-        }),
-      },
-      {
-        procedure: "attach",
-        payload: decode(AttachEnvironmentPayload)({ sessionId: SESSION_2, nonce: NONCE }),
-      },
-      { procedure: "delete", payload: decode(DeleteEnvironmentPayload)({ sessionId: SESSION_2 }) },
-    ]);
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_2), null);
+          payload: { action: "stop" },
+        });
+        assertEquals(controlled.status, "accepted");
+        assertEquals(first.environmentRequests, []);
+        assertEquals(
+          second.environmentRequests.map((request) => request.procedure),
+          ["control"],
+        );
+      }),
+    ),
+  ));
 
-    assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
-    yield* Deferred.await(probe.connectionFinalized);
-    assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
-  }))));
+test("runner.observed updates live capacity only for newer revisions", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, [], 5);
+        yield* live(gateway);
+        assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), {
+          capacity,
+          lastObservedAt: 5,
+        });
 
-Deno.test("reported environments route control and attach and notify their Session", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { notices, observer } = recordingObserver();
-    const { gateway, url } = yield* makeHarness(fakeRepository(), observer);
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [environment(SESSION_1, "stopped")]);
-    yield* routed(gateway);
-    assertEquals(notices.map(({ notice }) => notice.type), ["updated"]);
+        const observed = (revision: number, activeSessions: number) =>
+          emit(probe, {
+            type: "runner.observed",
+            revision,
+            observedAt: revision * 10,
+            capacity: { ...capacity, activeSessions },
+          });
+        yield* observed(6, 3);
+        yield* waitUntil(
+          () =>
+            gateway
+              .getRunnerLiveState(WORKSPACE_ID, RUNNER_ID)
+              .pipe(Effect.map((state) => state?.capacity.activeSessions === 3)),
+          "newer capacity not observed",
+        );
+        yield* observed(4, 7);
+        // Events apply in order, so this route proves the stale observation was already handled.
+        yield* emit(probe, {
+          type: "environment.updated",
+          revision: 7,
+          environment: environment(),
+        });
+        yield* routed(gateway);
+        const state = yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID);
+        assertEquals(state?.capacity.activeSessions, 3);
+        assertEquals(state?.lastObservedAt, 60);
+      }),
+    ),
+  ));
 
-    const started = yield* gateway.controlEnvironment({
-      workspaceId: WORKSPACE_ID,
-      sessionId: SESSION_1,
-      payload: { action: "start", githubToken: "gh-secret" },
-    });
-    assertEquals(started.status, "accepted");
-    const attached = yield* gateway.attachEnvironment({
-      workspaceId: WORKSPACE_ID,
-      sessionId: SESSION_1,
-      nonce: NONCE,
-    });
-    assertEquals(attached.status, "accepted");
-    assertEquals(probe.environmentRequests.map((request) => request.procedure), [
-      "control",
-      "attach",
-    ]);
+test("bulk connections require a valid identity, replace by runner and close on revocation", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        for (const rejected of [
+          yield* makeProbe("openorb_runner_invalid"),
+          yield* makeProbe(TOKEN, RUNNER_PROTOCOL_VERSION - 1),
+        ]) {
+          yield* connectRunner(url, rejected, true);
+          assertEquals(
+            yield* Deferred.await(rejected.closeCode).pipe(Effect.timeout("2 seconds")),
+            PERMANENT_REJECTION_CLOSE_CODE,
+          );
+          assertEquals(rejected.bulkWatchCalls, 0);
+        }
 
-    yield* emit(probe, {
-      type: "environment.updated",
-      revision: 2,
-      environment: environment(SESSION_1, "running"),
-    });
-    yield* waitUntil(() => Effect.sync(() => notices.length === 2), "update notice missing");
-    const last = notices[1]!.notice;
-    assertEquals(last.type === "updated" && last.environment.state, "running");
-    assert(notices.every((notice) => notice.workspaceId === WORKSPACE_ID));
-  }))));
+        const control = yield* makeProbe();
+        yield* connectRunner(url, control);
+        yield* publishSnapshot(control, [environment()]);
+        yield* routed(gateway);
+        const firstBulk = yield* makeProbe();
+        yield* connectRunner(url, firstBulk, true);
+        yield* waitUntil(
+          () => Effect.sync(() => firstBulk.bulkWatchCalls === 1),
+          "bulk not watching",
+        );
 
-Deno.test("another Workspace's environment in a runner snapshot rejects the connection", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [environment(SESSION_1, "running", FOREIGN_WORKSPACE_ID)]);
-    assertEquals(yield* Deferred.await(probe.closeCode), PERMANENT_REJECTION_CLOSE_CODE);
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getEnvironment(FOREIGN_WORKSPACE_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
-  }))));
+        const secondBulk = yield* makeProbe();
+        yield* connectRunner(url, secondBulk, true);
+        yield* waitUntil(
+          () => Effect.sync(() => secondBulk.bulkWatchCalls === 1),
+          "replacement bulk not watching",
+        );
+        yield* Deferred.await(firstBulk.connectionFinalized).pipe(Effect.timeout("2 seconds"));
+        // Replacing the bulk connection leaves the control connection and its routes alone.
+        assertEquals((yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1))?.runnerId, RUNNER_ID);
 
-Deno.test("after admission, another Workspace's environment updates are ignored and removals notify", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { notices, observer } = recordingObserver();
-    const { gateway, url } = yield* makeHarness(fakeRepository(), observer);
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [environment(SESSION_1)]);
-    yield* routed(gateway);
+        assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
+        yield* Deferred.await(secondBulk.connectionFinalized).pipe(Effect.timeout("2 seconds"));
+        yield* Deferred.await(control.connectionFinalized).pipe(Effect.timeout("2 seconds"));
+        assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
 
-    yield* emit(probe, {
-      type: "environment.updated",
-      revision: 2,
-      environment: environment(SESSION_2, "running", FOREIGN_WORKSPACE_ID),
-    });
-    yield* emit(probe, { type: "environment.removed", revision: 3, sessionId: SESSION_1 });
-    yield* waitUntil(
-      () => Effect.sync(() => notices.some(({ notice }) => notice.type === "removed")),
-      "removal notice missing",
-    );
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_2), null);
-    assertEquals(yield* gateway.getEnvironment(FOREIGN_WORKSPACE_ID, SESSION_2), null);
-    assertEquals(
-      notices.map(({ workspaceId, sessionId, notice }) => [workspaceId, sessionId, notice.type]),
-      [[WORKSPACE_ID, SESSION_1, "updated"], [WORKSPACE_ID, SESSION_1, "removed"]],
-    );
-  }))));
+        const revoked = yield* makeProbe();
+        yield* connectRunner(url, revoked, true);
+        assertEquals(
+          yield* Deferred.await(revoked.closeCode).pipe(Effect.timeout("2 seconds")),
+          PERMANENT_REJECTION_CLOSE_CODE,
+        );
+        assertEquals(revoked.bulkWatchCalls, 0);
+      }),
+    ),
+  ));
 
-Deno.test("a runner whose watch ends makes its environments unreachable", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { notices, observer } = recordingObserver();
-    const { gateway, url } = yield* makeHarness(fakeRepository(), observer);
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [environment(SESSION_1), environment(SESSION_2)]);
-    yield* routed(gateway, SESSION_2);
+test("environment commands preserve typed rejection and delivery uncertainty", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, [environment(SESSION_1, "stopped")]);
+        yield* routed(gateway);
 
-    yield* Queue.end(probe.runnerEvents);
-    yield* waitUntil(
-      () =>
-        Effect.sync(() =>
-          notices.filter(({ notice }) => notice.type === "unreachable").length === 2
-        ),
-      "unreachable notices missing",
-    );
-    assertEquals(
-      notices.filter(({ notice }) => notice.type === "unreachable").map(({ sessionId }) =>
-        sessionId
-      )
-        .sort(),
-      [SESSION_1, SESSION_2],
-    );
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
-    assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
-  }))));
+        probe.rejectEnvironment = true;
+        assertEquals(
+          yield* gateway.controlEnvironment({
+            workspaceId: WORKSPACE_ID,
+            sessionId: SESSION_1,
+            payload: { action: "start" },
+          }),
+          { status: "rejected", message: "Injected environment rejection." },
+        );
 
-Deno.test("losing the runner makes environments unreachable and revocation closes their links", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { notices, observer } = recordingObserver();
-    const { gateway, url } = yield* makeHarness(fakeRepository(), observer);
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, [environment()]);
-    yield* routed(gateway);
-    assertEquals(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID), true);
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
-    yield* waitUntil(
-      () => Effect.sync(() => notices.some(({ notice }) => notice.type === "revoked")),
-      "revocation notice missing",
-    );
-    const offline = yield* gateway.controlEnvironment({
-      workspaceId: WORKSPACE_ID,
-      sessionId: SESSION_1,
-      payload: { action: "start" },
-    });
-    assertEquals(offline.status, "unavailable");
-  }))));
+        probe.rejectEnvironment = false;
+        const block = yield* makeBlock();
+        probe.environmentBlock = block;
+        const starting = yield* gateway
+          .controlEnvironment({
+            workspaceId: WORKSPACE_ID,
+            sessionId: SESSION_1,
+            payload: { action: "start" },
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(block.started);
+        assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
 
-Deno.test("created environments are routed before the runner's watch reports them", () =>
-  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const { gateway, url } = yield* makeHarness();
-    const probe = yield* makeProbe();
-    yield* connectRunner(url, probe);
-    yield* publishSnapshot(probe, []);
-    yield* live(gateway);
-    const created = yield* gateway.createEnvironment({
-      workspaceId: WORKSPACE_ID,
-      runnerId: RUNNER_ID,
-      sessionId: SESSION_1,
-      payload: {
-        orbSize: "small",
-        repository: {
-          url: "https://github.com/meln1k/openorb-test-repo.git",
-          gitAuthor: new GitAuthor({ name: "Tester", email: "test@example.com" }),
-        },
-      },
-    });
-    assertEquals(created.status, "accepted");
-    const routedEnvironment = yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1);
-    assertEquals(routedEnvironment?.runnerId, RUNNER_ID);
-    const deleted = yield* gateway.deleteEnvironment({
-      workspaceId: WORKSPACE_ID,
-      sessionId: SESSION_1,
-    });
-    assertEquals(deleted.status, "accepted");
-    assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
-  }))));
+        assertEquals((yield* Fiber.join(starting)).status, "delivery-uncertain");
+        assertEquals(probe.environmentRequests.length, 2);
+      }),
+    ),
+  ));
+
+test("disconnect after environment create dispatch reports uncertain delivery", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const probe = yield* makeProbe();
+        const block = yield* makeBlock();
+        probe.environmentBlock = block;
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, []);
+        yield* live(gateway);
+
+        const create = yield* gateway
+          .createEnvironment({
+            workspaceId: WORKSPACE_ID,
+            runnerId: RUNNER_ID,
+            sessionId: SESSION_2,
+            payload: {
+              orbSize: "small",
+              repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+            },
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(block.started);
+        assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
+
+        assertEquals((yield* Fiber.join(create)).status, "delivery-uncertain");
+        assertEquals(probe.environmentRequests.length, 1);
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_2), null);
+      }),
+    ),
+  ));
+
+test("environment creation checks the runner is online and can host the orb size", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const input = {
+          workspaceId: WORKSPACE_ID,
+          runnerId: RUNNER_ID,
+          sessionId: SESSION_1,
+          payload: {
+            orbSize: "small" as const,
+            repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+          },
+        };
+        assertEquals((yield* gateway.createEnvironment(input)).status, "unavailable");
+
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, []);
+        yield* live(gateway);
+        assertEquals(
+          yield* gateway.createEnvironment({
+            ...input,
+            payload: { ...input.payload, orbSize: "xxlarge" },
+          }),
+          { status: "rejected", message: "The runner cannot host this orb size." },
+        );
+        assertEquals(probe.environmentRequests, []);
+        assertEquals((yield* gateway.createEnvironment(input)).status, "accepted");
+      }),
+    ),
+  ));
+
+test("typed environment commands carry Workspace-scoped payloads and disconnect finalizes the connection", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, []);
+        yield* live(gateway);
+
+        const input = { workspaceId: WORKSPACE_ID, sessionId: SESSION_2 };
+        const results = [
+          yield* gateway.createEnvironment({
+            ...input,
+            runnerId: RUNNER_ID,
+            payload: {
+              orbSize: "small",
+              repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+            },
+          }),
+          yield* gateway.controlEnvironment({
+            ...input,
+            payload: { action: "start", githubToken: GITHUB_TOKEN },
+          }),
+          yield* gateway.attachEnvironment({ ...input, nonce: NONCE }),
+          yield* gateway.deleteEnvironment(input),
+        ];
+        assertEquals(
+          results.map((result) => result.status),
+          ["accepted", "accepted", "accepted", "accepted"],
+        );
+        assertEquals(probe.environmentRequests, [
+          {
+            procedure: "create",
+            payload: decode(CreateEnvironmentPayload)({
+              sessionId: SESSION_2,
+              workspaceId: WORKSPACE_ID,
+              orbSize: "small",
+              repository: { url: REPOSITORY_URL, gitAuthor: GIT_AUTHOR },
+            }),
+          },
+          {
+            procedure: "control",
+            payload: decode(ControlEnvironmentPayload)({
+              sessionId: SESSION_2,
+              action: "start",
+              githubToken: GITHUB_TOKEN,
+            }),
+          },
+          {
+            procedure: "attach",
+            payload: decode(AttachEnvironmentPayload)({ sessionId: SESSION_2, nonce: NONCE }),
+          },
+          {
+            procedure: "delete",
+            payload: decode(DeleteEnvironmentPayload)({ sessionId: SESSION_2 }),
+          },
+        ]);
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_2), null);
+
+        assert(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID));
+        yield* Deferred.await(probe.connectionFinalized);
+        assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
+      }),
+    ),
+  ));
+
+test("reported environments route control and attach and notify their Session", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { notices, observer } = recordingObserver();
+        const { gateway, url } = yield* makeHarness(fakeRepository(), observer);
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, [environment(SESSION_1, "stopped")]);
+        yield* routed(gateway);
+        assertEquals(
+          notices.map(({ notice }) => notice.type),
+          ["updated"],
+        );
+
+        const started = yield* gateway.controlEnvironment({
+          workspaceId: WORKSPACE_ID,
+          sessionId: SESSION_1,
+          payload: { action: "start", githubToken: "gh-secret" },
+        });
+        assertEquals(started.status, "accepted");
+        const attached = yield* gateway.attachEnvironment({
+          workspaceId: WORKSPACE_ID,
+          sessionId: SESSION_1,
+          nonce: NONCE,
+        });
+        assertEquals(attached.status, "accepted");
+        assertEquals(
+          probe.environmentRequests.map((request) => request.procedure),
+          ["control", "attach"],
+        );
+
+        yield* emit(probe, {
+          type: "environment.updated",
+          revision: 2,
+          environment: environment(SESSION_1, "running"),
+        });
+        yield* waitUntil(() => Effect.sync(() => notices.length === 2), "update notice missing");
+        const last = notices[1]!.notice;
+        assertEquals(last.type === "updated" && last.environment.state, "running");
+        assert(notices.every((notice) => notice.workspaceId === WORKSPACE_ID));
+      }),
+    ),
+  ));
+
+test("another Workspace's environment in a runner snapshot rejects the connection", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, [environment(SESSION_1, "running", FOREIGN_WORKSPACE_ID)]);
+        assertEquals(yield* Deferred.await(probe.closeCode), PERMANENT_REJECTION_CLOSE_CODE);
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
+        assertEquals(yield* gateway.getEnvironment(FOREIGN_WORKSPACE_ID, SESSION_1), null);
+        assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
+      }),
+    ),
+  ));
+
+test("after admission, another Workspace's environment updates are ignored and removals notify", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { notices, observer } = recordingObserver();
+        const { gateway, url } = yield* makeHarness(fakeRepository(), observer);
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, [environment(SESSION_1)]);
+        yield* routed(gateway);
+
+        yield* emit(probe, {
+          type: "environment.updated",
+          revision: 2,
+          environment: environment(SESSION_2, "running", FOREIGN_WORKSPACE_ID),
+        });
+        yield* emit(probe, { type: "environment.removed", revision: 3, sessionId: SESSION_1 });
+        yield* waitUntil(
+          () => Effect.sync(() => notices.some(({ notice }) => notice.type === "removed")),
+          "removal notice missing",
+        );
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_2), null);
+        assertEquals(yield* gateway.getEnvironment(FOREIGN_WORKSPACE_ID, SESSION_2), null);
+        assertEquals(
+          notices.map(({ workspaceId, sessionId, notice }) => [
+            workspaceId,
+            sessionId,
+            notice.type,
+          ]),
+          [
+            [WORKSPACE_ID, SESSION_1, "updated"],
+            [WORKSPACE_ID, SESSION_1, "removed"],
+          ],
+        );
+      }),
+    ),
+  ));
+
+test("a runner whose watch ends makes its environments unreachable", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { notices, observer } = recordingObserver();
+        const { gateway, url } = yield* makeHarness(fakeRepository(), observer);
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, [environment(SESSION_1), environment(SESSION_2)]);
+        yield* routed(gateway, SESSION_2);
+
+        yield* Queue.end(probe.runnerEvents);
+        yield* waitUntil(
+          () =>
+            Effect.sync(
+              () => notices.filter(({ notice }) => notice.type === "unreachable").length === 2,
+            ),
+          "unreachable notices missing",
+        );
+        assertEquals(
+          notices
+            .filter(({ notice }) => notice.type === "unreachable")
+            .map(({ sessionId }) => sessionId)
+            .sort(),
+          [SESSION_1, SESSION_2],
+        );
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
+        assertEquals(yield* gateway.getRunnerLiveState(WORKSPACE_ID, RUNNER_ID), null);
+      }),
+    ),
+  ));
+
+test("losing the runner makes environments unreachable and revocation closes their links", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { notices, observer } = recordingObserver();
+        const { gateway, url } = yield* makeHarness(fakeRepository(), observer);
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, [environment()]);
+        yield* routed(gateway);
+        assertEquals(yield* gateway.disconnectRunner(WORKSPACE_ID, RUNNER_ID), true);
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
+        yield* waitUntil(
+          () => Effect.sync(() => notices.some(({ notice }) => notice.type === "revoked")),
+          "revocation notice missing",
+        );
+        const offline = yield* gateway.controlEnvironment({
+          workspaceId: WORKSPACE_ID,
+          sessionId: SESSION_1,
+          payload: { action: "start" },
+        });
+        assertEquals(offline.status, "unavailable");
+      }),
+    ),
+  ));
+
+test("created environments are routed before the runner's watch reports them", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { gateway, url } = yield* makeHarness();
+        const probe = yield* makeProbe();
+        yield* connectRunner(url, probe);
+        yield* publishSnapshot(probe, []);
+        yield* live(gateway);
+        const created = yield* gateway.createEnvironment({
+          workspaceId: WORKSPACE_ID,
+          runnerId: RUNNER_ID,
+          sessionId: SESSION_1,
+          payload: {
+            orbSize: "small",
+            repository: {
+              url: "https://github.com/meln1k/openorb-test-repo.git",
+              gitAuthor: new GitAuthor({ name: "Tester", email: "test@example.com" }),
+            },
+          },
+        });
+        assertEquals(created.status, "accepted");
+        const routedEnvironment = yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1);
+        assertEquals(routedEnvironment?.runnerId, RUNNER_ID);
+        const deleted = yield* gateway.deleteEnvironment({
+          workspaceId: WORKSPACE_ID,
+          sessionId: SESSION_1,
+        });
+        assertEquals(deleted.status, "accepted");
+        assertEquals(yield* gateway.getEnvironment(WORKSPACE_ID, SESSION_1), null);
+      }),
+    ),
+  ));

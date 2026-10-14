@@ -1,7 +1,7 @@
 import { Lexer, type MarkedOptions, type MarkedToken, type Token, type Tokens } from "marked";
 import { css, type Handle, type RemixNode } from "remix/component";
 
-import { routes } from "@/app/routes.ts";
+import { routes } from "../../../routes.ts";
 
 const markdownOptions = { gfm: true, breaks: false } satisfies MarkedOptions;
 
@@ -29,9 +29,11 @@ export function AssistantMarkdown(handle: Handle<AssistantMarkdownProps>) {
             token={asBuiltInMarkedToken(token)}
           />
         ))}
-        {!handle.props.completed
-          ? <span data-markdown-streaming-cursor aria-hidden="true">▍</span>
-          : null}
+        {!handle.props.completed ? (
+          <span data-markdown-streaming-cursor aria-hidden="true">
+            ▍
+          </span>
+        ) : null}
       </div>
     );
   };
@@ -58,7 +60,7 @@ function MarkdownBlockView(handle: Handle<MarkdownBlockProps>) {
 
 function renderBlockTokens(tokens: readonly Token[], path: string, sessionId: string): RemixNode[] {
   return tokens.map((token, index) =>
-    renderBlockToken(asBuiltInMarkedToken(token), `${path}:${index}`, sessionId)
+    renderBlockToken(asBuiltInMarkedToken(token), `${path}:${index}`, sessionId),
   );
 }
 
@@ -81,18 +83,22 @@ function renderBlockToken(token: MarkedToken, key: string, sessionId: string): R
     case "hr":
       return <hr key={key} />;
     case "html":
-      return token.block
-        ? (
-          <pre key={key} data-markdown-raw-html>
-            <code>{token.raw}</code>
-          </pre>
-        )
-        : token.raw;
+      return token.block ? (
+        <pre key={key} data-markdown-raw-html>
+          <code>{token.raw}</code>
+        </pre>
+      ) : (
+        token.raw
+      );
     case "list": {
       const items = renderListItems(token.items, key, sessionId);
-      return token.ordered
-        ? <ol key={key} start={token.start === "" ? undefined : token.start}>{items}</ol>
-        : <ul key={key}>{items}</ul>;
+      return token.ordered ? (
+        <ol key={key} start={token.start === "" ? undefined : token.start}>
+          {items}
+        </ol>
+      ) : (
+        <ul key={key}>{items}</ul>
+      );
     }
     case "paragraph":
       return <p key={key}>{renderInlineTokens(token.tokens, key, sessionId)}</p>;
@@ -128,13 +134,13 @@ function renderListItemTokens(
   return tokens.map((candidate, index) => {
     const key = `${path}:block:${index}`;
     const token = asBuiltInMarkedToken(candidate);
-    return token.type === "text"
-      ? (
-        <p key={key}>
-          {token.tokens ? renderInlineTokens(token.tokens, key, sessionId) : token.text}
-        </p>
-      )
-      : renderBlockToken(token, key, sessionId);
+    return token.type === "text" ? (
+      <p key={key}>
+        {token.tokens ? renderInlineTokens(token.tokens, key, sessionId) : token.text}
+      </p>
+    ) : (
+      renderBlockToken(token, key, sessionId)
+    );
   });
 }
 
@@ -145,10 +151,7 @@ function renderTable(
   sessionId: string,
 ): RemixNode {
   return (
-    <div
-      key={key}
-      data-markdown-table-scroll
-    >
+    <div key={key} data-markdown-table-scroll>
       <table>
         <thead>
           <tr>
@@ -188,7 +191,7 @@ function renderInlineTokens(
   sessionId: string,
 ): RemixNode[] {
   return tokens.map((token, index) =>
-    renderInlineToken(asBuiltInMarkedToken(token), `${path}:inline:${index}`, sessionId)
+    renderInlineToken(asBuiltInMarkedToken(token), `${path}:inline:${index}`, sessionId),
   );
 }
 
@@ -223,42 +226,38 @@ function renderInlineToken(token: MarkedToken, key: string, sessionId: string): 
           sessionId,
           artifactId: artifact.id,
         });
-        return artifact.kind === "image"
-          ? (
-            <a
-              key={key}
-              href={href}
-              title={token.title ?? undefined}
-              target="_blank"
-              rel="noreferrer"
-              data-published-media="image"
-            >
-              <img src={href} alt={token.text} loading="lazy" />
+        return artifact.kind === "image" ? (
+          <a
+            key={key}
+            href={href}
+            title={token.title ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            data-published-media="image"
+          >
+            <img src={href} alt={token.text} loading="lazy" />
+          </a>
+        ) : (
+          <video
+            key={key}
+            src={href}
+            title={token.text || token.title || undefined}
+            controls
+            preload="metadata"
+            data-published-media="video"
+          >
+            <a href={href} target="_blank" rel="noreferrer">
+              Download video
             </a>
-          )
-          : (
-            <video
-              key={key}
-              src={href}
-              title={token.text || token.title || undefined}
-              controls
-              preload="metadata"
-              data-published-media="video"
-            >
-              <a href={href} target="_blank" rel="noreferrer">Download video</a>
-            </video>
-          );
+          </video>
+        );
       }
       const href = safeLinkHref(token.href);
       const label = token.text.trim().length > 0 ? `Image: ${token.text}` : "Image";
-      return href === undefined ? label : (
-        <a
-          key={key}
-          href={href}
-          title={token.title ?? undefined}
-          target="_blank"
-          rel="noreferrer"
-        >
+      return href === undefined ? (
+        label
+      ) : (
+        <a key={key} href={href} title={token.title ?? undefined} target="_blank" rel="noreferrer">
           {label}
         </a>
       );
@@ -266,14 +265,10 @@ function renderInlineToken(token: MarkedToken, key: string, sessionId: string): 
     case "link": {
       const content = renderInlineTokens(token.tokens, key, sessionId);
       const href = safeLinkHref(token.href);
-      return href === undefined ? content : (
-        <a
-          key={key}
-          href={href}
-          title={token.title ?? undefined}
-          target="_blank"
-          rel="noreferrer"
-        >
+      return href === undefined ? (
+        content
+      ) : (
+        <a key={key} href={href} title={token.title ?? undefined} target="_blank" rel="noreferrer">
           {content}
         </a>
       );
@@ -291,8 +286,9 @@ function publishedArtifactReference(
   href: string,
 ): { readonly kind: "image" | "video"; readonly id: string } | undefined {
   const match =
-    /^openorb-artifact:(image|video):([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i
-      .exec(href);
+    /^openorb-artifact:(image|video):([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(
+      href,
+    );
   if (match === null) return undefined;
   const kind = match[1];
   const id = match[2];

@@ -51,9 +51,9 @@ export const dialEnvironmentLink = Effect.fn("dialEnvironmentLink")(function* (
     Effect.mapError(linkError("The Environment Link could not be opened.")),
   );
   const writer = yield* socket.writer;
-  yield* writer.write(
-    JSON.stringify({ type: "attach", token: options.runnerToken, nonce: options.nonce }),
-  ).pipe(Effect.mapError(linkError("The Environment Link could not be authenticated.")));
+  yield* writer
+    .write(JSON.stringify({ type: "attach", token: options.runnerToken, nonce: options.nonce }))
+    .pipe(Effect.mapError(linkError("The Environment Link could not be authenticated.")));
 
   // The gateway answers the attach message before any frame.
   const answer = yield* reader.pull.pipe(
@@ -102,7 +102,7 @@ export const dialEnvironmentLink = Effect.fn("dialEnvironmentLink")(function* (
           // Text messages are link control (`pong`); binary messages are protocol frames.
           if (!Predicate.isString(message) && !closed) push.enqueue(message);
         }
-      })
+      }),
     ),
     Effect.forever,
     Effect.ensuring(Effect.sync(finish)),
@@ -110,7 +110,7 @@ export const dialEnvironmentLink = Effect.fn("dialEnvironmentLink")(function* (
     Effect.forkScoped,
   );
   yield* Queue.take(outgoing).pipe(
-    Effect.tap((chunk) => Effect.sync(() => queuedBytes -= chunkBytes(chunk))),
+    Effect.tap((chunk) => Effect.sync(() => (queuedBytes -= chunkBytes(chunk)))),
     Effect.flatMap((chunk) => writer.write(chunk)),
     Effect.forever,
     Effect.ensuring(Effect.sync(finish)),
@@ -122,7 +122,7 @@ export const dialEnvironmentLink = Effect.fn("dialEnvironmentLink")(function* (
     else enqueue("ping");
   }).pipe(Effect.repeat(Schedule.spaced(LINK_PING_INTERVAL)), Effect.forkScoped);
   yield* Effect.addFinalizer(() =>
-    writer.write(new Socket.CloseEvent(1000, "runner closed the link")).pipe(Effect.ignore)
+    writer.write(new Socket.CloseEvent(1000, "runner closed the link")).pipe(Effect.ignore),
   );
 
   return {

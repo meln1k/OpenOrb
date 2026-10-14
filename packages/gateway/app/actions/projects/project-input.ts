@@ -14,7 +14,10 @@ export function canonicalizeGitHubRepository(value: string): string | null {
     if (!parts) return null;
     [owner, repository] = parts;
   } else {
-    const [url, urlError] = trySync(() => new URL(input), () => new Error("Invalid URL"));
+    const [url, urlError] = trySync(
+      () => new URL(input),
+      () => new Error("Invalid URL"),
+    );
     if (urlError !== undefined) return null;
     if (
       url.protocol !== "https:" ||

@@ -1,4 +1,5 @@
-import { assertEquals, assertInstanceOf } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assertEquals, assertInstanceOf } from "@jsr/std__assert";
 import { RunnerSessionSnapshot, SessionGitSnapshot } from "@openorb/protocol/runner-api";
 import { Schema } from "effect";
 import {
@@ -20,15 +21,17 @@ const snapshot = Schema.decodeUnknownSync(RunnerSessionSnapshot)({
   state: "error",
   agentState: "idle",
   environmentState: "error",
-  issues: [{
-    category: "clone",
-    severity: "failure",
-    message: "The repository could not be cloned.",
-    recovery: "retry-provisioning",
-  }],
+  issues: [
+    {
+      category: "clone",
+      severity: "failure",
+      message: "The repository could not be cloned.",
+      recovery: "retry-provisioning",
+    },
+  ],
 });
 
-Deno.test("Session views and Git Snapshots survive native RPC's structured clone", async () => {
+test("Session views and Git Snapshots survive native RPC's structured clone", async () => {
   const git = staleGitSnapshot();
   // SAFETY: only the two encoded results are exercised; other methods are never called.
   const rpc = {

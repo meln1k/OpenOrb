@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+
 export interface RunnerWorkingDirectoryOptions {
   cwd?: string;
   logicalCwd?: string;
@@ -14,10 +16,10 @@ export class RunnerWorkingDirectoryError extends Error {
 export async function validateRunnerWorkingDirectory(
   options: RunnerWorkingDirectoryOptions = {},
 ): Promise<string> {
-  const cwd = options.cwd ?? Deno.cwd();
-  const realPath = options.realPath ?? Deno.realPath;
+  const cwd = options.cwd ?? process.cwd();
+  const realPath = options.realPath ?? realpath;
   const canonical = await realPath(cwd);
-  const logicalCwd = options.logicalCwd ?? Deno.env.get("PWD");
+  const logicalCwd = options.logicalCwd ?? process.env.PWD;
 
   if (logicalCwd !== undefined) {
     const canonicalLogicalCwd = await realPath(logicalCwd);

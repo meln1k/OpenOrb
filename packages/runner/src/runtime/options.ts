@@ -1,4 +1,4 @@
-import { parseArgs } from "@std/cli/parse-args";
+import { parseArgs } from "@jsr/std__cli/parse-args";
 
 export interface RunnerStartOptions {
   gateway?: string;
@@ -15,6 +15,7 @@ export interface RunnerDoctorOptions {
 export type RunnerCommand =
   | { type: "start"; options: RunnerStartOptions }
   | { type: "doctor"; options: RunnerDoctorOptions }
+  | { type: "help" }
   | { type: "version" };
 
 export class RunnerOptionError extends Error {
@@ -25,19 +26,16 @@ export class RunnerOptionError extends Error {
 }
 
 export function parseRunnerCommand(args: string[]): RunnerCommand {
+  if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+    return { type: "help" };
+  }
   if (args.length === 1 && (args[0] === "--version" || args[0] === "version")) {
     return { type: "version" };
   }
   if (args[0] === "doctor") return parseDoctorCommand(args.slice(1));
 
   const parsed = parseArgs(args, {
-    string: [
-      "gateway",
-      "enrollment-token",
-      "name",
-      "vm-cpu-count",
-      "vm-memory-mib",
-    ],
+    string: ["gateway", "enrollment-token", "name", "vm-cpu-count", "vm-memory-mib"],
     unknown(_argument, key) {
       if (key === "data-dir") {
         throw new RunnerOptionError(
@@ -113,9 +111,7 @@ export function normalizeGatewayUrl(input: string): string {
     throw new RunnerOptionError("--gateway must use http or https.");
   }
   if (url.username || url.password || url.search || url.hash) {
-    throw new RunnerOptionError(
-      "--gateway must not contain credentials, a query, or a fragment.",
-    );
+    throw new RunnerOptionError("--gateway must not contain credentials, a query, or a fragment.");
   }
   if (url.pathname !== "/") {
     throw new RunnerOptionError("--gateway must be an origin URL without a path.");

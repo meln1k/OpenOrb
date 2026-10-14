@@ -6,11 +6,11 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/app/ui/public/components/alert-dialog.tsx";
-import { Button } from "@/app/ui/public/components/button.tsx";
-import { Field, FieldDescription, FieldLabel } from "@/app/ui/public/components/field.tsx";
-import { Input } from "@/app/ui/public/components/input.tsx";
-import { media } from "@/app/ui/public/responsive.ts";
+} from "../../../ui/public/components/alert-dialog.tsx";
+import { Button } from "../../../ui/public/components/button.tsx";
+import { Field, FieldDescription, FieldLabel } from "../../../ui/public/components/field.tsx";
+import { Input } from "../../../ui/public/components/input.tsx";
+import { media } from "../../../ui/public/responsive.ts";
 import {
   configurationStatusStyle,
   dialogFormStyle,
@@ -23,21 +23,21 @@ import {
 import type { SettingsGitHubCredential } from "../settings-navigation.tsx";
 
 export function GitHubCredentialSection(
-  handle: Handle<
-    {
-      actionHref: string;
-      csrfToken: string;
-      credential: SettingsGitHubCredential | null;
-      dialogId: string;
-      deleteDialogId: string;
-    }
-  >,
+  handle: Handle<{
+    actionHref: string;
+    csrfToken: string;
+    credential: SettingsGitHubCredential | null;
+    dialogId: string;
+    deleteDialogId: string;
+  }>,
 ) {
   const { actionHref, csrfToken, credential, dialogId, deleteDialogId } = handle.props;
   return () => (
     <section aria-labelledby="github-heading" mix={settingsSectionStyle}>
       <header mix={sectionHeaderStyle}>
-        <h2 id="github-heading" mix={sectionHeadingStyle}>GitHub credential</h2>
+        <h2 id="github-heading" mix={sectionHeadingStyle}>
+          GitHub credential
+        </h2>
         <p mix={sectionCopyStyle}>
           The token is encrypted and is never shown again after it is saved. Public projects do not
           require one.
@@ -61,18 +61,16 @@ export function GitHubCredentialSection(
           >
             {credential ? "Replace token" : "Add token"}
           </Button>
-          {credential
-            ? (
-              <Button
-                size="sm"
-                variant="destructive"
-                commandFor={deleteDialogId}
-                command="show-modal"
-              >
-                Delete
-              </Button>
-            )
-            : null}
+          {credential ? (
+            <Button
+              size="sm"
+              variant="destructive"
+              commandFor={deleteDialogId}
+              command="show-modal"
+            >
+              Delete
+            </Button>
+          ) : null}
         </div>
       </div>
       <GitHubCredentialDialog
@@ -81,15 +79,13 @@ export function GitHubCredentialSection(
         dialogId={dialogId}
         replacing={Boolean(credential)}
       />
-      {credential
-        ? (
-          <DeleteGitHubCredentialDialog
-            actionHref={actionHref}
-            csrfToken={csrfToken}
-            dialogId={deleteDialogId}
-          />
-        )
-        : null}
+      {credential ? (
+        <DeleteGitHubCredentialDialog
+          actionHref={actionHref}
+          csrfToken={csrfToken}
+          dialogId={deleteDialogId}
+        />
+      ) : null}
     </section>
   );
 }
@@ -170,7 +166,9 @@ function DeleteGitHubCredentialDialog(
           <Button type="button" variant="outline" commandFor={dialogId} command="close">
             Cancel
           </Button>
-          <Button type="submit" variant="destructive">Delete token</Button>
+          <Button type="submit" variant="destructive">
+            Delete token
+          </Button>
         </AlertDialogFooter>
       </form>
     </AlertDialog>

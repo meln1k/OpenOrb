@@ -1,15 +1,17 @@
+import { mkdir, realpath } from "node:fs/promises";
+
 const workingDirectory = new URL("../.openorb-runner-dev/", import.meta.url);
-await Deno.mkdir(workingDirectory, { recursive: true });
-const canonicalWorkingDirectory = await Deno.realPath(workingDirectory);
+await mkdir(workingDirectory, { recursive: true });
+const canonicalWorkingDirectory = await realpath(workingDirectory);
 const temporaryDirectory = `${canonicalWorkingDirectory}/tmp`;
 const cacheDirectory = `${canonicalWorkingDirectory}/cache`;
 await Promise.all([
-  Deno.mkdir(temporaryDirectory, { recursive: true }),
-  Deno.mkdir(cacheDirectory, { recursive: true }),
+  mkdir(temporaryDirectory, { recursive: true }),
+  mkdir(cacheDirectory, { recursive: true }),
 ]);
-Deno.chdir(canonicalWorkingDirectory);
-Deno.env.set("PWD", canonicalWorkingDirectory);
-Deno.env.set("TMPDIR", temporaryDirectory);
-Deno.env.set("XDG_CACHE_HOME", cacheDirectory);
+process.chdir(canonicalWorkingDirectory);
+process.env.PWD = canonicalWorkingDirectory;
+process.env.TMPDIR = temporaryDirectory;
+process.env.XDG_CACHE_HOME = cacheDirectory;
 const { runMain } = await import("@openorb/runner");
-runMain(Deno.args);
+runMain(process.argv.slice(2));

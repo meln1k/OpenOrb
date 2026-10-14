@@ -1,8 +1,8 @@
 import { css, type Handle } from "remix/component";
-import { Button, SubmitProgressBehavior } from "@/app/ui/public/components/button.tsx";
-import { Field, FieldLabel } from "@/app/ui/public/components/field.tsx";
-import { Input } from "@/app/ui/public/components/input.tsx";
-import { media } from "@/app/ui/public/responsive.ts";
+import { Button, SubmitProgressBehavior } from "../../../ui/public/components/button.tsx";
+import { Field, FieldLabel } from "../../../ui/public/components/field.tsx";
+import { Input } from "../../../ui/public/components/input.tsx";
+import { media } from "../../../ui/public/responsive.ts";
 import {
   configurationStatusStyle,
   formatSettingsDate,
@@ -13,22 +13,22 @@ import {
 } from "../settings-shared.ts";
 import type { SettingsGitAuthor } from "../settings-navigation.tsx";
 export function GitAuthorSection(
-  handle: Handle<
-    {
-      actionHref: string;
-      authorEmail: string;
-      authorName: string;
-      csrfToken: string;
-      formId: string;
-      gitAuthor: SettingsGitAuthor | null;
-    }
-  >,
+  handle: Handle<{
+    actionHref: string;
+    authorEmail: string;
+    authorName: string;
+    csrfToken: string;
+    formId: string;
+    gitAuthor: SettingsGitAuthor | null;
+  }>,
 ) {
   const { actionHref, authorEmail, authorName, csrfToken, formId, gitAuthor } = handle.props;
   return () => (
     <section aria-labelledby="git-author-heading" mix={settingsSectionStyle}>
       <header mix={sectionHeaderStyle}>
-        <h2 id="git-author-heading" mix={sectionHeadingStyle}>Git author</h2>
+        <h2 id="git-author-heading" mix={sectionHeadingStyle}>
+          Git author
+        </h2>
         <p mix={sectionCopyStyle}>
           This global identity is required before a session can be provisioned and is used for
           OpenOrb session commits.
@@ -69,7 +69,9 @@ export function GitAuthorSection(
               : "Not configured"}
           </span>
           <Button type="submit">
-            <span data-slot="submit-idle" mix={submitLabelStyle}>Save Git author</span>
+            <span data-slot="submit-idle" mix={submitLabelStyle}>
+              Save Git author
+            </span>
             <span data-slot="submit-progress" hidden mix={submitLabelStyle}>
               <span aria-hidden="true" mix={submitSpinnerStyle} />
               Saving Git author

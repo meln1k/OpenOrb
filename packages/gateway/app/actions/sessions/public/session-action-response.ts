@@ -5,10 +5,7 @@ const actionAcceptedResponseSchema = object(
   { status: literal("accepted" as const) },
   { unknownKeys: "error" },
 );
-const actionErrorResponseSchema = object(
-  { error: string() },
-  { unknownKeys: "error" },
-);
+const actionErrorResponseSchema = object({ error: string() }, { unknownKeys: "error" });
 
 export async function actionResponseAccepted(response: Response): Promise<boolean> {
   const [body, readError] = await tryAsync(response.json(), () => true);

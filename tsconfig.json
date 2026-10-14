@@ -5,7 +5,7 @@
     "exactOptionalPropertyTypes": true,
     "jsx": "react-jsx",
     "jsxImportSource": "remix/component",
-    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "module": "preserve",
     "moduleDetection": "force",
     "moduleResolution": "bundler",
@@ -13,14 +13,8 @@
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
-    "baseUrl": ".",
     "paths": {
-      "cloudflare:workers": ["packages/gateway/test/workspace/runtime.ts"],
-      "@cloudflare/workers-types": ["node_modules/@cloudflare/workers-types/index.ts"],
-      "@openorb/protocol": ["packages/protocol/src/index.ts"],
-      "@openorb/protocol/*": ["packages/protocol/src/*.ts"],
-      "@openorb/result": ["packages/result/src/index.ts"],
-      "@openorb/pi-env": ["packages/pi-env/src/index.ts"]
+      "cloudflare:workers": ["./packages/gateway/test/workspace/runtime.ts"]
     },
     "plugins": [
       {
@@ -28,9 +22,11 @@
       }
     ],
     "skipLibCheck": true,
+    "types": ["node", "./packages/gateway/worker-configuration.d.ts"],
     "strict": true,
     "target": "ES2024",
     "verbatimModuleSyntax": true
   },
-  "include": ["packages/**/*.ts", "packages/**/*.tsx", "scripts/**/*.ts"]
+  "include": ["packages/**/*.ts", "packages/**/*.tsx", "scripts/**/*.ts", "vite.config.ts"],
+  "exclude": ["node_modules", "**/dist", ".agents"]
 }

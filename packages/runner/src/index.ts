@@ -9,7 +9,8 @@ import { checkRunnerPrerequisites } from "./runtime/prerequisites.ts";
 import { validateRunnerWorkingDirectory } from "./runtime/working-directory.ts";
 import { runnerServicesLayer } from "./runtime/services.ts";
 import { EnvironmentSupervisor } from "./environment/session/supervisor.ts";
-import * as DenoRuntime from "@effect/platform-deno/DenoRuntime";
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import { isSea } from "node:sea";
 import { Effect, Exit, Predicate, Runtime, Schema } from "effect";
 import { RUNNER_PROTOCOL_VERSION, RunnerId } from "@openorb/protocol/runner-api";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
@@ -19,7 +20,7 @@ export const RUNNER_VERSION = "0.0.0";
 const tracer = trace.getTracer("openorb-runner", RUNNER_VERSION);
 
 export async function main(
-  args: string[] = Deno.args,
+  args: string[] = process.argv.slice(2),
   processSignal?: AbortSignal,
 ): Promise<number> {
   const [command, commandError] = trySync(parseRunnerCommand.bind(undefined, args), toError);
@@ -31,15 +32,22 @@ export async function main(
     return 2;
   }
 
+  if (command.type === "help") {
+    console.log(
+      "Usage: openorb-runner [doctor [--gateway URL]|--version|--help] [--gateway URL --enrollment-token PSK] [--name NAME] [--vm-cpu-count COUNT] [--vm-memory-mib MIB]",
+    );
+    return 0;
+  }
+
   if (command.type === "version") {
     console.log(
       JSON.stringify({
         component: "openorb-runner",
         version: RUNNER_VERSION,
-        denoVersion: Deno.version.deno,
-        target: Deno.build.target,
-        architecture: normalizeArchitecture(Deno.build.arch),
-        standalone: Deno.build.standalone,
+        nodeVersion: process.versions.node,
+        target: `${process.platform}-${process.arch}`,
+        architecture: normalizeArchitecture(process.arch),
+        standalone: isSea(),
       }),
     );
     return 0;
@@ -74,9 +82,7 @@ export async function main(
       return 2;
     }
     if (storedIdentity && gatewayUrl !== storedIdentity.gatewayUrl) {
-      console.error(
-        "[openorb-runner] error: --gateway does not match the enrolled runner.",
-      );
+      console.error("[openorb-runner] error: --gateway does not match the enrolled runner.");
       return 2;
     }
   }
@@ -147,8 +153,8 @@ export async function main(
       kernelRelease: report.kernelRelease,
       libc: report.libc,
       glibcVersion: report.glibcVersion,
-      denoVersion: report.denoVersion,
-      runtime: Deno.build.standalone ? "denort" : "deno",
+      nodeVersion: report.nodeVersion,
+      runtime: isSea() ? "node-sea" : "node",
       qemu: report.qemu,
       qemuImg: report.qemuImg,
       kvm: report.kvm,
@@ -173,7 +179,7 @@ export async function main(
           gatewayUrl: gatewayUrl!,
           enrollmentPsk: command.options.enrollmentToken!,
           name: command.options.name,
-          architecture: normalizeArchitecture(Deno.build.arch),
+          architecture: normalizeArchitecture(process.arch),
         });
         if (enrollmentError !== undefined) {
           return err(new RunnerRuntimeError("Runner enrollment failed.", enrollmentError));
@@ -233,10 +239,10 @@ export async function main(
               protocolVersion: RUNNER_PROTOCOL_VERSION,
               getCapacity,
             };
-            return yield* Effect.all([
-              runRunnerRpc(options),
-              runRunnerBulkRpc(options),
-            ], { concurrency: "unbounded", discard: true });
+            return yield* Effect.all([runRunnerRpc(options), runRunnerBulkRpc(options)], {
+              concurrency: "unbounded",
+              discard: true,
+            });
           }),
         ).pipe(Effect.provide(runnerServicesLive)),
         { signal: shutdownController.signal },
@@ -261,7 +267,7 @@ export async function main(
 }
 
 class RunnerRuntimeError extends Error {
-  constructor(message: string, override readonly cause: unknown) {
+  constructor(message: string, cause: unknown) {
     super(message, { cause });
     this.name = "RunnerRuntimeError";
   }
@@ -279,17 +285,17 @@ function normalizeArchitecture(value: string): "x64" | "arm64" {
 }
 
 function installShutdownListeners(controller: AbortController): () => void {
-  const shutdown = (signal: Deno.Signal) => {
+  const shutdown = (signal: NodeJS.Signals) => {
     console.log(`[openorb-runner] received ${signal}; stopping runner`);
     controller.abort();
   };
   const onSigint = () => shutdown("SIGINT");
   const onSigterm = () => shutdown("SIGTERM");
-  Deno.addSignalListener("SIGINT", onSigint);
-  Deno.addSignalListener("SIGTERM", onSigterm);
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
   return () => {
-    Deno.removeSignalListener("SIGINT", onSigint);
-    Deno.removeSignalListener("SIGTERM", onSigterm);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
   };
 }
 
@@ -303,7 +309,7 @@ function linkShutdownSignal(signal: AbortSignal, controller: AbortController): (
   return () => signal.removeEventListener("abort", shutdown);
 }
 
-export function runMain(args: string[] = Deno.args): void {
+export function runMain(args: string[] = process.argv.slice(2)): void {
   const program = Effect.callback<number>((resume, signal) => {
     const result = main(args, signal);
     result.then(
@@ -312,7 +318,7 @@ export function runMain(args: string[] = Deno.args): void {
     );
     return Effect.promise(() => result).pipe(Effect.asVoid);
   });
-  DenoRuntime.runMain(program, {
+  NodeRuntime.runMain(program, {
     teardown(exit, onExit) {
       if (Exit.isSuccess(exit)) {
         return onExit(Predicate.isNumber(exit.value) ? exit.value : 0);
@@ -320,8 +326,4 @@ export function runMain(args: string[] = Deno.args): void {
       Runtime.defaultTeardown(exit, onExit);
     },
   });
-}
-
-if (import.meta.main) {
-  runMain();
 }

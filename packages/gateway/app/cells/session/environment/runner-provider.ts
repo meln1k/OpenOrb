@@ -16,7 +16,7 @@ import type {
   SessionEnvironmentSecret,
   WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { encodeBase64Url } from "@std/encoding/base64url";
+import { encodeBase64Url } from "@jsr/std__encoding/base64url";
 import type { OperationResult } from "../../runners/runner-registry.ts";
 import {
   type AgentEnvironmentProvider,
@@ -185,15 +185,17 @@ function bindRunnerEnvironment(
         sessionId,
         payload: {
           orbSize: spec.orbSize,
-          ...(binding.repository === undefined ? {} : {
-            repository: {
-              url: binding.repository.url,
-              gitAuthor: {
-                name: binding.repository.gitAuthor.name,
-                email: binding.repository.gitAuthor.email,
-              },
-            },
-          }),
+          ...(binding.repository === undefined
+            ? {}
+            : {
+                repository: {
+                  url: binding.repository.url,
+                  gitAuthor: {
+                    name: binding.repository.gitAuthor.name,
+                    email: binding.repository.gitAuthor.email,
+                  },
+                },
+              }),
         },
       });
       options.recordState(accepted(result, "create the environment").environment.state);

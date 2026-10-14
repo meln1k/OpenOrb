@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertStrictEquals } from "@std/assert";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertStrictEquals } from "@jsr/std__assert";
 
 import { type FileDiffMetadata, parsePatchFiles } from "@pierre/diffs";
 import {
@@ -9,9 +10,9 @@ import {
   sessionChangeMutationPaths,
   sessionChangeRowKey,
   toggleSessionChangeItem,
-} from "@/app/actions/sessions/public/session-change-items.ts";
+} from "../app/actions/sessions/public/session-change-items.ts";
 
-Deno.test("collapsed renderable changes stay lightweight until expanded", () => {
+test("collapsed renderable changes stay lightweight until expanded", () => {
   const row = changeRow("unstaged", "src/value.ts", "before", "after", "initial");
   const initial = reconcileSessionChangeItems([row], new Map());
   const collapsed = initial.items[0];
@@ -30,7 +31,7 @@ Deno.test("collapsed renderable changes stay lightweight until expanded", () => 
   assertEquals(recollapsed.collapsed, true);
 });
 
-Deno.test("unchanged snapshots retain the exact Pierre item", () => {
+test("unchanged snapshots retain the exact Pierre item", () => {
   const initialRow = changeRow("unstaged", "src/value.ts", "before", "after", "initial");
   const initial = reconcileSessionChangeItems([initialRow], new Map());
   const expanded = expandItem(initial.records, initialRow.key);
@@ -42,7 +43,7 @@ Deno.test("unchanged snapshots retain the exact Pierre item", () => {
   assertEquals(refreshed.items[0]?.collapsed, false);
 });
 
-Deno.test("a changed file invalidates only its own Pierre item", () => {
+test("a changed file invalidates only its own Pierre item", () => {
   const firstRows = [
     changeRow("unstaged", "src/one.ts", "one", "first", "initial"),
     changeRow("unstaged", "src/two.ts", "two", "second", "initial"),
@@ -59,7 +60,7 @@ Deno.test("a changed file invalidates only its own Pierre item", () => {
   assertEquals(next.items[1]?.version, 1);
 });
 
-Deno.test("collapse state follows an unambiguous stage transition", () => {
+test("collapse state follows an unambiguous stage transition", () => {
   const unstaged = changeRow("unstaged", "src/value.ts", "before", "after", "unstaged");
   const initial = reconcileSessionChangeItems([unstaged], new Map());
   const expanded = expandItem(initial.records, unstaged.key);
@@ -71,7 +72,7 @@ Deno.test("collapse state follows an unambiguous stage transition", () => {
   assertEquals(moved.items[0]?.collapsed, false);
 });
 
-Deno.test("collapse state follows an unambiguous rename", () => {
+test("collapse state follows an unambiguous rename", () => {
   const original = changeRow("unstaged", "src/old.ts", "before", "after", "original");
   const initial = reconcileSessionChangeItems([original], new Map());
   const expanded = expandItem(initial.records, original.key);
@@ -96,7 +97,7 @@ Deno.test("collapse state follows an unambiguous rename", () => {
   assertEquals(moved.items[0]?.collapsed, false);
 });
 
-Deno.test("an existing destination keeps its own collapse state", () => {
+test("an existing destination keeps its own collapse state", () => {
   const staged = changeRow("staged", "src/value.ts", "base", "index", "initial");
   const unstaged = changeRow("unstaged", "src/value.ts", "index", "worktree", "initial");
   const initial = reconcileSessionChangeItems([unstaged, staged], new Map());
@@ -108,15 +109,20 @@ Deno.test("an existing destination keeps its own collapse state", () => {
   assertEquals(moved.items[0]?.collapsed, true);
 });
 
-Deno.test("pending file intents optimistically move the latest logical file state", () => {
+test("pending file intents optimistically move the latest logical file state", () => {
   const unstaged = changeRow("unstaged", "src/value.ts", "before", "after", "unstaged");
-  const staged = projectPendingSessionChanges([unstaged], [{
-    action: "stage",
-    ambiguousDiff: false,
-    generation: 1,
-    path: unstaged.file.path,
-    row: unstaged,
-  }]);
+  const staged = projectPendingSessionChanges(
+    [unstaged],
+    [
+      {
+        action: "stage",
+        ambiguousDiff: false,
+        generation: 1,
+        path: unstaged.file.path,
+        row: unstaged,
+      },
+    ],
+  );
 
   assertEquals(staged.length, 1);
   assertEquals(staged[0]?.state, "staged");
@@ -125,30 +131,40 @@ Deno.test("pending file intents optimistically move the latest logical file stat
 
   const optimisticStaged = staged[0];
   if (optimisticStaged === undefined) throw new Error("Missing optimistic staged row.");
-  const latest = projectPendingSessionChanges([unstaged], [{
-    action: "unstage",
-    ambiguousDiff: false,
-    generation: 2,
-    path: unstaged.file.path,
-    row: optimisticStaged,
-  }]);
+  const latest = projectPendingSessionChanges(
+    [unstaged],
+    [
+      {
+        action: "unstage",
+        ambiguousDiff: false,
+        generation: 2,
+        path: unstaged.file.path,
+        row: optimisticStaged,
+      },
+    ],
+  );
 
   assertEquals(latest.length, 1);
   assertEquals(latest[0]?.state, "unstaged");
   assertEquals(latest[0]?.pending, { path: "src/value.ts", requestPending: true });
 });
 
-Deno.test("pending intents do not present either half of a combined diff as authoritative", () => {
+test("pending intents do not present either half of a combined diff as authoritative", () => {
   const staged = changeRow("staged", "src/value.ts", "base", "index", "staged");
   const unstaged = changeRow("unstaged", "src/value.ts", "index", "worktree", "unstaged");
 
-  const projected = projectPendingSessionChanges([unstaged, staged], [{
-    action: "stage",
-    ambiguousDiff: true,
-    generation: 1,
-    path: unstaged.file.path,
-    row: unstaged,
-  }]);
+  const projected = projectPendingSessionChanges(
+    [unstaged, staged],
+    [
+      {
+        action: "stage",
+        ambiguousDiff: true,
+        generation: 1,
+        path: unstaged.file.path,
+        row: unstaged,
+      },
+    ],
+  );
 
   assertEquals(projected.length, 1);
   assertEquals(projected[0]?.state, "staged");
@@ -156,37 +172,47 @@ Deno.test("pending intents do not present either half of a combined diff as auth
   assertEquals(projected[0]?.stats, undefined);
   assertEquals(projected[0]?.fallback, "Updating the combined diff…");
 
-  const retained = projectPendingSessionChanges([], [{
-    action: "stage",
-    ambiguousDiff: true,
-    generation: 1,
-    path: unstaged.file.path,
-    row: unstaged,
-  }]);
+  const retained = projectPendingSessionChanges(
+    [],
+    [
+      {
+        action: "stage",
+        ambiguousDiff: true,
+        generation: 1,
+        path: unstaged.file.path,
+        row: unstaged,
+      },
+    ],
+  );
   assertEquals(retained.length, 1);
   assertEquals(retained[0]?.fileDiff, undefined);
   assertEquals(retained[0]?.stats, undefined);
   assertEquals(retained[0]?.fallback, "Updating the combined diff…");
 });
 
-Deno.test("pending intent uses newer confirmed source contents before its captured row", () => {
+test("pending intent uses newer confirmed source contents before its captured row", () => {
   const captured = changeRow("unstaged", "src/value.ts", "base", "clicked", "captured");
   const refreshed = changeRow("unstaged", "src/value.ts", "base", "refreshed", "refreshed");
 
-  const projected = projectPendingSessionChanges([refreshed], [{
-    action: "stage",
-    ambiguousDiff: false,
-    generation: 1,
-    path: captured.file.path,
-    row: captured,
-  }]);
+  const projected = projectPendingSessionChanges(
+    [refreshed],
+    [
+      {
+        action: "stage",
+        ambiguousDiff: false,
+        generation: 1,
+        path: captured.file.path,
+        row: captured,
+      },
+    ],
+  );
 
   assertEquals(projected.length, 1);
   assertEquals(projected[0]?.state, "staged");
   assertStrictEquals(projected[0]?.fileDiff, refreshed.fileDiff);
 });
 
-Deno.test("pending rename identity survives projection through a modified destination row", () => {
+test("pending rename identity survives projection through a modified destination row", () => {
   const renamedBase = changeRow("staged", "src/new.ts", "old", "index", "renamed");
   const renamedFile = {
     kind: "tracked" as const,
@@ -204,14 +230,19 @@ Deno.test("pending rename identity survives projection through a modified destin
   };
   const modified = changeRow("unstaged", "src/new.ts", "index", "working", "modified");
 
-  const projected = projectPendingSessionChanges([modified, renamed], [{
-    action: "unstage",
-    ambiguousDiff: true,
-    generation: 1,
-    path: renamedFile.path,
-    previousPath: renamedFile.previousPath,
-    row: renamed,
-  }]);
+  const projected = projectPendingSessionChanges(
+    [modified, renamed],
+    [
+      {
+        action: "unstage",
+        ambiguousDiff: true,
+        generation: 1,
+        path: renamedFile.path,
+        previousPath: renamedFile.previousPath,
+        row: renamed,
+      },
+    ],
+  );
   const pending = projected[0];
   if (pending === undefined) throw new Error("Missing pending rename row.");
 

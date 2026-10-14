@@ -1,8 +1,18 @@
 import { basename, join } from "node:path";
+import { copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import {
+  execFile,
+  spawn,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptionsWithoutStdio,
+} from "node:child_process";
+import { promisify } from "node:util";
 import { chromium, type Locator, type Page } from "playwright";
 import { routes } from "../packages/gateway/app/routes.ts";
 
-const REPOSITORY_ROOT = new URL("../", import.meta.url).pathname;
+const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const GATEWAY_PORT = 8787;
 const GATEWAY_URL = `http://127.0.0.1:${GATEWAY_PORT}`;
 const ACCEPTANCE_TIMEOUT_MS = 20 * 60_000;
@@ -57,8 +67,8 @@ interface GitHubRepositoryIdentity {
 }
 
 const configuration = readConfiguration();
-Deno.env.delete("OPENORB_GITHUB_TEST_TOKEN");
-Deno.env.delete("OPENCODE_API_KEY");
+delete process.env.OPENORB_GITHUB_TEST_TOKEN;
+delete process.env.OPENCODE_API_KEY;
 const runId = crypto.randomUUID().replaceAll("-", "");
 const masterKey = randomHex(32);
 const sessionSecret = randomHex(32);
@@ -71,7 +81,7 @@ const setupMarker = `setup-${runId}`;
 const resumeMarker = `resume-${runId}`;
 const initialMarker = `initial-${runId}`;
 const resumedMarker = `resumed-${runId}`;
-const temporaryDirectory = await Deno.makeTempDir({ prefix: "openorb-release-acceptance-" });
+const temporaryDirectory = await mkdtemp(join(tmpdir(), "openorb-release-acceptance-"));
 const gatewayDirectory = join(temporaryDirectory, "gateway");
 const runnerDirectory = join(temporaryDirectory, "runner");
 const runnerSessionDirectory = join(runnerDirectory, "environments", sessionId);
@@ -81,7 +91,7 @@ let runner: ManagedProcess | undefined;
 
 async function runAcceptance(): Promise<void> {
   await using cleanup = new AsyncDisposableStack();
-  cleanup.defer(() => Deno.remove(temporaryDirectory, { recursive: true }));
+  cleanup.defer(() => rm(temporaryDirectory, { recursive: true, force: true }));
   const github = new GitHubClient(configuration.githubRepository, configuration.githubToken);
   const repositoryIdentity = parseGitHubRepository(configuration.githubRepository);
 
@@ -100,14 +110,11 @@ async function runAcceptance(): Promise<void> {
   });
   console.log(`[acceptance] created fixture branch ${fixtureBranch}`);
 
-  await Deno.mkdir(runnerDirectory, { recursive: true, mode: 0o700 });
-  await Deno.mkdir(join(runnerDirectory, "tmp"));
-  await Deno.mkdir(join(runnerDirectory, "cache"));
+  await mkdir(runnerDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(join(runnerDirectory, "tmp"));
+  await mkdir(join(runnerDirectory, "cache"));
 
-  gateway = spawnGateway([
-    configuration.githubToken,
-    configuration.openCodeApiKey,
-  ]);
+  gateway = spawnGateway([configuration.githubToken, configuration.openCodeApiKey]);
   cleanup.defer(async () => {
     await gateway?.stop();
     assertNoLogLeaks();
@@ -178,7 +185,7 @@ async function runAcceptance(): Promise<void> {
 function readConfiguration(): AcceptanceConfiguration {
   const missing: string[] = [];
   const required = (name: string): string => {
-    const value = Deno.env.get(name)?.trim();
+    const value = process.env[name]?.trim();
     if (!value) missing.push(name);
     return value ?? "";
   };
@@ -186,8 +193,7 @@ function readConfiguration(): AcceptanceConfiguration {
     githubRepository: required("OPENORB_GITHUB_TEST_REPOSITORY"),
     githubToken: required("OPENORB_GITHUB_TEST_TOKEN"),
     openCodeApiKey: required("OPENCODE_API_KEY"),
-    chromiumExecutablePath: Deno.env.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")?.trim() ||
-      undefined,
+    chromiumExecutablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined,
   };
   if (missing.length > 0) {
     throw new Error(`Missing required release acceptance secrets: ${missing.join(", ")}`);
@@ -196,10 +202,13 @@ function readConfiguration(): AcceptanceConfiguration {
 }
 
 async function preflight(): Promise<void> {
-  invariant(Deno.build.os === "linux", "Release acceptance requires Linux.");
-  invariant(Deno.build.arch === "x86_64", "Release acceptance requires Linux x64.");
-  const kvm = await Deno.stat("/dev/kvm").catch(() => undefined);
-  invariant(kvm?.isCharDevice === true, "Release acceptance requires hardware KVM at /dev/kvm.");
+  invariant(process.platform === "linux", "Release acceptance requires Linux.");
+  invariant(process.arch === "x64", "Release acceptance requires Linux x64.");
+  const kvm = await stat("/dev/kvm").catch(() => undefined);
+  invariant(
+    kvm?.isCharacterDevice() === true,
+    "Release acceptance requires hardware KVM at /dev/kvm.",
+  );
   await command("celld", ["--version"]);
   await command("esbuild", ["--version"]);
 }
@@ -207,25 +216,19 @@ async function preflight(): Promise<void> {
 async function prepareGateway(): Promise<void> {
   // Build the production entrypoint, not a test facade. Do not run gateway prepare: it writes
   // the operator's .dev.vars. Only deployable bytes and the reviewed config enter this fixture.
-  await command(Deno.execPath(), ["task", "--filter", "@openorb/gateway", "build"]);
-  await Deno.mkdir(gatewayDirectory, { recursive: true, mode: 0o700 });
-  await Deno.mkdir(join(gatewayDirectory, "tmp"));
-  await Deno.mkdir(join(gatewayDirectory, "cache"));
+  await command("npm", ["run", "build", "--workspace", "@openorb/gateway"]);
+  await mkdir(gatewayDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(join(gatewayDirectory, "tmp"));
+  await mkdir(join(gatewayDirectory, "cache"));
   const sourceDirectory = join(REPOSITORY_ROOT, "packages/gateway");
-  await Deno.copyFile(
-    join(sourceDirectory, "wrangler.jsonc"),
-    join(gatewayDirectory, "wrangler.jsonc"),
-  );
-  await Deno.mkdir(join(gatewayDirectory, "dist"));
-  await Deno.copyFile(
-    join(sourceDirectory, "dist/worker.js"),
-    join(gatewayDirectory, "dist/worker.js"),
-  );
+  await copyFile(join(sourceDirectory, "wrangler.jsonc"), join(gatewayDirectory, "wrangler.jsonc"));
+  await mkdir(join(gatewayDirectory, "dist"));
+  await copyFile(join(sourceDirectory, "dist/worker.js"), join(gatewayDirectory, "dist/worker.js"));
   await copyGatewayAssets(
     join(sourceDirectory, "dist/assets"),
     join(gatewayDirectory, "dist/assets"),
   );
-  await Deno.writeTextFile(
+  await writeFile(
     join(gatewayDirectory, ".dev.vars"),
     [
       `OPENORB_MASTER_KEY=${masterKey}`,
@@ -238,12 +241,12 @@ async function prepareGateway(): Promise<void> {
 }
 
 async function copyGatewayAssets(source: string, target: string): Promise<void> {
-  await Deno.mkdir(target, { recursive: true });
-  for await (const entry of Deno.readDir(source)) {
+  await mkdir(target, { recursive: true });
+  for (const entry of await readdir(source, { withFileTypes: true })) {
     const from = join(source, entry.name);
     const to = join(target, entry.name);
-    if (entry.isDirectory) await copyGatewayAssets(from, to);
-    else if (entry.isFile) await Deno.copyFile(from, to);
+    if (entry.isDirectory()) await copyGatewayAssets(from, to);
+    else if (entry.isFile()) await copyFile(from, to);
     else throw new Error(`Gateway assets must be regular files: ${entry.name}`);
   }
 }
@@ -251,7 +254,8 @@ async function copyGatewayAssets(source: string, target: string): Promise<void> 
 function spawnGateway(secrets: readonly string[]): ManagedProcess {
   return new ManagedProcess(
     "gateway",
-    new Deno.Command("celld", {
+    "celld",
+    {
       args: [
         "dev",
         "wrangler.jsonc",
@@ -265,16 +269,12 @@ function spawnGateway(secrets: readonly string[]): ManagedProcess {
       ],
       // celld dev keeps .celld/dev beside this copied config, never beside the real config.
       cwd: gatewayDirectory,
-      clearEnv: true,
       env: {
-        PATH: Deno.env.get("PATH") ?? "",
+        PATH: process.env.PATH ?? "",
         TMPDIR: join(gatewayDirectory, "tmp"),
         XDG_CACHE_HOME: join(gatewayDirectory, "cache"),
       },
-      stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
-    }),
+    },
     [...secrets, masterKey, sessionSecret],
   );
 }
@@ -282,20 +282,9 @@ function spawnGateway(secrets: readonly string[]): ManagedProcess {
 function spawnRunner(enrollmentToken: string, secrets: readonly string[]): ManagedProcess {
   return new ManagedProcess(
     "runner",
-    new Deno.Command(Deno.execPath(), {
+    process.execPath,
+    {
       args: [
-        "run",
-        "--unstable-net",
-        "--unstable-process",
-        "--frozen",
-        `--config=${join(REPOSITORY_ROOT, "packages/runner/deno.json")}`,
-        "--node-modules-dir=auto",
-        "--allow-env",
-        "--allow-net",
-        "--allow-read",
-        `--allow-write=${runnerDirectory}`,
-        "--allow-run=qemu-system-x86_64,qemu-img",
-        "--allow-sys=cpus,gid,homedir,hostname,networkInterfaces,osRelease,statfs,systemMemoryInfo,uid",
         join(REPOSITORY_ROOT, "packages/runner/src/standalone.ts"),
         "--gateway",
         GATEWAY_URL,
@@ -305,27 +294,27 @@ function spawnRunner(enrollmentToken: string, secrets: readonly string[]): Manag
         runnerName,
       ],
       cwd: runnerDirectory,
-      clearEnv: true,
       env: {
-        PATH: Deno.env.get("PATH") ?? "",
+        PATH: process.env.PATH ?? "",
         PWD: runnerDirectory,
         TMPDIR: join(runnerDirectory, "tmp"),
         XDG_CACHE_HOME: join(runnerDirectory, "cache"),
       },
-      stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
-    }),
+    },
     [...secrets, enrollmentToken],
   );
 }
 
 async function waitForGateway(process: ManagedProcess): Promise<void> {
-  await poll("gateway readiness", async () => {
-    process.assertRunning();
-    const response = await fetch(gatewayUrl(routes.health.href())).catch(() => undefined);
-    return response?.ok === true;
-  }, 60_000);
+  await poll(
+    "gateway readiness",
+    async () => {
+      process.assertRunning();
+      const response = await fetch(gatewayUrl(routes.health.href())).catch(() => undefined);
+      return response?.ok === true;
+    },
+    60_000,
+  );
 }
 
 async function configureGateway(page: Page): Promise<void> {
@@ -335,7 +324,7 @@ async function configureGateway(page: Page): Promise<void> {
     `Gateway setup page returned HTTP ${setupResponse?.status() ?? "no response"}.`,
   );
   const password = page.getByLabel("Password", { exact: true });
-  if (await password.count() === 0) {
+  if ((await password.count()) === 0) {
     const body = (await page.locator("body").innerText()).slice(0, 2_000);
     throw new Error(
       `Gateway setup page did not render its password field at ${page.url()}: ${body}`,
@@ -392,25 +381,26 @@ async function configureGateway(page: Page): Promise<void> {
 
 async function readEnrollmentToken(page: Page): Promise<string> {
   await page.goto(gatewayUrl(routes.app.settings.runners.index.href()));
-  const commandText = await page.locator('section[aria-label="Runner enrollment command"] code')
+  const commandText = await page
+    .locator('section[aria-label="Runner enrollment command"] code')
     .innerText();
   const match = commandText.match(/--enrollment-token\s+([^\s\\]+)/u);
   invariant(match?.[1] !== undefined, "Runner enrollment token was absent from the settings UI.");
   return match[1];
 }
 
-async function waitForRunner(
-  page: Page,
-  name: string,
-  process: ManagedProcess,
-): Promise<void> {
-  await poll("runner enrollment", async () => {
-    process.assertRunning();
-    await page.reload();
-    const enrolled = page.getByLabel("Enrolled runners");
-    const text = await enrolled.innerText();
-    return text.includes(name) && text.includes("Online");
-  }, ACCEPTANCE_TIMEOUT_MS);
+async function waitForRunner(page: Page, name: string, process: ManagedProcess): Promise<void> {
+  await poll(
+    "runner enrollment",
+    async () => {
+      process.assertRunning();
+      await page.reload();
+      const enrolled = page.getByLabel("Enrolled runners");
+      const text = await enrolled.innerText();
+      return text.includes(name) && text.includes("Online");
+    },
+    ACCEPTANCE_TIMEOUT_MS,
+  );
 }
 
 async function createSession(page: Page): Promise<void> {
@@ -461,20 +451,24 @@ function continuationPrompt(): string {
 }
 
 async function waitForSessionState(page: Page, expected: string): Promise<void> {
-  await poll(`session state ${expected}`, async () => {
-    runner?.assertRunning();
-    const conversation = page.getByLabel("Session conversation");
-    const state = await conversation.getAttribute("data-session-state");
-    if (state === "error") {
-      throw new FatalAcceptanceError(`Session failed while waiting for ${expected}.`);
-    }
-    return state === expected;
-  }, ACCEPTANCE_TIMEOUT_MS);
+  await poll(
+    `session state ${expected}`,
+    async () => {
+      runner?.assertRunning();
+      const conversation = page.getByLabel("Session conversation");
+      const state = await conversation.getAttribute("data-session-state");
+      if (state === "error") {
+        throw new FatalAcceptanceError(`Session failed while waiting for ${expected}.`);
+      }
+      return state === expected;
+    },
+    ACCEPTANCE_TIMEOUT_MS,
+  );
 }
 
 async function assertPersistentRootDisk(): Promise<void> {
-  const rootDisk = await Deno.stat(join(runnerSessionDirectory, "root-disk.qcow2"));
-  invariant(rootDisk.isFile, "Stop did not preserve the persistent root disk.");
+  const rootDisk = await stat(join(runnerSessionDirectory, "root-disk.qcow2"));
+  invariant(rootDisk.isFile(), "Stop did not preserve the persistent root disk.");
 }
 
 async function assertTranscriptContinuity(page: Page): Promise<void> {
@@ -499,17 +493,24 @@ function assertNoLogLeaks(): void {
 }
 
 async function waitForSessionDeletion(page: Page): Promise<void> {
-  await poll("session deletion", async () => {
-    const sessionExists = await Deno.stat(runnerSessionDirectory).then(
-      () => true,
-      (error) => {
-        if (error instanceof Deno.errors.NotFound) return false;
-        throw error;
-      },
-    );
-    return !sessionExists && !page.url().includes(sessionId) &&
-      await page.getByText(initialMarker, { exact: false }).count() === 0;
-  }, 90_000);
+  await poll(
+    "session deletion",
+    async () => {
+      const sessionExists = await stat(runnerSessionDirectory).then(
+        () => true,
+        (error) => {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+          throw error;
+        },
+      );
+      return (
+        !sessionExists &&
+        !page.url().includes(sessionId) &&
+        (await page.getByText(initialMarker, { exact: false }).count()) === 0
+      );
+    },
+    90_000,
+  );
 }
 
 function setupScript(marker: string, repository: GitHubRepositoryIdentity): string {
@@ -540,9 +541,9 @@ printf '%s\\n' '${marker}' > /opt/openorb-acceptance-resume-ok
 }
 
 function mediatedGenericSecretProbe(repository: GitHubRepositoryIdentity): string {
-  const endpoint = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${
-    encodeURIComponent(repository.repository)
-  }`;
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(
+    repository.repository,
+  )}`;
   return `test -n "$${GENERIC_SECRET_NAME}"
 curl --fail --silent --show-error \\
   --header "Authorization: Bearer $${GENERIC_SECRET_NAME}" \\
@@ -607,43 +608,44 @@ class GitHubClient {
   }
 
   async waitForBranchFiles(branch: string, expectedFiles: Record<string, string>): Promise<void> {
-    await poll("pushed GitHub branch", async () => {
-      try {
-        const reference = await this.#request<GitHubReference>(
-          "GET",
-          `/git/ref/heads/${encodeURIComponent(branch)}`,
-        );
-        const commit = await this.#request<GitHubCommit>(
-          "GET",
-          `/git/commits/${reference.object.sha}`,
-        );
-        if (commit.message !== COMMIT_MESSAGE) return false;
-        const tree = await this.#request<GitHubTree>(
-          "GET",
-          `/git/trees/${commit.tree.sha}?recursive=1`,
-        );
-        for (const [path, expected] of Object.entries(expectedFiles)) {
-          const entry = tree.tree.find((candidate) =>
-            candidate.path === path && candidate.type === "blob"
+    await poll(
+      "pushed GitHub branch",
+      async () => {
+        try {
+          const reference = await this.#request<GitHubReference>(
+            "GET",
+            `/git/ref/heads/${encodeURIComponent(branch)}`,
           );
-          if (entry === undefined) return false;
-          const blob = await this.#request<GitHubBlob>("GET", `/git/blobs/${entry.sha}`);
-          if (decodeGitHubBlob(blob) !== expected) return false;
+          const commit = await this.#request<GitHubCommit>(
+            "GET",
+            `/git/commits/${reference.object.sha}`,
+          );
+          if (commit.message !== COMMIT_MESSAGE) return false;
+          const tree = await this.#request<GitHubTree>(
+            "GET",
+            `/git/trees/${commit.tree.sha}?recursive=1`,
+          );
+          for (const [path, expected] of Object.entries(expectedFiles)) {
+            const entry = tree.tree.find(
+              (candidate) => candidate.path === path && candidate.type === "blob",
+            );
+            if (entry === undefined) return false;
+            const blob = await this.#request<GitHubBlob>("GET", `/git/blobs/${entry.sha}`);
+            if (decodeGitHubBlob(blob) !== expected) return false;
+          }
+          return true;
+        } catch (error) {
+          if (error instanceof GitHubApiError && error.status === 404) return false;
+          throw error;
         }
-        return true;
-      } catch (error) {
-        if (error instanceof GitHubApiError && error.status === 404) return false;
-        throw error;
-      }
-    }, ACCEPTANCE_TIMEOUT_MS);
+      },
+      ACCEPTANCE_TIMEOUT_MS,
+    );
   }
 
   async deleteBranch(branch: string): Promise<void> {
     try {
-      await this.#request<GitHubReference>(
-        "GET",
-        `/git/ref/heads/${encodeURIComponent(branch)}`,
-      );
+      await this.#request<GitHubReference>("GET", `/git/ref/heads/${encodeURIComponent(branch)}`);
       await this.#request("DELETE", `/git/refs/heads/${encodeURIComponent(branch)}`);
       console.log(`[acceptance] deleted branch ${branch}`);
     } catch (error) {
@@ -679,34 +681,49 @@ class GitHubClient {
 }
 
 class GitHubApiError extends Error {
-  constructor(
-    readonly status: number,
-    method: string,
-    path: string,
-    body: string,
-  ) {
+  readonly status: number;
+
+  constructor(status: number, method: string, path: string, body: string) {
     super(`GitHub API ${method} ${path || "/"} failed (${status}): ${body}`);
+    this.status = status;
   }
 }
 
 class ManagedProcess {
   readonly name: string;
-  readonly #process: Deno.ChildProcess;
+  readonly #process: ChildProcessWithoutNullStreams;
+  readonly #closed: Promise<number | null>;
   readonly #secrets: readonly string[];
   readonly #outputTasks: readonly Promise<void>[];
   #diagnostic = "";
-  #status: Deno.CommandStatus | undefined;
+  #status: number | null | undefined;
   #secretLeak = false;
 
-  constructor(name: string, command: Deno.Command, secrets: readonly string[]) {
+  constructor(
+    name: string,
+    executable: string,
+    options: SpawnOptionsWithoutStdio & { readonly args: readonly string[] },
+    secrets: readonly string[],
+  ) {
     this.name = name;
     this.#secrets = secrets;
-    this.#process = command.spawn();
+    const { args, ...spawnOptions } = options;
+    this.#process = spawn(executable, [...args], { ...spawnOptions, stdio: "pipe" });
+    this.#process.stdin.end();
+    this.#closed = new Promise((resolve) => {
+      this.#process.once("error", (error) => {
+        this.#appendDiagnostic("spawn", error.message);
+        this.#status = 1;
+      });
+      this.#process.once("close", (code) => {
+        this.#status = code;
+        resolve(code);
+      });
+    });
     this.#outputTasks = [
       this.#capture("stdout", this.#process.stdout),
       this.#capture("stderr", this.#process.stderr),
     ];
-    void this.#process.status.then((status) => this.#status = status);
   }
 
   get secretLeak(): boolean {
@@ -720,7 +737,7 @@ class ManagedProcess {
   assertRunning(): void {
     if (this.#status !== undefined) {
       throw new FatalAcceptanceError(
-        `${this.name} exited early with code ${this.#status.code}.${this.#diagnostic}`,
+        `${this.name} exited early with code ${this.#status}.${this.#diagnostic}`,
       );
     }
   }
@@ -728,18 +745,14 @@ class ManagedProcess {
   async stop(): Promise<void> {
     if (this.#status === undefined) {
       this.#process.kill("SIGTERM");
-      await Promise.race([
-        this.#process.status,
-        delay(10_000).then(() => {
-          if (this.#status === undefined) this.#process.kill("SIGKILL");
-        }),
-      ]);
+      using _timeout = setTimeout(() => this.#process.kill("SIGKILL"), 10_000);
+      await this.#closed;
     }
-    this.#status ??= await this.#process.status;
+    await this.#closed;
     await Promise.all(this.#outputTasks);
   }
 
-  async #capture(streamName: string, stream: ReadableStream<Uint8Array>): Promise<void> {
+  async #capture(streamName: string, stream: AsyncIterable<Uint8Array>): Promise<void> {
     const decoder = new TextDecoder();
     const retentionLength = Math.max(0, ...this.#secrets.map((secret) => secret.length - 1));
     let pending = "";
@@ -781,7 +794,7 @@ class LinuxHostGitProcessMonitor {
   }
 
   start(): void {
-    this.#running ??= this.#run().catch((error) => this.#error = error);
+    this.#running ??= this.#run().catch((error) => (this.#error = error));
   }
 
   async stop(): Promise<string[]> {
@@ -800,27 +813,21 @@ class LinuxHostGitProcessMonitor {
   }
 
   async #sample(): Promise<void> {
-    const processList = await new Deno.Command("ps", {
-      args: ["-eww", "-o", "pid=,comm=,args="],
-      stdout: "piped",
-      stderr: "null",
-    }).output();
-    invariant(processList.success, "Unable to inspect host processes with ps.");
+    const processList = await promisify(execFile)("ps", ["-eww", "-o", "pid=,comm=,args="], {
+      env: { PATH: process.env.PATH ?? "" },
+    });
 
-    for (const line of new TextDecoder().decode(processList.stdout).split("\n")) {
+    for (const line of processList.stdout.split("\n")) {
       const match = line.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/u);
       if (!match) continue;
       const [, pid, executable, argumentsAndEnvironment] = match;
       if (!pid || !executable || basename(executable) !== "git") continue;
       let sessionEvidence = argumentsAndEnvironment?.includes(this.#sessionPath) ?? false;
       if (!sessionEvidence) {
-        const workingDirectory = await new Deno.Command("pwdx", {
-          args: [pid],
-          stdout: "piped",
-          stderr: "null",
-        }).output();
-        sessionEvidence = workingDirectory.success &&
-          new TextDecoder().decode(workingDirectory.stdout).includes(this.#sessionPath);
+        const workingDirectory = await promisify(execFile)("pwdx", [pid], {
+          env: { PATH: process.env.PATH ?? "" },
+        }).catch(() => undefined);
+        sessionEvidence = workingDirectory?.stdout.includes(this.#sessionPath) ?? false;
       }
       if (sessionEvidence) this.#findings.add(`pid ${pid}`);
     }
@@ -832,31 +839,22 @@ function parseGitHubRepository(value: string): GitHubRepositoryIdentity {
   const parts = normalized.replace(/^\/+|\/+$/gu, "").split("/");
   invariant(
     parts.length === 2 && parts[0] !== "" && parts[1] !== "",
-    [
-      "OPENORB_GITHUB_TEST_REPOSITORY must be owner/repository or an HTTPS github.com URL.",
-    ].join(" "),
+    ["OPENORB_GITHUB_TEST_REPOSITORY must be owner/repository or an HTTPS github.com URL."].join(
+      " ",
+    ),
   );
   return { owner: parts[0]!, repository: parts[1]!.replace(/\.git$/u, "") };
 }
 
 async function command(executable: string, args: readonly string[]): Promise<void> {
-  const output = await new Deno.Command(executable, {
-    args: [...args],
+  await promisify(execFile)(executable, [...args], {
     cwd: REPOSITORY_ROOT,
-    clearEnv: true,
     env: {
-      PATH: Deno.env.get("PATH") ?? "",
-      ...(Deno.env.has("HOME") ? { HOME: Deno.env.get("HOME")! } : {}),
-      ...(Deno.env.has("DENO_DIR") ? { DENO_DIR: Deno.env.get("DENO_DIR")! } : {}),
+      PATH: process.env.PATH ?? "",
+      ...(process.env.HOME === undefined ? {} : { HOME: process.env.HOME }),
     },
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  if (!output.success) {
-    throw new Error(
-      `${executable} failed (${output.code}): ${new TextDecoder().decode(output.stderr).trim()}`,
-    );
-  }
+    maxBuffer: 16 * 1024 * 1024,
+  });
 }
 
 async function poll(
@@ -913,13 +911,14 @@ function invariant(condition: unknown, message: string): asserts condition {
 }
 
 function sanitizedErrorDetails(cause: unknown): string {
-  const details = cause instanceof SuppressedError
-    ? `${sanitizedErrorDetails(cause.error)}\nSuppressed during cleanup:\n${
-      sanitizedErrorDetails(cause.suppressed)
-    }`
-    : cause instanceof Error
-    ? cause.stack ?? `${cause.name}: ${cause.message}`
-    : String(cause);
+  const details =
+    cause instanceof SuppressedError
+      ? `${sanitizedErrorDetails(cause.error)}\nSuppressed during cleanup:\n${sanitizedErrorDetails(
+          cause.suppressed,
+        )}`
+      : cause instanceof Error
+        ? (cause.stack ?? `${cause.name}: ${cause.message}`)
+        : String(cause);
   return [
     configuration.githubToken,
     configuration.openCodeApiKey,
@@ -932,13 +931,13 @@ function sanitizedErrorDetails(cause: unknown): string {
 try {
   await runAcceptance();
 } catch (cause) {
-  const diagnostics = [gateway, runner]
-    .flatMap((process) => process?.diagnostic ? [`${process.name}:\n${process.diagnostic}`] : []);
+  const diagnostics = [gateway, runner].flatMap((process) =>
+    process?.diagnostic ? [`${process.name}:\n${process.diagnostic}`] : [],
+  );
   throw new Error(
     `Release acceptance failed.\nCause details:\n${sanitizedErrorDetails(cause)}${
       diagnostics.length === 0 ? "" : `\nSanitized process output:\n${diagnostics.join("\n---\n")}`
     }`,
-    { cause },
   );
 }
 console.log("[acceptance] PASS: browser-to-Pi private GitHub lifecycle completed");

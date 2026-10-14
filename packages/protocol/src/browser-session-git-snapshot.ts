@@ -25,10 +25,15 @@ const sessionGitDiffStateSchema = union([
 ]);
 const sessionGitBranchSchema = string().refine(
   (value) =>
-    value.length > 0 && value.length <= 255 &&
-    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) && !value.includes("..") &&
-    !value.includes("//") && !value.includes("@{") && !value.endsWith("/") &&
-    !value.endsWith(".") && !value.endsWith(".lock"),
+    value.length > 0 &&
+    value.length <= 255 &&
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) &&
+    !value.includes("..") &&
+    !value.includes("//") &&
+    !value.includes("@{") &&
+    !value.endsWith("/") &&
+    !value.endsWith(".") &&
+    !value.endsWith(".lock"),
   "Expected a valid Git branch name.",
 );
 const sessionGitHeadSchema = string().refine(
@@ -41,28 +46,37 @@ const sessionGitFileBase = {
   diffState: sessionGitDiffStateSchema,
 } as const;
 const sessionGitTrackedFileSchema = union([
-  object({
-    ...sessionGitFileBase,
-    kind: literal("tracked" as const),
-    status: union([
-      literal("added" as const),
-      literal("modified" as const),
-      literal("deleted" as const),
-    ]),
-  }, { unknownKeys: "error" }),
-  object({
-    ...sessionGitFileBase,
-    kind: literal("tracked" as const),
-    status: literal("renamed" as const),
-    previousPath: sessionGitPathSchema,
-    previousDisplayPath: sessionGitPathSchema,
-  }, { unknownKeys: "error" }),
+  object(
+    {
+      ...sessionGitFileBase,
+      kind: literal("tracked" as const),
+      status: union([
+        literal("added" as const),
+        literal("modified" as const),
+        literal("deleted" as const),
+      ]),
+    },
+    { unknownKeys: "error" },
+  ),
+  object(
+    {
+      ...sessionGitFileBase,
+      kind: literal("tracked" as const),
+      status: literal("renamed" as const),
+      previousPath: sessionGitPathSchema,
+      previousDisplayPath: sessionGitPathSchema,
+    },
+    { unknownKeys: "error" },
+  ),
 ]);
-const sessionGitUntrackedFileSchema = object({
-  ...sessionGitFileBase,
-  kind: literal("untracked" as const),
-  status: literal("added" as const),
-}, { unknownKeys: "error" });
+const sessionGitUntrackedFileSchema = object(
+  {
+    ...sessionGitFileBase,
+    kind: literal("untracked" as const),
+    status: literal("added" as const),
+  },
+  { unknownKeys: "error" },
+);
 export const sessionGitFileSchema = union([
   sessionGitTrackedFileSchema,
   sessionGitUntrackedFileSchema,
@@ -79,25 +93,33 @@ const sessionGitSectionBase = {
   fullPatchBytes: optional(
     number().refine(
       (value) =>
-        Number.isInteger(value) && value >= 0 &&
-        value <= MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
+        Number.isInteger(value) && value >= 0 && value <= MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
       `Git Snapshot patch sizes must be at most ${MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES} bytes.`,
     ),
   ),
   truncated: booleanSchema,
 } as const;
-const sessionGitStagedSectionSchema = object({
-  ...sessionGitSectionBase,
-  files: array(sessionGitTrackedFileSchema),
-}, { unknownKeys: "error" });
-const sessionGitUnstagedSectionSchema = object({
-  ...sessionGitSectionBase,
-  files: array(sessionGitFileSchema),
-}, { unknownKeys: "error" });
-const sessionGitSectionsSchema = object({
-  staged: sessionGitStagedSectionSchema,
-  unstaged: sessionGitUnstagedSectionSchema,
-}, { unknownKeys: "error" }).refine(
+const sessionGitStagedSectionSchema = object(
+  {
+    ...sessionGitSectionBase,
+    files: array(sessionGitTrackedFileSchema),
+  },
+  { unknownKeys: "error" },
+);
+const sessionGitUnstagedSectionSchema = object(
+  {
+    ...sessionGitSectionBase,
+    files: array(sessionGitFileSchema),
+  },
+  { unknownKeys: "error" },
+);
+const sessionGitSectionsSchema = object(
+  {
+    staged: sessionGitStagedSectionSchema,
+    unstaged: sessionGitUnstagedSectionSchema,
+  },
+  { unknownKeys: "error" },
+).refine(
   (value) =>
     value.staged.files.length + value.unstaged.files.length <= MAX_SESSION_GIT_SNAPSHOT_FILES &&
     jsonByteLength([...value.staged.files, ...value.unstaged.files]) <=
@@ -109,26 +131,29 @@ const sessionGitSectionsSchema = object({
   "Git Snapshot sections exceed their file or patch budgets.",
 );
 
-export const sessionGitSnapshotSchema = object({
-  snapshotId: optional(
-    string().refine(
-      (value) => /^[0-9a-f]{64}$/.test(value),
-      "Expected a Git Snapshot identifier.",
+export const sessionGitSnapshotSchema = object(
+  {
+    snapshotId: optional(
+      string().refine(
+        (value) => /^[0-9a-f]{64}$/.test(value),
+        "Expected a Git Snapshot identifier.",
+      ),
     ),
-  ),
-  mutationRevision: number().refine(
-    (value) => Number.isSafeInteger(value) && value >= 0,
-    "Expected a non-negative Git mutation revision.",
-  ),
-  generatedAt: string(),
-  branch: optional(sessionGitBranchSchema),
-  head: optional(sessionGitHeadSchema),
-  completeness: union([literal("complete" as const), literal("incomplete" as const)]),
-  stale: booleanSchema,
-  truncated: booleanSchema,
-  message: optional(string()),
-  sections: sessionGitSectionsSchema,
-}, { unknownKeys: "error" });
+    mutationRevision: number().refine(
+      (value) => Number.isSafeInteger(value) && value >= 0,
+      "Expected a non-negative Git mutation revision.",
+    ),
+    generatedAt: string(),
+    branch: optional(sessionGitBranchSchema),
+    head: optional(sessionGitHeadSchema),
+    completeness: union([literal("complete" as const), literal("incomplete" as const)]),
+    stale: booleanSchema,
+    truncated: booleanSchema,
+    message: optional(string()),
+    sections: sessionGitSectionsSchema,
+  },
+  { unknownKeys: "error" },
+);
 
 export type SessionGitFileData = InferOutput<typeof sessionGitFileSchema>;
 export type SessionGitSnapshotData = InferOutput<typeof sessionGitSnapshotSchema>;

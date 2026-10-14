@@ -152,8 +152,7 @@ export function agentTools(
     }),
     defineTool({
       name: "publish_media",
-      description:
-        `Publish an image or video under ${ARTIFACTS_DIRECTORY}. Include the returned Markdown in your response.`,
+      description: `Publish an image or video under ${ARTIFACTS_DIRECTORY}. Include the returned Markdown in your response.`,
       parameters: Type.Object({ path: Type.String(), description: Type.String() }),
       async execute({ path, description }) {
         return {
@@ -180,11 +179,11 @@ export function systemPrompt(options: Pick<AgentOptions, "guestPrompt" | "projec
 function projectPrompt(project: SessionProject) {
   return [
     "Create commits or push only when the user explicitly requests it. Preserve existing commits: never amend, squash, reset, rewrite history, or force-push.",
-    `Keep all work on session branch ${
-      JSON.stringify(project.branchName)
-    }. Push only that branch to canonical repository ${
-      JSON.stringify(project.repositoryUrl)
-    }, never an agent-modified remote destination.`,
+    `Keep all work on session branch ${JSON.stringify(
+      project.branchName,
+    )}. Push only that branch to canonical repository ${JSON.stringify(
+      project.repositoryUrl,
+    )}, never an agent-modified remote destination.`,
   ];
 }
 
@@ -200,15 +199,17 @@ export async function openAgent(
 ): Promise<Agent> {
   const models = options.models;
   const registry = createRegistry();
-  registry.install(createCodemodeExtension({
-    sandbox: new InlineCodemodeSandbox({
-      wasm: await loadCodemodeWasm(),
-      memoryLimitBytes: 32 * 1024 * 1024,
-      // Inline computation blocks the Session thread; bound it even when timers cannot run.
-      interruptBudget: 1_000,
+  registry.install(
+    createCodemodeExtension({
+      sandbox: new InlineCodemodeSandbox({
+        wasm: await loadCodemodeWasm(),
+        memoryLimitBytes: 32 * 1024 * 1024,
+        // Inline computation blocks the Session thread; bound it even when timers cannot run.
+        interruptBudget: 1_000,
+      }),
+      models: false,
     }),
-    models: false,
-  }));
+  );
   registry.install({
     name: "openorb",
     tools: agentTools(options),
@@ -219,18 +220,22 @@ export async function openAgent(
     sections: [{ key: REPOSITORY_SKILLS_SECTION, render: options.repositorySkills }],
   });
   const storage = await openDurableObjectSqliteStorage(storageHost);
-  const harness = await Harness.open(storage, {
-    models,
-    registry,
-    env: () => options.env,
-    settings: {
-      stream: {
-        headers: options.model.startsWith("opencode-go/")
-          ? { "x-opencode-session": options.sessionId }
-          : {},
+  const harness = await Harness.open(
+    storage,
+    {
+      models,
+      registry,
+      env: () => options.env,
+      settings: {
+        stream: {
+          headers: options.model.startsWith("opencode-go/")
+            ? { "x-opencode-session": options.sessionId }
+            : {},
+        },
       },
     },
-  }, context);
+    context,
+  );
   const conversation = await harness.root(context, {
     agent: {
       model: modelRef(options.model),

@@ -1,26 +1,28 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { modelReference } from "@openorb/protocol";
+import { mkdir, writeFile } from "node:fs/promises";
 import type { ModelOption, ModelProviderOption } from "./app/model-provider-catalog.ts";
 
 const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
 
 const MODEL_PROVIDERS = builtinProviders()
-  .filter((provider) =>
-    provider.auth.apiKey !== undefined || provider.id === OPENAI_CODEX_PROVIDER_ID
+  .filter(
+    (provider) => provider.auth.apiKey !== undefined || provider.id === OPENAI_CODEX_PROVIDER_ID,
   )
   .sort((left, right) => left.name.localeCompare(right.name));
 
-const API_KEY_MODEL_PROVIDERS = MODEL_PROVIDERS
-  .filter((provider) => provider.auth.apiKey !== undefined)
-  .sort((left, right) => left.name.localeCompare(right.name));
+const API_KEY_MODEL_PROVIDERS = MODEL_PROVIDERS.filter(
+  (provider) => provider.auth.apiKey !== undefined,
+).sort((left, right) => left.name.localeCompare(right.name));
 
-export const MODEL_PROVIDER_OPTIONS: readonly ModelProviderOption[] = API_KEY_MODEL_PROVIDERS
-  .map((provider) => ({ id: provider.id, name: provider.name }))
-  .sort((left, right) => left.name.localeCompare(right.name));
+export const MODEL_PROVIDER_OPTIONS: readonly ModelProviderOption[] = API_KEY_MODEL_PROVIDERS.map(
+  (provider) => ({ id: provider.id, name: provider.name }),
+).sort((left, right) => left.name.localeCompare(right.name));
 
 export const MODEL_OPTIONS: readonly ModelOption[] = MODEL_PROVIDERS.flatMap((provider) =>
-  provider.getModels()
+  provider
+    .getModels()
     .map((model) => ({
       contextWindow: model.contextWindow,
       id: modelReference(provider.id, model.id),
@@ -29,12 +31,12 @@ export const MODEL_OPTIONS: readonly ModelOption[] = MODEL_PROVIDERS.flatMap((pr
       providerName: provider.name,
       thinkingLevels: getSupportedThinkingLevels(model),
     }))
-    .sort((left, right) => left.name.localeCompare(right.name))
+    .sort((left, right) => left.name.localeCompare(right.name)),
 );
 
 if (import.meta.main) {
-  await Deno.mkdir("dist", { recursive: true });
-  await Deno.writeTextFile(
+  await mkdir("dist", { recursive: true });
+  await writeFile(
     "dist/model-catalog.json",
     JSON.stringify({
       providers: MODEL_PROVIDER_OPTIONS,

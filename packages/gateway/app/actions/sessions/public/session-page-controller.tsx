@@ -9,7 +9,7 @@ import { trySync } from "../../../../../result/src/index.ts";
 import { parseSafe, string } from "remix/data-schema";
 import { type Handle, type RemixNode, TypedEventTarget } from "remix/component";
 
-import { routes } from "@/app/routes.ts";
+import { routes } from "../../../routes.ts";
 import {
   ConversationFrameError,
   runnerSessionStateForProvisioningStage,
@@ -97,9 +97,7 @@ interface SessionPageScopeProps {
   readonly sessionId: string;
 }
 
-export function SessionPageScope(
-  handle: Handle<SessionPageScopeProps, SessionPageController>,
-) {
+export function SessionPageScope(handle: Handle<SessionPageScopeProps, SessionPageController>) {
   const controller = new SessionPageController(
     handle.props.initialState,
     handle.props.initialIssues,
@@ -129,10 +127,13 @@ export function SessionPageScope(
       const encoded = parseSafe(string(), message.data);
       if (!encoded.success) return;
       const event = parseSessionEvent(encoded.value);
-      const [, error] = trySync(() => {
-        if (!event) throw new ConversationFrameError("Invalid session frame.");
-        controller.apply(event);
-      }, () => true);
+      const [, error] = trySync(
+        () => {
+          if (!event) throw new ConversationFrameError("Invalid session frame.");
+          controller.apply(event);
+        },
+        () => true,
+      );
       if (error !== undefined) {
         controller.invalidateStream();
         return;

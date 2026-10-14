@@ -55,9 +55,7 @@ export function makeJsonlJournal(
           failure(persistenceId, operation, "Could not resolve the journal path.", cause),
       });
 
-    const readEntries = Effect.fn("JsonlJournal.readEntries")(function* (
-      persistenceId: string,
-    ) {
+    const readEntries = Effect.fn("JsonlJournal.readEntries")(function* (persistenceId: string) {
       const path = yield* pathFor(persistenceId, "replay");
       const exists = yield* regularFileExists(fs, path, persistenceId, "replay");
       if (!exists) {
@@ -93,12 +91,7 @@ export function makeJsonlJournal(
           strictSchemaOptions,
         ).pipe(
           Effect.mapError((cause) =>
-            failure(
-              persistenceId,
-              "replay",
-              `Journal entry ${index + 1} is invalid.`,
-              cause,
-            )
+            failure(persistenceId, "replay", `Journal entry ${index + 1} is invalid.`, cause),
           ),
         );
         const expectedSequence = index + 1;
@@ -120,65 +113,70 @@ export function makeJsonlJournal(
       lockFor(persistenceId).withPermit(
         readEntries(persistenceId).pipe(
           Effect.flatMap((entries) =>
-            Effect.forEach(entries, (entry) => decodeEvent(persistenceId, entry, codec))
+            Effect.forEach(entries, (entry) => decodeEvent(persistenceId, entry, codec)),
           ),
         ),
       );
 
     const append: Journal["append"] = (persistenceId, expectedSequence, event, codec) =>
-      lockFor(persistenceId).withPermit(Effect.gen(function* () {
-        const path = yield* pathFor(persistenceId, "append");
-        let actualSequence = sequences.get(persistenceId);
-        let exists = true;
-        if (actualSequence === undefined) {
-          const recovered = yield* readEntries(persistenceId).pipe(
-            Effect.matchEffect({
-              onFailure: (error): Effect.Effect<readonly JournalEntry<unknown>[], JournalError> => {
-                if (error._tag !== "JournalNotFound") return Effect.fail(error);
-                exists = false;
-                return Effect.succeed([]);
-              },
-              onSuccess: Effect.succeed,
-            }),
-          );
-          actualSequence = recovered.length;
-        } else {
-          exists = yield* regularFileExists(fs, path, persistenceId, "append");
-          if (!exists) {
-            sequences.delete(persistenceId);
-            actualSequence = 0;
+      lockFor(persistenceId).withPermit(
+        Effect.gen(function* () {
+          const path = yield* pathFor(persistenceId, "append");
+          let actualSequence = sequences.get(persistenceId);
+          let exists = true;
+          if (actualSequence === undefined) {
+            const recovered = yield* readEntries(persistenceId).pipe(
+              Effect.matchEffect({
+                onFailure: (
+                  error,
+                ): Effect.Effect<readonly JournalEntry<unknown>[], JournalError> => {
+                  if (error._tag !== "JournalNotFound") return Effect.fail(error);
+                  exists = false;
+                  return Effect.succeed([]);
+                },
+                onSuccess: Effect.succeed,
+              }),
+            );
+            actualSequence = recovered.length;
+          } else {
+            exists = yield* regularFileExists(fs, path, persistenceId, "append");
+            if (!exists) {
+              sequences.delete(persistenceId);
+              actualSequence = 0;
+            }
           }
-        }
-        if (actualSequence !== expectedSequence) {
-          return yield* new JournalSequenceConflict({
-            persistenceId,
-            expectedSequence,
-            actualSequence,
-            message:
-              `Journal ${persistenceId} is at sequence ${actualSequence}, expected ${expectedSequence}.`,
-          });
-        }
+          if (actualSequence !== expectedSequence) {
+            return yield* new JournalSequenceConflict({
+              persistenceId,
+              expectedSequence,
+              actualSequence,
+              message: `Journal ${persistenceId} is at sequence ${actualSequence}, expected ${expectedSequence}.`,
+            });
+          }
 
-        const entry = { sequence: expectedSequence + 1, event };
-        const encodedEvent = yield* codec.encode(event).pipe(
-          Effect.mapError((cause) =>
-            failure(persistenceId, "append", "Could not encode the journal event.", cause)
-          ),
-        );
-        const contents = yield* encodeEnvelope(persistenceId, {
-          version: 1,
-          sequence: entry.sequence,
-          event: encodedEvent,
-        });
-        if (exists) {
-          yield* appendFile(fs, path, contents, persistenceId);
-        } else {
-          yield* writeNewFile(fs, path, contents, persistenceId);
-          yield* syncDirectory(fs, paths.dirname(path), persistenceId);
-        }
-        sequences.set(persistenceId, entry.sequence);
-        return entry;
-      }));
+          const entry = { sequence: expectedSequence + 1, event };
+          const encodedEvent = yield* codec
+            .encode(event)
+            .pipe(
+              Effect.mapError((cause) =>
+                failure(persistenceId, "append", "Could not encode the journal event.", cause),
+              ),
+            );
+          const contents = yield* encodeEnvelope(persistenceId, {
+            version: 1,
+            sequence: entry.sequence,
+            event: encodedEvent,
+          });
+          if (exists) {
+            yield* appendFile(fs, path, contents, persistenceId);
+          } else {
+            yield* writeNewFile(fs, path, contents, persistenceId);
+            yield* syncDirectory(fs, paths.dirname(path), persistenceId);
+          }
+          sequences.set(persistenceId, entry.sequence);
+          return entry;
+        }),
+      );
 
     return { replay, append };
   });
@@ -191,7 +189,7 @@ function encodeEnvelope(
   return Schema.encodeEffect(JournalEnvelopeJson)(envelope, strictSchemaOptions).pipe(
     Effect.map((encoded) => new TextEncoder().encode(`${encoded}\n`)),
     Effect.mapError((cause) =>
-      failure(persistenceId, "append", "Could not encode the journal entry.", cause)
+      failure(persistenceId, "append", "Could not encode the journal entry.", cause),
     ),
   );
 }
@@ -204,12 +202,7 @@ function decodeEvent<Event>(
   return codec.decode(entry.event).pipe(
     Effect.map((event) => ({ sequence: entry.sequence, event })),
     Effect.mapError((cause) =>
-      failure(
-        persistenceId,
-        "replay",
-        `Journal entry ${entry.sequence} event is invalid.`,
-        cause,
-      )
+      failure(persistenceId, "replay", `Journal entry ${entry.sequence} event is invalid.`, cause),
     ),
   );
 }
@@ -223,19 +216,15 @@ function regularFileExists(
   return fs.stat(path).pipe(
     Effect.matchEffect({
       onFailure: (error) =>
-        error.reason._tag === "NotFound" ? Effect.succeed(false) : Effect.fail(failure(
-          persistenceId,
-          operation,
-          "Could not inspect the journal.",
-          error,
-        )),
+        error.reason._tag === "NotFound"
+          ? Effect.succeed(false)
+          : Effect.fail(failure(persistenceId, operation, "Could not inspect the journal.", error)),
       onSuccess: (info) =>
-        info.type === "File" ? Effect.succeed(true) : Effect.fail(failure(
-          persistenceId,
-          operation,
-          "The journal must be a regular file.",
-          undefined,
-        )),
+        info.type === "File"
+          ? Effect.succeed(true)
+          : Effect.fail(
+              failure(persistenceId, operation, "The journal must be a regular file.", undefined),
+            ),
     }),
   );
 }
@@ -246,26 +235,28 @@ function appendFile(
   contents: Uint8Array,
   persistenceId: string,
 ): Effect.Effect<void, JournalFailure> {
-  return Effect.scoped(Effect.gen(function* () {
-    const file = yield* journalFileSystem(
-      fs.open(path, { flag: "a" }),
-      persistenceId,
-      "append",
-      "Could not open the journal for append.",
-    );
-    yield* journalFileSystem(
-      file.writeAll(contents),
-      persistenceId,
-      "append",
-      "Could not write the complete journal entry.",
-    );
-    yield* journalFileSystem(
-      file.sync,
-      persistenceId,
-      "append",
-      "Could not synchronize the journal.",
-    );
-  }));
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* journalFileSystem(
+        fs.open(path, { flag: "a" }),
+        persistenceId,
+        "append",
+        "Could not open the journal for append.",
+      );
+      yield* journalFileSystem(
+        file.writeAll(contents),
+        persistenceId,
+        "append",
+        "Could not write the complete journal entry.",
+      );
+      yield* journalFileSystem(
+        file.sync,
+        persistenceId,
+        "append",
+        "Could not synchronize the journal.",
+      );
+    }),
+  );
 }
 
 function writeNewFile(
@@ -274,26 +265,28 @@ function writeNewFile(
   contents: Uint8Array,
   persistenceId: string,
 ): Effect.Effect<void, JournalFailure> {
-  return Effect.scoped(Effect.gen(function* () {
-    const file = yield* journalFileSystem(
-      fs.open(path, { flag: "ax", mode: 0o600 }),
-      persistenceId,
-      "append",
-      "Could not create the journal.",
-    );
-    yield* journalFileSystem(
-      file.writeAll(contents),
-      persistenceId,
-      "append",
-      "Could not write the complete journal entry.",
-    );
-    yield* journalFileSystem(
-      file.sync,
-      persistenceId,
-      "append",
-      "Could not synchronize the new journal.",
-    );
-  }));
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* journalFileSystem(
+        fs.open(path, { flag: "ax", mode: 0o600 }),
+        persistenceId,
+        "append",
+        "Could not create the journal.",
+      );
+      yield* journalFileSystem(
+        file.writeAll(contents),
+        persistenceId,
+        "append",
+        "Could not write the complete journal entry.",
+      );
+      yield* journalFileSystem(
+        file.sync,
+        persistenceId,
+        "append",
+        "Could not synchronize the new journal.",
+      );
+    }),
+  );
 }
 
 function truncate(
@@ -302,26 +295,28 @@ function truncate(
   length: number,
   persistenceId: string,
 ): Effect.Effect<void, JournalFailure> {
-  return Effect.scoped(Effect.gen(function* () {
-    const file = yield* journalFileSystem(
-      fs.open(path, { flag: "r+" }),
-      persistenceId,
-      "replay",
-      "Could not open the journal for tail repair.",
-    );
-    yield* journalFileSystem(
-      file.truncate(length),
-      persistenceId,
-      "replay",
-      "Could not repair the incomplete journal tail.",
-    );
-    yield* journalFileSystem(
-      file.sync,
-      persistenceId,
-      "replay",
-      "Could not synchronize the repaired journal.",
-    );
-  }));
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* journalFileSystem(
+        fs.open(path, { flag: "r+" }),
+        persistenceId,
+        "replay",
+        "Could not open the journal for tail repair.",
+      );
+      yield* journalFileSystem(
+        file.truncate(length),
+        persistenceId,
+        "replay",
+        "Could not repair the incomplete journal tail.",
+      );
+      yield* journalFileSystem(
+        file.sync,
+        persistenceId,
+        "replay",
+        "Could not synchronize the repaired journal.",
+      );
+    }),
+  );
 }
 
 function syncDirectory(
@@ -329,20 +324,22 @@ function syncDirectory(
   path: string,
   persistenceId: string,
 ): Effect.Effect<void, JournalFailure> {
-  return Effect.scoped(Effect.gen(function* () {
-    const directory = yield* journalFileSystem(
-      fs.open(path, { flag: "r" }),
-      persistenceId,
-      "append",
-      "Could not open the journal directory.",
-    );
-    yield* journalFileSystem(
-      directory.sync,
-      persistenceId,
-      "append",
-      "Could not synchronize the journal directory.",
-    );
-  }));
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const directory = yield* journalFileSystem(
+        fs.open(path, { flag: "r" }),
+        persistenceId,
+        "append",
+        "Could not open the journal directory.",
+      );
+      yield* journalFileSystem(
+        directory.sync,
+        persistenceId,
+        "append",
+        "Could not synchronize the journal directory.",
+      );
+    }),
+  );
 }
 
 function journalFileSystem<A, R>(
@@ -351,9 +348,7 @@ function journalFileSystem<A, R>(
   operation: "replay" | "append",
   message: string,
 ): Effect.Effect<A, JournalFailure, R> {
-  return effect.pipe(
-    Effect.mapError((cause) => failure(persistenceId, operation, message, cause)),
-  );
+  return effect.pipe(Effect.mapError((cause) => failure(persistenceId, operation, message, cause)));
 }
 
 function failure(

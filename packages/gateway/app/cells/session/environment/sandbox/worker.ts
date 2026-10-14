@@ -108,7 +108,7 @@ export class Sandbox extends DurableObject<unknown> implements SandboxRpc {
     }
     const call = open.reader[method]!;
     // SAFETY: reader methods other than close return a Result.
-    return encodeResult(await call.apply(open.reader, [...args, BACKGROUND_CONTEXT]) as Outcome);
+    return encodeResult((await call.apply(open.reader, [...args, BACKGROUND_CONTEXT])) as Outcome);
   }
 
   async exec(
@@ -123,10 +123,14 @@ export class Sandbox extends DurableObject<unknown> implements SandboxRpc {
     using _running = { [Symbol.dispose]: () => this.#running.delete(id) };
     const env = (await this.#env).withCwd(cwd);
     const output: ["stdout" | "stderr", string][] = [];
-    const result = await env.exec(command, {
-      ...options,
-      onOutput: (text, _context, info) => output.push([info.stream, text]),
-    }, withAbortSignal(controller.signal, BACKGROUND_CONTEXT));
+    const result = await env.exec(
+      command,
+      {
+        ...options,
+        onOutput: (text, _context, info) => output.push([info.stream, text]),
+      },
+      withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+    );
     return { result: encodeResult(result), output };
   }
 

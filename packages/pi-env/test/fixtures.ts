@@ -1,4 +1,10 @@
-import { assert, assertEquals, assertGreater, assertObjectMatch, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertGreater,
+  assertObjectMatch,
+  assertRejects,
+} from "@jsr/std__assert";
 import type { EnvConformanceAssertions } from "@earendil-works/pi-durable/testing";
 import { Connection, DaemonRelay, type EnvLinkHandlers } from "../src/index.ts";
 
@@ -9,10 +15,10 @@ export const assertions: EnvConformanceAssertions = {
   partialDeepEqual: (actual, expected) =>
     assertObjectMatch(
       // SAFETY: conformance cases only compare record-shaped results partially.
-      // deno-lint-ignore openorb/no-unsafe-dictionary-type
+      // oxlint-disable-next-line openorb/no-unsafe-dictionary-type
       actual as Record<PropertyKey, unknown>,
       // SAFETY: as above; `assertObjectMatch` accepts only records.
-      // deno-lint-ignore openorb/no-unsafe-dictionary-type
+      // oxlint-disable-next-line openorb/no-unsafe-dictionary-type
       expected as Record<PropertyKey, unknown>,
     ),
   greaterThan: (actual, expected) => assertGreater(actual, expected),

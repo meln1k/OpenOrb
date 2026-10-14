@@ -1,5 +1,11 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { rm } from "node:fs/promises";
+import { test } from "vite-plus/test";
+import { spawn } from "node:child_process";
 import { createEnvConformance } from "@earendil-works/pi-durable/testing";
-import { encodeHex } from "@std/encoding/hex";
+import { randomBytes } from "node:crypto";
 import { RemoteExecutionEnv } from "../src/index.ts";
 import { assertions, type DaemonProcess, relayedConnection } from "./fixtures.ts";
 
@@ -7,60 +13,60 @@ import { assertions, type DaemonProcess, relayedConnection } from "./fixtures.ts
 // same relay the runner uses. The Gondolin suite runs the same cases inside the guest.
 const daemonPath = new URL(
   `../../../node_modules/@earendil-works/pi-env/bin/pi-env-linux-${
-    Deno.build.arch === "aarch64" ? "arm64" : "x64"
+    process.arch === "arm64" ? "arm64" : "x64"
   }/pi-env`,
   import.meta.url,
 ).pathname;
-// Only `deno task test:pi-env` may run the daemon; the repository-wide test task skips it.
-const daemonRunnable = Deno.build.os === "linux" &&
-  (await Deno.permissions.query({ name: "run", command: daemonPath })).state === "granted";
+// Only `npm run test:pi-env` enables host processes; the default suite skips this integration.
+const daemonRunnable = process.platform === "linux" && process.env.OPENORB_RUN_PI_ENV_TESTS === "1";
 
 function startLocalDaemon(): Promise<DaemonProcess> {
-  const token = encodeHex(crypto.getRandomValues(new Uint8Array(16)));
-  const child = new Deno.Command(daemonPath, {
-    args: ["serve", "--token", token],
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "inherit",
-  }).spawn();
-  const stdin = child.stdin.getWriter();
+  const token = randomBytes(16).toString("hex");
+  const child = spawn(daemonPath, ["serve", "--token", token], {
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  child.stdin.on("error", () => {});
+  const exited = new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", () => resolve());
+  });
+  // The fixture consumes exit asynchronously; attach a handler before any spawn failure.
+  void exited.catch(() => {});
   return Promise.resolve({
     token,
-    write: (bytes) => void stdin.write(bytes).catch(() => {}),
-    end: () => void stdin.close().catch(() => {}),
+    write: (bytes) => {
+      child.stdin.write(bytes);
+    },
+    end: () => {
+      child.stdin.end();
+    },
     stdout: child.stdout,
-    exited: child.status,
+    exited,
   });
 }
 
 const connection = relayedConnection(startLocalDaemon);
 
-for (
-  const conformance of createEnvConformance({
-    assertions,
-    withEnv: async (use) => {
-      const cwd = await Deno.makeTempDir({ prefix: "openorb-pi-env-" });
-      try {
-        await use(new RemoteExecutionEnv({ connection, id: `local:${cwd}`, cwd }));
-      } finally {
-        await Deno.remove(cwd, { recursive: true });
-      }
-    },
-  })
-) {
-  Deno.test({
-    name: `pi-env over a relayed link: ${conformance.name}`,
-    ignore: !daemonRunnable,
-    sanitizeOps: false,
-    sanitizeResources: false,
-    fn: () => conformance.run(),
-  });
+for (const conformance of createEnvConformance({
+  assertions,
+  withEnv: async (use) => {
+    const cwd = await mkdtemp(join(tmpdir(), "openorb-pi-env-"));
+    try {
+      await use(new RemoteExecutionEnv({ connection, id: `local:${cwd}`, cwd }));
+    } finally {
+      await rm(cwd, { recursive: true });
+    }
+  },
+})) {
+  test(
+    `pi-env over a relayed link: ${conformance.name}`,
+    { skip: !daemonRunnable, timeout: 120_000 },
+    () => conformance.run(),
+  );
 }
 
-Deno.test({
-  name: "pi-env over a relayed link: closing the connection stops the daemon",
-  ignore: !daemonRunnable,
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: () => connection.close(),
-});
+test(
+  "pi-env over a relayed link: closing the connection stops the daemon",
+  { skip: !daemonRunnable, timeout: 120_000 },
+  () => connection.close(),
+);

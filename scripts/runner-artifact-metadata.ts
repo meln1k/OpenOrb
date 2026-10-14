@@ -1,3 +1,6 @@
+import { copyFile, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+
 const knownArtifacts = [
   {
     path: "dist/openorb-runner-linux-x64",
@@ -15,9 +18,8 @@ const systemdUnit = {
   path: "dist/openorb-runner.service",
 } as const;
 
-const requestedPaths = Deno.args.length > 0
-  ? Deno.args
-  : knownArtifacts.map((artifact) => artifact.path);
+const args = process.argv.slice(2);
+const requestedPaths = args.length > 0 ? args : knownArtifacts.map((artifact) => artifact.path);
 const artifacts = requestedPaths.map((path) => {
   const artifact = knownArtifacts.find((candidate) => candidate.path === path);
   if (!artifact) throw new Error(`Unknown runner artifact path: ${path}.`);
@@ -29,13 +31,13 @@ if (new Set(requestedPaths).size !== requestedPaths.length) {
 
 const checksumLines: string[] = [];
 for (const artifact of artifacts) {
-  const bytes = await Deno.readFile(artifact.path);
+  const bytes = await readFile(artifact.path);
   verifyElf(bytes, artifact.machine, artifact.architecture);
-  const checksum = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)).toHex();
+  const checksum = createHash("sha256").update(bytes).digest("hex");
   const glibcBaseline = findGlibcBaseline(bytes);
-  if (compareVersions(glibcBaseline, "2.27") > 0) {
+  if (compareVersions(glibcBaseline, "2.28") > 0) {
     throw new Error(
-      `${artifact.path} requires glibc ${glibcBaseline}, newer than the supported baseline 2.27.`,
+      `${artifact.path} requires glibc ${glibcBaseline}, newer than the supported Node baseline 2.28.`,
     );
   }
   checksumLines.push(`${checksum}  ${artifact.path.replace("dist/", "")}`);
@@ -49,15 +51,15 @@ for (const artifact of artifacts) {
   );
 }
 
-if (Deno.args.length === 0) {
-  await Deno.copyFile(systemdUnit.source, systemdUnit.path);
-  const bytes = await Deno.readFile(systemdUnit.path);
-  const checksum = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)).toHex();
+if (args.length === 0) {
+  await copyFile(systemdUnit.source, systemdUnit.path);
+  const bytes = await readFile(systemdUnit.path);
+  const checksum = createHash("sha256").update(bytes).digest("hex");
   checksumLines.push(`${checksum}  ${systemdUnit.path.replace("dist/", "")}`);
   console.log(JSON.stringify({ artifact: systemdUnit.path, sha256: checksum }));
 }
 
-await Deno.writeTextFile("dist/SHA256SUMS", `${checksumLines.join("\n")}\n`);
+await writeFile("dist/SHA256SUMS", `${checksumLines.join("\n")}\n`);
 
 function verifyElf(bytes: Uint8Array, expectedMachine: number, architecture: string): void {
   if (
