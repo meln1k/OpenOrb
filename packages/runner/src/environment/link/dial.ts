@@ -21,7 +21,6 @@ export interface DialEnvironmentLinkOptions {
   readonly gatewayUrl: string;
   readonly sessionId: SessionId;
   readonly runnerToken: string;
-  readonly nonce: string;
 }
 
 export function environmentLinkUrl(gatewayUrl: string, sessionId: SessionId): string {
@@ -31,8 +30,8 @@ export function environmentLinkUrl(gatewayUrl: string, sessionId: SessionId): st
 }
 
 /**
- * Dials one Environment Link and authenticates it in-band with the runner token and the one-time
- * attach nonce, like the control socket's identify step. The returned end is valid for the
+ * Dials one Environment Link and authenticates it in-band with the runner token, like the control
+ * socket's identify step. The returned end is valid for the
  * enclosing scope; closing the scope closes the socket.
  */
 export const dialEnvironmentLink = Effect.fn("dialEnvironmentLink")(function* (
@@ -52,7 +51,7 @@ export const dialEnvironmentLink = Effect.fn("dialEnvironmentLink")(function* (
   );
   const writer = yield* socket.writer;
   yield* writer
-    .write(JSON.stringify({ type: "attach", token: options.runnerToken, nonce: options.nonce }))
+    .write(JSON.stringify({ type: "attach", token: options.runnerToken }))
     .pipe(Effect.mapError(linkError("The Environment Link could not be authenticated.")));
 
   // The gateway answers the attach message before any frame.

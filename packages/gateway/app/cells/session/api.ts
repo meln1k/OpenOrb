@@ -1,15 +1,13 @@
-import {
-  type EnvironmentState,
-  RunnerSessionSnapshot,
-  type SessionEnvironmentRecoveryMode,
-  type SessionGitFileAction,
-  SessionGitSnapshot,
-  type ThinkingLevel,
-} from "@openorb/protocol/runner-api";
-import { Schema } from "effect";
-import type { SessionGitPatchSection } from "@openorb/protocol/runner-bulk-api";
+import type { SessionThinkingLevel as ThinkingLevel } from "@openorb/protocol";
+import type { EnvironmentState } from "@openorb/protocol/runner-api";
 import type { GitPatchChunk } from "./git-snapshot.ts";
+import type {
+  SessionGitFileAction,
+  SessionGitPatchSection,
+  SessionGitSnapshot,
+} from "./git-snapshot-schema.ts";
 import type { CreateSessionInput, SessionMedia } from "./session.ts";
+import type { SessionView } from "./view.ts";
 
 export type { CreateSessionInput, SessionMedia } from "./session.ts";
 
@@ -17,16 +15,16 @@ export type { CreateSessionInput, SessionMedia } from "./session.ts";
 export interface SessionApi {
   create(input: CreateSessionInput): Promise<{ readonly created: boolean }>;
   /** The view browser pages render; null once the Session is deleted. */
-  view(): Promise<RunnerSessionSnapshot | null>;
+  view(): Promise<SessionView | null>;
   submit(input: {
     prompt: string;
     requestId: string;
     thinkingLevel?: ThinkingLevel;
-  }): Promise<{ submissionId: number }>;
+  }): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<ThinkingLevel>;
   abort(): Promise<void>;
   stop(): Promise<{ state: EnvironmentState; forced: boolean }>;
-  wake(recovery?: SessionEnvironmentRecoveryMode): Promise<void>;
+  wake(): Promise<void>;
   retry(recovery: "retry-provisioning" | "restart-environment"): Promise<void>;
   delete(): Promise<void>;
   media(id: string): Promise<SessionMedia | null>;
@@ -45,47 +43,26 @@ export interface SessionApi {
   events(request: Request): Promise<Response>;
 }
 
-/**
- * The Session Durable Object's wire surface. Native RPC structured-clones results, which drops
- * Schema classes, so their encoded forms cross and `decodeSessionRpc` restores them.
- */
-export interface SessionRpc extends Omit<SessionApi, "view" | "gitSnapshot"> {
-  view(): Promise<(typeof RunnerSessionSnapshot)["Encoded"] | null>;
-  gitSnapshot(): Promise<(typeof SessionGitSnapshot)["Encoded"]>;
-}
+/** The native RPC methods; the event stream uses HTTP, as celld requires. */
+export type SessionRpc = Omit<SessionApi, "events">;
 
-export function encodeSessionView(
-  snapshot: RunnerSessionSnapshot,
-): (typeof RunnerSessionSnapshot)["Encoded"] {
-  return Schema.encodeSync(RunnerSessionSnapshot)(snapshot);
-}
-
-export function encodeGitSnapshot(
-  snapshot: SessionGitSnapshot,
-): (typeof SessionGitSnapshot)["Encoded"] {
-  return Schema.encodeSync(SessionGitSnapshot)(snapshot);
-}
-
-/** The browser-facing API over a Session's wire surface. */
-export function decodeSessionRpc(
+/** Forwards each method to the stub, whose results are plain objects that survive RPC. */
+export function sessionApiFromRpc(
   rpc: SessionRpc,
   events: (request: Request) => Promise<Response>,
 ): SessionApi {
   return {
     create: (input) => rpc.create(input),
-    view: async () => {
-      const view = await rpc.view();
-      return view === null ? null : Schema.decodeUnknownSync(RunnerSessionSnapshot)(view);
-    },
+    view: () => rpc.view(),
     submit: (input) => rpc.submit(input),
     setThinkingLevel: (level) => rpc.setThinkingLevel(level),
     abort: () => rpc.abort(),
     stop: () => rpc.stop(),
-    wake: (recovery) => rpc.wake(recovery),
+    wake: () => rpc.wake(),
     retry: (recovery) => rpc.retry(recovery),
     delete: () => rpc.delete(),
     media: (id) => rpc.media(id),
-    gitSnapshot: async () => Schema.decodeUnknownSync(SessionGitSnapshot)(await rpc.gitSnapshot()),
+    gitSnapshot: () => rpc.gitSnapshot(),
     gitPatchChunk: (input) => rpc.gitPatchChunk(input),
     updateGitFile: (input) => rpc.updateGitFile(input),
     events,

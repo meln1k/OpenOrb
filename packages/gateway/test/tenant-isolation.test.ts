@@ -1,6 +1,6 @@
 import { test } from "vite-plus/test";
 import { assert, assertEquals, assertNotEquals, assertRejects } from "@jsr/std__assert";
-import { UserId } from "@openorb/protocol/runner-api";
+import { UserId } from "../app/cells/workspace/api.ts";
 import { selectRunnerForWorkspace } from "../app/cells/runners/runner-selection.ts";
 import { activate, createWorkspace } from "./workspace-test.ts";
 
@@ -69,17 +69,13 @@ test("separate Workspace objects isolate configuration, identity, runners, and c
       createdAt: "2026-09-20T10:00:00Z",
       initialPromptPreview: "Same ID, separate objects",
     };
-    assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [entry]), [
-      {
-        acceptedSessionIds: [entry.id],
-        tombstonedSessionIds: [],
-        rejected: [],
-      },
+    assertEquals(await workspace.addSessionCatalogEntry(workspaceId, entry), [
+      undefined,
       undefined,
     ]);
     assertEquals(await workspace.getSessionCatalogEntry(foreignId, entry.id), null);
     assertEquals(await workspace.listSessionNavigationEntries(foreignId), []);
-    assertEquals(await workspace.deleteSessionCatalogEntry(foreignId, entry.id, entry.createdAt), [
+    assertEquals(await workspace.deleteSessionCatalogEntry(foreignId, entry.id), [
       "not-found",
       undefined,
     ]);
@@ -133,13 +129,9 @@ test("separate Workspace objects isolate configuration, identity, runners, and c
   assertEquals((await second.workspace.listProjects(second.workspaceId)).length, 1);
   // Deletion markers are object/Workspace-scoped, including identical session IDs.
   const id = "00000000-0000-4000-8000-000000000001";
-  assertEquals(
-    await first.workspace.deleteSessionCatalogEntry(
-      first.workspaceId,
-      id,
-      new Date().toISOString(),
-    ),
-    ["deleted", undefined],
-  );
+  assertEquals(await first.workspace.deleteSessionCatalogEntry(first.workspaceId, id), [
+    "deleted",
+    undefined,
+  ]);
   assert(await second.workspace.getSessionCatalogEntry(second.workspaceId, id));
 });

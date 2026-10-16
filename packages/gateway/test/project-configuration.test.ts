@@ -6,7 +6,8 @@ import {
   assertNotEquals,
   assertNotMatch,
 } from "@jsr/std__assert";
-import type { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
+import type { UserId } from "../app/cells/workspace/api.ts";
 
 import {
   activate,
@@ -301,15 +302,13 @@ test("configures GitHub, Git author, and project CRUD through protected browser 
 
     const sessionId = crypto.randomUUID();
     assertEquals(
-      await client.store.reconcileSessionManifestEntries(client.workspaceId, [
-        {
-          id: sessionId,
-          projectId: project.id,
-          createdAt: new Date().toISOString(),
-          initialPromptPreview: "Project deletion reference",
-        },
-      ]),
-      [{ acceptedSessionIds: [sessionId], tombstonedSessionIds: [], rejected: [] }, undefined],
+      await client.store.addSessionCatalogEntry(client.workspaceId, {
+        id: sessionId,
+        projectId: project.id,
+        createdAt: new Date().toISOString(),
+        initialPromptPreview: "Project deletion reference",
+      }),
+      [undefined, undefined],
     );
     const inUseDeletion = await submitForm(client, projectsPath, {
       intent: "delete-project",
@@ -318,14 +317,10 @@ test("configures GitHub, Git author, and project CRUD through protected browser 
     assertEquals(inUseDeletion.status, 409);
     assertMatch(await inUseDeletion.text(), /used by a session and cannot be deleted/);
     assert(await client.store.getProject(client.workspaceId, project.id));
-    assertEquals(
-      await client.store.deleteSessionCatalogEntry(
-        client.workspaceId,
-        sessionId,
-        new Date().toISOString(),
-      ),
-      ["deleted", undefined],
-    );
+    assertEquals(await client.store.deleteSessionCatalogEntry(client.workspaceId, sessionId), [
+      "deleted",
+      undefined,
+    ]);
 
     assertEquals(
       (

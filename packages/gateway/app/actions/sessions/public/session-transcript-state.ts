@@ -1,25 +1,28 @@
 import { applyImmutable } from "@earendil-works/chord/delta";
 import type { JsonObject } from "@earendil-works/pi-durable";
+import type {
+  ConversationView,
+  SessionEvent,
+  SessionProvisioningStage,
+  SessionState as ViewState,
+} from "../../../cells/session/view.ts";
 import {
-  type ConversationView,
-  isConversationView,
-  type SessionEvent,
-  type SessionProvisioningStage,
+  SESSION_THINKING_LEVELS,
   type SessionThinkingLevel,
-  type SessionUsage,
-} from "@openorb/protocol/browser-session-events";
-import { SESSION_THINKING_LEVELS } from "../../../../../protocol/src/thinking-level.ts";
+} from "../../../../../protocol/src/thinking-level.ts";
 
 export class ConversationFrameError extends Error {}
 
-export type SessionState =
-  | "created"
-  | "provisioning"
-  | "running"
-  | "ready"
-  | "stopped"
-  | "error"
-  | "offline";
+export type SessionState = ViewState | "offline";
+
+export interface SessionUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+  readonly totalTokens: number;
+  readonly totalCost: number;
+}
 export function runnerSessionStateForProvisioningStage(
   stage: SessionProvisioningStage,
 ): SessionState {
@@ -65,16 +68,15 @@ export interface ActivityEntry {
   readonly detail?: string;
   readonly inProgress?: boolean;
 }
-export interface ProvisioningEntry {
-  readonly role: "provisioning";
-  readonly text: string;
+/** A project command's outcome while the environment was prepared: clone, setup, or resume. */
+export interface SetupEntry {
+  readonly role: "setup";
+  readonly id: number;
+  readonly step: string;
+  readonly exitCode: number;
+  readonly output: string;
 }
-export type TranscriptEntry =
-  | UserEntry
-  | AssistantEntry
-  | ToolEntry
-  | ActivityEntry
-  | ProvisioningEntry;
+export type TranscriptEntry = UserEntry | AssistantEntry | ToolEntry | ActivityEntry | SetupEntry;
 export interface SessionTranscriptState {
   readonly view: ConversationView | undefined;
   readonly status: string;
@@ -158,27 +160,12 @@ export function reduceSessionTranscriptState(
       warningVisible: event.checkoutState === "unavailable",
     };
   }
-  if (event.type === "provisioning.log") {
-    const output = state.entries.find(
-      (entry): entry is ProvisioningEntry => "role" in entry && entry.role === "provisioning",
-    );
-    return {
-      ...state,
-      entries: [
-        { role: "provisioning", text: (output?.text ?? "") + event.text },
-        ...state.entries.filter((entry) => !("role" in entry && entry.role === "provisioning")),
-      ],
-    };
-  }
   if (event.type === "git.snapshot.updated") return state;
   if (event.type === "conversation.ops" && state.view === undefined) {
     throw new ConversationFrameError("Conversation ops received before a snapshot.");
   }
   const view =
     event.type === "conversation.snapshot" ? event.view : applyImmutable(state.view, event.ops);
-  if (!isConversationView(view)) {
-    throw new ConversationFrameError("Invalid conversation view after patch.");
-  }
   const projected = projectConversation(view, state.thinkingLevel);
   // Local pending input is not part of the replicated state. Match only newly observed user entries,
   // so an old identical prompt cannot acknowledge a new submission on reconnect.
@@ -191,9 +178,7 @@ export function reduceSessionTranscriptState(
         .map((message) => normalizeText(contentText(message.content))),
     );
   const local = state.entries.filter((entry) => {
-    if (!("role" in entry)) return false;
-    if (entry.role === "provisioning") return true;
-    if (entry.role !== "user" || !entry.delivery) return false;
+    if (!("role" in entry) || entry.role !== "user" || !entry.delivery) return false;
     const index = newTexts.indexOf(normalizeText(entry.text));
     if (index === -1) return true;
     newTexts.splice(index, 1);
@@ -268,7 +253,7 @@ export function projectConversation(
         toolName: string(item.toolName),
         active: false,
         result: contentText(
-          (item.toolName === "read" || item.toolName === "readImage") && item.isError !== true
+          item.toolName === "read" && item.isError !== true
             ? content.filter((block) => object(block).type === "image")
             : item.content,
         ),
@@ -284,6 +269,16 @@ export function projectConversation(
         detail: (entry.model ?? []).map((item) => contentText(item.content)).join("\n"),
       });
       contextUsage = undefined;
+    } else if (entry.kind === "openorb.setup") {
+      // Its model message only tells the agent about a failure; viewers see the output itself.
+      const data = object(entry.data);
+      entries.push({
+        role: "setup",
+        id: entry.id,
+        step: string(data.step),
+        exitCode: number(data.exitCode),
+        output: string(data.output),
+      });
     } else {
       (entry.model ?? []).forEach((item, index) => message(item, `${entry.id}:${index}`, true));
     }
@@ -338,7 +333,7 @@ function normalizeText(value: string): string {
 }
 
 function object(value: unknown): JsonObject {
-  // SAFETY: Every caller reads JSON from the validated ConversationView, never host objects.
+  // SAFETY: Every caller reads JSON from the ConversationView, never host objects.
   // oxlint-disable-next-line openorb/no-runtime-typeof -- Narrow the JSON union to its object member for presentation.
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonObject)

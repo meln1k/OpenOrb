@@ -46,7 +46,7 @@ const COREPACK_SHA256 = "3fa310217f641e51dc8d7f707ded3c75261d2745e9601b190d7c169
 const NODE_VERSION = "26.5.1";
 const PI_ENV_LICENSE_SHA256 = "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48";
 const PI_ENV_SHA256 = "2f937488e93cb80486eda4cde582659fb0a5b914bd76b853b58d65b3374425a4";
-// Must remain protocol-compatible with the vendored client in packages/pi-env.
+// Must remain protocol-compatible with the @earendil-works/pi-env client in package.json.
 const PI_ENV_VERSION = "1.2.0";
 const PNPM_VERSION = "11.1.3";
 const PNPM_SHA256 = "740302fe768aaf1ba680c5213bd08983f219e0bcf0c96c0c6d7be393b8620c98";

@@ -6,7 +6,7 @@ import {
   assertRejects,
 } from "@jsr/std__assert";
 import type { EnvConformanceAssertions } from "@earendil-works/pi-durable/testing";
-import { Connection, DaemonRelay, type EnvLinkHandlers } from "../src/index.ts";
+import { DaemonRelay, type EnvLinkHandlers, LinkConnection } from "../src/index.ts";
 
 export const assertions: EnvConformanceAssertions = {
   ok: (value, message) => assert(value, message),
@@ -40,8 +40,8 @@ export interface DaemonProcess {
  * Joins a client `Connection` to a daemon through a `DaemonRelay` and an in-memory link that
  * delivers one frame per message asynchronously, as a WebSocket does.
  */
-export function relayedConnection(start: () => Promise<DaemonProcess>): Connection {
-  return new Connection({
+export function relayedConnection(start: () => Promise<DaemonProcess>): LinkConnection {
+  return new LinkConnection({
     open: async (handlers: EnvLinkHandlers) => {
       const daemon = await start();
       let open = true;

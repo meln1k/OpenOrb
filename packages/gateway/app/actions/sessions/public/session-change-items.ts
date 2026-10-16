@@ -1,4 +1,4 @@
-import type { SessionGitFileData } from "../../../../../protocol/src/browser-session-git-snapshot.ts";
+import type { SessionGitFile as SessionGitFileData } from "../../../cells/session/git-snapshot-schema.ts";
 import type { CodeViewItem, FileDiffMetadata } from "@pierre/diffs";
 
 export type SessionChangeFileState = "staged" | "unstaged";

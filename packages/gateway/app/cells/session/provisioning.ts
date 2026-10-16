@@ -1,23 +1,37 @@
 import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { EnvironmentCredentials } from "./environment/provider.ts";
+import type { EnvironmentCredentials } from "@openorb/environments";
 import {
-  MAX_RPC_SESSION_EVENT_TEXT_BYTES,
+  type CheckoutState,
   MAX_SESSION_ISSUES,
-  type RunnerCheckoutState,
+  MAX_SESSION_OUTPUT_BYTES,
   type SessionIssue,
   type SessionIssueCategory,
   type SessionProvisioningStage,
   type SessionRecoveryAction,
-} from "@openorb/protocol/runner-api";
+} from "./view.ts";
 
 // Project work runs in the guest over ExecutionEnv for every Agent Environment Provider
-// (ADR 0006), with the commands, log budget, and issue model the runner used before.
+// (ADR 0006). Their outcomes are transcript entries (ADR 0008); failures are also Session issues.
 
 const WORKSPACE = "/workspace";
-const MAX_CAPTURED_COMMAND_BYTES = MAX_RPC_SESSION_EVENT_TEXT_BYTES / 2;
-const MAX_PROVISIONING_LOG_BYTES = 256 * 1024;
-const OUTPUT_TRUNCATED_MESSAGE = "\n[Provisioning output was truncated.]\n";
+/** A command's output is kept up to this size, its end first: failures are reported last. */
+const MAX_CAPTURED_OUTPUT_BYTES = MAX_SESSION_OUTPUT_BYTES;
+const OUTPUT_TRUNCATED_MESSAGE = "[Earlier output was truncated.]\n";
+/** More than the longest secret's UTF-8 size. */
+const REDACTION_SLACK = 16 * 1024;
+const encoder = new TextEncoder();
+
+/** The transcript entry kind for the outcome of a project command: clone, setup, or resume. */
+export const SETUP_ENTRY_KIND = "openorb.setup";
+
+/** What a project command did, as its transcript entry shows it. */
+export interface SetupOutput {
+  readonly step: "clone" | "setup" | "resume";
+  readonly exitCode: number;
+  /** Redacted, interleaved stdout and stderr; the end of it when long. */
+  readonly output: string;
+}
 
 export interface CheckoutDefinition {
   readonly repositoryUrl: string;
@@ -27,13 +41,14 @@ export interface CheckoutDefinition {
 
 export interface ProvisioningReporter {
   readonly stage: (stage: SessionProvisioningStage) => void;
-  readonly log: (stream: "stdout" | "stderr", text: string) => void;
+  /** Records a project command's outcome in the transcript. */
+  readonly output: (output: SetupOutput) => Promise<void>;
   /** The session branch is checked out; `.agents/setup` has not run yet. */
   readonly checkedOut?: (baseCommit: string) => void;
 }
 
 export interface CheckoutResult {
-  readonly checkoutState: RunnerCheckoutState;
+  readonly checkoutState: CheckoutState;
   readonly baseCommit?: string;
   readonly issues: readonly SessionIssue[];
 }
@@ -41,7 +56,8 @@ export interface CheckoutResult {
 interface CommandOutput {
   readonly exitCode: number;
   readonly stdout: string;
-  readonly stderr: string;
+  /** Redacted stdout and stderr, interleaved. */
+  readonly output: string;
 }
 
 export class ProvisioningFailure extends Error {
@@ -54,70 +70,67 @@ export class ProvisioningFailure extends Error {
   }
 }
 
-/** Guest command output, bounded and redacted before it reaches any Session viewer. */
+/** Guest commands whose output is bounded and redacted before anyone sees it. */
 class GuestCommands {
-  #remaining = MAX_PROVISIONING_LOG_BYTES;
-  #truncated = false;
-
   constructor(
     private readonly env: ExecutionEnv,
-    private readonly reporter: ProvisioningReporter,
     private readonly secrets: readonly string[],
     private readonly context: Context,
   ) {}
 
   async run(argv: readonly string[]): Promise<CommandOutput> {
-    let stdout = "";
-    let stderr = "";
+    const stdout = new OutputTail();
+    const output = new OutputTail();
     const result = await this.env.exec(
       argv,
       {
         cwd: WORKSPACE,
         onOutput: (text, _context, info) => {
-          const clean = this.#redact(sanitizeOutput(text));
-          if (info.stream === "stdout") stdout = appendBounded(stdout, clean);
-          else stderr = appendBounded(stderr, clean);
-          this.#emit(info.stream, clean);
+          const clean = sanitizeOutput(text);
+          if (info.stream === "stdout") stdout.push(clean);
+          output.push(clean);
         },
       },
       this.context,
     );
-    if (!result.ok) {
-      return { exitCode: -1, stdout, stderr: appendBounded(stderr, result.error.message) };
-    }
-    return { exitCode: result.value.exitCode, stdout, stderr };
-  }
-
-  note(stream: "stdout" | "stderr", text: string): void {
-    this.#emit(stream, text);
+    if (!result.ok) output.push(`\n${result.error.message}`);
+    return {
+      exitCode: result.ok ? result.value.exitCode : -1,
+      stdout: stdout.text(this.#redact),
+      output: output.text(this.#redact),
+    };
   }
 
   diagnostics(output: CommandOutput): string | undefined {
-    const text = [output.stdout.trim(), output.stderr.trim()].filter(Boolean).join("\n");
-    return text ? takeUtf8(text, MAX_RPC_SESSION_EVENT_TEXT_BYTES).head : undefined;
+    return output.output.trim() || undefined;
   }
 
-  #emit(stream: "stdout" | "stderr", text: string): void {
-    while (text.length > 0 && this.#remaining > 0) {
-      const { head, tail, bytes } = takeUtf8(
-        text,
-        Math.min(this.#remaining, MAX_RPC_SESSION_EVENT_TEXT_BYTES),
-      );
-      if (head.length === 0) break;
-      this.reporter.log(stream, head);
-      this.#remaining -= bytes;
-      text = tail;
-    }
-    if (text.length > 0 && !this.#truncated) {
-      this.#truncated = true;
-      this.reporter.log("stderr", OUTPUT_TRUNCATED_MESSAGE);
-    }
-  }
-
-  #redact(text: string): string {
+  readonly #redact = (text: string): string => {
     let redacted = text;
     for (const secret of this.secrets) redacted = redacted.replaceAll(secret, "[REDACTED]");
     return redacted;
+  };
+}
+
+/**
+ * The end of a command's output. Redaction runs on the whole retained text, which keeps enough
+ * beyond the limit that a secret cut at its start is dropped by the final truncation.
+ */
+class OutputTail {
+  readonly #chunks: { readonly text: string; readonly bytes: number }[] = [];
+  #bytes = 0;
+
+  push(text: string): void {
+    const bytes = encoder.encode(text).length;
+    this.#chunks.push({ text, bytes });
+    this.#bytes += bytes;
+    while (this.#bytes - this.#chunks[0]!.bytes >= MAX_CAPTURED_OUTPUT_BYTES + REDACTION_SLACK) {
+      this.#bytes -= this.#chunks.shift()!.bytes;
+    }
+  }
+
+  text(redact: (text: string) => string): string {
+    return keepTail(redact(this.#chunks.map((chunk) => chunk.text).join("")));
   }
 }
 
@@ -133,7 +146,7 @@ export async function provisionCheckout(
   secrets: readonly string[],
   context: Context,
 ): Promise<CheckoutResult> {
-  const commands = new GuestCommands(env, reporter, secrets, context);
+  const commands = new GuestCommands(env, secrets, context);
   const issues: SessionIssue[] = [];
   await createWorkspace(env, context);
   const cleared = await commands.run(["/usr/bin/find", WORKSPACE, "-mindepth", "1", "-delete"]);
@@ -160,7 +173,8 @@ export async function provisionCheckout(
     ".",
   ]);
   if (clone.exitCode !== 0) {
-    const category = gitFailureCategory(`${clone.stdout}\n${clone.stderr}`);
+    await reporter.output({ step: "clone", exitCode: clone.exitCode, output: clone.output });
+    const category = gitFailureCategory(clone.output);
     issues.push(
       sessionIssue({
         category,
@@ -172,10 +186,6 @@ export async function provisionCheckout(
         diagnostics: commands.diagnostics(clone),
         recovery: "none",
       }),
-    );
-    commands.note(
-      "stderr",
-      "Repository clone failed. The checkout is unavailable; the stored prompt remains ready for Pi.\n",
     );
     return { checkoutState: "unavailable", issues };
   }
@@ -212,6 +222,7 @@ export async function provisionCheckout(
     "-lc",
     "if [ -x .agents/setup ]; then exec ./.agents/setup; fi",
   ]);
+  await reportHook(reporter, "setup", setup);
   if (setup.exitCode !== 0) {
     issues.push(
       sessionIssue({
@@ -223,12 +234,45 @@ export async function provisionCheckout(
         recovery: "none",
       }),
     );
-    commands.note(
-      "stderr",
-      `.agents/setup exited with status ${setup.exitCode}; continuing to Pi so it can repair the project.\n`,
-    );
   }
   return { checkoutState: "available", baseCommit, issues };
+}
+
+/** A hook that is absent, or ran silently and succeeded, leaves no transcript entry. */
+function reportHook(
+  reporter: ProvisioningReporter,
+  step: "setup" | "resume",
+  result: CommandOutput,
+): Promise<void> {
+  if (result.exitCode === 0 && result.output.trim() === "") return Promise.resolve();
+  return reporter.output({ step, exitCode: result.exitCode, output: result.output });
+}
+
+/**
+ * The transcript entry for a project command. The agent sees only a failure, which it may need to
+ * repair; output of a command that succeeded is shown to viewers but costs the model nothing.
+ */
+export function setupEntry(outcome: SetupOutput, now: number) {
+  const command = outcome.step === "clone" ? "Cloning the repository" : `.agents/${outcome.step}`;
+  return {
+    kind: SETUP_ENTRY_KIND,
+    data: { step: outcome.step, exitCode: outcome.exitCode, output: outcome.output },
+    ...(outcome.exitCode === 0
+      ? {}
+      : {
+          model: [
+            {
+              role: "user" as const,
+              content:
+                `[OpenOrb] ${command} failed with exit status ${outcome.exitCode} while the ` +
+                `environment was prepared. Its output${
+                  outcome.output.trim() === "" ? " was empty." : `:\n\n${outcome.output}`
+                }`,
+              timestamp: now,
+            },
+          ],
+        }),
+  };
 }
 
 /**
@@ -265,18 +309,15 @@ export async function resumeCheckout(
   secrets: readonly string[],
   context: Context,
 ): Promise<readonly SessionIssue[]> {
-  const commands = new GuestCommands(env, reporter, secrets, context);
+  const commands = new GuestCommands(env, secrets, context);
   reporter.stage("resuming");
   const resume = await commands.run([
     "/bin/sh",
     "-lc",
     "if [ -x .agents/resume ]; then exec ./.agents/resume; fi",
   ]);
+  await reportHook(reporter, "resume", resume);
   if (resume.exitCode === 0) return [];
-  commands.note(
-    "stderr",
-    `.agents/resume exited with status ${resume.exitCode}; continuing to Pi so it can repair the project.\n`,
-  );
   return [
     sessionIssue({
       category: "resume-hook",
@@ -344,21 +385,18 @@ function sanitizeOutput(value: string): string {
   return sanitized;
 }
 
-function appendBounded(current: string, next: string): string {
-  const remaining = MAX_CAPTURED_COMMAND_BYTES - new TextEncoder().encode(current).length;
-  return remaining <= 0 ? current : current + takeUtf8(next, remaining).head;
-}
-
-function takeUtf8(value: string, maxBytes: number) {
-  if (maxBytes <= 0 || value.length === 0) return { head: "", tail: value, bytes: 0 };
-  const encoder = new TextEncoder();
-  let end = 0;
+/** The end of `value` within the capture limit, marked when its start was dropped. */
+function keepTail(value: string): string {
+  if (encoder.encode(value).length <= MAX_CAPTURED_OUTPUT_BYTES) return value;
+  const budget = MAX_CAPTURED_OUTPUT_BYTES - encoder.encode(OUTPUT_TRUNCATED_MESSAGE).length;
+  const codePoints = Array.from(value);
+  let start = codePoints.length;
   let bytes = 0;
-  for (const codePoint of value) {
-    const size = encoder.encode(codePoint).length;
-    if (bytes + size > maxBytes) break;
+  while (start > 0) {
+    const size = encoder.encode(codePoints[start - 1]!).length;
+    if (bytes + size > budget) break;
     bytes += size;
-    end += codePoint.length;
+    start--;
   }
-  return { head: value.slice(0, end), tail: value.slice(end), bytes };
+  return OUTPUT_TRUNCATED_MESSAGE + codePoints.slice(start).join("");
 }

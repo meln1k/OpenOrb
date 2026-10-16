@@ -1,4 +1,4 @@
-import type { SessionThinkingLevel } from "@openorb/protocol/browser-session-events";
+import type { SessionThinkingLevel } from "../../../../../protocol/src/thinking-level.ts";
 import { tryAsync } from "../../../../../result/src/index.ts";
 import { literal, object, parseSafe, union } from "remix/data-schema";
 

@@ -12,7 +12,7 @@ import {
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createEnvConformance } from "@earendil-works/pi-durable/testing";
-import { RemoteExecutionEnv } from "@openorb/pi-env";
+import { RemoteExecutionEnv } from "@earendil-works/pi-env";
 import { Effect, Exit, Scope } from "effect";
 import { makeGondolinAgentEnvironmentProvider } from "../../../src/environment/gondolin/layer.ts";
 import { relayedConnection } from "./guest-tools.ts";

@@ -1,11 +1,7 @@
 import { test } from "vite-plus/test";
 import { assert, assertEquals, assertRejects } from "@jsr/std__assert";
-import {
-  ProjectId,
-  SessionEnvironmentSecret,
-  SessionId,
-  WorkspaceId,
-} from "@openorb/protocol/runner-api";
+import { SessionEnvironmentSecret, SessionId, WorkspaceId } from "@openorb/protocol/runner-api";
+import { ProjectId } from "../../app/cells/workspace/api.ts";
 import { createRpcClient } from "./rpc-client.ts";
 import { WorkspaceSessionStorage } from "../../app/data/workspace-session-storage.ts";
 
@@ -117,12 +113,8 @@ test(
       createdAt: new Date().toISOString(),
       initialPromptPreview: "RPC catalog record",
     };
-    assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [entry]), [
-      {
-        acceptedSessionIds: [entry.id],
-        tombstonedSessionIds: [],
-        rejected: [],
-      },
+    assertEquals(await workspace.addSessionCatalogEntry(workspaceId, entry), [
+      undefined,
       undefined,
     ]);
     const storage = new WorkspaceSessionStorage(workspace);
@@ -153,10 +145,10 @@ test(
     }
     assert((await workspace.resolveProviderAccessToken(workspaceId))?.startsWith("e30."));
     assertEquals(await workspace.disconnectProvider(workspaceId), { status: "deleted" });
-    assertEquals(
-      await workspace.deleteSessionCatalogEntry(workspaceId, entry.id, new Date().toISOString()),
-      ["deleted", undefined],
-    );
+    assertEquals(await workspace.deleteSessionCatalogEntry(workspaceId, entry.id), [
+      "deleted",
+      undefined,
+    ]);
     assertEquals(await workspace.deleteProject(workspaceId, project.id), ["deleted", undefined]);
   },
 );

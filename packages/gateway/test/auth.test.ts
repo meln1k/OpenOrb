@@ -6,7 +6,7 @@ import {
   assertNotEquals,
   assertNotMatch,
 } from "@jsr/std__assert";
-import { UserId } from "@openorb/protocol/runner-api";
+import { UserId } from "../app/cells/workspace/api.ts";
 import { v7 } from "@jsr/std__uuid";
 
 import { createMemorySessionStorage } from "remix/session-storage/memory";

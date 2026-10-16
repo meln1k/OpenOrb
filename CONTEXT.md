@@ -9,8 +9,8 @@ periods of agent activity.
 enrollment credentials, and the session catalog. _Avoid_: User tenant, Project Workspace
 
 **Workspace Durable Object**: The configuration authority for the current Workspace. It owns browser
-identities/sessions, configuration, enrollment records, catalog entries, deletion markers, and
-provider authorization. _Avoid_: Session host, Runner Registry
+identities/sessions, configuration, enrollment records, catalog entries, and provider authorization.
+_Avoid_: Session host, Runner Registry
 
 **Runner Registry**: The live connection and command-routing authority for enrolled runners. It owns
 control and bulk connections, runner presence, and live environment projections. Workspace remains
@@ -46,9 +46,6 @@ New run, prompt run
 **Session Event**: A fact about a Session expressed in OpenOrb's stable event vocabulary,
 independent of the provider-specific source that reported it.
 
-**Session Journal**: The runner-owned sequence of infrastructure and configuration facts for a
-Session. It is separate from the agent work owned by Harness State. _Avoid_: Conversation journal
-
 **Conversation View**: The current active transcript, queued input, agent configuration, usage, and
 live progress presented to a Session viewer. _Avoid_: Event replay
 
@@ -77,7 +74,7 @@ inside the Agent Environment. _Avoid_: pi-env server, guest agent
 
 **Agent Environment Provider**: The authority that creates, starts, stops, and deletes Agent
 Environments and opens Environment Links to them, such as an OpenOrb runner or a sandbox vendor. It
-declares its persistence and Egress Secret Mediation instead of sharing one guarantee. _Avoid_:
+declares its Egress Secret Mediation and Git support instead of sharing one guarantee. _Avoid_:
 Sandbox provider, vendor, Workspace Runtime
 
 **Sandbox**: The built-in Agent Environment Provider that runs just-bash, a TypeScript bash
@@ -97,13 +94,14 @@ retains for one Session and reopens in each new VM. It includes the Project Chec
 non-tmpfs guest state, but not RAM, processes, or tmpfs-backed paths. _Avoid_: Workspace disk, host
 checkout
 
-**Stop Session**: A recoverable pause of agent work together with a durable stop of its Agent
-Environment. _Avoid_: Abort, cancellation
+**Stop Session**: An Abort together with a durable stop of the Session's Agent Environment. The
+conversation stays durable, so the next prompt continues it. _Avoid_: Pause, cancellation
 
-**Wake**: Resumption of a paused Session's agent work and Agent Environment. _Avoid_: New Session
+**Wake**: Restart of a stopped Session's Agent Environment, followed by its project resume hook.
+_Avoid_: New Session, Resume
 
 **Abort**: Cancellation of agent work and queued inputs without stopping the Agent Environment.
 _Avoid_: Stop Session
 
-**Environment Control**: Agent-initiated start, stop, or restart of the Agent Environment without
-pausing the agent itself. _Avoid_: Stop Session
+**Environment Control**: Agent-initiated start, stop, or restart of the Agent Environment while the
+agent keeps working. _Avoid_: Stop Session

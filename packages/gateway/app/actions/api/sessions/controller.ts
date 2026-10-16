@@ -1,9 +1,10 @@
-import { MAX_SESSION_GIT_PATH_CHARACTERS, SessionId } from "@openorb/protocol/runner-api";
+import { SessionId } from "@openorb/protocol/runner-api";
 import {
-  SessionArtifactId,
+  MAX_SESSION_GIT_PATH_CHARACTERS,
   SessionGitPatchSection,
   SessionGitSnapshotId,
-} from "@openorb/protocol/runner-bulk-api";
+} from "../../../cells/session/git-snapshot-schema.ts";
+import { SessionArtifactId } from "../../../cells/session/media.ts";
 import { requireAuth } from "remix/middleware/auth";
 import { createController } from "remix/router";
 import * as s from "remix/data-schema";
@@ -20,7 +21,6 @@ import {
   sessionStage,
 } from "./telemetry.ts";
 import { csrf } from "../../../middleware/csrf.ts";
-import { resolveSessionModelRuntime } from "../../../model-provider-runtime.ts";
 import { routes } from "../../../routes.ts";
 import { Option, Schema } from "effect";
 import { tryAsync } from "@openorb/result";
@@ -37,9 +37,6 @@ const updateGitFileSchema = f.object({
   path: f.field(gitPathSchema),
   previousPath: f.field(s.optional(gitPathSchema)),
 });
-const wakeSessionSchema = f.object({
-  recovery: f.field(s.optional(s.literal("restart-environment" as const))),
-});
 const gitPatchChunkParamsSchema = Schema.Struct({
   sessionId: SessionId,
   snapshotId: SessionGitSnapshotId,
@@ -52,11 +49,6 @@ export default createController(routes.api.sessions, {
   actions: {
     async wake(context) {
       sessionStage("wake.validate");
-      const parsed = s.parseSafe(wakeSessionSchema, context.formData);
-      if (!parsed.success) {
-        sessionRejection("invalid_recovery_action");
-        return apiError("Invalid recovery action.", 400);
-      }
       const workspaceId = context.auth.identity.workspaceId;
       const sessionId = parseSessionId(context.params.sessionId);
       if (!sessionId) return apiError("Session not found.", 404);
@@ -69,17 +61,8 @@ export default createController(routes.api.sessions, {
         tryAsync(sessionApi.view(), () => "unavailable"),
       );
       if (!snapshot) return apiError("The session is unavailable.", 503);
-      const [modelRuntime, modelCredentialError] = await sessionSpan("credentials.read", () =>
-        resolveSessionModelRuntime(workspaceId, snapshot.model, context.services.workspace),
-      );
-      if (modelCredentialError !== undefined) {
-        return apiError("The saved model provider credential could not be read.", 500);
-      }
-      if (modelRuntime === null) {
-        return apiError("Reconfigure this session's model provider before continuing.", 409);
-      }
       const [, wakeError] = await sessionSpan("session.wake", () =>
-        tryAsync(sessionApi.wake(parsed.value.recovery), (cause) =>
+        tryAsync(sessionApi.wake(), (cause) =>
           cause instanceof Error ? cause.message : "The session is unavailable.",
         ),
       );

@@ -6,7 +6,6 @@ import type { Env } from "../../env.ts";
 import type { WorkspaceApi } from "../workspace/api.ts";
 import { RunnerRegistry as Registry, runnerRegistryLayer } from "./runner-registry.ts";
 import type {
-  AttachEnvironmentInput,
   ControlEnvironmentInput,
   CreateEnvironmentInput,
   EnvironmentInput,
@@ -25,12 +24,7 @@ export class Runners extends DurableObject<Env> {
     // Runner-side environment changes go to the Session Durable Object that owns the agent.
     const observer: EnvironmentObserver = {
       notify: async (workspaceId, sessionId, notice) => {
-        // Native RPC rejects Schema.Class values such as the environment snapshot.
-        await env.SESSIONS.getByName(sessionId).environmentNotice(
-          workspaceId,
-          sessionId,
-          structuredClone(notice),
-        );
+        await env.SESSIONS.getByName(sessionId).environmentNotice(workspaceId, sessionId, notice);
       },
     };
     this.#runtime = ManagedRuntime.make(runnerRegistryLayer(workspace, observer));
@@ -52,17 +46,11 @@ export class Runners extends DurableObject<Env> {
     return this.#run(Effect.flatMap(Registry, (r) => r.disconnectRunner(id, runner)));
   }
 
-  getEnvironment(id: WorkspaceId, session: string) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.getEnvironment(id, session)));
-  }
   createEnvironment(input: CreateEnvironmentInput) {
     return this.#run(Effect.flatMap(Registry, (r) => r.createEnvironment(input)));
   }
   controlEnvironment(input: ControlEnvironmentInput) {
     return this.#run(Effect.flatMap(Registry, (r) => r.controlEnvironment(input)));
-  }
-  attachEnvironment(input: AttachEnvironmentInput) {
-    return this.#run(Effect.flatMap(Registry, (r) => r.attachEnvironment(input)));
   }
   deleteEnvironment(input: EnvironmentInput) {
     return this.#run(Effect.flatMap(Registry, (r) => r.deleteEnvironment(input)));

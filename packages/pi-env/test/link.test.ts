@@ -1,18 +1,16 @@
 import { afterEach, test, vi } from "vite-plus/test";
 import { assert, assertEquals, assertRejects, assertThrows } from "@jsr/std__assert";
-import { posix } from "node:path";
+import { isConnectionLost } from "@earendil-works/pi-env";
 import {
-  Connection,
   DaemonOutput,
   DaemonOutputError,
   DaemonRelay,
   type EnvLinkHandlers,
-  isConnectionLost,
+  LinkConnection,
   parseFrame,
   PING_FRAME,
   RelayError,
 } from "../src/index.ts";
-import * as paths from "../src/path.ts";
 
 const encoder = new TextEncoder();
 
@@ -51,7 +49,7 @@ function scriptedLink() {
   const sent: ReturnType<typeof parseFrame>[] = [];
   let handlers: EnvLinkHandlers | undefined;
   let closed = false;
-  const connection = new Connection({
+  const connection = new LinkConnection({
     open: (next) => {
       handlers = next;
       return Promise.resolve({
@@ -193,35 +191,4 @@ test("the relay keeps the daemon alive and notices when it goes silent", () => {
   relay.pingDaemon();
   assertEquals(toDaemon, [PING_FRAME]);
   assertThrows(() => relay.pingDaemon(Date.now() + 31_000), RelayError);
-});
-
-test("guest paths follow node:path posix rules", () => {
-  const samples = [
-    "",
-    ".",
-    "..",
-    "/",
-    "//",
-    "/a//b/",
-    "a/../..",
-    "./a/./b/",
-    "/a/../../b",
-    "a/b/../../..",
-    "/workspace/src/../x.ts",
-    "...",
-    "a/.../b",
-  ];
-  for (const sample of samples) {
-    assertEquals(paths.normalize(sample), posix.normalize(sample), `normalize ${sample}`);
-    assertEquals(paths.basename(sample), posix.basename(sample), `basename ${sample}`);
-    assertEquals(paths.join("/workspace", sample), posix.join("/workspace", sample));
-    assertEquals(paths.join(sample, "x"), posix.join(sample, "x"), `join ${sample}`);
-    assertEquals(paths.resolve("/workspace", sample), posix.resolve("/workspace", sample));
-  }
-  assertEquals(paths.join(), posix.join());
-  assertEquals(paths.resolve("/a", "/b", "c"), posix.resolve("/a", "/b", "c"));
-  assertEquals(paths.fileURLToPath("file:///tmp/a%20b"), "/tmp/a b");
-  assertThrows(() => paths.fileURLToPath("file://host/tmp"));
-  assertThrows(() => paths.fileURLToPath("file:///tmp%2fa"));
-  assertThrows(() => paths.resolve("relative"));
 });

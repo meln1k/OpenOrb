@@ -1,20 +1,16 @@
-import {
-  type AgentState,
-  type EnvironmentState,
-  GitAuthor,
-  GitMutationRevision,
-  type OrbSize,
-  type RunnerCheckoutState,
-  RunnerSessionSnapshot,
-  type RunnerSessionState,
-  SessionGitSnapshot,
-  type SessionIssue,
-  type SessionProvisioningStage,
-  type ThinkingLevel,
-  WorkspaceId,
-} from "@openorb/protocol/runner-api";
+import type { EnvironmentPlacement, EnvironmentStatus } from "@openorb/environments";
+import type { SessionThinkingLevel } from "@openorb/protocol";
+import { GitAuthor, type OrbSize, WorkspaceId } from "@openorb/protocol/runner-api";
 import { Schema } from "effect";
-import type { SessionPlacement } from "./environment/provider.ts";
+import { SessionGitSnapshot } from "./git-snapshot-schema.ts";
+import type {
+  AgentState,
+  CheckoutState,
+  SessionIssue,
+  SessionProvisioningStage,
+  SessionState,
+  SessionView,
+} from "./view.ts";
 import type { DurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 
 /**
@@ -39,22 +35,19 @@ export interface SessionRecord {
   readonly createdAt: string;
   readonly initialPromptPreview: string;
   /** Chosen at creation; the Session keeps its provider and placement for its lifetime. */
-  readonly placement: SessionPlacement;
+  readonly placement: EnvironmentPlacement;
   /** The Project's Guest Credential Opt-in at creation; only unmediated providers consult it. */
   readonly guestCredentialOptIn: boolean;
   readonly orbSize: OrbSize;
   readonly model: string;
-  readonly initialThinkingLevel: ThinkingLevel;
-  readonly environmentState: EnvironmentState;
-  readonly environmentReachable: boolean;
-  readonly checkoutState: RunnerCheckoutState;
+  readonly initialThinkingLevel: SessionThinkingLevel;
+  readonly environment: EnvironmentStatus;
+  readonly checkoutState: CheckoutState;
   readonly baseCommit?: string;
   readonly issues: readonly SessionIssue[];
-  /** Set while provisioning or resume runs; guest tools wait for it to finish. */
+  /** Set while provisioning or resume runs; an eviction restarts it. */
   readonly operation?: "provisioning" | "resuming";
   readonly operationStage?: SessionProvisioningStage;
-  /** Stop Session paused the agent recoverably; Wake or a prompt resumes it. */
-  readonly agentPaused: boolean;
   /** Counts accepted stage/unstage requests so viewers can order snapshots after them. */
   readonly gitMutationRevision: number;
   readonly lastActivityAt: number;
@@ -64,37 +57,12 @@ export interface SessionRecord {
 export function readRecord(storage: DurableObjectSqliteStorage): SessionRecord | undefined {
   const row = storage.sql.exec("SELECT record FROM openorb_session WHERE id = 1").toArray()[0];
   if (row === undefined) return undefined;
-  const {
-    environmentProvider: _provider,
-    runnerId,
-    projectId,
-    repositoryUrl,
-    ref,
-    branchName,
-    gitAuthor,
-    ...parsed
-  } = JSON.parse(String(row.record));
+  const parsed = JSON.parse(String(row.record));
   return {
     ...parsed,
-    // Records written before placements were runner Sessions with a separate `runnerId`, and
-    // before optional projects every Session had flat project fields.
-    placement: parsed.placement ?? {
-      provider: "runner",
-      runnerId: Schema.decodeUnknownSync(Schema.String)(runnerId),
-    },
-    ...(parsed.project !== undefined
-      ? { project: { ...parsed.project, gitAuthor: new GitAuthor(parsed.project.gitAuthor) } }
-      : projectId !== undefined
-        ? {
-            project: {
-              id: projectId,
-              repositoryUrl,
-              ref,
-              branchName,
-              gitAuthor: new GitAuthor(gitAuthor),
-            },
-          }
-        : {}),
+    ...(parsed.project === undefined
+      ? {}
+      : { project: { ...parsed.project, gitAuthor: new GitAuthor(parsed.project.gitAuthor) } }),
     workspaceId: Schema.decodeUnknownSync(WorkspaceId)(parsed.workspaceId),
   };
 }
@@ -106,59 +74,53 @@ export function writeRecord(storage: DurableObjectSqliteStorage, record: Session
   );
 }
 
-export function agentState(record: SessionRecord, busy: boolean): AgentState {
-  if (record.agentPaused) return "paused";
-  return busy ? "running" : "idle";
+export function hasFailure(record: SessionRecord): boolean {
+  return record.issues.some((issue) => issue.severity === "failure");
 }
 
-export function sessionStage(record: SessionRecord, busy: boolean): SessionProvisioningStage {
-  if (record.operationStage !== undefined) return record.operationStage;
-  switch (record.environmentState) {
-    case "starting":
-      return "starting-vm";
-    case "stopping":
-      return "stopping";
-    case "stopped":
-      return "stopped";
-    case "error":
-      return "failed";
-    case "running":
-      return busy ? "running" : "ready";
-  }
+/** What viewers see of a Session's lifecycle. */
+export function sessionView(record: SessionRecord, busy: boolean) {
+  const { state: environmentState, reachable: environmentReachable } = record.environment;
+  const agentState: AgentState = busy ? "running" : "idle";
+  const stage: SessionProvisioningStage =
+    record.operationStage ??
+    {
+      starting: "starting-vm" as const,
+      stopping: "stopping" as const,
+      stopped: "stopped" as const,
+      error: "failed" as const,
+      running: busy ? ("running" as const) : ("ready" as const),
+    }[environmentState];
+  const state: SessionState =
+    hasFailure(record) || environmentState === "error"
+      ? "error"
+      : record.operation !== undefined || environmentState === "starting"
+        ? "provisioning"
+        : busy
+          ? "running"
+          : environmentState === "stopped"
+            ? "stopped"
+            : "ready";
+  return { agentState, environmentState, environmentReachable, stage, state };
 }
 
-export function publicState(record: SessionRecord, busy: boolean): RunnerSessionState {
-  const agent = agentState(record, busy);
-  if (record.issues.some((issue) => issue.severity === "failure")) return "error";
-  if (record.environmentState === "error") return "error";
-  if (agent === "running") return "running";
-  if (record.operation !== undefined || record.environmentState === "starting") {
-    return "provisioning";
-  }
-  return record.environmentState === "stopped" ? "stopped" : "ready";
-}
-
-/** The view browser pages render; unchanged in shape from the runner-hosted sessions. */
-export function sessionSnapshot(record: SessionRecord, busy: boolean): RunnerSessionSnapshot {
-  return new RunnerSessionSnapshot({
-    id: Schema.decodeUnknownSync(RunnerSessionSnapshot.fields.id)(record.sessionId),
-    ...(record.project === undefined
-      ? {}
-      : {
-          projectId: Schema.decodeUnknownSync(RunnerSessionSnapshot.fields.projectId)(
-            record.project.id,
-          ),
-        }),
+/** The view browser pages render. */
+export function sessionSnapshot(record: SessionRecord, busy: boolean): SessionView {
+  const { agentState, environmentState, environmentReachable, state } = sessionView(record, busy);
+  return {
+    id: record.sessionId,
+    ...(record.project === undefined ? {} : { projectId: record.project.id }),
     createdAt: record.createdAt,
     initialPromptPreview: record.initialPromptPreview,
     model: record.model,
     initialThinkingLevel: record.initialThinkingLevel,
     orbSize: record.orbSize,
-    state: publicState(record, busy),
-    agentState: agentState(record, busy),
-    environmentState: record.environmentState,
-    issues: [...record.issues],
-  });
+    state,
+    agentState,
+    environmentState,
+    environmentReachable,
+    issues: record.issues,
+  };
 }
 
 /** The latest Git Snapshot summary; full patches stay in the guest (ADR 0006). */
@@ -181,8 +143,4 @@ export function writeGitSnapshot(
     "INSERT INTO openorb_git_snapshot (id, snapshot) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET snapshot = excluded.snapshot",
     Schema.encodeSync(Schema.fromJsonString(SessionGitSnapshot))(snapshot),
   );
-}
-
-export function gitMutationRevision(record: SessionRecord): GitMutationRevision {
-  return GitMutationRevision.make(record.gitMutationRevision);
 }

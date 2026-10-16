@@ -53,7 +53,7 @@ test(
       import { SessionVmControl } from "/assets/app/actions/sessions/public/session-vm-control.tsx";
       const root = createRoot(document.getElementById("app"));
       globalThis.renderSession = (sessionId, initial = {}) => root.render(jsx(Fragment, {children:jsx(SessionPageScope, {
-        csrfToken:"browser-csrf",sessionId,initialState:"stopped",initialAgentState:"paused",initialEnvironmentState:"stopped",initialIssues:[],...initial,
+        csrfToken:"browser-csrf",sessionId,initialState:"stopped",initialAgentState:"idle",initialEnvironmentState:"stopped",initialIssues:[],...initial,
         children:jsx(Fragment,{children:[jsx(SessionVmControl,{csrfToken:"browser-csrf",sessionId}),jsx(SessionTranscript,{csrfToken:"browser-csrf",sessionId,contextWindow:1000,initialThinkingLevel:"high",thinkingLevels:["off","minimal","low","medium","high"]})]})
       },sessionId)}));
       globalThis.renderSession("browser-session");</script></body></html>`;
@@ -136,6 +136,13 @@ test(
       const initial = mounted(
         [
           {
+            id: 0,
+            conversationId: 0,
+            kind: "openorb.setup",
+            data: { step: "setup", exitCode: 1, output: "npm ERR! missing script: build\n" },
+            model: [{ role: "user", content: "[OpenOrb] .agents/setup failed" }],
+          },
+          {
             id: 1,
             conversationId: 0,
             kind: "pi.user",
@@ -189,6 +196,15 @@ test(
       );
       frame({ type: "conversation.snapshot", view: initial });
       await page.getByText("Still thinking with the environment stopped").waitFor();
+      // A failed setup shows its output to viewers, open; its message for the agent is not shown.
+      const setup = page.locator('[data-role="setup"] details');
+      assertEquals(
+        await setup.locator("summary").textContent(),
+        ".agents/setup failed with exit status 1",
+      );
+      assertEquals(await setup.getAttribute("open"), "");
+      await page.getByText("npm ERR! missing script: build").waitFor();
+      assertEquals(await page.getByText("[OpenOrb] .agents/setup failed").count(), 0);
       const tool = page.locator('[data-tool-call-id="tool-1"] details');
       await tool.locator("summary").click();
       frame({
@@ -226,8 +242,8 @@ test(
       const stopRequest = page.waitForRequest((request) => request.method() === "POST");
       await page.getByRole("button", { name: "Stop Session", exact: true }).click();
       await stopRequest;
-      state("paused", "stopping");
-      await page.getByText("Agent: paused · Environment: stopping", { exact: true }).waitFor();
+      state("idle", "stopping");
+      await page.getByText("Agent: idle · Environment: stopping", { exact: true }).waitFor();
       releaseCommand.resolve();
       await page.getByRole("alert").filter({ hasText: "Acknowledgement lost" }).waitFor();
       assertEquals(commands, [
@@ -238,10 +254,10 @@ test(
       if (process.env["OPENORB_BROWSER_SCREENSHOTS"]) {
         await page.mouse.move(0, 0);
         await page.screenshot({
-          path: ".amp/in/artifacts/durable-paused-environment-stopping.png",
+          path: ".amp/in/artifacts/durable-stopped-environment-stopping.png",
         });
       }
-      state("paused", "stopped");
+      state("idle", "stopped");
       await page.getByRole("button", { name: "Wake", exact: true }).waitFor();
       assertEquals(commands.length, 3);
       if (process.env["OPENORB_BROWSER_SCREENSHOTS"]) {
@@ -250,7 +266,7 @@ test(
           () =>
             new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
         );
-        await page.screenshot({ path: ".amp/in/artifacts/durable-paused-wake-narrow.png" });
+        await page.screenshot({ path: ".amp/in/artifacts/durable-stopped-wake-narrow.png" });
         await page.setViewportSize({ width: 1280, height: 800 });
       }
 
@@ -290,7 +306,7 @@ test(
                   {
                     type: "toolCall",
                     id: "read-image",
-                    name: "readImage",
+                    name: "read",
                     arguments: { path: "/workspace/logo.png" },
                   },
                 ],
@@ -305,7 +321,7 @@ test(
               {
                 role: "toolResult",
                 toolCallId: "read-image",
-                toolName: "readImage",
+                toolName: "read",
                 content: [
                   { type: "text", text: "Read image file [image/png]" },
                   { type: "image", artifactId },
@@ -382,16 +398,14 @@ test(
             [
               {
                 type: "text",
-                text: "readImage requires a PNG, JPEG, GIF, or WebP image",
+                text: "The image is too large.",
               },
             ],
           ],
           ["s", ["entries", 1, "model", 0, "isError"], true],
         ],
       });
-      await page
-        .getByText("readImage requires a PNG, JPEG, GIF, or WebP image", { exact: true })
-        .waitFor();
+      await page.getByText("The image is too large.", { exact: true }).waitFor();
       assertEquals(await image.count(), 0);
       if (process.env["OPENORB_BROWSER_SCREENSHOTS"]) {
         await page.screenshot({ path: ".amp/in/artifacts/durable-read-image-error.png" });

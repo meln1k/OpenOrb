@@ -2,15 +2,22 @@ import type { Context } from "@earendil-works/chord";
 import type { JsonValue } from "@earendil-works/chord/delta";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import {
-  MAX_SESSION_ARTIFACT_BYTES,
-  MAX_SESSION_ARTIFACT_TOTAL_BYTES,
-} from "@openorb/protocol/runner-api";
-import {
-  SessionArtifactMediaType,
-  type SessionArtifactMediaType as MediaType,
-} from "@openorb/protocol/runner-bulk-api";
 import { Schema } from "effect";
+
+export const MAX_SESSION_ARTIFACT_BYTES = 64 * 1024 * 1024;
+export const MAX_SESSION_ARTIFACT_TOTAL_BYTES = 1024 * 1024 * 1024;
+
+export const SessionArtifactId = Schema.String.check(Schema.isUUID());
+export const SessionArtifactMediaType = Schema.Literals([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "video/mp4",
+  "video/webm",
+]);
+export type SessionArtifactMediaType = typeof SessionArtifactMediaType.Type;
+type MediaType = SessionArtifactMediaType;
 
 /** Agents publish media only from this guest directory (ADR 0003). */
 export const ARTIFACTS_DIRECTORY = "/workspace/.openorb/artifacts";

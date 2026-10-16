@@ -57,7 +57,8 @@ async function bundle(entry: string, destination: string) {
 if (process.argv.includes("--workspace-test")) {
   await bundle("test/workspace/celld-worker.ts", "test/workspace/dist/worker.js");
 } else {
-  await bundle("app/cells/session/environment/sandbox/worker.ts", "dist/sandbox.js");
+  // The sandbox runs in its own Worker Loader isolate; the gateway carries its bundle as a string.
+  await bundle("../environments/src/sandbox/worker.ts", "dist/sandbox.js");
   sandboxCode = await readFile(new URL("sandbox.js", output), "utf8");
   sandboxHash = createHash("sha256").update(sandboxCode).digest("hex").slice(0, 16);
   await bundle("server.ts", "dist/worker.js");

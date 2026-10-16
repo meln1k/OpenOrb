@@ -92,23 +92,31 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
   const vmActionSubmit = on<HTMLFormElement, "submit">("submit", submitVmAction);
 
   return () => {
-    const vmPhase = sessionVmPhase(page.projection.environmentState);
+    const { environmentReachable } = page.projection;
+    const vmPhase = environmentReachable
+      ? sessionVmPhase(page.projection.environmentState)
+      : "offline";
     const action = pendingAction ?? actionForState(page.projection);
     const canSubmit =
-      !page.projection.connectionInterrupted && pendingAction === undefined && action !== undefined;
+      !page.projection.connectionInterrupted &&
+      environmentReachable &&
+      pendingAction === undefined &&
+      action !== undefined;
     const transitioning = pendingAction !== undefined || isSessionVmTransitioning(vmPhase);
     const phaseLabel = sessionVmPhaseLabel(vmPhase);
     const actionLabel = action === "start" ? "Wake" : "Stop Session";
     const lifecycleLabel = `Agent: ${page.projection.agentState ?? "unknown"} · Environment: ${
-      page.projection.environmentState ?? "unknown"
+      environmentReachable ? (page.projection.environmentState ?? "unknown") : "unreachable"
     }`;
     const actionTitle = canSubmit
       ? actionLabel
       : page.projection.connectionInterrupted
         ? "Session controls are unavailable while the connection is interrupted"
-        : pendingAction !== undefined
-          ? `${pendingAction === "start" ? "Waking" : "Stopping"} session`
-          : `${phaseLabel} Gondolin VM`;
+        : !environmentReachable
+          ? "Session controls are unavailable while the runner is disconnected"
+          : pendingAction !== undefined
+            ? `${pendingAction === "start" ? "Waking" : "Stopping"} session`
+            : `${phaseLabel} Gondolin VM`;
 
     return (
       <div
@@ -183,7 +191,7 @@ export function actionForState(
     state.environmentState === "stopping"
   )
     return undefined;
-  return state.agentState === "paused" ? "start" : "stop";
+  return state.agentState !== "running" && state.environmentState === "stopped" ? "start" : "stop";
 }
 
 const vmControlStyle = css({

@@ -14,6 +14,7 @@ test("session detail defaults mobile navigation to the agent view", async () => 
       initialState="ready"
       initialAgentState="idle"
       initialEnvironmentState="running"
+      initialEnvironmentReachable
       initialIssues={[]}
       initialThinkingLevel="max"
       sessionId="session-id"
@@ -54,6 +55,7 @@ test("session composer replaces send with stop during an active turn", async () 
       initialState="running"
       initialAgentState="running"
       initialEnvironmentState="stopped"
+      initialEnvironmentReachable
       initialIssues={[]}
       initialThinkingLevel="high"
       sessionId="session-id"
@@ -69,6 +71,33 @@ test("session composer replaces send with stop during an active turn", async () 
   assertNotMatch(html, /aria-label="Send prompt"/);
 });
 
+test("a disconnected runner does not show its environment as running", async () => {
+  const html = await renderToString(
+    <SessionDetailClient
+      changes
+      contextWindow={1_000}
+      csrfToken="csrf-token"
+      error={undefined}
+      initialState="ready"
+      initialAgentState="idle"
+      initialEnvironmentState="running"
+      initialEnvironmentReachable={false}
+      initialIssues={[]}
+      initialThinkingLevel="high"
+      sessionId="session-id"
+      sessionName="Disconnected session"
+      thinkingLevels={["off", "low", "high"]}
+    />,
+  );
+
+  assertStringIncludes(html, "Agent: idle · Environment: unreachable");
+  assertNotMatch(html, /Environment: running/);
+  assertMatch(html, /data-session-vm-status data-phase="offline"/);
+  assertStringIncludes(html, "data-runner-unreachable");
+  assertMatch(html, /aria-label="Stop Session"[^>]*disabled/);
+  assertMatch(html, /aria-label="Send prompt"/);
+});
+
 test("a session without Git integration shows no changes panel or view tabs", async () => {
   const html = await renderToString(
     <SessionDetailClient
@@ -79,6 +108,7 @@ test("a session without Git integration shows no changes panel or view tabs", as
       initialState="ready"
       initialAgentState="idle"
       initialEnvironmentState="running"
+      initialEnvironmentReachable
       initialIssues={[]}
       initialThinkingLevel="high"
       sessionId="session-id"

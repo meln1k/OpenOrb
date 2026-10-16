@@ -50,15 +50,13 @@ test(
       await page.getByRole("button", { name: "New session", exact: true }).click();
       const prompt = page.getByRole("textbox", { name: "Initial prompt" });
       await prompt.fill("Native Worker hydration");
-      await page.getByRole("button", { name: "Orb size", exact: true }).click();
-      await page.getByRole("option", { name: /^large ·/ }).click();
+      // Without a runner the composer offers the built-in Sandbox, which has no orb sizes.
+      await page.getByRole("button", { name: "Thinking level", exact: true }).click();
+      await page.getByRole("option", { name: "Low", exact: true }).click();
       await page.waitForFunction(
         () =>
-          document.querySelector('button[aria-label="Orb size"]')?.textContent?.trim() === "large",
-      );
-      assertEquals(
-        await page.getByRole("button", { name: "Orb size", exact: true }).innerText(),
-        "large",
+          document.querySelector('button[aria-label="Thinking level"]')?.textContent?.trim() ===
+          "Low",
       );
       assertEquals(await prompt.inputValue(), "Native Worker hydration");
       await page.getByRole("button", { name: "Close new session" }).click();

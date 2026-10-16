@@ -29,15 +29,8 @@ export {
   orbSizeResources,
   orbSizeSchema,
 } from "./orb-size.ts";
+export { IdentifyBulkRunner, RunnerBulkApi, WatchBulkRunner } from "./runner-bulk-api.ts";
 export {
-  IdentifyBulkRunner,
-  RunnerBulkApi,
-  SessionGitPatchSection,
-  SessionGitSnapshotId,
-  WatchBulkRunner,
-} from "./runner-bulk-api.ts";
-export {
-  AttachEnvironment,
   ControlEnvironment,
   CreateEnvironment,
   DeleteEnvironment,

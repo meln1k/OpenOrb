@@ -3,12 +3,34 @@ import type { Session } from "remix/session";
 import { Schema } from "effect";
 import {
   MAX_SESSION_SECRET_HOSTS,
-  RunnerSessionSnapshot,
   type SessionEnvironmentSecret,
-  UserId,
+  SessionId,
   type WorkspaceId,
   WorkspaceId as WorkspaceIdSchema,
 } from "@openorb/protocol/runner-api";
+
+const Uuid = Schema.String.check(Schema.isUUID());
+export const UserId = Uuid.pipe(Schema.brand("UserId"));
+export type UserId = typeof UserId.Type;
+export const ProjectId = Uuid.pipe(Schema.brand("ProjectId"));
+export type ProjectId = typeof ProjectId.Type;
+
+const InitialPromptPreview = Schema.String.check(
+  Schema.makeFilter((value) =>
+    value.length > 0 && value === collapseWhitespace(value) && Array.from(value).length <= 200
+      ? undefined
+      : "Initial prompt previews must contain 1 to 200 normalized Unicode code points.",
+  ),
+);
+
+/** The catalog's title for a Session: its prompt's first 200 code points on one line. */
+export function initialPromptPreview(prompt: string): string {
+  return Array.from(collapseWhitespace(prompt)).slice(0, 200).join("").trimEnd();
+}
+
+function collapseWhitespace(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
 
 export interface Administrator {
   userId: UserId;
@@ -93,17 +115,6 @@ export interface SessionNavigationEntry {
   projectId?: string;
   projectName?: string;
   initialPromptPreview: string;
-}
-
-export interface RejectedSessionManifestEntry {
-  sessionId: string;
-  reason: "catalog-conflict" | "project-not-found";
-}
-
-export interface ReconciledSessionManifest {
-  acceptedSessionIds: string[];
-  tombstonedSessionIds: string[];
-  rejected: RejectedSessionManifestEntry[];
 }
 
 export interface OpenAICodexAuthorization {
@@ -208,15 +219,14 @@ export interface WorkspaceApi {
   ): Promise<"deleted" | "not-found" | "not-revoked">;
   listSessionNavigationEntries(workspaceId: WorkspaceId): Promise<SessionNavigationEntry[]>;
   getSessionCatalogEntry(workspaceId: WorkspaceId, id: string): Promise<SessionCatalogEntry | null>;
+  addSessionCatalogEntry(
+    workspaceId: WorkspaceId,
+    entry: SessionCatalogEntry,
+  ): Promise<Result<void, Error>>;
   deleteSessionCatalogEntry(
     workspaceId: WorkspaceId,
     id: string,
-    deletedAt: string,
   ): Promise<Result<"deleted" | "not-found", Error>>;
-  reconcileSessionManifestEntries(
-    workspaceId: WorkspaceId,
-    entries: readonly SessionCatalogEntry[],
-  ): Promise<Result<ReconciledSessionManifest, Error>>;
   startProviderLogin(workspaceId: WorkspaceId): Promise<OpenAICodexAuthorization>;
   getProviderLoginStatus(
     workspaceId: WorkspaceId,
@@ -306,18 +316,16 @@ const WORKSPACE_ARGUMENTS: WorkspaceArgumentSchemas = {
   deleteRunner: OwnedIdentifier,
   listSessionNavigationEntries: Owner,
   getSessionCatalogEntry: OwnedIdentifier,
-  deleteSessionCatalogEntry: Schema.Tuple([WorkspaceIdSchema, Identifier, Text]),
-  reconcileSessionManifestEntries: Schema.Tuple([
+  addSessionCatalogEntry: Schema.Tuple([
     WorkspaceIdSchema,
-    Schema.Array(
-      Schema.Struct({
-        id: RunnerSessionSnapshot.fields.id,
-        projectId: RunnerSessionSnapshot.fields.projectId,
-        createdAt: RunnerSessionSnapshot.fields.createdAt,
-        initialPromptPreview: RunnerSessionSnapshot.fields.initialPromptPreview,
-      }),
-    ).check(Schema.isMaxLength(10000)),
+    Schema.Struct({
+      id: SessionId,
+      projectId: Schema.optionalKey(ProjectId),
+      createdAt: Schema.String,
+      initialPromptPreview: InitialPromptPreview,
+    }),
   ]),
+  deleteSessionCatalogEntry: OwnedIdentifier,
   startProviderLogin: Owner,
   getProviderLoginStatus: OwnedIdentifier,
   cancelProviderLogin: OwnedIdentifier,

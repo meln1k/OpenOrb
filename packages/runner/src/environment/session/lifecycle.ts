@@ -1,14 +1,13 @@
-import { Deferred, Effect, Exit, Fiber, Scope, Semaphore, SubscriptionRef } from "effect";
+import { Effect, Exit, Fiber, Option, Scope, Semaphore } from "effect";
 import type { EnvironmentState } from "@openorb/protocol/runner-api";
 import { type AgentEnvironment, AgentEnvironmentError } from "../agent-environment.ts";
 import { withDeadline } from "./deadline.ts";
 
 interface Instance {
   readonly scope: Scope.Closeable;
-  readonly ready: Deferred.Deferred<AgentEnvironment, AgentEnvironmentError>;
-  readonly cancelled: Deferred.Deferred<never, AgentEnvironmentError>;
+  boot?: Fiber.Fiber<AgentEnvironment, AgentEnvironmentError>;
+  /** Acquired before it is ready, so a stop can release it. */
   environment?: AgentEnvironment;
-  boot?: Fiber.Fiber<void>;
   detaching?: Fiber.Fiber<void, AgentEnvironmentError>;
   closing?: Fiber.Fiber<void>;
   forced?: boolean;
@@ -18,17 +17,27 @@ interface EnvironmentLifecycleOptions {
   readonly boot: (
     acquired: (environment: AgentEnvironment) => Effect.Effect<void>,
   ) => Effect.Effect<AgentEnvironment, AgentEnvironmentError, Scope.Scope>;
+  /** Reports each state, with the ready guest while it runs. */
   readonly changed: (
     state: EnvironmentState,
-    forced?: boolean,
-  ) => Effect.Effect<void, AgentEnvironmentError>;
+    running: AgentEnvironment | undefined,
+  ) => Effect.Effect<void>;
   readonly syncDisk: Effect.Effect<void, unknown>;
   readonly warning: (message: string) => Effect.Effect<void>;
   readonly readinessMs?: number;
   readonly shutdownMs?: number;
 }
 
-/** One attach at a time. Guest waiters never own or cancel the shared boot fiber. */
+export interface ControlOutcome {
+  readonly state: "running" | "stopped";
+  /** Stopping forced termination and may have lost unsynced writes. */
+  readonly forced: boolean;
+}
+
+/**
+ * At most one VM per environment, started and stopped under one lock. A start resolves once the
+ * guest runs commands; a stop interrupts a boot still in progress.
+ */
 export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(function* (
   options: EnvironmentLifecycleOptions,
 ) {
@@ -37,12 +46,12 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
   const readinessMs = options.readinessMs ?? 120_000;
   const shutdownMs = options.shutdownMs ?? 5_000;
   let instance: Instance | undefined;
-  const state = yield* SubscriptionRef.make<EnvironmentState>("stopped");
+  let state: EnvironmentState = "stopped";
 
-  const change = (next: EnvironmentState, forced = false) =>
-    Effect.gen(function* () {
-      yield* SubscriptionRef.set(state, next);
-      yield* options.changed(next, forced);
+  const change = (next: EnvironmentState, running?: AgentEnvironment) =>
+    Effect.suspend(() => {
+      state = next;
+      return options.changed(next, running);
     });
   const stopped = () =>
     new AgentEnvironmentError(
@@ -60,58 +69,11 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
       ),
     );
 
-  const start = Effect.gen(function* () {
-    if (instance !== undefined) {
-      if (state.value === "error") {
-        return yield* new AgentEnvironmentError(
-          "The previous environment must be stopped before another disk attach.",
-          undefined,
-        );
-      }
-      return instance;
-    }
-    const next: Instance = {
-      scope: yield* Scope.make(),
-      ready: yield* Deferred.make<AgentEnvironment, AgentEnvironmentError>(),
-      cancelled: yield* Deferred.make<never, AgentEnvironmentError>(),
-    };
-    instance = next;
-    yield* change("starting");
-    next.boot = yield* options
-      .boot((environment) =>
-        Effect.sync(() => {
-          next.environment = environment;
-        }),
-      )
-      .pipe(
-        Effect.provideService(Scope.Scope, next.scope),
-        Effect.timeout(readinessMs),
-        Effect.mapError(
-          () =>
-            new AgentEnvironmentError(
-              "The guest environment did not become ready before its deadline.",
-              undefined,
-            ),
-        ),
-        Effect.flatMap((environment) =>
-          change("running").pipe(Effect.andThen(Deferred.succeed(next.ready, environment))),
-        ),
-        Effect.catch((error) =>
-          Deferred.fail(next.ready, error).pipe(Effect.andThen(change("error")), Effect.ignore),
-        ),
-        Effect.asVoid,
-        Effect.forkIn(owner),
-      );
-    return next;
-  });
-
   const stop = (allowForce: boolean) =>
     Effect.gen(function* () {
       const current = instance;
       if (current === undefined) return false;
       yield* change("stopping");
-      yield* Deferred.fail(current.cancelled, stopped());
-      yield* Deferred.fail(current.ready, stopped());
       if (current.boot) yield* bounded(Fiber.interrupt(current.boot));
       let forced = current.forced ?? false;
       if (current.environment && !current.detaching) {
@@ -154,93 +116,80 @@ export const makeEnvironmentLifecycle = Effect.fn("makeEnvironmentLifecycle")(fu
       yield* bounded(Fiber.join(current.closing));
       yield* bounded(options.syncDisk);
       instance = undefined;
-      yield* change("stopped", forced);
+      yield* change("stopped");
       return forced;
-    }).pipe(Effect.tapError(() => change("error").pipe(Effect.ignore)));
+    }).pipe(Effect.tapError(() => change("error")));
 
-  const wait = (current: Instance) =>
-    Deferred.await(current.ready).pipe(
-      Effect.timeout(readinessMs),
-      Effect.mapError(
-        () => new AgentEnvironmentError("Guest readiness failed or timed out.", undefined),
+  const start = Effect.gen(function* () {
+    // A failed boot or stop leaves an instance that may still own the disk: release it first.
+    const forced = instance !== undefined && state === "error" ? yield* stop(true) : false;
+    if (instance?.boot !== undefined) return { boot: instance.boot, forced };
+    const next: Instance = { scope: yield* Scope.make() };
+    instance = next;
+    yield* change("starting");
+    const boot = yield* options
+      .boot((environment) =>
+        Effect.sync(() => {
+          next.environment = environment;
+        }),
+      )
+      .pipe(
+        Effect.provideService(Scope.Scope, next.scope),
+        Effect.timeoutOrElse({
+          duration: readinessMs,
+          orElse: () =>
+            Effect.fail(
+              new AgentEnvironmentError(
+                "The guest environment did not become ready before its deadline.",
+                undefined,
+              ),
+            ),
+        }),
+        Effect.tap((environment) => change("running", environment)),
+        Effect.tapError(() => change("error")),
+        Effect.forkIn(owner),
+      );
+    next.boot = boot;
+    return { boot, forced };
+  });
+
+  // A boot interrupted by a stop has no error of its own.
+  const ready = (boot: Fiber.Fiber<AgentEnvironment, AgentEnvironmentError>) =>
+    Fiber.await(boot).pipe(
+      Effect.flatMap((exit) =>
+        Exit.isSuccess(exit)
+          ? Effect.void
+          : Effect.fail(Option.getOrElse(Exit.findErrorOption(exit), stopped)),
       ),
     );
-  const use = <A>(
-    operation: (environment: AgentEnvironment) => Effect.Effect<A, AgentEnvironmentError>,
-    signal?: AbortSignal,
-  ) =>
-    Effect.suspend(() => {
-      const current = instance;
-      if (
-        !current ||
-        state.value === "stopped" ||
-        state.value === "stopping" ||
-        state.value === "error"
-      ) {
-        return Effect.fail(stopped());
-      }
-      const operationWithCancellation = Effect.raceFirst(
-        wait(current).pipe(Effect.flatMap(operation)),
-        Deferred.await(current.cancelled),
-      );
-      if (!signal) return operationWithCancellation;
-      const aborted = Effect.callback<never, AgentEnvironmentError>((resume) => {
-        const cancel = () =>
-          resume(Effect.fail(new AgentEnvironmentError("Guest operation cancelled.", undefined)));
-        if (signal.aborted) cancel();
-        else signal.addEventListener("abort", cancel, { once: true });
-        return Effect.sync(() => signal.removeEventListener("abort", cancel));
-      });
-      return Effect.raceFirst(operationWithCancellation, aborted);
-    });
 
   const control = (action: "start" | "stop" | "restart") =>
     lock
       .withPermit(
         Effect.gen(function* () {
-          const forced = action === "start" ? false : yield* stop(action === "restart");
-          const current = action === "stop" ? undefined : yield* start;
-          return { current, forced };
+          const stopForced = action === "start" ? false : yield* stop(action === "restart");
+          if (action === "stop") return { boot: undefined, forced: stopForced };
+          const started = yield* start;
+          return { boot: started.boot, forced: stopForced || started.forced };
         }),
       )
       .pipe(
-        Effect.flatMap(
-          ({
-            current,
-            forced,
-          }): Effect.Effect<
-            {
-              state: "running" | "stopped";
-              forced: boolean;
-            },
-            AgentEnvironmentError
-          > =>
-            current === undefined
-              ? Effect.succeed({ state: "stopped" as const, forced })
-              : wait(current).pipe(Effect.as({ state: "running" as const, forced })),
+        Effect.flatMap(({ boot, forced }): Effect.Effect<ControlOutcome, AgentEnvironmentError> =>
+          boot === undefined
+            ? Effect.succeed({ state: "stopped", forced })
+            : ready(boot).pipe(Effect.as({ state: "running" as const, forced })),
         ),
       );
 
-  const proxy: AgentEnvironment = {
-    run: (command, args) => use((environment) => environment.run(command, args), args?.signal),
-    startDaemon: use((environment) => environment.startDaemon),
-    stop: control("stop").pipe(Effect.asVoid),
-  };
   return {
-    proxy,
     control,
-    states: SubscriptionRef.changes(state),
-    begin: lock.withPermit(start).pipe(Effect.asVoid),
-    cancelGuests: Effect.suspend(() =>
-      instance ? Deferred.fail(instance.cancelled, stopped()).pipe(Effect.asVoid) : Effect.void,
-    ),
     stop: lock.withPermit(stop(false)),
     forceStop: lock.withPermit(stop(true)),
     get active() {
       return instance !== undefined;
     },
     get state() {
-      return state.value;
+      return state;
     },
   };
 });

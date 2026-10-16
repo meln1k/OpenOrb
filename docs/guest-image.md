@@ -12,7 +12,7 @@ utilities; plus agent-browser 0.35.0. From `release-2` it also contains the stat
 Environment Daemon at `/usr/local/libexec/openorb/pi-env`, which serves the Agent Harness's file and
 shell operations over the Environment Link (ADR 0005). The next image build pins pi-env 1.2.0;
 publishing it requires a new image release, not replacing `release-2`. The daemon must remain
-protocol-compatible with the vendored 1.1.0 client in `packages/pi-env`. Versions supplied by Debian
+protocol-compatible with the pinned `@earendil-works/pi-env` client. Versions supplied by Debian
 come from one immutable snapshot. Standalone tools and npm packages are versioned and verified by
 SHA-256. The image intentionally excludes Amp/E2B internals, Deno, Go, Rust, Java, database CLIs,
 container and VM tooling, GUI desktop components, systemd, the SSH daemon, and other services.

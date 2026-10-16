@@ -21,11 +21,11 @@ import {
   createReadTool,
   createWriteTool,
 } from "@earendil-works/pi-durable/tools";
-import { parseModelReference } from "@openorb/protocol";
-import type { EnvironmentAction, ThinkingLevel } from "@openorb/protocol/runner-api";
+import { parseModelReference, type SessionThinkingLevel as ThinkingLevel } from "@openorb/protocol";
+import type { EnvironmentAction } from "@openorb/protocol/runner-api";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { EnvironmentControlResult } from "./environment/provider.ts";
-import { ARTIFACTS_DIRECTORY, detectMediaType } from "./media.ts";
+import type { EnvironmentControlResult } from "@openorb/environments";
+import { ARTIFACTS_DIRECTORY } from "./media.ts";
 import { REPOSITORY_SKILLS_SECTION } from "./skills.ts";
 import type { SessionProject } from "./record.ts";
 
@@ -45,8 +45,13 @@ export interface AgentOptions {
   /** What the provider says about its guest in the system prompt. */
   readonly guestPrompt: readonly string[];
   readonly models: Models;
-  /** The guest as the agent sees it: the provider's ExecutionEnv behind the readiness gate. */
+  /** The guest: the provider's ExecutionEnv, whose operations fail while it is unavailable. */
   readonly env: ExecutionEnv;
+  /**
+   * Resolves once queued environment setup has settled, successfully or not. Each model request
+   * and guest tool waits for it, so a prompt admitted during setup runs on the set-up guest.
+   */
+  readonly setupSettled: (context: Context) => Promise<void>;
   /** Host-side Environment Control; works while the guest is unavailable. */
   readonly controlEnvironment: (action: EnvironmentAction) => Promise<EnvironmentControlResult>;
   /** Copies a guest artifact into Session media storage and returns its transcript Markdown. */
@@ -102,12 +107,7 @@ export function effectiveThinkingLevel(
   return clampThinkingLevel(resolved, requested);
 }
 
-/** Inline images become model context; larger guest files belong in publish_media. */
-const MAX_READ_IMAGE_BYTES = 8 * 1024 * 1024;
-
-export function agentTools(
-  options: Pick<AgentOptions, "controlEnvironment" | "publishMedia" | "env">,
-) {
+export function agentTools(options: Pick<AgentOptions, "controlEnvironment" | "publishMedia">) {
   return [
     createReadTool(),
     createWriteTool(),
@@ -123,31 +123,6 @@ export function agentTools(
       async execute({ action }) {
         const result = await options.controlEnvironment(action);
         return { output: [{ type: "text", text: JSON.stringify(result) }] };
-      },
-    }),
-    defineTool({
-      name: "readImage",
-      description:
-        "Read a guest PNG, JPEG, GIF, or WebP image into the conversation. Use read for text files.",
-      parameters: Type.Object({ path: Type.String() }),
-      async execute({ path }, _api, context) {
-        const info = await options.env.fileInfo(path, context);
-        if (!info.ok) throw new SessionError(info.error.message);
-        if (info.value.size > MAX_READ_IMAGE_BYTES) {
-          throw new SessionError(`readImage reads images up to ${MAX_READ_IMAGE_BYTES} bytes.`);
-        }
-        const bytes = await options.env.readBinaryFile(path, context);
-        if (!bytes.ok) throw new SessionError(bytes.error.message);
-        const mimeType = detectMediaType(bytes.value);
-        if (!mimeType?.startsWith("image/")) {
-          throw new SessionError("readImage requires a PNG, JPEG, GIF, or WebP image");
-        }
-        return {
-          output: [
-            { type: "text", text: `Read image file [${mimeType}]` },
-            { type: "image", mimeType, data: bytes.value.toBase64() },
-          ],
-        };
       },
     }),
     defineTool({
@@ -169,7 +144,7 @@ export function systemPrompt(options: Pick<AgentOptions, "guestPrompt" | "projec
     "All shell and file operations run in an isolated guest environment, never on a trusted host. Relative paths resolve from /workspace.",
     "Guest tools fail immediately while the environment is stopped or unreachable. The environment tool controls the guest independently of this conversation; stopping preserves disk, not RAM or processes. Do not shut down the guest using bash.",
     "Use bash for ls, rg, and find. Be concise and show file paths clearly.",
-    "Use read for text files and readImage to inspect images.",
+    "Use read for text files and to inspect images.",
     "To show media, use publish_media and include its exact returned Markdown.",
     ...options.guestPrompt,
     ...(options.project === undefined ? NO_PROJECT_PROMPT : projectPrompt(options.project)),
@@ -225,7 +200,10 @@ export async function openAgent(
     {
       models,
       registry,
-      env: () => options.env,
+      env: async (_target, context) => {
+        await options.setupSettled(context);
+        return options.env;
+      },
       settings: {
         stream: {
           headers: options.model.startsWith("opencode-go/")

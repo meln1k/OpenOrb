@@ -1,7 +1,7 @@
 import { test } from "vite-plus/test";
 import { assert, assertEquals } from "@jsr/std__assert";
-import { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
-import type { WorkspaceApi } from "../cells/workspace/api.ts";
+import { WorkspaceId } from "@openorb/protocol/runner-api";
+import { UserId, type WorkspaceApi } from "../cells/workspace/api.ts";
 
 import type { AppServices } from "../middleware/services.ts";
 import type { SecretMetadata } from "./secret-cipher.ts";

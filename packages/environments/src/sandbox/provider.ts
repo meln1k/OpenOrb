@@ -7,15 +7,17 @@ import {
   ok,
   type Result as EnvResult,
 } from "@earendil-works/pi-durable/env";
-import type { EnvironmentAction, EnvironmentState } from "@openorb/protocol/runner-api";
+import type { EnvironmentAction } from "@openorb/protocol/runner-api";
 import { tryAsync, trySync } from "@openorb/result";
 import {
-  type AgentEnvironmentProvider,
+  type Environment,
   type EnvironmentControlResult,
+  type EnvironmentHost,
+  type EnvironmentProvider,
   EnvironmentUnavailableError,
-} from "./provider.ts";
-import { SANDBOX_WORKER } from "./sandbox/code.ts";
-import { SANDBOX_COMMAND_SECONDS } from "./sandbox/limits.ts";
+} from "../environment.ts";
+import { SANDBOX_WORKER } from "./code.ts";
+import { SANDBOX_COMMAND_SECONDS } from "./limits.ts";
 import {
   decodeExecResult,
   decodeFileResult,
@@ -24,7 +26,7 @@ import {
   type ReaderMethod,
   type SandboxRpc,
   type WireResult,
-} from "./sandbox/rpc.ts";
+} from "./rpc.ts";
 
 const FACET = "sandbox";
 /** Backstops just-bash's cooperative deadline: the runtime terminates a call that spins longer. */
@@ -35,24 +37,28 @@ const SANDBOX_GUEST_PROMPT = [
 ];
 
 export interface SandboxProviderOptions {
-  readonly facets: DurableObjectFacets;
   readonly loader: WorkerLoader;
-  readonly sessionId: string;
-  /** Reconcile current Session activity when outstanding transport work settles. */
-  readonly onIdle: () => void;
-  readonly state: () => EnvironmentState;
-  readonly recordState: (state: EnvironmentState) => void;
 }
 
 export type SandboxUse = <T>(work: (rpc: SandboxRpc) => Promise<T>) => Promise<T>;
+
+/** The built-in Sandbox as an Agent Environment Provider (ADR 0007). */
+export function sandboxProvider({ loader }: SandboxProviderOptions): EnvironmentProvider {
+  return {
+    // No network to mediate: credentials never reach the sandbox.
+    capabilities: { credentials: "none", git: false },
+    guestPrompt: SANDBOX_GUEST_PROMPT,
+    open: (host) => openSandbox(host, loader),
+  };
+}
 
 /**
  * Loads the sandbox worker into its own isolate, with no bindings and no network, and runs it as
  * a facet of the Session Durable Object. The loader ID names the Session so that no two Sessions
  * share an isolate, and the code hash so that a new build never reuses old code.
  */
-export function sandboxProvider(options: SandboxProviderOptions): AgentEnvironmentProvider {
-  const { facets, loader, sessionId, onIdle } = options;
+function openSandbox(host: EnvironmentHost, loader: WorkerLoader): Environment {
+  const { facets, sessionId } = host;
   // celld's explicit disposal extension is not declared by Cloudflare's WorkerStub types.
   let worker: (ReturnType<WorkerLoader["get"]> & { dispose(): void }) | undefined;
   let stub: SandboxRpc | undefined;
@@ -94,8 +100,9 @@ export function sandboxProvider(options: SandboxProviderOptions): AgentEnvironme
     stub = undefined;
     releaseRequested = false;
   };
+  const record = (state: "running" | "stopped") => host.report({ state, reachable: true });
   const checkRunning = () => {
-    if (deleted || transitions !== 0 || options.state() !== "running") {
+    if (deleted || transitions !== 0 || host.status().state !== "running") {
       throw new EnvironmentUnavailableError(
         "The environment is stopped. Start it with the environment tool.",
       );
@@ -111,24 +118,25 @@ export function sandboxProvider(options: SandboxProviderOptions): AgentEnvironme
     using _pending = {
       [Symbol.dispose]: () => {
         pending.delete(operation);
-        if (pending.size === 0 && releaseRequested && transitions === 0) onIdle();
+        // Transport work can outlive durable task completion: the Session rechecks activity.
+        if (pending.size === 0 && releaseRequested && transitions === 0) host.reconcile();
       },
     };
     return await operation;
   };
   const transition = (action: EnvironmentAction | "delete"): Promise<void> => {
-    // All bindings share this authority. Close guest admission before waiting for older RPCs.
+    // Close guest admission before waiting for older RPCs.
     transitions++;
     if (action === "delete") deleted = true;
     const next = lifecycle
       .then(async () => {
         if (action !== "start" || deleted) {
-          options.recordState("stopped");
+          record("stopped");
           await Promise.allSettled([...pending]);
           retire();
         }
         if (action === "delete") facets.delete(FACET);
-        if (!deleted && action !== "stop") options.recordState("running");
+        if (!deleted && action !== "stop") record("running");
       })
       .finally(() => transitions--);
     lifecycle = next.then(
@@ -138,31 +146,18 @@ export function sandboxProvider(options: SandboxProviderOptions): AgentEnvironme
     return next;
   };
   return {
-    kind: "sandbox",
-    capabilities: {
-      persistence: "virtual-disk",
-      // No network to mediate: credentials never reach the sandbox.
-      credentials: "none",
-      // There is no link, so nothing keeps the Session Durable Object awake on its behalf.
-      hibernatableLink: false,
-      git: false,
+    env: sandboxExecutionEnv(`openorb-sandbox:${sessionId}`, "/workspace", use),
+    create: () => Promise.resolve(),
+    control: async (action: EnvironmentAction): Promise<EnvironmentControlResult> => {
+      await transition(action);
+      return { state: host.status().state, forced: false };
     },
-    guestPrompt: SANDBOX_GUEST_PROMPT,
-    bind: (binding) => ({
-      env: sandboxExecutionEnv(`openorb-sandbox:${binding.sessionId}`, "/workspace", use),
-      state: options.state,
-      create: () => Promise.resolve(),
-      control: async (action): Promise<EnvironmentControlResult> => {
-        await transition(action);
-        return { state: options.state(), forced: false };
-      },
-      delete: () => transition("delete"),
-      close: () => {
-        if (transitions !== 0 || deleted) return;
-        if (pending.size !== 0) releaseRequested = true;
-        else retire();
-      },
-    }),
+    delete: () => transition("delete"),
+    release: () => {
+      if (transitions !== 0 || deleted) return;
+      if (pending.size !== 0) releaseRequested = true;
+      else retire();
+    },
   };
 }
 

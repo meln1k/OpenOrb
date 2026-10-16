@@ -8,16 +8,16 @@ import {
 } from "@jsr/std__assert";
 import { Buffer } from "node:buffer";
 
-import { SessionArtifactId } from "@openorb/protocol/runner-bulk-api";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
+import { Schema } from "effect";
 import {
   initialPromptPreview,
-  RunnerSessionSnapshot,
-  SessionGitSnapshot,
+  type SessionCatalogEntry,
   type UserId,
-  type WorkspaceId,
-} from "@openorb/protocol/runner-api";
-import { Schema } from "effect";
-import type { SessionCatalogEntry } from "../app/cells/workspace/api.ts";
+} from "../app/cells/workspace/api.ts";
+import { SessionGitSnapshot } from "../app/cells/session/git-snapshot-schema.ts";
+import { SessionArtifactId } from "../app/cells/session/media.ts";
+import type { SessionView } from "../app/cells/session/view.ts";
 import type {
   CreateSessionInput,
   MediaReader,
@@ -96,7 +96,7 @@ class BrowserTestSessions {
   readonly addressed: string[] = [];
   /** Every SessionApi invocation, including those rejected while unreachable. */
   readonly calls: SessionCall[] = [];
-  readonly views = new Map<string, RunnerSessionSnapshot>();
+  readonly views = new Map<string, SessionView>();
   readonly mediaItems = new Map<string, SessionMedia>();
   readonly objects = new Map<string, Uint8Array>();
   readonly mediaReads: { key: string; range: { offset: number; length: number } }[] = [];
@@ -159,7 +159,7 @@ class BrowserTestSessions {
     return this.calls.slice(mark).map((call) => call.method);
   }
 
-  snapshot(sessionId: string): RunnerSessionSnapshot {
+  snapshot(sessionId: string): SessionView {
     const view = this.views.get(sessionId);
     assert(view, `expected a Session view for ${sessionId}`);
     return view;
@@ -168,12 +168,15 @@ class BrowserTestSessions {
   update(
     sessionId: string,
     patch: Partial<
-      Pick<RunnerSessionSnapshot, "state" | "agentState" | "environmentState" | "issues">
+      Pick<
+        SessionView,
+        "state" | "agentState" | "environmentState" | "environmentReachable" | "issues"
+      >
     >,
   ): void {
     const view = this.views.get(sessionId);
     assert(view, `expected a Session view for ${sessionId}`);
-    this.views.set(sessionId, new RunnerSessionSnapshot({ ...view, ...patch }));
+    this.views.set(sessionId, { ...view, ...patch });
   }
 
   publish(sessionId: string, artifactId: string, bytes: Uint8Array): void {
@@ -199,7 +202,7 @@ class BrowserTestSessions {
     return Promise.resolve().then(run);
   }
 
-  #existing(sessionId: string): RunnerSessionSnapshot {
+  #existing(sessionId: string): SessionView {
     const view = this.views.get(sessionId);
     if (view === undefined) throw new Error("Session not found.");
     return view;
@@ -211,22 +214,20 @@ class BrowserTestSessions {
         this.#invoke(sessionId, "create", input, async () => {
           await this.beforeCreate?.(input);
           if (this.createError !== undefined) throw new Error(this.createError);
-          this.views.set(
-            sessionId,
-            Schema.decodeUnknownSync(RunnerSessionSnapshot)({
-              id: input.sessionId,
-              ...(input.project === undefined ? {} : { projectId: input.project.id }),
-              createdAt: input.createdAt,
-              initialPromptPreview: initialPromptPreview(input.initialPrompt),
-              model: input.model,
-              initialThinkingLevel: input.thinkingLevel,
-              orbSize: input.orbSize,
-              state: "created",
-              agentState: "idle",
-              environmentState: "starting",
-              issues: [],
-            }),
-          );
+          this.views.set(sessionId, {
+            id: input.sessionId,
+            ...(input.project === undefined ? {} : { projectId: input.project.id }),
+            createdAt: input.createdAt,
+            initialPromptPreview: initialPromptPreview(input.initialPrompt),
+            model: input.model,
+            initialThinkingLevel: input.thinkingLevel,
+            orbSize: input.orbSize,
+            state: "created",
+            agentState: "idle",
+            environmentState: "starting",
+            environmentReachable: true,
+            issues: [],
+          });
           return { created: true };
         }),
       view: () =>
@@ -234,7 +235,6 @@ class BrowserTestSessions {
       submit: (input) =>
         this.#invoke(sessionId, "submit", input, () => {
           this.#existing(sessionId);
-          return { submissionId: this.inputsOf("submit", sessionId).length };
         }),
       setThinkingLevel: (level) =>
         this.#invoke(sessionId, "setThinkingLevel", level, () => {
@@ -250,8 +250,8 @@ class BrowserTestSessions {
           this.#existing(sessionId);
           return { state: "stopping" as const, forced: false };
         }),
-      wake: (recovery) =>
-        this.#invoke(sessionId, "wake", recovery, () => {
+      wake: () =>
+        this.#invoke(sessionId, "wake", undefined, () => {
           this.#existing(sessionId);
         }),
       retry: (recovery) =>
@@ -274,7 +274,7 @@ class BrowserTestSessions {
       gitSnapshot: () =>
         this.#invoke(sessionId, "gitSnapshot", undefined, () => {
           this.#existing(sessionId);
-          return new SessionGitSnapshot({
+          return SessionGitSnapshot.make({
             generatedAt: "2026-08-23T12:00:00Z",
             branch: "openorb/browser-test",
             head: "0123456789abcdef0123456789abcdef01234567",
@@ -736,7 +736,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
 
     const olderSessionId = crypto.randomUUID();
     const newerSessionId = crypto.randomUUID();
-    const [additionalCatalog] = await store.reconcileSessionManifestEntries(client.workspaceId, [
+    for (const entry of [
       catalogEntry(
         olderSessionId,
         projectResult.project.id,
@@ -749,9 +749,12 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
         "2099-08-17T13:00:00Z",
         "Newer sidebar session",
       ),
-    ]);
-    assert(additionalCatalog);
-    assertEquals(additionalCatalog.acceptedSessionIds, [olderSessionId, newerSessionId]);
+    ]) {
+      assertEquals(await store.addSessionCatalogEntry(client.workspaceId, entry), [
+        undefined,
+        undefined,
+      ]);
+    }
     assertEquals(
       (await store.listSessionNavigationEntries(client.workspaceId)).map((session) => session.id),
       [newerSessionId, sessionId, olderSessionId],
@@ -1000,17 +1003,6 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     assertEquals(woken.status, 202);
     assertEquals(await woken.json(), { status: "accepted" });
     assertEquals(sessions.inputsOf("wake", sessionId), [undefined]);
-    const restarted = await fetch(new URL(wakeHref, server.baseUrl), {
-      method: "POST",
-      headers: { Accept: "application/json", Cookie: client.cookie },
-      body: new URLSearchParams({
-        _csrf: csrfFrom(detailHtml),
-        recovery: "restart-environment",
-      }),
-    });
-    assertEquals(restarted.status, 202);
-    assertEquals(await restarted.json(), { status: "accepted" });
-    assertEquals(sessions.inputsOf("wake", sessionId), [undefined, "restart-environment"]);
 
     const changesHref = routes.api.sessions.changes.href({ sessionId });
     const anonymousChange = await fetch(new URL(changesHref, server.baseUrl), {
@@ -1131,32 +1123,6 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
       thinkingLevel: "low",
     });
 
-    // The model provider credential is checked, not forwarded, before every continuation.
-    assertEquals(await store.deleteModelProviderCredential(client.workspaceId, PROVIDER_ID), {
-      status: "deleted",
-    });
-    const unconfiguredMark = sessions.calls.length;
-    const unconfiguredContinuation = await fetch(new URL(messageHref, server.baseUrl), {
-      method: "POST",
-      headers: { Accept: "application/json", Cookie: client.cookie },
-      body: new URLSearchParams({ _csrf: csrfFrom(detailHtml), prompt: "No provider" }),
-    });
-    assertEquals(unconfiguredContinuation.status, 409);
-    assertEquals(await unconfiguredContinuation.json(), {
-      error: "Reconfigure this session's model provider before continuing.",
-    });
-    const unconfiguredWake = await fetch(new URL(wakeHref, server.baseUrl), {
-      method: "POST",
-      headers: { Accept: "application/json", Cookie: client.cookie },
-      body: new URLSearchParams({ _csrf: csrfFrom(detailHtml) }),
-    });
-    assertEquals(unconfiguredWake.status, 409);
-    assertEquals(await unconfiguredWake.json(), {
-      error: "Reconfigure this session's model provider before continuing.",
-    });
-    assertEquals(sessions.methodsSince(unconfiguredMark), ["view", "view"]);
-    await store.saveModelProviderCredential(client.workspaceId, PROVIDER_ID, MODEL_PROVIDER_KEY);
-
     const thinkingLevelHref = routes.app.sessions.thinkingLevel.href({ sessionId });
     const changedThinkingLevel = await fetch(new URL(thinkingLevelHref, server.baseUrl), {
       method: "POST",
@@ -1191,7 +1157,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
 
     sessions.update(sessionId, {
       state: "stopped",
-      agentState: "paused",
+      agentState: "idle",
       environmentState: "stopped",
     });
     const stoppedDetail = await fetch(new URL(location, server.baseUrl), {
@@ -1200,7 +1166,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     const stoppedHtml = await stoppedDetail.text();
     assertNotMatch(stoppedHtml, /data-session-stopped/);
     assertMatch(stoppedHtml, /aria-label="Continue session"/);
-    assertMatch(stoppedHtml, /aria-label="Agent: paused · Environment: stopped"/);
+    assertMatch(stoppedHtml, /aria-label="Agent: idle · Environment: stopped"/);
     assertMatch(stoppedHtml, /aria-label="Wake"/);
     assertNotMatch(stoppedHtml, /aria-label="Stop Session"/);
     const alreadyStopped = await fetch(new URL(stopHref, server.baseUrl), {
@@ -1220,7 +1186,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     });
     assertEquals(coldWake.status, 202);
     assertEquals(await coldWake.json(), { status: "accepted" });
-    assertEquals(sessions.inputsOf("wake", sessionId).length, 3);
+    assertEquals(sessions.inputsOf("wake", sessionId).length, 2);
     const coldContinuation = await fetch(new URL(messageHref, server.baseUrl), {
       method: "POST",
       redirect: "manual",
@@ -1325,9 +1291,9 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     const offlineHtml = await offlineDetail.text();
     assertStringIncludes(
       offlineHtml,
-      "Conversation history is unavailable while the pinned runner is offline.",
+      "Conversation history is unavailable while the connection is interrupted.",
     );
-    assertMatch(offlineHtml, /data-runner-disconnected/);
+    assertMatch(offlineHtml, /data-connection-interrupted/);
     assertMatch(offlineHtml, /aria-label="Agent: unknown · Environment: unknown"/);
     assertMatch(
       offlineHtml,
@@ -1394,12 +1360,12 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     assertEquals(submitInputs(sessions, sessionId).length, 4);
     assertEquals(sessions.inputsOf("abort", sessionId).length, 1);
     assertEquals(sessions.inputsOf("stop", sessionId).length, 2);
-    assertEquals(sessions.inputsOf("wake", sessionId).length, 3);
+    assertEquals(sessions.inputsOf("wake", sessionId).length, 2);
     sessions.unreachable = false;
 
     sessions.update(sessionId, {
       state: "error",
-      agentState: "error",
+      agentState: "idle",
       environmentState: "error",
       issues: [
         {
@@ -1693,7 +1659,7 @@ test("session routes enforce auth, CSRF, project ownership, and runner ownership
 });
 
 test("browser deletion confirms, dispatches cleanup, tombstones, and isolates tenants", async () => {
-  const { workspace: store, storage } = activate();
+  const { workspace: store } = activate();
   const { sessions, router } = createSessionServer(store);
   const server = await createTestServer((request) => router.fetch(request));
 
@@ -1715,11 +1681,10 @@ test("browser deletion confirms, dispatches cleanup, tombstones, and isolates te
       projectResult.project.id,
       "Delete this online session",
     );
-    const [onlineReconciled] = await store.reconcileSessionManifestEntries(client.workspaceId, [
-      onlineSession,
+    assertEquals(await store.addSessionCatalogEntry(client.workspaceId, onlineSession), [
+      undefined,
+      undefined,
     ]);
-    assert(onlineReconciled);
-    assertEquals(onlineReconciled.acceptedSessionIds, [onlineSession.id]);
     sessions.views.set(onlineSession.id, onlineSession);
 
     const detailUrl = new URL(
@@ -1777,10 +1742,10 @@ test("browser deletion confirms, dispatches cleanup, tombstones, and isolates te
       projectResult.project.id,
       "Delete this lost runner session",
     );
-    const [offlineReconciled] = await store.reconcileSessionManifestEntries(client.workspaceId, [
-      offlineSession,
+    assertEquals(await store.addSessionCatalogEntry(client.workspaceId, offlineSession), [
+      undefined,
+      undefined,
     ]);
-    assert(offlineReconciled);
     assertEquals(await store.revokeRunner(client.workspaceId, enrolled.runnerId), "revoked");
     // Deletion does not depend on a reachable Session or a connected runner.
     sessions.unreachable = true;
@@ -1806,11 +1771,10 @@ test("browser deletion confirms, dispatches cleanup, tombstones, and isolates te
       otherProject.project.id,
       "Foreign session",
     );
-    const [foreignReconciled] = await otherWorkspace.reconcileSessionManifestEntries(
-      otherWorkspaceId,
-      [foreignSession],
-    );
-    assert(foreignReconciled);
+    assertEquals(await otherWorkspace.addSessionCatalogEntry(otherWorkspaceId, foreignSession), [
+      undefined,
+      undefined,
+    ]);
     // A Session of another Workspace is never addressed, even when it exists and is healthy.
     sessions.views.set(foreignSession.id, foreignSession);
     const foreignDelete = await submitDeletion(
@@ -1831,43 +1795,12 @@ test("browser deletion confirms, dispatches cleanup, tombstones, and isolates te
       otherProject.project.id,
       "Same ID in another Workspace",
     );
-    const [sameIdReconciled] = await otherWorkspace.reconcileSessionManifestEntries(
-      otherWorkspaceId,
-      [sameIdForOtherWorkspace],
+    assertEquals(
+      await otherWorkspace.addSessionCatalogEntry(otherWorkspaceId, sameIdForOtherWorkspace),
+      [undefined, undefined],
     );
-    assert(sameIdReconciled);
-    assertEquals(sameIdReconciled.acceptedSessionIds, [onlineSession.id]);
     assert(await otherWorkspace.getSessionCatalogEntry(otherWorkspaceId, onlineSession.id));
-    const [staleOwnerSnapshot] = await store.reconcileSessionManifestEntries(client.workspaceId, [
-      onlineSession,
-    ]);
-    assert(staleOwnerSnapshot);
-    assertEquals(staleOwnerSnapshot.acceptedSessionIds, []);
-    assertEquals(staleOwnerSnapshot.tombstonedSessionIds, [onlineSession.id]);
     assertEquals(await store.getSessionCatalogEntry(client.workspaceId, onlineSession.id), null);
-
-    const marker = storage.rows<{ deletedAt: string }>(
-      "SELECT deletedAt FROM deleted_sessions WHERE workspaceId = ? AND sessionId = ?",
-      client.workspaceId,
-      onlineSession.id,
-    )[0];
-    assert(marker);
-    assertEquals(new Date(marker.deletedAt).toISOString(), marker.deletedAt);
-    assertEquals(
-      await activate(storage).workspace.getSessionCatalogEntry(
-        client.workspaceId,
-        onlineSession.id,
-      ),
-      null,
-    );
-    assertEquals(
-      storage.rows(
-        "SELECT deletedAt FROM deleted_sessions WHERE workspaceId = ? AND sessionId = ?",
-        otherWorkspaceId,
-        onlineSession.id,
-      ),
-      [],
-    );
   } finally {
     await server.close();
   }
@@ -1945,8 +1878,8 @@ function deletionSnapshot(
   sessionId: string,
   projectId: string,
   initialPromptPreview: string,
-): RunnerSessionSnapshot {
-  return Schema.decodeUnknownSync(RunnerSessionSnapshot)({
+): SessionView {
+  return {
     id: sessionId,
     projectId,
     createdAt: "2026-08-28T12:00:00Z",
@@ -1957,8 +1890,9 @@ function deletionSnapshot(
     state: "ready",
     agentState: "idle",
     environmentState: "running",
+    environmentReachable: true,
     issues: [],
-  });
+  };
 }
 
 function submitDeletion(

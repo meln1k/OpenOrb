@@ -12,11 +12,9 @@ import {
   CapacityExceeded,
   ControlEnvironmentPayload,
   CreateEnvironmentPayload,
-  EnvironmentRejected,
   GitAuthor,
   RunnerId,
   SessionId,
-  WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { Effect, Exit, Layer, Predicate, Scope } from "effect";
 import {
@@ -24,7 +22,7 @@ import {
   AgentEnvironmentProvider,
   type EnvironmentDaemon,
 } from "../../../src/environment/agent-environment.ts";
-import { EnvironmentStore, environmentStoreLayer } from "../../../src/environment/session/store.ts";
+import { environmentStoreLayer } from "../../../src/environment/session/store.ts";
 import {
   type EnvironmentSupervisor,
   makeEnvironmentSupervisor,
@@ -33,16 +31,13 @@ import { FakeEnvironment } from "../fake-environment.ts";
 
 const SESSION_ID = SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134d10");
 const RUNNER_ID = RunnerId.make("01989d78-65ee-7f6a-a97e-0f16ad134d09");
-const WORKSPACE_ID = WorkspaceId.make("01989d78-65ee-7f6a-a97e-0f16ad134d12");
 const TOKEN = "openorb_runner_test";
-const NONCE = "A".repeat(43);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const create = (orbSize: "small" | "xxlarge" = "small") =>
   new CreateEnvironmentPayload({
     sessionId: SESSION_ID,
-    workspaceId: WORKSPACE_ID,
     orbSize,
     repository: {
       url: "https://github.com/meln1k/openorb-test-repo.git",
@@ -51,7 +46,7 @@ const create = (orbSize: "small" | "xxlarge" = "small") =>
   });
 const control = (
   action: "start" | "stop" | "restart",
-  extra: Partial<{ githubToken: string; recovery: "restart-environment" }> = {},
+  extra: Partial<{ githubToken: string }> = {},
 ) => new ControlEnvironmentPayload({ sessionId: SESSION_ID, action, ...extra });
 
 type FrameFields = Readonly<Record<string, string | number>>;
@@ -99,12 +94,6 @@ class DaemonEnvironment extends FakeEnvironment {
     this.daemons.push(daemon);
     return daemon;
   });
-}
-
-interface ReceivedFrames {
-  attach?: unknown;
-  reply?: Uint8Array;
-  pong?: boolean;
 }
 
 interface Fixture {
@@ -217,63 +206,44 @@ test("an environment without a project gets no GitHub mediation, even with a tok
     }
   }));
 
-test("an interrupted environment restores as failed and requires an explicit restart", () =>
+test("environments restore stopped and an unacknowledged creation is discarded", () =>
   withFixture(async ({ open, directory }) => {
     const first = await open();
     await Effect.runPromise(first.supervisor.create(create()));
+    await Effect.runPromise(first.supervisor.control(control("start")));
     await first.close();
-    // Simulate a runner crash while the VM ran: the journal says running, but no VM survived.
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* EnvironmentStore;
-        const replayed = yield* store.replay(SESSION_ID);
-        yield* store.append(SESSION_ID, replayed!.sequence, {
-          type: "environment.changed",
-          state: "running",
-        });
-      }).pipe(
-        Effect.provide(
-          environmentStoreLayer(directory).pipe(
-            Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)),
-          ),
-        ),
-      ),
+    // A creation interrupted before its definition was published, and a disk without one.
+    const orphan = "01989d78-65ee-7f6a-a97e-0f16ad134d11";
+    await fs.mkdir(`${directory}/environments/${orphan}`);
+    const undefinedDisk = "01989d78-65ee-7f6a-a97e-0f16ad134d13";
+    await fs.mkdir(`${directory}/environments/${undefinedDisk}`);
+    await fs.writeFile(
+      `${directory}/environments/${undefinedDisk}/root-disk.qcow2`,
+      new Uint8Array(),
     );
     const { supervisor, close } = await open();
     try {
-      const restored = supervisor.snapshots()[0]!;
-      assertEquals(restored.state, "error");
-      assertEquals(restored.recovery, "restart-environment");
-      const refused = await Effect.runPromise(Effect.flip(supervisor.control(control("start"))));
-      assertInstanceOf(refused, EnvironmentRejected);
-      const recovered = await Effect.runPromise(
-        supervisor.control(control("start", { recovery: "restart-environment" })),
+      assertEquals(
+        supervisor.snapshots().map((x) => ({ ...x })),
+        [{ sessionId: SESSION_ID, state: "stopped" }],
       );
-      assertEquals(recovered.state, "running");
+      assertEquals(
+        (await fs.readdir(`${directory}/environments`)).sort(),
+        [SESSION_ID, undefinedDisk],
+        "only the empty interrupted creation is removed",
+      );
+      const started = await Effect.runPromise(supervisor.control(control("start")));
+      assertEquals(started.state, "running");
     } finally {
       await close();
     }
   }));
 
-test("attaching a stopped environment fails immediately", () =>
-  withFixture(async ({ open }) => {
-    const { supervisor, close } = await open();
-    try {
-      await Effect.runPromise(supervisor.create(create()));
-      const refused = await Effect.runPromise(Effect.flip(supervisor.attach(SESSION_ID, NONCE)));
-      assertInstanceOf(refused, EnvironmentRejected);
-      assert(refused.message.includes("stopped"));
-    } finally {
-      await close();
-    }
-  }));
-
-test("attach dials the link, authenticates in-band and relays daemon frames", () =>
+test("a running environment keeps its link dialed and relays daemon frames", () =>
   withFixture(async ({ open, environments }) => {
-    // SAFETY: every field of ReceivedFrames is optional; the server fills them as frames arrive.
-    const received = {} as ReceivedFrames;
-    let gatewaySocket: WebSocket | undefined;
-    const replied = Promise.withResolvers<void>();
+    const attaches: unknown[] = [];
+    const sockets: WebSocket[] = [];
+    const replies: Uint8Array[] = [];
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     server.on("connection", (socket, request) => {
       assertEquals(
@@ -281,48 +251,55 @@ test("attach dials the link, authenticates in-band and relays daemon frames", ()
         `/api/runners/environments/${SESSION_ID}/link`,
       );
       socket.binaryType = "arraybuffer";
-      gatewaySocket = socket;
+      sockets.push(socket);
       socket.onmessage = (event) => {
         if (Predicate.isString(event.data)) {
           if (event.data === "ping") {
-            received.pong = true;
             socket.send("pong");
             return;
           }
-          received.attach = JSON.parse(event.data);
+          attaches.push(JSON.parse(event.data));
           socket.send("attached");
           // Act as the Session Durable Object's client: a hello request through the relay.
           socket.send(frame(1, 41, { op: "hello", protocol: 1 }));
           return;
         }
         const data = event.data;
-        received.reply =
+        replies.push(
           data instanceof ArrayBuffer
             ? new Uint8Array(data)
-            : new Uint8Array(Array.isArray(data) ? Buffer.concat(data) : data);
-        replied.resolve();
+            : new Uint8Array(Array.isArray(data) ? Buffer.concat(data) : data),
+        );
       };
     });
     await once(server, "listening");
     const address = server.address();
     // oxlint-disable-next-line openorb/no-runtime-typeof -- Validate Node's socket address union at the listener I/O boundary.
     assert(typeof address === "object" && address !== null);
+    const until = async (condition: () => boolean) => {
+      for (let attempt = 0; attempt < 500 && !condition(); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert(condition());
+    };
     const { supervisor, close } = await open(`http://127.0.0.1:${address.port}`);
     try {
       await Effect.runPromise(supervisor.create(create()));
       await Effect.runPromise(supervisor.control(control("start")));
-      await Effect.runPromise(supervisor.attach(SESSION_ID, NONCE));
-      await replied.promise;
-      assertEquals(received.attach, { type: "attach", token: TOKEN, nonce: NONCE });
-      assertEquals(new DataView(received.reply!.buffer).getUint32(5), 41);
-      const daemon = environments[0]!.daemons[0]!;
-      assert(!daemon.closed);
-      // Losing the link closes the daemon, which kills what it started.
-      gatewaySocket!.close();
-      for (let attempt = 0; attempt < 200 && !daemon.closed; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      assert(daemon.closed);
+      await until(() => replies.length === 1);
+      assertEquals(attaches, [{ type: "attach", token: TOKEN }]);
+      assertEquals(new DataView(replies[0]!.buffer).getUint32(5), 41);
+      const first = environments[0]!.daemons[0]!;
+      assert(!first.closed);
+      // Losing the link closes the daemon, which kills what it started, and the runner redials.
+      sockets[0]!.close();
+      await until(() => first.closed);
+      await until(() => replies.length === 2);
+      const second = environments[0]!.daemons[1]!;
+      await Effect.runPromise(supervisor.control(control("stop")));
+      assert(second.closed);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      assertEquals(sockets.length, 2, "a stopped environment dials no link");
     } finally {
       await close();
       await new Promise<void>((resolve, reject) =>
@@ -342,8 +319,8 @@ test("deleting an environment stops compute and removes its storage", () =>
       assertEquals(environments[0]?.stops, 1);
       const entries = await fs.readdir(`${directory}/environments`);
       assertEquals(entries, []);
-      const recreated = await Effect.runPromise(Effect.flip(supervisor.attach(SESSION_ID, NONCE)));
-      assertEquals(recreated._tag, "EnvironmentNotFound");
+      const gone = await Effect.runPromise(Effect.flip(supervisor.control(control("start"))));
+      assertEquals(gone._tag, "EnvironmentNotFound");
       // A fresh create after deletion is a new environment, not a conflict.
       const again = await Effect.runPromise(supervisor.create(create()));
       assertEquals(again.state, "stopped");

@@ -1,4 +1,4 @@
-import type { SessionIssue, SessionRecoveryAction } from "@openorb/protocol/browser-session-events";
+import type { SessionIssue, SessionRecoveryAction } from "../../../cells/session/view.ts";
 import { css, type Handle } from "remix/component";
 
 import { routes } from "../../../routes.ts";
@@ -8,6 +8,8 @@ import { Marker, MarkerContent, MarkerIcon } from "../../../ui/public/components
 
 interface SessionFailureNoticesProps {
   readonly connectionInterrupted: boolean;
+  /** The environment's runner is disconnected; the conversation itself stays available. */
+  readonly runnerUnreachable: boolean;
   readonly csrfToken: string;
   readonly issues: readonly SessionIssue[];
   readonly recoveryAllowed: boolean;
@@ -18,13 +20,24 @@ export function SessionFailureNotices(handle: Handle<SessionFailureNoticesProps>
   return () => (
     <>
       {handle.props.connectionInterrupted ? (
-        <Marker role="alert" data-runner-disconnected mix={[noticeMarkerStyle, failureStyle]}>
+        <Marker role="alert" data-connection-interrupted mix={[noticeMarkerStyle, failureStyle]}>
           <MarkerIcon>
             <Icon name="activity" />
           </MarkerIcon>
           <MarkerContent>
-            The pinned runner is disconnected. Conversation history and session actions are
-            unavailable until it reconnects.
+            The connection to this session is interrupted. Conversation history and session actions
+            are unavailable until it reconnects.
+          </MarkerContent>
+        </Marker>
+      ) : null}
+      {handle.props.runnerUnreachable ? (
+        <Marker role="alert" data-runner-unreachable mix={[noticeMarkerStyle, failureStyle]}>
+          <MarkerIcon>
+            <Icon name="activity" />
+          </MarkerIcon>
+          <MarkerContent>
+            The runner hosting this environment is disconnected. Guest tools and environment
+            controls are unavailable until it reconnects.
           </MarkerContent>
         </Marker>
       ) : null}

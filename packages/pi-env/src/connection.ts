@@ -1,6 +1,14 @@
-// Vendored from @earendil-works/pi-env 1.1.0 (MIT, see ../LICENSE); OpenOrb changes are in README.md.
+// Transport adapted from upstream pi-env's `Connection` (MIT, see ../LICENSE); see README.md.
 // Upstream protocol code keeps its own idioms instead of OpenOrb boundary-parsing conventions.
 // oxlint-disable openorb/no-chained-type-assertions, openorb/no-runtime-typeof, openorb/no-unknown-returns, openorb/no-unsafe-dictionary-type, openorb/prefer-disposable-stack
+
+import {
+  Connection,
+  RemoteError,
+  type RemoteInfo,
+  type Reply,
+  type RequestOptions,
+} from "@earendil-works/pi-env";
 
 /** Frame types (pi-env docs/protocol.md). */
 const REQUEST = 1;
@@ -18,36 +26,7 @@ const SILENCE_LIMIT_MS = 30_000;
 /** How long opening the link and the daemon's `hello` may take. */
 const START_TIMEOUT_MS = 60_000;
 
-export type Json = Record<string, unknown>;
-
-/** A failure reported by the daemon, with its Node-style code. */
-export class RemoteError extends Error {
-  readonly code: string;
-  readonly path?: string;
-  readonly fields: Json;
-
-  constructor(fields: Json) {
-    super(typeof fields.message === "string" ? fields.message : "Remote operation failed");
-    this.name = "RemoteError";
-    this.code = typeof fields.code === "string" ? fields.code : "unknown";
-    if (typeof fields.path === "string") this.path = fields.path;
-    this.fields = fields;
-  }
-}
-
-/** What `hello` reports about the remote machine. */
-export interface RemoteInfo {
-  protocol: number;
-  version: string;
-  os: string;
-  arch: string;
-  home: string;
-  tmpdir: string;
-  separator: string;
-  /** The daemon's working directory. */
-  cwd: string;
-  pid: number;
-}
+type Json = Record<string, unknown>;
 
 /**
  * One open link to a started daemon. Each message carries exactly one complete protocol frame in
@@ -74,33 +53,11 @@ export interface ConnectionOptions {
   onLog?: (text: string) => void;
 }
 
-export interface Reply {
-  json: Json;
-  payload: Uint8Array;
-  /** The link session that answered; handles from it are only valid while it lives. */
-  session: number;
-}
-
 type Pending = {
   resolve: (value: Reply) => void;
   reject: (error: Error) => void;
   onEvent?: (json: Json, payload: Uint8Array) => void;
 };
-
-export interface RequestOptions {
-  payload?: Uint8Array;
-  /** Aborting sends `cancel`; the request still settles with the daemon's result or error. */
-  signal?: AbortSignal;
-  /** Progress events of the request, such as `exec` output. */
-  onEvent?: (json: Json, payload: Uint8Array) => void;
-  /** The request's id and session, for `kill`. */
-  onStart?: (id: number, session: number) => void;
-  /**
-   * Only run in this link session, for requests on handles it opened. After the link was lost and
-   * opened again, such requests fail instead of reaching a daemon that never opened the handle.
-   */
-  session?: number;
-}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -131,11 +88,6 @@ function frame(
 /** The link failed or ended; a request may succeed once it is opened again. */
 function lost(message: string): RemoteError {
   return new RemoteError({ code: "unknown", message, lost: true });
-}
-
-/** Whether an error means the link was lost, not that the daemon refused the request. */
-export function isConnectionLost(error: unknown): boolean {
-  return error instanceof RemoteError && error.fields.lost === true;
 }
 
 function closed(): RemoteError {
@@ -172,8 +124,11 @@ class Session {
  *
  * Liveness costs nothing while idle: the client pings only while requests are in flight, and the
  * relay answers the daemon's own pings next to it.
+ *
+ * It replaces every public method of upstream's `Connection`, which can only spawn the daemon as a
+ * process, so upstream's `RemoteExecutionEnv` runs over it unchanged.
  */
-export class Connection {
+export class LinkConnection extends Connection {
   readonly #options: ConnectionOptions;
   #session: Session | undefined;
   #ready: Promise<{ info: RemoteInfo; session: Session }> | undefined;
@@ -182,20 +137,22 @@ export class Connection {
   #closed = false;
 
   constructor(options: ConnectionOptions) {
+    // Never started: every method that would spawn the daemon is overridden.
+    super({ command: () => Promise.reject(new Error("pi-env runs over an Environment Link")) });
     this.#options = options;
   }
 
   /** Connect if needed and return what the daemon reported about its machine. */
-  async info(): Promise<RemoteInfo> {
+  override async info(): Promise<RemoteInfo> {
     return (await this.#connect()).info;
   }
 
   /** Connect if needed and return the live session's id. */
-  async session(): Promise<number> {
+  override async session(): Promise<number> {
     return (await this.#connect()).session.id;
   }
 
-  async request(op: string, json: Json, options: RequestOptions = {}): Promise<Reply> {
+  override async request(op: string, json: Json, options: RequestOptions = {}): Promise<Reply> {
     if (options.session !== undefined) {
       const current = this.#session;
       if (current === undefined || current.id !== options.session || !current.live) {
@@ -208,7 +165,7 @@ export class Connection {
   }
 
   /** Close the link; the daemon kills everything it started. */
-  close(): void {
+  override close(): void {
     this.#closed = true;
     if (this.#session) this.#teardown(this.#session, closed());
   }
@@ -219,7 +176,7 @@ export class Connection {
   }
 
   /** Kill one `exec` without aborting it. */
-  kill(id: number, session: number): void {
+  override kill(id: number, session: number): void {
     const current = this.#session;
     if (current?.id === session && current.live) {
       this.#write(current, frame(CANCEL, id, { mode: "kill" }));
@@ -334,7 +291,6 @@ export class Connection {
         failed,
       ]);
       if (json.protocol !== 1) throw lost(`Unsupported protocol ${json.protocol}`);
-      if (json.os !== "linux") throw lost(`Unsupported daemon platform ${json.os}`);
       // SAFETY: protocol 1 `hello` replies carry every RemoteInfo field (pi-env docs/protocol.md).
       return { info: json as unknown as RemoteInfo, session };
     } catch (error) {
@@ -418,7 +374,7 @@ export function parseFrame(bytes: Uint8Array): Frame | undefined {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
   // SAFETY: checked above to be a non-null, non-array JSON object.
   const json = parsed as Json;
-  // A plain copy, like `NodeExecutionEnv`'s reader results, not a view of the receive buffer.
+  // A plain copy, like Node's file reader results, not a view of the receive buffer.
   return { type, id, json, payload: bytes.slice(HEADER_BYTES + jsonLength) };
 }
 

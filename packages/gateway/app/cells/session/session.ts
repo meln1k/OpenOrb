@@ -1,33 +1,29 @@
 import { DurableObject } from "cloudflare:workers";
+import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import type { CredentialStore, Models } from "@earendil-works/pi-ai";
 import { type EntryId, LiveDoc, watchEvents } from "@earendil-works/pi-durable";
 import type { DurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
-  type EnvironmentAction,
-  type EnvironmentState,
-  GitAuthor,
-  initialPromptPreview,
-  type OrbSize,
-  type SessionEnvironmentRecoveryMode,
-  type SessionEvent,
-  type SessionGitFileAction,
-  SessionGitSnapshot,
-  SessionId,
-  type SessionProvisioningStage,
-  type ThinkingLevel,
-  WorkspaceId,
-} from "@openorb/protocol/runner-api";
+  type Environment,
+  type EnvironmentCapabilities,
+  type EnvironmentControlResult,
+  type EnvironmentCredentials,
+  type EnvironmentHost,
+  type EnvironmentPlacement,
+  type EnvironmentProvider,
+  type EnvironmentProviders,
+  type HostWebSocket,
+  receivesCredentials,
+} from "@openorb/environments";
+import type { SessionThinkingLevel as ThinkingLevel } from "@openorb/protocol";
+import { GitAuthor, type OrbSize, SessionId, WorkspaceId } from "@openorb/protocol/runner-api";
 import { tryAsync } from "@openorb/result";
 import { Schema } from "effect";
-import type {
-  SessionArtifactMediaType,
-  SessionGitPatchSection,
-} from "@openorb/protocol/runner-bulk-api";
 import type { Env } from "../../env.ts";
-import type { EnvironmentNotice } from "../runners/runner-registry.ts";
-import type { WorkspaceApi } from "../workspace/api.ts";
+import { initialPromptPreview, type WorkspaceApi } from "../workspace/api.ts";
 import {
   type Agent,
   createAgentModels,
@@ -35,22 +31,8 @@ import {
   openAgent,
   SessionError,
 } from "./agent.ts";
-import { encodeGitSnapshot, encodeSessionView } from "./api.ts";
 import { WorkspaceCredentialStore } from "./credentials.ts";
-import {
-  type AgentEnvironmentCapabilities,
-  type AgentEnvironmentProvider,
-  type EnvironmentControlResult,
-  type EnvironmentCredentials,
-  receivesCredentials,
-  type SessionEnvironment,
-  type SessionPlacement,
-} from "./environment/provider.ts";
-import { type RunnerEnvironmentApi, runnerProvider } from "./environment/runner-provider.ts";
-import { sandboxProvider } from "./environment/sandbox-provider.ts";
-import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { SessionArtifactMediaType as SessionArtifactMediaTypeSchema } from "@openorb/protocol/runner-bulk-api";
-import { gatedExecutionEnv } from "./gate.ts";
+import { environmentProviders } from "./environments.ts";
 import { migrateDurableObjectDatabase } from "../migrations.ts";
 import { sessionMigrations } from "./migrations.ts";
 import { shownRepositorySkills } from "./skills.ts";
@@ -62,8 +44,8 @@ import {
   type MediaBucket,
   mediaPrefix,
   publishGuestMedia,
+  SessionArtifactMediaType,
 } from "./media.ts";
-import { EnvironmentLinks, type SessionWebSocket } from "./link.ts";
 import {
   appendIssues,
   clearFailures,
@@ -72,26 +54,35 @@ import {
   type ProvisioningReporter,
   redactedValues,
   sessionIssue,
+  setupEntry,
 } from "./provisioning.ts";
 import {
-  gitMutationRevision,
+  hasFailure,
   readGitSnapshot,
   readRecord,
   type SessionProject,
   type SessionRecord,
   sessionSnapshot,
-  sessionStage,
+  sessionView,
   writeRecord,
 } from "./record.ts";
 import { type GitPatchChunk, staleGitSnapshot } from "./git-snapshot.ts";
+import type {
+  SessionGitFileAction,
+  SessionGitPatchSection,
+  SessionGitSnapshot,
+} from "./git-snapshot-schema.ts";
+import type { SessionEvent, SessionIssue, SessionView } from "./view.ts";
 import { GIT_REFRESH_DEBOUNCE_MS, ProjectIntegration } from "./project.ts";
-
-export type { SessionWebSocket } from "./link.ts";
 
 const context = BACKGROUND_CONTEXT;
 /** Deadman alarm: a crash during startup or an alarm leaves another wake behind. */
 const RECOVERY_MS = 30_000;
 const IDLE_STOP_MS = 15 * 60_000;
+/** A deferred or retried model request further out than this lets the object sleep until then. */
+const SLEEP_AFTER_MS = 60_000;
+/** Bounds this object's wait for the agent, not the durable turn; an alarm renews it. */
+const HOST_WAIT_MS = 10 * 60_000;
 
 export interface SessionStorage extends DurableObjectSqliteStorage {
   setAlarm(time: number): Promise<void>;
@@ -103,10 +94,10 @@ export interface SessionStorage extends DurableObjectSqliteStorage {
 export interface SessionContext {
   readonly storage: SessionStorage;
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
-  acceptWebSocket(socket: SessionWebSocket, tags?: string[]): void;
+  acceptWebSocket(socket: HostWebSocket, tags?: string[]): void;
   /** Child Durable Objects with their own storage, such as the sandbox environment. */
   readonly facets: DurableObjectFacets;
-  getWebSockets(tag?: string): SessionWebSocket[];
+  getWebSockets(tag?: string): HostWebSocket[];
   waitUntil(promise: Promise<unknown>): void;
   setWebSocketAutoResponse?(pair: InstanceType<typeof WebSocketRequestResponsePair>): void;
 }
@@ -121,7 +112,7 @@ export interface CreateSessionInput {
   /** The catalog entry's creation time, so both records agree. */
   readonly createdAt: string;
   /** Where the Agent Environment runs (ADRs 0006 and 0007). */
-  readonly placement: SessionPlacement;
+  readonly placement: EnvironmentPlacement;
   /** The Project's Guest Credential Opt-in (ADR 0006). Absent: not opted in. */
   readonly guestCredentialOptIn?: boolean;
   readonly orbSize: OrbSize;
@@ -146,35 +137,73 @@ export type SessionMedia =
     };
 
 interface Runtime {
-  readonly environment: SessionEnvironment;
+  readonly environment: Environment;
   /** What the Session's provider guarantees; fixed for the Session's lifetime. */
-  readonly capabilities: AgentEnvironmentCapabilities;
+  readonly capabilities: EnvironmentCapabilities;
   /** The project's checkout, hooks, skills, and Git Snapshots; absent without a project. */
   readonly project: ProjectIntegration | undefined;
   readonly agent: Agent;
 }
 
+export interface AlarmInputs {
+  readonly now: number;
+  readonly record: Pick<SessionRecord, "environment" | "operation" | "lastActivityAt" | "deleting">;
+  /** Unsettled harness tasks. */
+  readonly tasks: number;
+  /** When a deferred or retried model request is due, if the agent waits for one. */
+  readonly resumeAt: number | undefined;
+  /** This object is already waiting for the agent to settle. */
+  readonly hostWait: boolean;
+}
+
+/**
+ * When the Session must wake next, or `undefined` when nothing needs it. Unfinished work, setup,
+ * and deletion renew a short recovery deadline, unless the agent waits for a distant model retry;
+ * idle compute wakes the Session once the idle period has passed, to stop it.
+ */
+export function nextAlarm({
+  now,
+  record,
+  tasks,
+  resumeAt,
+  hostWait,
+}: AlarmInputs): number | undefined {
+  const recovery = now + RECOVERY_MS;
+  if (tasks > 0) {
+    return !hostWait && resumeAt !== undefined && resumeAt - now > SLEEP_AFTER_MS
+      ? resumeAt
+      : recovery;
+  }
+  if (record.deleting || record.operation !== undefined) return recovery;
+  if (record.environment.state === "running") {
+    return Math.max(record.lastActivityAt + IDLE_STOP_MS, recovery);
+  }
+  return undefined;
+}
+
 /**
  * One Session's agent and project: Pi Durable on this object's SQLite storage, reaching its Agent
- * Environment only through the provider's ExecutionEnv (ADRs 0005 and 0006). Agent work keeps
- * running while the runner is offline; guest tools then fail immediately.
+ * Environment only through the provider's ExecutionEnv (ADRs 0005 and 0006). The Session never
+ * depends on which provider that is. Pi owns every prompt from admission; its runs wait only for
+ * queued environment setup to settle, and guest tools fail immediately while the environment is
+ * unavailable.
  */
 export class Session extends DurableObject<Env> {
   readonly #ctx: SessionContext;
   readonly #workspace: WorkspaceApi;
-  readonly #runners: RunnerEnvironmentApi;
   readonly #media: MediaBucket;
-  readonly #links: EnvironmentLinks;
   readonly #subscribers = new Set<(event: SessionEvent) => void>();
+  #providers: EnvironmentProviders | undefined;
   #record: SessionRecord | undefined;
   #runtime: Promise<Runtime | undefined>;
   #busy = false;
-  #readiness: Promise<void> | undefined;
+  /** Orders idle and alarm decisions; never waits for the agent or for compute. */
+  #decisions: Promise<unknown> = Promise.resolve();
+  /** Runs environment operations one at a time: setup, start, and stop. */
   #operations: Promise<unknown> = Promise.resolve();
-  #wakeTail: Promise<void> = Promise.resolve();
-  #idle: Promise<void> | undefined;
-  #idleStop: Promise<void> | undefined;
-  #sandbox: AgentEnvironmentProvider | undefined;
+  #queuedOperations = 0;
+  /** This object's bounded wait for the agent to settle, while one runs. */
+  #hostWait: Promise<void> | undefined;
 
   constructor(ctx: SessionContext, env: Env) {
     super(ctx, env);
@@ -182,15 +211,9 @@ export class Session extends DurableObject<Env> {
     // SAFETY: native RPC stubs implement these interfaces; platform thenables differ only in types.
     // oxlint-disable-next-line openorb/no-chained-type-assertions
     this.#workspace = env.WORKSPACE.getByName("workspace") as unknown as WorkspaceApi;
-    // SAFETY: as above, for the Runners Durable Object's environment procedures.
-    // oxlint-disable-next-line openorb/no-chained-type-assertions
-    this.#runners = env.RUNNERS.getByName("runners") as unknown as RunnerEnvironmentApi;
     // SAFETY: the R2 binding implements this subset; its thenables differ only in checker types.
     // oxlint-disable-next-line openorb/no-chained-type-assertions
     this.#media = env.MEDIA as unknown as MediaBucket;
-    this.#links = new EnvironmentLinks(ctx);
-    // Link liveness answered by the platform, so an idle link never wakes this object.
-    ctx.setWebSocketAutoResponse?.(new WebSocketRequestResponsePair("ping", "pong"));
     // Requests wait until the schema is current and the record and runtime are loaded.
     this.#runtime = ctx.blockConcurrencyWhile(async () => {
       await migrateDurableObjectDatabase(ctx.storage, sessionMigrations);
@@ -202,17 +225,35 @@ export class Session extends DurableObject<Env> {
   // --- Native RPC -------------------------------------------------------------------------------
 
   /**
-   * Admits the initial prompt and provisions the project in the background. Repeating it for the
-   * same Session is harmless.
+   * Records the Session, provisions it in the background, and admits its initial prompt, which
+   * runs once setup settles. Repeating it is harmless: Pi admits the prompt once.
    */
   async create(input: CreateSessionInput): Promise<{ readonly created: boolean }> {
-    if ((await this.#runtime) !== undefined) return { created: false };
-    if (
-      input.project !== undefined &&
-      !this.#provider(input.placement, input.sessionId).capabilities.git
-    )
+    const created = (await this.#runtime) === undefined;
+    if (created) this.#record = this.#createdRecord(input);
+    if (this.#record?.deleting) return { created: false };
+    if (created) {
+      this.#runtime = this.#open();
+      // A placement its provider cannot open, such as one without a runner, leaves no Session.
+      const [, failure] = await tryAsync(this.#runtime, (cause) => cause);
+      if (failure !== undefined) {
+        this.#ctx.storage.sql.exec("DELETE FROM openorb_session");
+        this.#record = undefined;
+        this.#runtime = Promise.resolve(undefined);
+        throw failure;
+      }
+    }
+    await this.#admit(await this.#required(), input.initialPrompt, input.sessionId);
+    return { created };
+  }
+
+  #createdRecord(input: CreateSessionInput): SessionRecord {
+    // Resolved before anything is recorded: an unknown provider leaves no Session behind.
+    const provider = this.#provider(input.placement);
+    if (input.project !== undefined && !provider.capabilities.git) {
       throw new SessionError("This environment has no Git, so its Sessions cannot have a project.");
-    this.#write({
+    }
+    const record: SessionRecord = {
       workspaceId: Schema.decodeUnknownSync(WorkspaceId)(input.workspaceId),
       sessionId: input.sessionId,
       ...(input.project === undefined
@@ -225,74 +266,40 @@ export class Session extends DurableObject<Env> {
       orbSize: input.orbSize,
       model: input.model,
       initialThinkingLevel: input.thinkingLevel,
-      environmentState: "stopped",
-      environmentReachable: true,
+      environment: { state: "stopped", reachable: true },
       checkoutState: "pending",
       issues: [],
       operation: "provisioning",
       operationStage: "created",
-      agentPaused: false,
       gitMutationRevision: 0,
       lastActivityAt: Date.now(),
       deleting: false,
-    });
-    this.#runtime = this.#open();
-    await this.#runtime;
-    // The prompt is admitted at once; its guest tools wait for project setup.
-    await this.submit({ prompt: input.initialPrompt, requestId: input.sessionId });
-    return { created: true };
+    };
+    writeRecord(this.#ctx.storage, record);
+    return record;
   }
 
-  view(): ReturnType<typeof encodeSessionView> | null {
+  view(): SessionView | null {
     const record = this.#record;
     if (record === undefined || record.deleting) return null;
-    return encodeSessionView(sessionSnapshot(record, this.#busy));
+    return sessionSnapshot(record, this.#busy);
   }
 
+  /** Admits a prompt to Pi; it starts a stopped environment and runs once setup settles. */
   async submit(input: {
     prompt: string;
     requestId: string;
     thinkingLevel?: ThinkingLevel;
-  }): Promise<{ submissionId: number }> {
+  }): Promise<void> {
     const runtime = await this.#required();
-    const { agent } = runtime;
     if (!/^[A-Za-z0-9-]{1,100}$/.test(input.requestId) || !input.prompt.trim()) {
       throw new SessionError("A prompt and a request ID are required.");
     }
     if (input.thinkingLevel !== undefined) await this.setThinkingLevel(input.thinkingLevel);
-    const submission = await this.#schedule(async () => {
-      // Admission and idle alarm decisions are ordered, but never wait for model execution.
-      await this.#ctx.storage.setAlarm(Date.now() + RECOVERY_MS);
-      // A retried request observes its original admission and still resumes scheduling.
-      const existing = await agent.storage.submissionByRequest(
-        agent.conversation.id,
-        input.requestId,
-        context,
-      );
-      if (existing !== undefined) return existing;
-      // A prompt resumes a paused agent and wakes stopped compute, as the runner did.
-      if (this.#record?.agentPaused) this.#update({ agentPaused: false });
-      if (
-        this.#record?.operation === undefined &&
-        (this.#record?.environmentState === "stopped" || this.#idleStop !== undefined)
-      ) {
-        this.#background(this.#serialized(() => this.#startEnvironment(runtime)));
-      }
-      this.#touch();
-      return await agent.conversation.submit(
-        {
-          type: "input",
-          content: input.prompt,
-          requestId: input.requestId,
-          whenBusy: "followUp",
-        },
-        context,
-      );
-    });
-    await this.#wake(runtime);
-    return { submissionId: submission.id };
+    await this.#admit(runtime, input.prompt, input.requestId);
   }
 
+  /** Abort: cancels agent work and queued prompts; the environment keeps running. */
   async abort(): Promise<void> {
     const { agent } = await this.#required();
     await agent.conversation.abort(context, { background: true });
@@ -305,82 +312,49 @@ export class Session extends DurableObject<Env> {
     return effective;
   }
 
-  /** Wake: resume the agent at once, then start compute and run `.agents/resume` behind it. */
-  async wake(recovery?: SessionEnvironmentRecoveryMode): Promise<void> {
+  /** Wake: starts compute and runs `.agents/resume`. */
+  async wake(): Promise<void> {
     const runtime = await this.#required();
-    if (this.#record?.agentPaused) {
-      this.#update({ agentPaused: false });
-      await this.#wake(runtime);
-    }
-    this.#background(this.#serialized(() => this.#startEnvironment(runtime, recovery)));
+    this.#background(this.#startEnvironment(runtime));
   }
 
-  /** Stop Session: pause the agent recoverably, then stop compute (ADR 0005). */
+  /**
+   * Stop Session: aborts agent work and queued prompts, then stops compute (ADR 0008). Pi's
+   * conversation is durable, so the next prompt continues it and starts compute again.
+   */
   async stop(): Promise<EnvironmentControlResult> {
     const runtime = await this.#required();
-    return await this.#serialized(async () => {
-      await this.#pause(runtime);
-      const current = (await this.#runtime)!;
-      // The final Git Snapshot is taken before compute stops; failure keeps the previous one.
-      await current.project?.refresh();
-      return await current.environment.control("stop");
-    });
+    // Queued first, so a prompt admitted after the abort runs after the stop, on started compute.
+    const stopped = this.#stopEnvironment(runtime);
+    await tryAsync(runtime.agent.conversation.abort(context, { background: true }), () => {});
+    return await stopped;
   }
 
   async retry(recovery: "retry-provisioning" | "restart-environment"): Promise<void> {
     const runtime = await this.#required();
     this.#update({ issues: clearFailures(this.#record!.issues) });
-    if (recovery === "restart-environment") {
-      this.#background(this.#serialized(() => this.#startEnvironment(runtime, recovery)));
-      return;
-    }
-    this.#update({ operation: "provisioning", operationStage: "created" });
-    this.#background(this.#serialized(() => this.#provision(runtime)));
+    this.#background(
+      recovery === "restart-environment"
+        ? this.#startEnvironment(runtime, { restart: true })
+        : this.#provision(runtime),
+    );
   }
 
-  async controlEnvironment(
-    action: EnvironmentAction,
-    recovery?: SessionEnvironmentRecoveryMode,
-  ): Promise<{ state: EnvironmentState; forced: boolean }> {
-    const runtime = await this.#required();
-    if (action === "stop") return await runtime.environment.control("stop");
-    return await this.#control(runtime, action, recovery);
-  }
-
-  /** The Runners Durable Object reports runner-side changes to this Session's environment. */
-  async environmentNotice(
-    workspaceId: string,
-    sessionId: string,
-    notice: EnvironmentNotice,
-  ): Promise<void> {
-    const placement = this.#record?.placement;
+  /** The provider's control plane reports a change to this Session's environment. */
+  async environmentNotice(workspaceId: string, sessionId: string, notice: unknown): Promise<void> {
+    const runtime = await this.#runtime;
+    const record = this.#record;
     if (
-      placement?.provider !== "runner" ||
-      placement.runnerId !== notice.runnerId ||
-      this.#record?.workspaceId !== workspaceId ||
-      this.#record.sessionId !== sessionId
+      runtime === undefined ||
+      record?.workspaceId !== workspaceId ||
+      record.sessionId !== sessionId
     )
       return;
-    if (notice.type === "updated") {
-      this.#update({ environmentState: notice.environment.state, environmentReachable: true });
-      if (notice.environment.state !== "running" && notice.environment.state !== "starting") {
-        this.#links.closeAll(1000, "The environment is no longer running.");
-      }
-    } else if (notice.type === "removed") {
-      this.#update({ environmentState: "stopped", environmentReachable: false });
-      this.#links.closeAll(1000, "The environment was removed.");
-    } else if (notice.type === "unreachable") {
-      // The link is independent of the control connection and may still be healthy.
-      this.#update({ environmentReachable: false });
-    } else {
-      this.#update({ environmentReachable: false });
-      this.#links.closeAll(4401, "The runner was revoked.");
-    }
-    const runtime = await this.#runtime;
-    if (runtime !== undefined) await this.#wake(runtime);
+    runtime.environment.notice?.(notice);
+    await this.#reconcile(runtime);
   }
 
-  /** Deletes compute, then this object's storage. Retried by the alarm while the runner is away. */
+  /** Deletes compute, then this object's storage. Retried by the alarm while the provider is away. */
   async delete(): Promise<void> {
     const runtime = await this.#runtime;
     if (runtime === undefined) return;
@@ -390,14 +364,12 @@ export class Session extends DurableObject<Env> {
   }
 
   /** The latest Git Snapshot summary, served while the environment is stopped or offline. */
-  gitSnapshot(): (typeof SessionGitSnapshot)["Encoded"] {
+  gitSnapshot(): SessionGitSnapshot {
     const record = this.#record;
     const stored = readGitSnapshot(this.#ctx.storage) ?? staleGitSnapshot();
-    return encodeGitSnapshot(
-      record === undefined
-        ? stored
-        : new SessionGitSnapshot({ ...stored, mutationRevision: gitMutationRevision(record) }),
-    );
+    return record === undefined
+      ? stored
+      : { ...stored, mutationRevision: record.gitMutationRevision };
   }
 
   /** One byte range of a full patch, read from the guest; needs a running environment. */
@@ -428,7 +400,7 @@ export class Session extends DurableObject<Env> {
       return {
         kind: "published",
         key: `${mediaPrefix(record.workspaceId, record.sessionId)}${id}`,
-        mediaType: Schema.decodeUnknownSync(SessionArtifactMediaTypeSchema)(published.media_type),
+        mediaType: Schema.decodeUnknownSync(SessionArtifactMediaType)(published.media_type),
         byteLength: Number(published.byte_length),
         fileName: String(published.file_name),
       };
@@ -457,35 +429,28 @@ export class Session extends DurableObject<Env> {
 
   // --- HTTP and WebSockets ----------------------------------------------------------------------
 
+  /** Conversation events; anything else is the environment's, such as a runner's link upgrade. */
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (url.pathname.endsWith("/link")) return this.#links.accept(request);
-    if (url.pathname.endsWith("/events")) return await this.#events(request);
-    return new Response("Not found", { status: 404 });
+    if (new URL(request.url).pathname.endsWith("/events")) return await this.#events(request);
+    const environment = (await this.#runtime)?.environment;
+    return (await environment?.fetch?.(request)) ?? new Response("Not found", { status: 404 });
   }
 
-  async webSocketMessage(socket: SessionWebSocket, message: string | ArrayBuffer): Promise<void> {
-    const record = this.#record;
-    // Only a runner placement has a runner that may attach an Environment Link.
-    await this.#links.message(
-      socket,
-      message,
-      record?.placement.provider !== "runner"
-        ? undefined
-        : {
-            runnerId: record.placement.runnerId,
-            workspaceId: record.workspaceId,
-            authenticate: (token) => this.#workspace.authenticateRunner(token),
-          },
-    );
+  async webSocketMessage(socket: HostWebSocket, message: string | ArrayBuffer): Promise<void> {
+    const environment = (await this.#runtime)?.environment;
+    if (environment?.webSocketMessage === undefined) {
+      socket.close(4400, "This session accepts no WebSocket messages.");
+      return;
+    }
+    await environment.webSocketMessage(socket, message);
   }
 
-  webSocketClose(socket: SessionWebSocket, _code: number, reason: string): void {
-    this.#links.closed(socket, reason);
+  async webSocketClose(socket: HostWebSocket, _code: number, reason: string): Promise<void> {
+    (await this.#runtime)?.environment.webSocketClose?.(socket, reason);
   }
 
-  webSocketError(socket: SessionWebSocket): void {
-    this.#links.closed(socket, "The Environment Link failed.");
+  async webSocketError(socket: HostWebSocket): Promise<void> {
+    (await this.#runtime)?.environment.webSocketClose?.(socket, "The WebSocket failed.");
   }
 
   async alarm(): Promise<void> {
@@ -501,12 +466,17 @@ export class Session extends DurableObject<Env> {
     }
     if (this.#busy) runtime.project?.scheduleRefresh(0);
     await this.#stopIfIdle(runtime);
-    await this.#wake(runtime);
+    await this.#reconcile(runtime);
   }
 
-  /** Model access with Workspace credentials; the only seam for scripted test models. */
+  /** Model access with Workspace credentials; a seam for scripted test models. */
   protected agentModels(credentials: CredentialStore): Models {
     return createAgentModels(credentials);
+  }
+
+  /** The Agent Environment Providers by placement name; a seam for test providers. */
+  protected environmentProviders(): EnvironmentProviders {
+    return environmentProviders(this.env, this.#workspace);
   }
 
   // --- Lifecycle --------------------------------------------------------------------------------
@@ -515,17 +485,29 @@ export class Session extends DurableObject<Env> {
     const record = this.#record;
     if (record === undefined) return undefined;
     await this.#ctx.storage.setAlarm(Date.now() + RECOVERY_MS);
-    const provider = this.#provider(record.placement, record.sessionId);
-    const environment = provider.bind({
+    const provider = this.#provider(record.placement);
+    const ctx = this.#ctx;
+    const host: EnvironmentHost = {
       workspaceId: record.workspaceId,
       sessionId: Schema.decodeUnknownSync(SessionId)(record.sessionId),
+      placement: record.placement,
       ...(record.project === undefined
         ? {}
         : {
             repository: { url: record.project.repositoryUrl, gitAuthor: record.project.gitAuthor },
           }),
-    });
-    const gated = gatedExecutionEnv(environment.env, () => this.#readiness);
+      facets: ctx.facets,
+      acceptWebSocket: (socket, tags) => ctx.acceptWebSocket(socket, tags),
+      getWebSockets: (tag) => ctx.getWebSockets(tag),
+      ...(ctx.setWebSocketAutoResponse === undefined
+        ? {}
+        : { setWebSocketAutoResponse: (pair) => ctx.setWebSocketAutoResponse!(pair) }),
+      status: () => this.#record?.environment ?? { state: "stopped", reachable: false },
+      report: (environment) => this.#update({ environment }),
+      reconcile: () =>
+        this.#background(this.#runtime.then((current) => current && this.#reconcile(current))),
+    };
+    const environment = provider.open(host);
     let project: ProjectIntegration | undefined;
     const agent = await openAgent(
       this.#ctx.storage,
@@ -536,13 +518,13 @@ export class Session extends DurableObject<Env> {
         project: record.project,
         guestPrompt: provider.guestPrompt,
         models: this.agentModels(new WorkspaceCredentialStore(this.#workspace, record.workspaceId)),
-        env: gated,
-        controlEnvironment: async (action) => {
-          const runtime = await this.#required();
-          if (action === "stop") return await runtime.environment.control("stop");
-          return await this.#control(runtime, action);
-        },
-        publishMedia: (path, description) => this.#publishMedia(gated, path, description),
+        env: environment.env,
+        setupSettled: (context) => this.#setupSettled(context),
+        controlEnvironment: async (action) =>
+          action === "stop"
+            ? await environment.control("stop")
+            : await this.#control(await this.#required(), action),
+        publishMedia: (path, description) => this.#publishMedia(environment.env, path, description),
         // Without a project there is no repository to discover skills in.
         repositorySkills: () => project?.skillsPrompt() ?? "",
       },
@@ -564,25 +546,19 @@ export class Session extends DurableObject<Env> {
       );
     }
     const runtime: Runtime = { environment, capabilities: provider.capabilities, project, agent };
-    await this.#watchActivity(agent);
-    if (record.operation === undefined && record.environmentState === "running") {
+    await this.#watchActivity(runtime);
+    if (record.operation === undefined && record.environment.state === "running") {
       this.#background(project?.loadSkills());
     }
-    if (record.operation !== undefined) {
-      // An eviction interrupted setup; finish it from the start, which is idempotent.
-      this.#background(
-        this.#serialized(() =>
-          record.operation === "provisioning"
-            ? this.#provision(runtime)
-            : this.#startEnvironment(runtime),
-        ),
-      );
-    }
-    await this.#wake(runtime);
+    // An eviction interrupted setup; finish it from the start, which is idempotent.
+    if (record.operation === "provisioning") this.#background(this.#provision(runtime));
+    if (record.operation === "resuming") this.#background(this.#startEnvironment(runtime));
+    this.#background(this.#reconcile(runtime));
     return runtime;
   }
 
-  async #watchActivity(agent: Agent): Promise<void> {
+  async #watchActivity(runtime: Runtime): Promise<void> {
+    const { agent } = runtime;
     const events = await watchEvents(agent.harness, agent.conversation.id, context);
     this.#busy = events.snapshot.run !== undefined;
     events.start((batch) => {
@@ -599,14 +575,8 @@ export class Session extends DurableObject<Env> {
           event.type === "run_end";
       }
       if (before !== this.#busy) this.#publishState();
-      if (before && !this.#busy) {
-        this.#background(this.#runtime.then((runtime) => runtime && this.#wake(runtime)));
-      }
-      if (boundary) {
-        void this.#runtime.then((runtime) =>
-          runtime?.project?.scheduleRefresh(GIT_REFRESH_DEBOUNCE_MS),
-        );
-      }
+      if (before && !this.#busy) this.#background(this.#reconcile(runtime));
+      if (boundary) runtime.project?.scheduleRefresh(GIT_REFRESH_DEBOUNCE_MS);
       return Promise.resolve();
     });
   }
@@ -626,16 +596,155 @@ export class Session extends DurableObject<Env> {
     return project;
   }
 
+  #provider(placement: EnvironmentPlacement): EnvironmentProvider {
+    const provider = (this.#providers ??= this.environmentProviders())[placement.provider];
+    if (provider === undefined) {
+      throw new SessionError(`There is no "${placement.provider}" environment provider.`);
+    }
+    return provider;
+  }
+
+  /**
+   * Keeps unfinished agent work running with an alarm behind it, and releases the environment's
+   * memory once the agent is idle. Ordered with the idle-stop decision.
+   */
+  #reconcile(runtime: Runtime): Promise<void> {
+    return this.#decide(async () => {
+      // A deleted Session's harness makes no more decisions.
+      if ((await this.#runtime) !== runtime) return;
+      const { harness, conversation } = runtime.agent;
+      const { tasks, scheduling } = await harness.inspect(context);
+      const record = this.#record;
+      if (scheduling === "closing" || record === undefined) return;
+      if (tasks.length === 0 && !this.#busy && !record.deleting && record.operation === undefined) {
+        runtime.environment.release();
+      }
+      const live =
+        tasks.length === 0 || this.#hostWait !== undefined
+          ? undefined
+          : await harness.snapshot(LiveDoc, conversation.id, context);
+      const now = Date.now();
+      const alarm = nextAlarm({
+        now,
+        record,
+        tasks: tasks.length,
+        resumeAt: live?.generation?.deferred?.pollAt ?? live?.generation?.retry?.at,
+        hostWait: this.#hostWait !== undefined,
+      });
+      if (alarm === undefined) await this.#ctx.storage.deleteAlarm();
+      else await this.#ctx.storage.setAlarm(alarm);
+      if (tasks.length === 0) return;
+      this.#touch();
+      harness.resume();
+      const sleeping = alarm !== undefined && alarm > now + RECOVERY_MS;
+      if (sleeping || this.#hostWait || tasks.every((task) => task.record.background)) return;
+      const budget = new AbortController();
+      const timer = setTimeout(() => budget.abort(), HOST_WAIT_MS);
+      this.#hostWait = conversation
+        .waitForIdle(withAbortSignal(budget.signal, context))
+        .then(
+          () => {},
+          () => {},
+        )
+        .finally(() => {
+          clearTimeout(timer);
+          this.#hostWait = undefined;
+          this.#touch();
+          this.#background(this.#reconcile(runtime));
+        });
+      this.#ctx.waitUntil(this.#hostWait);
+    });
+  }
+
+  /**
+   * Admits a prompt to Pi behind a queued start, so a stopped environment starts for it and its
+   * run waits for that start and any setup before it. The recovery alarm is persisted first.
+   */
+  async #admit(runtime: Runtime, prompt: string, requestId: string): Promise<void> {
+    this.#touch();
+    this.#background(
+      this.#operate(runtime, async () => {
+        const record = this.#record!;
+        const { state } = record.environment;
+        // A failed setup waits for the user's recovery action; the agent runs anyway and may fix it.
+        if ((state === "stopped" || state === "stopping") && !hasFailure(record)) {
+          await this.#starting(runtime);
+        }
+      }),
+    );
+    await this.#ctx.storage.setAlarm(Date.now() + RECOVERY_MS);
+    await runtime.agent.conversation.submit(
+      { type: "input", content: prompt, requestId, whenBusy: "followUp" },
+      context,
+    );
+    await this.#reconcile(runtime);
+  }
+
+  /** Resolves once no environment operation is queued, or rejects when `context` is cancelled. */
+  async #setupSettled(context: Context): Promise<void> {
+    const signal = context.abortSignal;
+    while (this.#queuedOperations > 0) {
+      signal?.throwIfAborted();
+      using listening = new DisposableStack();
+      const cancelled = Promise.withResolvers<never>();
+      const cancel = () => cancelled.reject(signal?.reason);
+      signal?.addEventListener("abort", cancel, { once: true });
+      listening.defer(() => signal?.removeEventListener("abort", cancel));
+      await Promise.race([this.#operations, cancelled.promise]);
+    }
+  }
+
+  async #stopIfIdle(runtime: Runtime): Promise<void> {
+    const decided = await this.#decide(async () => {
+      const { tasks } = await runtime.agent.harness.inspect(context);
+      if (tasks.some((task) => !task.record.background)) return undefined;
+      // Setup, admission, and explicit control can change eligibility during the inspection.
+      const record = this.#record;
+      if (
+        record?.environment.state !== "running" ||
+        record.operation !== undefined ||
+        this.#queuedOperations > 0 ||
+        this.#hostWait !== undefined ||
+        Date.now() - record.lastActivityAt < IDLE_STOP_MS
+      )
+        return undefined;
+      // Queued while decisions are ordered; the potentially long drain runs outside them.
+      return { stopping: this.#stopEnvironment(runtime) };
+    });
+    if (decided !== undefined) await tryAsync(decided.stopping, () => {});
+  }
+
+  /** Runs an environment operation after the ones before it; agent runs wait for the queue. */
+  #operate<T>(runtime: Runtime, work: () => Promise<T>): Promise<T> {
+    this.#queuedOperations++;
+    const result = this.#operations.then(work);
+    this.#operations = result
+      .then(
+        () => {},
+        () => {},
+      )
+      .finally(() => {
+        this.#queuedOperations--;
+        this.#background(this.#reconcile(runtime));
+      });
+    return result;
+  }
+
   /** Environment creation and start; then, with a project, its clone, branch, and setup. */
-  async #provision(runtime: Runtime): Promise<void> {
-    await this.#operation(runtime, "provisioning", async (reporter, credentials) => {
+  #provision(runtime: Runtime): Promise<void> {
+    return this.#operate(runtime, () => this.#provisioning(runtime));
+  }
+
+  async #provisioning(runtime: Runtime): Promise<void> {
+    this.#update({ operationStage: "created" });
+    await this.#setup(runtime, "provisioning", async (reporter, credentials) => {
       const record = this.#record!;
       reporter.stage("starting-vm");
-      await this.#guard("vm-start", "The environment could not be created.", () =>
+      await this.#guard("The environment could not be created.", "retry-provisioning", () =>
         runtime.environment.create({ orbSize: record.orbSize }),
       );
-      await this.#guard("vm-start", "The environment could not be started.", () =>
-        this.#control(runtime, "start", undefined, credentials),
+      await this.#guard("The environment could not be started.", "retry-provisioning", () =>
+        this.#control(runtime, "start", credentials),
       );
       if (runtime.project === undefined) {
         // Without a project /workspace starts empty and no project behaviour runs.
@@ -657,27 +766,21 @@ export class Session extends DurableObject<Env> {
     runtime.project?.scheduleRefresh(0);
   }
 
+  #startEnvironment(runtime: Runtime, options: { restart?: boolean } = {}): Promise<void> {
+    return this.#operate(runtime, () => this.#starting(runtime, options.restart));
+  }
+
   /** Starts compute and, with a project, runs `.agents/resume` on an available checkout. */
-  async #startEnvironment(
-    runtime: Runtime,
-    recovery?: SessionEnvironmentRecoveryMode,
-  ): Promise<void> {
+  async #starting(runtime: Runtime, restart = false): Promise<void> {
     const record = this.#record!;
-    if (record.checkoutState === "pending") {
-      this.#update({ operation: "provisioning", operationStage: "created" });
-      await this.#provision(runtime);
+    if (record.checkoutState === "pending") return await this.#provisioning(runtime);
+    if (record.environment.state === "running" && !restart && record.operation === undefined)
       return;
-    }
-    if (
-      record.environmentState === "running" &&
-      recovery === undefined &&
-      this.#idleStop === undefined
-    )
-      return;
-    await this.#operation(runtime, "resuming", async (reporter, credentials) => {
+    await this.#setup(runtime, "resuming", async (reporter, credentials) => {
       reporter.stage("starting-vm");
-      await this.#guard("vm-start", "The environment could not be started.", () =>
-        this.#control(runtime, recovery === undefined ? "start" : "restart", recovery, credentials),
+      // Recovery restarts compute: re-provisioning would replace an available checkout.
+      await this.#guard("The environment could not be started.", "restart-environment", () =>
+        this.#control(runtime, restart ? "restart" : "start", credentials),
       );
       if (runtime.project === undefined || this.#record!.checkoutState !== "available") return;
       const issues = await runtime.project.resume(reporter, redactedValues(credentials), context);
@@ -685,38 +788,45 @@ export class Session extends DurableObject<Env> {
     });
   }
 
-  /** Runs one setup operation with its stages and logs published, and the readiness gate held. */
-  async #operation(
+  #stopEnvironment(runtime: Runtime): Promise<EnvironmentControlResult> {
+    return this.#operate(runtime, async () => {
+      // The final Git Snapshot is taken before compute stops; failure keeps the previous one.
+      await runtime.project?.refresh();
+      return await runtime.environment.control("stop");
+    });
+  }
+
+  /** Runs provisioning or resume with its stages and logs published; failure becomes an issue. */
+  async #setup(
     runtime: Runtime,
     operation: "provisioning" | "resuming",
     work: (reporter: ProvisioningReporter, credentials: EnvironmentCredentials) => Promise<void>,
   ): Promise<void> {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    this.#readiness = promise;
     this.#update({ operation });
-    using settle = new DisposableStack();
-    settle.defer(() => {
-      this.#readiness = undefined;
-      resolve();
-      const { operation: _operation, operationStage: _stage, ...settled } = this.#record!;
-      this.#write(settled);
-      this.#background(this.#wake(runtime));
-    });
     const reporter: ProvisioningReporter = {
       stage: (stage) => this.#update({ operationStage: stage }),
-      log: (stream, text) => this.#publish({ type: "provisioning.log", stream, text }),
+      // In the transcript; a failure also reaches the agent at its next boundary.
+      output: async (outcome) => {
+        await tryAsync(
+          runtime.agent.conversation.submit(
+            { type: "write", entry: setupEntry(outcome, Date.now()) },
+            context,
+          ),
+          () => {},
+        );
+      },
+    };
+    const settle = (issues: readonly SessionIssue[]) => {
+      const { operation: _operation, operationStage: _stage, ...settled } = this.#record!;
+      this.#write({ ...settled, issues: appendIssues(settled.issues, issues) });
     };
     const [, failure] = await tryAsync(
       // Fetched once per operation, and only for a provider that receives them.
-      (async () => {
-        // Admission can request resume before the runner acknowledges the preceding idle stop.
-        await this.#idleStop;
-        await work(reporter, await this.#credentials(runtime));
-      })(),
+      (async () => await work(reporter, await this.#credentials(runtime)))(),
       (cause) => cause,
     );
     if (failure !== undefined) {
-      const issue =
+      settle([
         failure instanceof ProvisioningFailure
           ? failure.issue
           : sessionIssue({
@@ -724,16 +834,17 @@ export class Session extends DurableObject<Env> {
               severity: "failure",
               message: failure instanceof Error ? failure.message : "Session setup failed.",
               recovery: operation === "provisioning" ? "retry-provisioning" : "restart-environment",
-            });
-      this.#update({ issues: appendIssues(this.#record!.issues, [issue]) });
+            }),
+      ]);
       return;
     }
+    settle([]);
   }
 
-  /** Runs an infrastructure step whose failure needs the retry-provisioning recovery. */
+  /** Runs an infrastructure step whose failure becomes an issue with the given recovery. */
   async #guard(
-    category: "vm-start",
     message: string,
+    recovery: "retry-provisioning" | "restart-environment",
     action: () => Promise<void | EnvironmentControlResult>,
   ): Promise<void> {
     const [, failure] = await tryAsync(
@@ -741,67 +852,25 @@ export class Session extends DurableObject<Env> {
       (cause) =>
         new ProvisioningFailure(
           sessionIssue({
-            category,
+            category: "vm-start",
             severity: "failure",
             message,
             diagnostics: cause instanceof Error ? cause.message : undefined,
-            recovery: "retry-provisioning",
+            recovery,
           }),
         ),
     );
     if (failure !== undefined) throw failure;
   }
 
-  async #pause(runtime: Runtime): Promise<void> {
-    if (this.#record?.agentPaused) return;
-    // Closing checkpoints the work; reopening without resuming keeps it paused until Wake.
-    this.#update({ agentPaused: true });
-    await runtime.agent.harness.close(context);
-    this.#runtime = this.#open();
-    await this.#runtime;
-  }
-
-  #provider(placement: SessionPlacement, sessionId: string): AgentEnvironmentProvider {
-    switch (placement.provider) {
-      case "runner":
-        return runnerProvider({
-          runnerId: placement.runnerId,
-          runners: this.#runners,
-          links: this.#links.host(),
-          state: () => ({
-            state: this.#record?.environmentState ?? "stopped",
-            reachable: this.#record?.environmentReachable ?? false,
-          }),
-          recordState: (environmentState) => this.#update({ environmentState }),
-        });
-      case "sandbox":
-        return (this.#sandbox ??= sandboxProvider({
-          facets: this.#ctx.facets,
-          loader: this.env.LOADER,
-          sessionId,
-          onIdle: () => {
-            // Transport work can outlive durable task completion. Recheck current activity
-            // rather than releasing from an earlier idle observation.
-            this.#background(this.#runtime.then((current) => current && this.#wake(current)));
-          },
-          state: () => this.#record?.environmentState ?? "stopped",
-          recordState: (environmentState) => this.#update({ environmentState }),
-        }));
-    }
-  }
-
   async #control(
     runtime: Runtime,
     action: "start" | "restart",
-    recovery?: SessionEnvironmentRecoveryMode,
     credentials?: EnvironmentCredentials,
   ): Promise<EnvironmentControlResult> {
     const permitted = credentials ?? (await this.#credentials(runtime));
     this.#touch();
-    const result = await runtime.environment.control(action, {
-      credentials: permitted,
-      ...(recovery === undefined ? {} : { recovery }),
-    });
+    const result = await runtime.environment.control(action, { credentials: permitted });
     // Retries a first load that failed or was interrupted; a loaded catalog is never rescanned.
     if (result.state === "running") this.#background(runtime.project?.loadSkills());
     return result;
@@ -822,102 +891,6 @@ export class Session extends DurableObject<Env> {
       ...(githubToken === null ? {} : { githubToken }),
       ...(secrets.length === 0 ? {} : { environmentSecrets: secrets }),
     };
-  }
-
-  /** Orders durable admission and scheduling decisions, never the agent run or transport drain. */
-  #schedule<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.#wakeTail.then(work);
-    this.#wakeTail = next.then(
-      () => {},
-      () => {},
-    );
-    return next;
-  }
-
-  /** pi-celld's recovery loop: alarms renew bounded host waits until the durable work settles. */
-  #wake(runtime: Runtime): Promise<void> {
-    return this.#schedule(async () => {
-      const { harness, conversation } = runtime.agent;
-      const runtimePromise = this.#runtime;
-      const { tasks, scheduling } = await harness.inspect(context);
-      if (scheduling === "closing") return;
-      // A replaced harness cannot make idle decisions for the new runtime.
-      if (runtimePromise !== this.#runtime) return;
-      const record = this.#record;
-      if (record === undefined) {
-        await this.#ctx.storage.deleteAlarm();
-        return;
-      }
-      if (!tasks.length) {
-        if (
-          record.placement.provider === "sandbox" &&
-          !this.#busy &&
-          !record.deleting &&
-          record.operation === undefined
-        ) {
-          runtime.environment.close();
-        }
-        // Idle: wake only to stop compute once the idle period has passed.
-        if (
-          !record.agentPaused &&
-          (record.environmentState === "running" || record.operation !== undefined)
-        ) {
-          await this.#ctx.storage.setAlarm(
-            Math.max(record.lastActivityAt + IDLE_STOP_MS, Date.now() + RECOVERY_MS),
-          );
-        } else {
-          await this.#ctx.storage.deleteAlarm();
-        }
-        return;
-      }
-      if (record.agentPaused) {
-        await this.#ctx.storage.deleteAlarm();
-        return;
-      }
-      this.#touch();
-      const live = await harness.snapshot(LiveDoc, conversation.id, context);
-      const at = live?.generation?.deferred?.pollAt ?? live?.generation?.retry?.at;
-      const sleeping = !this.#idle && at !== undefined && at - Date.now() > 60_000;
-      await this.#ctx.storage.setAlarm(sleeping ? at : Date.now() + RECOVERY_MS);
-      harness.resume();
-      if (sleeping || this.#idle || tasks.every((task) => task.record.background)) return;
-      // Bound the host wait, not the durable turn; an alarm renews it if needed.
-      const budget = new AbortController();
-      const timer = setTimeout(() => budget.abort(), 10 * 60_000);
-      this.#idle = conversation
-        .waitForIdle(withAbortSignal(budget.signal, context))
-        .then(
-          () => {},
-          () => {},
-        )
-        .finally(async () => {
-          clearTimeout(timer);
-          this.#idle = undefined;
-          this.#touch();
-          await this.#wake(runtime);
-        });
-      this.#ctx.waitUntil(this.#idle);
-    });
-  }
-
-  async #stopIfIdle(runtime: Runtime): Promise<void> {
-    let stopping: Promise<void> | undefined;
-    await this.#schedule(async () => {
-      const runtimePromise = this.#runtime;
-      const { tasks } = await runtime.agent.harness.inspect(context);
-      if (runtimePromise !== this.#runtime || tasks.some((task) => !task.record.background)) return;
-      // Setup and explicit control can change eligibility while the inspection is in flight.
-      const record = this.#record;
-      if (record?.environmentState !== "running" || record.operation !== undefined) return;
-      if (this.#idle || this.#idleStop || Date.now() - record.lastActivityAt < IDLE_STOP_MS) return;
-      // Begin stopping while admission is ordered; the potentially long drain is outside it.
-      stopping = tryAsync(runtime.environment.control("stop"), () => {}).then(() => {});
-      this.#idleStop = stopping;
-    });
-    if (stopping !== undefined) {
-      await stopping;
-      if (this.#idleStop === stopping) this.#idleStop = undefined;
-    }
   }
 
   async #publishMedia(env: ExecutionEnv, path: string, description: string): Promise<string> {
@@ -964,11 +937,10 @@ export class Session extends DurableObject<Env> {
     }
     const [, failure] = await tryAsync(runtime.environment.delete(), (cause) => cause);
     if (failure !== undefined) {
-      // The runner may be offline; the alarm retries until compute is gone.
+      // The provider may be offline; the alarm retries until compute is gone.
       await this.#ctx.storage.setAlarm(Date.now() + RECOVERY_MS);
       return;
     }
-    this.#links.closeAll(1000, "The session was deleted.");
     await tryAsync(runtime.agent.harness.close(context), () => {});
     await this.#ctx.storage.deleteAlarm();
     await this.#ctx.storage.deleteAll();
@@ -1070,14 +1042,18 @@ export class Session extends DurableObject<Env> {
   #stateEvent(): SessionEvent | undefined {
     const record = this.#record;
     if (record === undefined) return undefined;
-    const snapshot = sessionSnapshot(record, this.#busy);
+    const { stage, agentState, environmentState, environmentReachable } = sessionView(
+      record,
+      this.#busy,
+    );
     return {
       type: "session.state",
-      stage: sessionStage(record, this.#busy) satisfies SessionProvisioningStage,
-      agentState: snapshot.agentState,
-      environmentState: record.environmentState,
+      stage,
+      agentState,
+      environmentState,
+      environmentReachable,
       checkoutState: record.checkoutState,
-      issues: snapshot.issues,
+      issues: [...record.issues],
     };
   }
 
@@ -1092,13 +1068,13 @@ export class Session extends DurableObject<Env> {
 
   // --- Record -----------------------------------------------------------------------------------
 
-  #serialized<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.#operations.then(work, work);
-    this.#operations = result.then(
+  #decide<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.#decisions.then(work);
+    this.#decisions = next.then(
       () => {},
       () => {},
     );
-    return result;
+    return next;
   }
 
   #background(work: Promise<unknown> | undefined): void {

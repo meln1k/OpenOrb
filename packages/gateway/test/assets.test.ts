@@ -133,6 +133,18 @@ test("build exports lazy graphs, portable worker, public files and no private so
       suffix,
     );
   }
+  // The Changes panel imports `@pierre/diffs` dynamically, so its static graph is a root too.
+  const diffs = metadata.assetUrls.find((href) =>
+    decodeURIComponent(href).endsWith("/@pierre/diffs/dist/index.js"),
+  );
+  assert(diffs);
+  const diffsSource = await readTextFile(`${directory}/assets${decodeURIComponent(diffs)}`);
+  const relativeImports = [...diffsSource.matchAll(/from\s*["'](\.{1,2}\/[^"']+)["']/g)];
+  assert(relativeImports.length > 0);
+  for (const [, specifier] of relativeImports) {
+    const href = new URL(specifier!, `https://assets.test${diffs}`).pathname;
+    assert(metadata.assetUrls.includes(href), href);
+  }
   const lru = metadata.assetUrls.find((href) => href.endsWith("/lru_map/dist/lru.js"));
   assert(lru);
   const lruSource = await readTextFile(`${directory}/assets${decodeURIComponent(lru)}`);

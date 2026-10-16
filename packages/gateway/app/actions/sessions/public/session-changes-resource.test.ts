@@ -25,8 +25,9 @@ test("Git actions use the actual environment, never the catalog summary or agent
   page.apply({
     type: "session.state",
     stage: "stopping",
-    agentState: "paused",
+    agentState: "idle",
     environmentState: "stopping",
+    environmentReachable: true,
     checkoutState: "available",
     issues: [],
   });
@@ -34,8 +35,9 @@ test("Git actions use the actual environment, never the catalog summary or agent
   page.apply({
     type: "session.state",
     stage: "stopped",
-    agentState: "paused",
+    agentState: "idle",
     environmentState: "running",
+    environmentReachable: true,
     checkoutState: "available",
     issues: [],
   });

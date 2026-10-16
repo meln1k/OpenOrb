@@ -3,13 +3,9 @@ import {
   modelReferenceSchema,
   type OrbSize,
   orbSizeSchema,
+  parseModelReference,
 } from "@openorb/protocol";
-import {
-  initialPromptPreview,
-  isSafeGitReference,
-  MAX_RPC_INITIAL_PROMPT_BYTES,
-  type WorkspaceId,
-} from "@openorb/protocol/runner-api";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
 import { tryAsync } from "@openorb/result";
 import { validate as validateUuid } from "@jsr/std__uuid";
 import * as s from "remix/data-schema";
@@ -22,16 +18,16 @@ import { redirect } from "remix/response/redirect";
 
 import { AppPage } from "../app/page.tsx";
 import { SessionDetailFrame, SessionDetailPage } from "./page.tsx";
-import type { Administrator } from "../../cells/workspace/api.ts";
+import { type Administrator, initialPromptPreview } from "../../cells/workspace/api.ts";
+import { isSafeGitReference } from "../../cells/session/git-snapshot-schema.ts";
 import { csrf } from "../../middleware/csrf.ts";
 import type { AppContext } from "../../router.ts";
 import { selectRunnerForWorkspace } from "../../cells/runners/runner-selection.ts";
-import type { SessionPlacement } from "../../cells/session/environment/provider.ts";
+import type { EnvironmentPlacement } from "@openorb/environments";
 import type { AppServices } from "../../middleware/services.ts";
 import { routes } from "../../routes.ts";
 import { loadSessionComposerData } from "../../session-composer-data.ts";
 import { isModelReference } from "../../model-provider-catalog.ts";
-import { resolveSessionModelRuntime } from "../../model-provider-runtime.ts";
 import type { SessionComposerValues } from "../../ui/public/session-composer.tsx";
 import { SessionWorkspaceLoadError } from "../../ui/public/shell.tsx";
 import { currentSessionRecovery } from "../../utils/session-recovery.ts";
@@ -50,13 +46,14 @@ const sessionGitRefSchema = s
 const sessionBranchNameSchema = s
   .string()
   .refine(isSafeGitReference, "Expected a valid Git branch name.");
+const MAX_INITIAL_PROMPT_BYTES = 32 * 1024;
 const promptSchema = s
   .string()
   .refine(
     (value) =>
       value.trim().length > 0 &&
-      new TextEncoder().encode(value).byteLength <= MAX_RPC_INITIAL_PROMPT_BYTES,
-    `The prompt is required and must be at most ${MAX_RPC_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
+      new TextEncoder().encode(value).byteLength <= MAX_INITIAL_PROMPT_BYTES,
+    `The prompt is required and must be at most ${MAX_INITIAL_PROMPT_BYTES} UTF-8 bytes.`,
   );
 const thinkingLevelSchema = s.union([
   s.literal("off" as const),
@@ -145,19 +142,13 @@ export default createController(routes.app.sessions, {
         return await renderCreateError(context, placement.rejected, 409, submitted);
       }
 
-      const [[modelRuntime, modelCredentialError], gitAuthor] = await Promise.all([
-        resolveSessionModelRuntime(workspaceId, parsed.value.model, workspace),
+      const [providers, gitAuthor] = await Promise.all([
+        workspace.listModelProviderCredentials(workspaceId),
         workspace.getGitAuthorConfiguration(context.auth.identity.userId),
       ]);
-      if (modelCredentialError !== undefined) {
-        return await renderCreateError(
-          context,
-          "The saved model provider credential could not be read.",
-          500,
-          submitted,
-        );
-      }
-      if (modelRuntime === null) {
+      // Only whether the provider is configured; the Session resolves the credential itself.
+      const { providerId } = parseModelReference(parsed.value.model);
+      if (!providers.some((provider) => provider.providerId === providerId)) {
         return await renderCreateError(
           context,
           "Configure the selected model provider before starting a session.",
@@ -177,23 +168,13 @@ export default createController(routes.app.sessions, {
       const sessionId = crypto.randomUUID();
       const createdAt = new Date().toISOString();
       // The catalog entry first, so a Session that fails to start is still visible and deletable.
-      const [catalog, catalogError] = await workspace.reconcileSessionManifestEntries(workspaceId, [
-        {
-          id: sessionId,
-          ...(project === undefined ? {} : { projectId: project.id }),
-          createdAt,
-          initialPromptPreview: initialPromptPreview(parsed.value.initialPrompt),
-        },
-      ]);
+      const [, catalogError] = await workspace.addSessionCatalogEntry(workspaceId, {
+        id: sessionId,
+        ...(project === undefined ? {} : { projectId: project.id }),
+        createdAt,
+        initialPromptPreview: initialPromptPreview(parsed.value.initialPrompt),
+      });
       if (catalogError !== undefined) {
-        return await renderCreateError(
-          context,
-          "The session could not be recorded.",
-          500,
-          submitted,
-        );
-      }
-      if (!catalog.acceptedSessionIds.includes(sessionId)) {
         return await renderCreateError(
           context,
           "The session could not be recorded.",
@@ -225,7 +206,7 @@ export default createController(routes.app.sessions, {
         }),
       );
       if (createError !== undefined) {
-        await workspace.deleteSessionCatalogEntry(workspaceId, sessionId, new Date().toISOString());
+        await workspace.deleteSessionCatalogEntry(workspaceId, sessionId);
         return await renderCreateError(context, createError, 503, submitted);
       }
 
@@ -263,32 +244,6 @@ export default createController(routes.app.sessions, {
         return await sessionCommandError(context, "The session is unavailable.", 503);
       }
       if (snapshot === null) return await sessionCommandError(context, "Session not found.", 404);
-      if (snapshot.agentState === "error") {
-        return await sessionCommandError(
-          context,
-          "The session cannot accept a prompt right now.",
-          409,
-        );
-      }
-      const [modelRuntime, modelCredentialError] = await resolveSessionModelRuntime(
-        workspaceId,
-        snapshot.model,
-        context.services.workspace,
-      );
-      if (modelCredentialError !== undefined) {
-        return await sessionCommandError(
-          context,
-          "The saved model provider credential could not be read.",
-          500,
-        );
-      }
-      if (modelRuntime === null) {
-        return await sessionCommandError(
-          context,
-          "Reconfigure this session's model provider before continuing.",
-          409,
-        );
-      }
       const [, promptError] = await sessionCall(
         sessionApi.submit({
           prompt: parsed.value.prompt,
@@ -357,7 +312,7 @@ export default createController(routes.app.sessions, {
       if (
         snapshot === undefined ||
         snapshot === null ||
-        (snapshot.agentState === "paused" && snapshot.environmentState === "stopped")
+        (snapshot.agentState !== "running" && snapshot.environmentState === "stopped")
       ) {
         return await sessionCommandError(context, "The session cannot be stopped right now.", 409);
       }
@@ -379,7 +334,6 @@ export default createController(routes.app.sessions, {
       const [deleted, deletionError] = await context.services.workspace.deleteSessionCatalogEntry(
         workspaceId,
         sessionId,
-        new Date().toISOString(),
       );
       if (deletionError !== undefined) {
         return await sessionCommandError(context, deletionError.message, 500);
@@ -554,7 +508,7 @@ async function placeSession(
   },
   workspaceId: WorkspaceId,
   services: Pick<AppServices, "workspace" | "runnerConnections">,
-): Promise<SessionPlacement | { readonly rejected: string }> {
+): Promise<EnvironmentPlacement | { readonly rejected: string }> {
   if (input.environment === "sandbox") return { provider: "sandbox" };
   const selected = await selectRunnerForWorkspace(
     workspaceId,

@@ -6,10 +6,10 @@ import { test } from "vite-plus/test";
 import { spawn } from "node:child_process";
 import { createEnvConformance } from "@earendil-works/pi-durable/testing";
 import { randomBytes } from "node:crypto";
-import { RemoteExecutionEnv } from "../src/index.ts";
+import { RemoteExecutionEnv } from "@earendil-works/pi-env";
 import { assertions, type DaemonProcess, relayedConnection } from "./fixtures.ts";
 
-// The vendored client against the pinned daemon running natively on a Linux host, through the
+// Upstream's client against the pinned daemon running natively on a Linux host, through the
 // same relay the runner uses. The Gondolin suite runs the same cases inside the guest.
 const daemonPath = new URL(
   `../../../node_modules/@earendil-works/pi-env/bin/pi-env-linux-${

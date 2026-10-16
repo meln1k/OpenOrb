@@ -1,7 +1,7 @@
 import type {
-  SessionGitFileData,
-  SessionGitSnapshotData,
-} from "../../../../../protocol/src/browser-session-git-snapshot.ts";
+  SessionGitFile as SessionGitFileData,
+  SessionGitSnapshot as SessionGitSnapshotData,
+} from "../../../cells/session/git-snapshot-schema.ts";
 import type { CodeViewItem, CodeViewOptions, FileDiffMetadata } from "@pierre/diffs";
 import { css, type Handle } from "remix/component";
 

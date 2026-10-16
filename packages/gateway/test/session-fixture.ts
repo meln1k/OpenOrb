@@ -6,9 +6,9 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { Session, type SessionContext } from "../app/cells/session/session.ts";
-import { sandboxProvider } from "../app/cells/session/environment/sandbox-provider.ts";
+import { type EnvironmentStatus, sandboxProvider } from "@openorb/environments";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type EnvironmentState, SessionId, WorkspaceId } from "@openorb/protocol/runner-api";
+import { SessionId, WorkspaceId } from "@openorb/protocol/runner-api";
 
 /** A 1×1 PNG the scripted model publishes as Session media. */
 export const SCRIPTED_PNG_BASE64 =
@@ -41,15 +41,8 @@ export class ScriptedSession extends Session {
   /** Disposable runtime probe: retained original handles prevent GC from hiding a loader leak. */
   async sandboxReloadProbe(): Promise<{ cycles: number; retained: number }> {
     const retained: ReturnType<WorkerLoader["get"]>[] = [];
-    let state: EnvironmentState = "stopped";
-    const sessionId = SessionId.make(crypto.randomUUID());
+    let status: EnvironmentStatus = { state: "stopped", reachable: true };
     const provider = sandboxProvider({
-      // SAFETY: Session's constructor receives this context; the test base class types it unknown.
-      facets: (this.ctx as SessionContext).facets,
-      sessionId,
-      state: () => state,
-      recordState: (next) => (state = next),
-      onIdle: () => {},
       loader: {
         get: (...args) => {
           const worker = this.env.LOADER.get(...args);
@@ -59,9 +52,17 @@ export class ScriptedSession extends Session {
         load: (code) => this.env.LOADER.load(code),
       },
     });
-    const environment = provider.bind({
+    const environment = provider.open({
       workspaceId: WorkspaceId.make(crypto.randomUUID()),
-      sessionId,
+      sessionId: SessionId.make(crypto.randomUUID()),
+      placement: { provider: "sandbox" },
+      // SAFETY: Session's constructor receives this context; the Deno runtime shim types it unknown.
+      facets: (this.ctx as SessionContext).facets,
+      acceptWebSocket: () => {},
+      getWebSockets: () => [],
+      status: () => status,
+      report: (next) => (status = next),
+      reconcile: () => {},
     });
     await environment.control("start");
     for (let cycle = 0; cycle < 260; cycle++) {
@@ -77,7 +78,7 @@ export class ScriptedSession extends Session {
         const result = await environment.env.writeFile(path, String(cycle), BACKGROUND_CONTEXT);
         if (!result.ok) throw result.error;
       }
-      environment.close();
+      environment.release();
     }
     await environment.delete();
     return { cycles: 260, retained: retained.length };

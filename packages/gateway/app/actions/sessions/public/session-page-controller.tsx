@@ -4,7 +4,7 @@ import type {
   SessionEvent,
   SessionIssue,
   SessionProvisioningStage,
-} from "@openorb/protocol/browser-session-events";
+} from "../../../cells/session/view.ts";
 import { trySync } from "../../../../../result/src/index.ts";
 import { parseSafe, string } from "remix/data-schema";
 import { type Handle, type RemixNode, TypedEventTarget } from "remix/component";
@@ -27,6 +27,8 @@ export interface SessionPageProjection {
   readonly sessionState: SessionState;
   readonly agentState: AgentState | null;
   readonly environmentState: EnvironmentState | null;
+  /** False while the runner hosting the environment is disconnected. */
+  readonly environmentReachable: boolean;
   readonly stage: SessionProvisioningStage | null;
   readonly issues: readonly SessionIssue[];
 }
@@ -40,6 +42,7 @@ export class SessionPageController extends TypedEventTarget<SessionPageEventMap>
     initialIssues: readonly SessionIssue[],
     agentState: AgentState | null = null,
     environmentState: EnvironmentState | null = null,
+    environmentReachable = true,
   ) {
     super();
     this.#projection = {
@@ -47,6 +50,7 @@ export class SessionPageController extends TypedEventTarget<SessionPageEventMap>
       sessionState: initialState,
       agentState,
       environmentState,
+      environmentReachable,
       stage: null,
       issues: initialIssues,
     };
@@ -67,6 +71,7 @@ export class SessionPageController extends TypedEventTarget<SessionPageEventMap>
         sessionState: runnerSessionStateForProvisioningStage(event.stage),
         agentState: event.agentState,
         environmentState: event.environmentState,
+        environmentReachable: event.environmentReachable,
         stage: event.stage,
         issues: event.issues,
       };
@@ -93,6 +98,7 @@ interface SessionPageScopeProps {
   readonly initialState: SessionState;
   readonly initialAgentState: AgentState | null;
   readonly initialEnvironmentState: EnvironmentState | null;
+  readonly initialEnvironmentReachable: boolean;
   readonly initialIssues: readonly SessionIssue[];
   readonly sessionId: string;
 }
@@ -103,6 +109,7 @@ export function SessionPageScope(handle: Handle<SessionPageScopeProps, SessionPa
     handle.props.initialIssues,
     handle.props.initialAgentState ?? null,
     handle.props.initialEnvironmentState ?? null,
+    handle.props.initialEnvironmentReachable,
   );
   handle.context.set(controller);
 

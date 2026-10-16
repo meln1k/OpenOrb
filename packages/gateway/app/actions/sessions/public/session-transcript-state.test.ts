@@ -1,8 +1,6 @@
 import { test } from "vite-plus/test";
 import { assertEquals, assertThrows } from "@jsr/std__assert";
-import type { JsonObject } from "@earendil-works/pi-durable";
-import { ConversationViewSchema } from "@openorb/protocol/runner-api";
-import { Schema } from "effect";
+import type { ConversationView, JsonObject } from "@earendil-works/pi-durable";
 import {
   appendOptimisticUserMessage,
   createSessionTranscriptState,
@@ -10,8 +8,9 @@ import {
   totalSessionUsage,
 } from "./session-transcript-state.ts";
 
-const view = (entries: readonly unknown[] = [], docs: JsonObject = {}) =>
-  Schema.decodeUnknownSync(ConversationViewSchema)({ conversation: { id: 0 }, entries, docs });
+// Fixtures reach the reducer as JSON, as frames from the Session Durable Object do.
+const view = (entries: readonly unknown[] = [], docs: JsonObject = {}): ConversationView =>
+  JSON.parse(JSON.stringify({ conversation: { id: 0 }, entries, docs }));
 const user = (id: number, text: string) => ({
   id,
   conversationId: 0,
@@ -125,6 +124,7 @@ test("environment stopping never settles or discards a running agent partial", (
     stage: "stopping",
     agentState: "running",
     environmentState: "stopping",
+    environmentReachable: true,
     checkoutState: "available",
     issues: [],
   });
@@ -198,72 +198,90 @@ test("tool projection retains arguments and suppresses read output without rewri
   assertEquals(state.view, mounted);
 });
 
-for (const toolName of ["read", "readImage"]) {
-  test(`${toolName} images use artifact Markdown while text output stays hidden`, () => {
-    const artifactId = "01989d78-65ee-8f6a-a97e-0f16ad134c10";
-    const state = reduceSessionTranscriptState(initial(), {
-      type: "conversation.snapshot",
-      view: view([
-        {
-          id: 1,
-          conversationId: 0,
-          kind: "pi.tool-result",
-          model: [
-            {
-              role: "toolResult",
-              toolCallId: "read-image",
-              toolName,
-              content: [
-                { type: "text", text: "hidden file output" },
-                { type: "image", artifactId },
-                { type: "image", text: "[Image unavailable: unsupported format]" },
-              ],
-            },
-          ],
-        },
-      ]),
-    });
-    assertEquals(state.entries, [
+test("read images use artifact Markdown while text output stays hidden", () => {
+  const artifactId = "01989d78-65ee-8f6a-a97e-0f16ad134c10";
+  const state = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view([
       {
-        role: "tool",
-        toolCallId: "read-image",
-        toolName,
-        active: false,
-        isError: false,
-        result: `\n\n![Image](openorb-artifact:image:${artifactId})\n\n[Image unavailable: unsupported format]`,
+        id: 1,
+        conversationId: 0,
+        kind: "pi.tool-result",
+        model: [
+          {
+            role: "toolResult",
+            toolCallId: "read-image",
+            toolName: "read",
+            content: [
+              { type: "text", text: "hidden file output" },
+              { type: "image", artifactId },
+              { type: "image", text: "[Image unavailable: unsupported format]" },
+            ],
+          },
+        ],
       },
-    ]);
+    ]),
   });
+  assertEquals(state.entries, [
+    {
+      role: "tool",
+      toolCallId: "read-image",
+      toolName: "read",
+      active: false,
+      isError: false,
+      result: `\n\n![Image](openorb-artifact:image:${artifactId})\n\n[Image unavailable: unsupported format]`,
+    },
+  ]);
+});
 
-  test(`${toolName} errors retain diagnostic text`, () => {
-    const state = reduceSessionTranscriptState(initial(), {
-      type: "conversation.snapshot",
-      view: view([
-        {
-          id: 1,
-          conversationId: 0,
-          kind: "pi.tool-result",
-          model: [
-            {
-              role: "toolResult",
-              toolCallId: "failed-read",
-              toolName,
-              isError: true,
-              content: [{ type: "text", text: "Guest file could not be read." }],
-            },
-          ],
-        },
-      ]),
-    });
-    assertEquals(state.entries, [
+test("read errors retain diagnostic text", () => {
+  const state = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view([
       {
-        role: "tool",
-        toolCallId: "failed-read",
-        toolName,
-        active: false,
-        isError: true,
-        result: "Guest file could not be read.",
+        id: 1,
+        conversationId: 0,
+        kind: "pi.tool-result",
+        model: [
+          {
+            role: "toolResult",
+            toolCallId: "failed-read",
+            toolName: "read",
+            isError: true,
+            content: [{ type: "text", text: "Guest file could not be read." }],
+          },
+        ],
       },
-    ]);
+    ]),
   });
-}
+  assertEquals(state.entries, [
+    {
+      role: "tool",
+      toolCallId: "failed-read",
+      toolName: "read",
+      active: false,
+      isError: true,
+      result: "Guest file could not be read.",
+    },
+  ]);
+});
+
+test("setup entries show their output to viewers, not the message written for the agent", () => {
+  const state = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view([
+      {
+        id: 1,
+        conversationId: 0,
+        kind: "openorb.setup",
+        data: { step: "setup", exitCode: 2, output: "npm ERR! missing script" },
+        model: [{ role: "user", content: "[OpenOrb] .agents/setup failed", timestamp: 1 }],
+      },
+      user(2, "Fix the build"),
+    ]),
+  });
+  assertEquals(state.entries, [
+    { role: "setup", id: 1, step: "setup", exitCode: 2, output: "npm ERR! missing script" },
+    { role: "user", messageId: "2:0", text: "Fix the build" },
+  ]);
+});

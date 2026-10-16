@@ -3,15 +3,16 @@
 **Status:** Accepted; implemented with the OpenOrb runner and, since
 [ADR 0007](0007-built-in-sandbox-provider.md), the built-in Sandbox. The Session records its
 provider kind and the Project's Guest Credential Opt-in; Workspace defaults, Project overrides, and
-their storage and UI are deferred. Providers also declare whether the guest has Git.
+their storage and UI are deferred. Providers also declare whether the guest has Git. ADR 0008 drops
+the persistence and hibernatable-link capabilities and lets prompts wait for setup.
 
 The Agent Harness sees only Pi's `ExecutionEnv` interface, unchanged. Everything that supplies it
 sits behind an OpenOrb Agent Environment Provider. That includes the OpenOrb runner, which becomes
 one provider among future sandbox vendors. A provider supplies compute, lifecycle (start, stop,
 restart, delete), persistence, network policy, and a way to open an Environment Link. It does not
-supply project behaviour. Providers that can run the static Environment Daemon all share the
-vendored `RemoteExecutionEnv`, and only the link transport is vendor-specific. A provider with a
-suitable native API may return its own `ExecutionEnv` instead.
+supply project behaviour. Providers that can run the static Environment Daemon all share the pi-env
+`RemoteExecutionEnv`, and only the link transport is vendor-specific. A provider with a suitable
+native API may return its own `ExecutionEnv` instead.
 
 Repository clone, `.agents/setup` and `.agents/resume`, Git Snapshots, skill discovery, and
 Published Media move into the Session Durable Object and run over `ExecutionEnv`. This keeps

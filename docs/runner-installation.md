@@ -224,7 +224,7 @@ sudo stat -c '%a %U %G %n' /var/lib/openorb-runner \
 ```
 
 The expected modes are `700` for the state directory and `600` for both identity files, all owned by
-`openorb-runner:openorb-runner`. Restarting the service preserves identity, Session Journals, and
-each session's persistent `root-disk.qcow2` regardless of which launch mode is active. A wake opens
-the same disk in a new VM and runs `.agents/resume`; RAM, processes, and tmpfs-backed guest paths do
-not return.
+`openorb-runner:openorb-runner`. Restarting the service preserves identity, environment definitions,
+and each session's persistent `root-disk.qcow2` regardless of which launch mode is active. A wake
+opens the same disk in a new VM and runs `.agents/resume`; RAM, processes, and tmpfs-backed guest
+paths do not return.

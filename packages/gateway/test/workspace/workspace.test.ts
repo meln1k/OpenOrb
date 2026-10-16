@@ -7,12 +7,8 @@ import {
   assertRejects,
   assertThrows,
 } from "@jsr/std__assert";
-import {
-  ProjectId,
-  SessionEnvironmentSecret,
-  SessionId,
-  WorkspaceId,
-} from "@openorb/protocol/runner-api";
+import { SessionEnvironmentSecret, SessionId, WorkspaceId } from "@openorb/protocol/runner-api";
+import { ProjectId } from "../../app/cells/workspace/api.ts";
 import {
   decodeWorkspaceArguments,
   type SaveBrowserSession,
@@ -164,18 +160,19 @@ test("Workspace migrations preserve records, roll back failed upgrades, and reje
   assertEquals(storage.rows("SELECT id FROM data_table_migrations"), [
     { id: "0001" },
     { id: "0002" },
+    { id: "0003" },
   ]);
   const unchanged = storage.dump();
   assertEquals((await migrateWorkspaceDatabase(storage, workspaceMigrations)).applied, []);
   assertEquals(storage.dump(), unchanged);
 
   const upgrade = {
-    id: "0003",
+    id: "0004",
     name: "project_note",
     up: "ALTER TABLE projects ADD COLUMN note TEXT NOT NULL DEFAULT 'retained';",
   };
   const failed = {
-    id: "0004",
+    id: "0005",
     name: "migration_probe",
     up: "CREATE TABLE migration_probe (value TEXT); INSERT INTO missing_table VALUES ('fail');",
   };
@@ -199,7 +196,7 @@ test("Workspace migrations preserve records, roll back failed upgrades, and reje
   ];
   assertEquals(
     (await migrateWorkspaceDatabase(storage, migrations)).applied.map((m) => m.id),
-    ["0003", "0004"],
+    ["0004", "0005"],
   );
   assertEquals(storage.rows("SELECT id, note FROM projects"), [
     {
@@ -214,7 +211,7 @@ test("Workspace migrations preserve records, roll back failed upgrades, and reje
     migrateWorkspaceDatabase(storage, [
       ...workspaceMigrations,
       { ...upgrade, up: upgrade.up + "\n" },
-      migrations[2]!,
+      migrations.at(-1)!,
     ]),
   );
   assertEquals(storage.dump(), upgraded);
@@ -245,13 +242,12 @@ test("migration 0002 keeps catalog rows and lets Sessions go without a project",
     { id: "with-project", projectId: "p" },
     { id: "without-project", projectId: null },
   ]);
-  // The rebuilt table keeps its deletion guard and project reference.
-  assertThrows(() =>
-    storage.sql.exec(
-      "INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview) VALUES ('w', 'gone', NULL, '3', 'x')",
-    ),
-  );
+  // The rebuilt table keeps its project reference; migration 0003 drops the deletion tombstones.
   assertThrows(() => storage.sql.exec("DELETE FROM projects WHERE id = 'p'"));
+  assertEquals(
+    storage.rows("SELECT name FROM sqlite_master WHERE name LIKE '%deleted_session%'"),
+    [],
+  );
 });
 
 test("Worker validates HTTP before RPC and keeps remote failures private", async () => {
@@ -441,77 +437,37 @@ test("runner enrollment authenticates durably and revocation invalidates the tok
   assertEquals(await restarted.enrollRunner(input), null);
 });
 
-test("catalog manifests are all-or-nothing and durable tombstones prevent resurrection", async () => {
+test("catalog entries need their project and are deleted once", async () => {
   const { workspace, storage, workspaceId } = await configured();
   const project = await createProject(workspace, workspaceId);
-  const existing = snapshot(project.id);
-  assertEquals(await workspace.reconcileSessionManifestEntries(workspaceId, [existing]), [
+  const entry = snapshot(project.id);
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, entry), [undefined, undefined]);
+  const [, missingProject] = await workspace.addSessionCatalogEntry(
+    workspaceId,
+    snapshot(crypto.randomUUID()),
+  );
+  assert(missingProject instanceof Error);
+  const restarted = activate(storage).workspace;
+  assertEquals(await restarted.listSessionNavigationEntries(workspaceId), [
     {
-      acceptedSessionIds: [existing.id],
-      tombstonedSessionIds: [],
-      rejected: [],
+      id: entry.id,
+      projectId: project.id,
+      projectName: project.name,
+      initialPromptPreview: entry.initialPromptPreview,
     },
-    undefined,
   ]);
-  const fresh = snapshot(project.id);
-  const missing = snapshot(crypto.randomUUID());
-  const conflict = {
-    ...existing,
-    initialPromptPreview: "Changed immutable preview",
-  };
-  assertEquals(
-    await workspace.reconcileSessionManifestEntries(workspaceId, [fresh, conflict, missing]),
-    [
-      {
-        acceptedSessionIds: [],
-        tombstonedSessionIds: [],
-        rejected: [
-          { sessionId: existing.id, reason: "catalog-conflict" },
-          { sessionId: missing.id, reason: "project-not-found" },
-        ],
-      },
-      undefined,
-    ],
-  );
-  assertEquals(await workspace.getSessionCatalogEntry(workspaceId, fresh.id), null);
-  assertEquals(
-    (await workspace.getSessionCatalogEntry(workspaceId, existing.id))?.initialPromptPreview,
-    existing.initialPromptPreview,
-  );
-  const deletedAt = new Date().toISOString();
-  assertEquals(await workspace.deleteSessionCatalogEntry(workspaceId, existing.id, deletedAt), [
+  assertEquals(await restarted.deleteSessionCatalogEntry(workspaceId, entry.id), [
     "deleted",
     undefined,
   ]);
-  const restarted = activate(storage).workspace;
-  assertEquals(await restarted.reconcileSessionManifestEntries(workspaceId, [existing, fresh]), [
-    {
-      acceptedSessionIds: [fresh.id],
-      tombstonedSessionIds: [existing.id],
-      rejected: [],
-    },
+  assertEquals(await restarted.deleteSessionCatalogEntry(workspaceId, entry.id), [
+    "not-found",
     undefined,
   ]);
-  assertEquals(await restarted.getSessionCatalogEntry(workspaceId, existing.id), null);
-  assertEquals(
-    storage.rows(
-      "SELECT deletedAt FROM deleted_sessions WHERE workspaceId = ? AND sessionId = ?",
-      workspaceId,
-      existing.id,
-    ),
-    [{ deletedAt }],
-  );
-  assertEquals(await restarted.listSessionNavigationEntries(workspaceId), [
-    {
-      id: fresh.id,
-      projectId: project.id,
-      projectName: project.name,
-      initialPromptPreview: fresh.initialPromptPreview,
-    },
-  ]);
+  assertEquals(await restarted.getSessionCatalogEntry(workspaceId, entry.id), null);
 });
 
-test("Workspace preserves protocol limits and rejects conflicting entries in one manifest", async () => {
+test("Workspace preserves protocol limits", async () => {
   const { workspace, workspaceId } = await configured();
   const hosts = Array.from({ length: 32 }, (_, index) => `api${index}.example.com`);
   assertEquals(
@@ -522,26 +478,14 @@ test("Workspace preserves protocol limits and rejects conflicting entries in one
     workspace.saveSecret(workspaceId, "HOSTS", "test-secret", [...hosts, "extra.example.com"]),
   );
   const project = await createProject(workspace, workspaceId);
-  const entry = {
-    ...snapshot(project.id),
-    initialPromptPreview: "😀".repeat(200),
-  };
-  const entries = [entry] as const;
-  const [accepted, error] = await workspace.reconcileSessionManifestEntries(workspaceId, entries);
-  assertEquals(error, undefined);
-  assertEquals(accepted?.acceptedSessionIds, [entry.id]);
+  const entry = { ...snapshot(project.id), initialPromptPreview: "😀".repeat(200) };
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, entry), [undefined, undefined]);
   await assertRejects(() =>
-    workspace.reconcileSessionManifestEntries(workspaceId, [
-      { ...entry, initialPromptPreview: "😀".repeat(201) },
-    ]),
+    workspace.addSessionCatalogEntry(workspaceId, {
+      ...snapshot(project.id),
+      initialPromptPreview: "😀".repeat(201),
+    }),
   );
-  const fresh = snapshot(project.id);
-  const [rejected] = await workspace.reconcileSessionManifestEntries(workspaceId, [
-    fresh,
-    { ...fresh, initialPromptPreview: "Different immutable preview" },
-  ]);
-  assertEquals(rejected?.rejected, [{ sessionId: fresh.id, reason: "catalog-conflict" }]);
-  assertEquals(await workspace.getSessionCatalogEntry(workspaceId, fresh.id), null);
 });
 
 test("browser-session rotation and logout reject stale saves after reactivation", async () => {

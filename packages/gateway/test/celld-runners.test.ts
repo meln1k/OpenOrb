@@ -10,7 +10,6 @@ import {
   RunnerIdentity,
   RunnerStateEvent,
   SessionId,
-  type WorkspaceId,
 } from "@openorb/protocol/runner-api";
 import { RunnerBulkApi, runnerBulkRpcSerializationLayer } from "@openorb/protocol/runner-bulk-api";
 import {
@@ -34,14 +33,8 @@ const capacity = new RunnerCapacity({
   diskFreeMiB: 50_000,
 });
 
-function environment(sessionId: string, workspaceId: WorkspaceId) {
-  return new RunnerEnvironmentSnapshot({
-    sessionId: SessionId.make(sessionId),
-    workspaceId,
-    createdAt: "2026-10-08T12:00:00Z",
-    orbSize: "small",
-    state: "running",
-  });
+function environment(sessionId: string) {
+  return new RunnerEnvironmentSnapshot({ sessionId: SessionId.make(sessionId), state: "running" });
 }
 
 function endpoint(path: string, params: Record<string, string> = {}) {
@@ -110,7 +103,6 @@ function controlHandlers(probe: Probe) {
           probe.stops.push(sessionId);
           return new EnvironmentControlled({ state: "stopped", forced: false });
         }),
-      "environment.attach": unused,
       "environment.delete": unused,
     }),
   );
@@ -194,9 +186,7 @@ const fixture = Effect.fn(function* () {
   );
   assert(enrolled);
   const runnerParams = { workspaceId, runnerId: enrolled.runnerId };
-  const environments = [crypto.randomUUID(), crypto.randomUUID()].map((id) =>
-    environment(id, workspaceId),
-  );
+  const environments = [crypto.randomUUID(), crypto.randomUUID()].map(environment);
   yield* Effect.addFinalizer(() =>
     Effect.promise(async () => {
       await workspace.revokeRunner(workspaceId, enrolled.runnerId);
@@ -214,30 +204,11 @@ const fixture = Effect.fn(function* () {
   return { workspace, workspaceId, runnerParams, environments, probe };
 });
 
-const publish = (probe: Probe, environments: RunnerEnvironmentSnapshot[], revision = 1) =>
-  Effect.forEach(
-    [
-      ...environments.map((environment) => ({
-        type: "snapshot.environment" as const,
-        environment,
-      })),
-      {
-        type: "snapshot.complete" as const,
-        revision,
-        environmentCount: environments.length,
-        observedAt: revision,
-        capacity,
-      },
-    ],
-    (event) => Queue.offer(probe.events, decode(RunnerStateEvent)(event)),
-    { discard: true },
+const publish = (probe: Probe, environments: RunnerEnvironmentSnapshot[]) =>
+  Queue.offer(
+    probe.events,
+    decode(RunnerStateEvent)({ type: "snapshot", observedAt: 1, capacity, environments }),
   );
-
-/** The routed environment as native RPC returns it: a plain record, not a Schema.Class. */
-const routedEnvironment = (runnerId: string, environment: RunnerEnvironmentSnapshot) => ({
-  runnerId,
-  environment: { ...environment },
-});
 
 const admitted = (params: Record<string, string>) =>
   eventually(
@@ -246,7 +217,7 @@ const admitted = (params: Record<string, string>) =>
   );
 
 test(
-  "native celld Runners admits environments, routes control, replaces connections and revokes",
+  "native celld Runners admits a runner, routes control to it, replaces connections and revokes",
   { skip: !gatewayUrl, timeout: 120_000 },
   () =>
     Effect.runPromise(
@@ -255,34 +226,29 @@ test(
           const f = yield* fixture();
           const [first, second] = f.environments;
           assert(first && second);
-          const runnerId = f.runnerParams.runnerId;
-          const firstParams = { workspaceId: f.workspaceId, sessionId: first.sessionId };
-          const secondParams = { workspaceId: f.workspaceId, sessionId: second.sessionId };
-          const routed = (params: Record<string, string>) =>
-            Effect.promise(() => json("/__registry/environment", params));
+          const control = (params: Record<string, string>) =>
+            Effect.promise(() =>
+              json("/__registry/environment/control", {}, { ...params, action: "stop" }),
+            );
+          const firstParams = { ...f.runnerParams, sessionId: first.sessionId };
           yield* connect(f.probe);
           yield* eventually(
             () => Effect.sync(() => f.probe.watchCalls === 1),
             "runner.watch did not start",
           );
           assertEquals(yield* Effect.promise(() => json("/__registry/live", f.runnerParams)), null);
+          assertEquals((yield* control(firstParams)).status, "unavailable");
           yield* publish(f.probe, [first]);
           yield* admitted(f.runnerParams);
-          assertEquals(yield* routed(firstParams), routedEnvironment(runnerId, first));
-          assertEquals(
-            yield* Effect.promise(() =>
-              json("/__registry/environment/control", {}, { ...firstParams, action: "stop" }),
-            ),
-            { status: "accepted", acknowledgement: { state: "stopped", forced: false } },
-          );
+          assertEquals(yield* control(firstParams), {
+            status: "accepted",
+            acknowledgement: { state: "stopped", forced: false },
+          });
           assertEquals(f.probe.stops, [first.sessionId]);
           assertEquals(f.probe.identifyCalls, 1);
-          const foreign = { ...firstParams, workspaceId: crypto.randomUUID() };
-          assertEquals(yield* routed(foreign), null);
+          // A runner is addressed within its Workspace: another Workspace cannot reach it.
           assertEquals(
-            (yield* Effect.promise(() =>
-              json("/__registry/environment/control", {}, { ...foreign, action: "stop" }),
-            )).status,
+            (yield* control({ ...firstParams, workspaceId: crypto.randomUUID() })).status,
             "unavailable",
           );
           assertEquals(f.probe.stops, [first.sessionId]);
@@ -307,13 +273,13 @@ test(
             () => Effect.sync(() => replacement.watchCalls === 1),
             "replacement watch missing",
           );
-          assertEquals(yield* routed(firstParams), routedEnvironment(runnerId, first));
-          yield* publish(replacement, [second], 10);
-          yield* eventually(
-            () => Effect.map(routed(secondParams), (route) => route !== null),
-            "replacement environments missing",
-          );
-          assertEquals(yield* routed(firstParams), null);
+          yield* publish(replacement, [second]);
+          // Admitting the replacement closes the connection it replaces.
+          yield* Deferred.await(f.probe.closed).pipe(Effect.timeout("3 seconds"));
+          const secondParams = { ...f.runnerParams, sessionId: second.sessionId };
+          assertEquals((yield* control(secondParams)).status, "accepted");
+          assertEquals(replacement.stops, [second.sessionId]);
+          assertEquals(f.probe.stops, [first.sessionId]);
           assertEquals(
             yield* Effect.promise(() =>
               f.workspace.revokeRunner(f.workspaceId, f.runnerParams.runnerId),
@@ -325,7 +291,7 @@ test(
             true,
           );
           assertEquals(yield* Effect.promise(() => json("/__registry/live", f.runnerParams)), null);
-          assertEquals(yield* routed(secondParams), null);
+          assertEquals((yield* control(secondParams)).status, "unavailable");
           const revoked = yield* makeProbe(f.probe.identity);
           yield* connect(revoked);
           assertEquals(

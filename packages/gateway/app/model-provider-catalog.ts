@@ -1,6 +1,5 @@
 import catalog from "../dist/model-catalog.json" with { type: "json" };
-import { DEFAULT_SESSION_THINKING_LEVEL, type SessionThinkingLevel } from "@openorb/protocol";
-import type { SessionModelRuntime } from "@openorb/protocol/runner-api";
+import type { SessionThinkingLevel } from "@openorb/protocol";
 
 export const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
 export interface ModelProviderOption {
@@ -34,14 +33,4 @@ export function modelThinkingLevels(value: string) {
 }
 export function modelProviderName(id: string) {
   return catalog.names.find((p) => p.id === id)?.name ?? id;
-}
-export function sessionModelRuntime(
-  model: string,
-  credential: SessionModelRuntime["credential"],
-): SessionModelRuntime {
-  return {
-    model,
-    thinkingLevel: DEFAULT_SESSION_THINKING_LEVEL,
-    credential,
-  };
 }

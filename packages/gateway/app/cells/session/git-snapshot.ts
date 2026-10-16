@@ -2,7 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
   isSafeGitReference,
-  MAX_RUNNER_BULK_CHUNK_BYTES,
+  MAX_GIT_PATCH_CHUNK_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_FILES,
   MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
   MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
@@ -13,9 +13,9 @@ import {
   type SessionGitFile,
   type SessionGitFileAction,
   type SessionGitFileStatus,
+  type SessionGitPatchSection,
   SessionGitSnapshot,
-} from "@openorb/protocol/runner-api";
-import type { SessionGitPatchSection } from "@openorb/protocol/runner-bulk-api";
+} from "./git-snapshot-schema.ts";
 
 // Git Snapshots for every Agent Environment Provider (ADR 0006): hardened Git runs in the guest
 // over ExecutionEnv. Only the summary crosses the Environment Link; full patches stay in a guest
@@ -192,7 +192,7 @@ export async function generateGitSnapshot(
   // Keep only this snapshot's patches; a viewer of an older snapshot refreshes.
   await capture(env, publishPatchesCommand(directory, snapshotId), 4_096, context);
 
-  return new SessionGitSnapshot({
+  return SessionGitSnapshot.make({
     snapshotId,
     generatedAt: new Date().toISOString(),
     ...(parsedStatus.branch === undefined ? {} : { branch: parsedStatus.branch }),
@@ -244,7 +244,7 @@ export async function readGitPatchChunk(
   if (!opened.ok) throw new GitSnapshotError("The full patch is no longer in the environment.");
   using cleanup = new DisposableStack();
   cleanup.defer(() => void opened.value.close(context));
-  const length = Math.min(MAX_RUNNER_BULK_CHUNK_BYTES, fullPatchBytes - offset);
+  const length = Math.min(MAX_GIT_PATCH_CHUNK_BYTES, fullPatchBytes - offset);
   const read = await opened.value.read(offset, length, context);
   if (!read.ok || read.value.length === 0) {
     throw new GitSnapshotError("The full patch could not be read from the environment.");
@@ -295,7 +295,7 @@ export function staleGitSnapshot(previous?: SessionGitSnapshot): SessionGitSnaps
   const message =
     "Git changes could not be refreshed. Showing the last saved snapshot; try again after the next agent action.";
   if (previous) {
-    return new SessionGitSnapshot({
+    return SessionGitSnapshot.make({
       ...previous,
       completeness: "incomplete",
       stale: true,
@@ -935,7 +935,7 @@ function byteLength(value: string): number {
 }
 
 function incompleteSnapshot(message: string, stale = false): SessionGitSnapshot {
-  return new SessionGitSnapshot({
+  return SessionGitSnapshot.make({
     generatedAt: new Date().toISOString(),
     completeness: "incomplete",
     stale,

@@ -25,7 +25,7 @@ export function createRpcClient(url: string): WorkspaceApi {
             "getModelProviderApiKey",
             "getGitHubToken",
             "deleteSessionCatalogEntry",
-            "reconcileSessionManifestEntries",
+            "addSessionCatalogEntry",
           ].includes(String(name))
         ) {
           if (value[1] === null) value[1] = undefined;

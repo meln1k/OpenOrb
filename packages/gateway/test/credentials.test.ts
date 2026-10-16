@@ -10,10 +10,9 @@ import {
 import {
   MAX_SESSION_ENVIRONMENT_SECRETS,
   MAX_SESSION_SECRET_HOST_CHARACTERS,
-  type UserId,
   type WorkspaceId,
 } from "@openorb/protocol/runner-api";
-import { resolveSessionModelRuntime } from "../app/model-provider-runtime.ts";
+import type { UserId } from "../app/cells/workspace/api.ts";
 import { OPENAI_CODEX_PROVIDER_ID } from "../app/model-provider-catalog.ts";
 import { createAppRouter } from "./workspace-test.ts";
 import { routes } from "../app/routes.ts";
@@ -428,26 +427,14 @@ test("ChatGPT runtime refreshes rotation once and sends only the access token", 
   try {
     await client.store.startProviderLogin(client.workspaceId);
     await client.store.alarm();
-    const [runtime, error] = await resolveSessionModelRuntime(
-      client.workspaceId,
-      "openai-codex/gpt-5.2-codex",
-      client.store,
-    );
-    assertEquals(error, undefined);
-    assertEquals(runtime?.credential, { type: "access_token", value: rotated.access });
-    assertNotMatch(JSON.stringify(runtime), new RegExp(rotated.refresh));
+    assertEquals(await client.store.resolveProviderAccessToken(client.workspaceId), rotated.access);
     assertEquals(
       await activate(client.storage).workspace.resolveProviderAccessToken(client.workspaceId),
       rotated.access,
     );
 
-    const [reused, reuseError] = await resolveSessionModelRuntime(
-      client.workspaceId,
-      "openai-codex/gpt-5.2-codex",
-      client.store,
-    );
-    assertEquals(reuseError, undefined);
-    assertEquals(reused?.credential, { type: "access_token", value: rotated.access });
+    // The rotated token is reused until it expires.
+    assertEquals(await client.store.resolveProviderAccessToken(client.workspaceId), rotated.access);
     assertEquals(refreshCalls, 1);
   } finally {
     await client.server.close();

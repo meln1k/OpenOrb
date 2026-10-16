@@ -36,23 +36,17 @@ test("session navigation joins project names in catalog order and isolates Works
     createdAt: "2026-09-20T14:00:00.000Z",
     initialPromptPreview: "Foreign session",
   };
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, alphaSession), [
+    undefined,
+    undefined,
+  ]);
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, betaSession), [
+    undefined,
+    undefined,
+  ]);
   assertEquals(
-    await workspace.reconcileSessionManifestEntries(workspaceId, [alphaSession, betaSession]),
-    [
-      {
-        acceptedSessionIds: [alphaSession.id, betaSession.id],
-        tombstonedSessionIds: [],
-        rejected: [],
-      },
-      undefined,
-    ],
-  );
-  assertEquals(
-    await foreign.workspace.reconcileSessionManifestEntries(foreign.workspaceId, [foreignSession]),
-    [
-      { acceptedSessionIds: [foreignSession.id], tombstonedSessionIds: [], rejected: [] },
-      undefined,
-    ],
+    await foreign.workspace.addSessionCatalogEntry(foreign.workspaceId, foreignSession),
+    [undefined, undefined],
   );
   assertEquals(await workspace.listSessionNavigationEntries(workspaceId), [
     {

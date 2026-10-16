@@ -1,7 +1,4 @@
-import {
-  type SessionGitSnapshotData,
-  sessionGitSnapshotSchema,
-} from "../../../../../protocol/src/browser-session-git-snapshot.ts";
+import type { SessionGitSnapshot as SessionGitSnapshotData } from "../../../cells/session/git-snapshot-schema.ts";
 import { tryAsync, trySync } from "../../../../../result/src/index.ts";
 import { boolean, number, object, parseSafe, string } from "remix/data-schema";
 import { type Handle, type RemixNode, TypedEventTarget } from "remix/component";
@@ -120,6 +117,7 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
   get canMutate(): boolean {
     return (
       this.#page?.projection.environmentState === "running" &&
+      this.#page.projection.environmentReachable &&
       !this.#page.projection.connectionInterrupted
     );
   }
@@ -395,13 +393,9 @@ export class SessionChangesResource extends TypedEventTarget<SessionChangesEvent
       this.#setLoadError(errorMessage(body, "The cached Git Snapshot is unavailable."));
       return;
     }
-    const parsed = parseSafe(sessionGitSnapshotSchema, body);
-    if (!parsed.success) {
-      this.#setLoadError("The runner returned an invalid Git Snapshot.");
-      return;
-    }
-
-    const snapshot = parsed.value;
+    // SAFETY: The Session Durable Object validates a Git Snapshot before it stores one, and the
+    // gateway serves the matching browser assets in the same deployment.
+    const snapshot = body as SessionGitSnapshotData;
     const bulkPending =
       snapshot.snapshotId !== undefined &&
       (["staged", "unstaged"] as const).some(

@@ -1,6 +1,7 @@
 # Run a built-in just-bash sandbox when no runner is available
 
-**Status:** Accepted; implemented as the `sandbox` Agent Environment Provider.
+**Status:** Accepted; implemented as the `sandbox` Agent Environment Provider. ADR 0008 drops the
+persistence and hibernatable-link capabilities.
 
 People should be able to try OpenOrb before they operate a runner, and an agent needs somewhere to
 look inside untrusted content (a suspicious download, an archive) where nothing it finds can escape.

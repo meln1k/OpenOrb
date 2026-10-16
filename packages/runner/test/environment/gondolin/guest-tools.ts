@@ -12,12 +12,8 @@ import {
   createReadTool,
   createWriteTool,
 } from "@earendil-works/pi-durable/tools";
-import {
-  Connection,
-  type EnvLink,
-  type EnvLinkHandlers,
-  RemoteExecutionEnv,
-} from "@openorb/pi-env";
+import { RemoteExecutionEnv } from "@earendil-works/pi-env";
+import { type EnvLink, type EnvLinkHandlers, LinkConnection } from "@openorb/pi-env";
 import { assert, assertEquals } from "@jsr/std__assert";
 import { Effect } from "effect";
 import type { AgentEnvironment } from "../../../src/environment/agent-environment.ts";
@@ -58,8 +54,8 @@ function inMemoryLink(handlers: EnvLinkHandlers): InMemoryLink {
 }
 
 /** The guest's Environment Daemon behind the runner relay, as a Session Durable Object sees it. */
-export function relayedConnection(environment: AgentEnvironment): Connection {
-  return new Connection({
+export function relayedConnection(environment: AgentEnvironment): LinkConnection {
+  return new LinkConnection({
     open: async (handlers) => {
       const daemon = await Effect.runPromise(environment.startDaemon);
       const link = inMemoryLink(handlers);

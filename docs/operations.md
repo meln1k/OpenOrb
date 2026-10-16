@@ -75,7 +75,7 @@ Treat the gateway, runner, and protocol as one release unit. Check out the same 
 SHA on the gateway and every source-installed runner; do not mix independently updated checkouts.
 Record it before deployment with `git rev-parse HEAD`, and use that value (not a branch name) as the
 release revision. A standalone runner must come from the release for that same source revision.
-Protocol version **28** is source-owned and is not a separately upgradeable public API.
+Protocol version **29** is source-owned and is not a separately upgradeable public API.
 
 The exact runtime and application pins in this release graph are:
 
@@ -88,7 +88,7 @@ The exact runtime and application pins in this release graph are:
 | OpenOrb guest image                 | `release-2` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi Durable / Pi Env / Chord | 1.2.0                                            |
 | Remix                               | 3.0.0                                            |
-| Runner protocol                     | 28                                               |
+| Runner protocol                     | 29                                               |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
 build IDs, hashes, sizes, and immutable URLs are in
@@ -96,17 +96,22 @@ build IDs, hashes, sizes, and immutable URLs are in
 [guest image release process](guest-image.md), rather than rebuilding an asset under an existing
 release ID.
 
-Protocol 28 carries only runner identification, the `runner.watch` environment stream, and the
-`environment.create`, `environment.control`, `environment.attach`, and `environment.delete`
-procedures; it has no `session.*` procedures. Since v28, `environment.create` omits `repository`
-(its URL and Git author together) for a Session without a project, whose guest then gets no GitHub
-mediation; v27 environment journals are not converted. A v28 gateway rejects v27 runners, so runner
-and gateway must be upgraded together. Control messages use UTF-8 JSON inside SchemaBinary framing
-on the binary control WebSocket; neither the former CBOR format nor unframed JSON text messages are
-supported. Logical control messages are capped at 16 MiB and split into WebSocket messages of at
-most 1 MiB. Reassembly is per connection and is discarded on disconnect; reconnect obtains a fresh
-environment snapshot. The bulk channel carries only identification and a heartbeat and is reserved
-for future terminal and preview tunnels; Git patches and media no longer cross it.
+Protocol 29 carries only runner identification, the `runner.watch` environment stream, and the
+`environment.create`, `environment.control`, and `environment.delete` procedures; it has no
+`session.*` procedures. `runner.watch` sends one snapshot of the runner's environment states and
+capacity, then capacity observations and state changes. `environment.create` omits `repository` (its
+URL and Git author together) for a Session without a project, whose guest then gets no GitHub
+mediation. A runner dials each running environment's Environment Link itself. Since v29 a runner
+stores each environment's definition in `environment.json` instead of a JSONL journal. v28
+environment journals are not converted: a v29 runner skips, with a warning, a directory that holds a
+root disk but no definition, and leaves it for an operator to remove. A v29 gateway rejects v28
+runners, so runner and gateway must be upgraded together. Control messages use UTF-8 JSON inside
+SchemaBinary framing on the binary control WebSocket; neither the former CBOR format nor unframed
+JSON text messages are supported. Logical control messages are capped at 16 MiB and split into
+WebSocket messages of at most 1 MiB. Reassembly is per connection and is discarded on disconnect;
+reconnect obtains a fresh environment snapshot. The bulk channel carries only identification and a
+heartbeat and is reserved for future terminal and preview tunnels; Git patches and media no longer
+cross it.
 
 Streaming RPC handlers emit one event per RPC envelope, so queue batching cannot combine
 individually valid events into an oversized message. The control transport owns its limits; the
@@ -114,10 +119,10 @@ outbound adapter only reconnects. Bulk retains its own frame limit. Values use E
 codecs, including strings for schema-declared bigints. Ordinary numbers retain JavaScript's usual
 precision limits; there is no custom numeric conversion.
 
-Prompts, Abort, and thinking-level changes go to the Session DO, never to a runner. Prompt
-acknowledgements carry the Durable `submissionId`, not a run group or admission mode. Duplicate
-request IDs return the existing submission without resuming paused agent work. Abort targets the
-Session's conversation and leaves its environment running.
+Prompts, Abort, and thinking-level changes go to the Session DO, never to a runner. A prompt is
+admitted to Pi durably at once and runs once queued setup has settled, even if it failed; a prompt
+to a stopped Session starts its environment. Duplicate request IDs are admitted once. Abort targets
+the Session's conversation and its queued prompts and leaves its environment running.
 
 ## Build and run the native gateway locally
 
@@ -202,10 +207,11 @@ and guest-asset release, preserving owner `openorb-runner`, directory mode `0700
 mode `0600`.
 
 Do not claim a crash-consistent copy of a running directory is a session backup. Each environment's
-`root-disk.qcow2`, Session Journal, and pending environment deletions under `environment-deletions/`
-can change independently while a session runs. QEMU mutates the persistent root disk in place while
-its VM is running, so copying it concurrently can produce a corrupt or internally inconsistent
-backup. Stop the service first; filesystem snapshots alone do not coordinate with an active VM.
+`root-disk.qcow2`, `environment.json`, and pending environment deletions under
+`environment-deletions/` can change independently while a session runs. QEMU mutates the persistent
+root disk in place while its VM is running, so copying it concurrently can produce a corrupt or
+internally inconsistent backup. Stop the service first; filesystem snapshots alone do not coordinate
+with an active VM.
 
 Even a consistent runner backup is not a gateway backup and does not make sessions portable or
 provide migration/HA. Runners hold no Harness State, conversation content, Git Snapshots, or
@@ -218,11 +224,11 @@ VM-start failure and never substitutes an older copy.
 
 Pi Durable runs in the Session DO; runner-hosted sessions from earlier releases are not migrated,
 and a runner's former `sessions/` directory is not read. Create new sessions after upgrading. Stop
-Session pauses checkpointed agent work and durably stops compute; Wake resumes it. Abort cancels
-work without stopping compute. Agent-issued environment restart can force a hung VM to close and
-reports possible loss of unsynced writes. Conversation stream subscriptions/reconnects are read-only
-and never wake the Session. Opening a Session page separately sends an authenticated, CSRF-protected
-Wake request.
+Session aborts agent work and durably stops compute; Wake restarts compute and the next prompt
+continues the conversation. Abort cancels work without stopping compute. Agent-issued environment
+restart can force a hung VM to close and reports possible loss of unsynced writes. Conversation
+stream subscriptions/reconnects are read-only and never wake the Session. Opening a Session page
+separately sends an authenticated, CSRF-protected Wake request.
 
 ## Troubleshooting
 

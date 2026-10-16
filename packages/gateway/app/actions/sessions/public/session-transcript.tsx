@@ -1,4 +1,3 @@
-import type { SessionUsage } from "@openorb/protocol/browser-session-events";
 import type { SessionThinkingLevel } from "../../../../../protocol/src/thinking-level.ts";
 import { tryAsync, trySync } from "../../../../../result/src/index.ts";
 import { object, parseSafe, string } from "remix/data-schema";
@@ -26,6 +25,8 @@ import {
   failOptimisticUserMessage,
   reduceSessionTranscriptState,
   type SessionState,
+  type SessionUsage,
+  type SetupEntry,
   type ToolEntry,
   totalSessionUsage,
   type TranscriptEntry,
@@ -52,10 +53,6 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
         return "ready";
       case "running":
         return "running";
-      case "paused":
-        return "stopped";
-      case "error":
-        return "error";
       case null:
         return "offline";
     }
@@ -243,10 +240,12 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
         ) : null}
         <SessionFailureNotices
           connectionInterrupted={connectionInterrupted}
+          runnerUnreachable={!connectionInterrupted && !page.projection.environmentReachable}
           csrfToken={handle.props.csrfToken}
           issues={page.projection.issues}
           recoveryAllowed={
-            page.projection.agentState === "error" || page.projection.environmentState === "error"
+            page.projection.issues.some((issue) => issue.severity === "failure") ||
+            page.projection.environmentState === "error"
           }
           sessionId={handle.props.sessionId}
         />
@@ -295,7 +294,7 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
                 <MessageScrollerItem>
                   <p data-conversation-placeholder mix={emptyConversationStyle}>
                     {sessionState === "offline"
-                      ? "Conversation history is unavailable while the pinned runner is offline."
+                      ? "Conversation history is unavailable while the connection is interrupted."
                       : "Connecting to the orb"}
                   </p>
                 </MessageScrollerItem>
@@ -587,7 +586,7 @@ function renderTranscriptEntry(
                   name={
                     entry.toolName === "bash"
                       ? "terminal"
-                      : entry.toolName === "read" || entry.toolName === "readImage"
+                      : entry.toolName === "read"
                         ? "book-open-text"
                         : "wrench"
                   }
@@ -604,29 +603,41 @@ function renderTranscriptEntry(
               )}
             </MarkerContent>
           </Marker>
-          {(entry.toolName === "read" || entry.toolName === "readImage") && entry.result ? (
+          {entry.toolName === "read" && entry.result ? (
             <AssistantMarkdown text={entry.result} completed sessionId={sessionId} />
           ) : null}
         </MessageScrollerItem>
       );
     }
-    case "provisioning":
+    case "setup":
       return (
-        <MessageScrollerItem key="provisioning:output" messageId="provisioning:output">
-          <Marker data-session-output mix={richMarkerStyle}>
+        <MessageScrollerItem key={`setup:${entry.id}`} messageId={`setup:${entry.id}`}>
+          <Marker
+            data-conversation-entry
+            data-role="setup"
+            data-exit-code={entry.exitCode}
+            mix={richMarkerStyle}
+          >
             <MarkerIcon>
               <Icon name="terminal" />
             </MarkerIcon>
             <MarkerContent mix={markerDetailStyle}>
-              <details>
-                <summary>Provisioning output</summary>
-                <pre>{entry.text}</pre>
+              <details open={entry.exitCode !== 0}>
+                <summary>{setupSummary(entry)}</summary>
+                {entry.output.trim() === "" ? null : <pre>{entry.output}</pre>}
               </details>
             </MarkerContent>
           </Marker>
         </MessageScrollerItem>
       );
   }
+}
+
+function setupSummary(entry: SetupEntry): string {
+  const command = entry.step === "clone" ? "Repository clone" : `.agents/${entry.step}`;
+  return entry.exitCode === 0
+    ? `${command} output`
+    : `${command} failed with exit status ${entry.exitCode}`;
 }
 
 function ToolDetails(handle: Handle<{ entry: ToolEntry }>) {
@@ -674,8 +685,7 @@ function commandForBashTool(entry: ToolEntry): string | undefined {
 
 function pathForReadTool(entry: ToolEntry): string | undefined {
   const argumentsText = entry.arguments;
-  if ((entry.toolName !== "read" && entry.toolName !== "readImage") || argumentsText === undefined)
-    return undefined;
+  if (entry.toolName !== "read" || argumentsText === undefined) return undefined;
   const [argumentsValue, parseError] = trySync(
     () => JSON.parse(argumentsText),
     () => true,

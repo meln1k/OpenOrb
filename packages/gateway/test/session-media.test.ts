@@ -6,11 +6,8 @@ import {
   assertNotStrictEquals,
   assertStrictEquals,
 } from "@jsr/std__assert";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import type { ConversationView, JsonObject } from "@earendil-works/pi-durable";
-import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { gatedExecutionEnv } from "../app/cells/session/gate.ts";
 import {
   ConversationProjection,
   detectMediaType,
@@ -80,29 +77,4 @@ test("inline images are found again in Harness State by identifier", async () =>
 test("published media types come from content signatures, not names", () => {
   assertEquals(detectMediaType(Uint8Array.fromBase64(SCRIPTED_PNG_BASE64)), "image/png");
   assertEquals(detectMediaType(new TextEncoder().encode("<svg/>")), null);
-});
-
-test("guest operations wait for project setup, then reach the provider", async () => {
-  const calls: string[] = [];
-  const fake: Partial<ExecutionEnv> = {
-    id: "fake",
-    cwd: "/workspace",
-    exists: (path: string) => {
-      calls.push(path);
-      return Promise.resolve({ ok: true, value: true });
-    },
-  };
-  // SAFETY: the gate forwards only `exists` here; no other provider method is called.
-  const env = fake as ExecutionEnv;
-  let release!: () => void;
-  let readiness: Promise<void> | undefined = new Promise<void>((resolve) => (release = resolve));
-  const gated = gatedExecutionEnv(env, () => readiness);
-  const pending = gated.exists("/workspace/a", BACKGROUND_CONTEXT);
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assertEquals(calls, []);
-  release();
-  readiness = undefined;
-  await pending;
-  await gated.exists("/workspace/b", BACKGROUND_CONTEXT);
-  assertEquals(calls, ["/workspace/a", "/workspace/b"]);
 });

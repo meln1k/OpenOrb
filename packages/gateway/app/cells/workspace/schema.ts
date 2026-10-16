@@ -151,16 +151,6 @@ export const sessions = table({
   },
 });
 
-export const deletedSessions = table({
-  name: "deleted_sessions",
-  primaryKey: ["workspaceId", "sessionId"],
-  columns: {
-    workspaceId: c.text().notNull(),
-    sessionId: c.text().notNull(),
-    deletedAt: c.text().notNull(),
-  },
-});
-
 export const browserSessions = table({
   name: "browser_sessions",
   primaryKey: "id",
@@ -195,6 +185,5 @@ export type ProjectRow = TableRow<typeof projects>;
 export type RunnerEnrollmentTokenRow = TableRow<typeof runnerEnrollmentTokens>;
 export type RunnerRow = TableRow<typeof runners>;
 export type SessionRow = TableRow<typeof sessions>;
-export type DeletedSessionRow = TableRow<typeof deletedSessions>;
 export type BrowserSessionRow = TableRow<typeof browserSessions>;
 export type ProviderAuthorizationRow = TableRow<typeof providerAuthorizations>;

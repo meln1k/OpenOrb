@@ -1,6 +1,7 @@
 import { object, parseSafe, string } from "remix/data-schema";
 import { v7 } from "@jsr/std__uuid";
-import { UserId, WorkspaceId } from "@openorb/protocol/runner-api";
+import { WorkspaceId } from "@openorb/protocol/runner-api";
+import { UserId } from "../cells/workspace/api.ts";
 
 export const BROWSER_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 

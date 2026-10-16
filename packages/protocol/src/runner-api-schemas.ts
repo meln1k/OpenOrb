@@ -1,56 +1,33 @@
-import { Effect, Schema } from "effect";
+import { Schema } from "effect";
 
-import {
-  AgentState,
-  EnvironmentState,
-  SessionEnvironmentRecoveryMode,
-  SessionIssues,
-} from "./runner-api-session-events.ts";
-import {
-  MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES,
-  MAX_SESSION_GIT_PATH_CHARACTERS,
-  MAX_SESSION_GIT_SNAPSHOT_FILES,
-  MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
-} from "./runner-api-limits.ts";
-import { SESSION_THINKING_LEVELS } from "./thinking-level.ts";
+import { MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES } from "./runner-api-limits.ts";
 
-export const MAX_RPC_INITIAL_PROMPT_BYTES = 32 * 1024;
 export const MAX_SESSION_ENVIRONMENT_SECRETS = 64;
 export const MAX_SESSION_SECRET_HOSTS = 32;
 export const MAX_SESSION_SECRET_HOST_CHARACTERS = 253;
-export const RUNNER_PROTOCOL_VERSION = 28;
+export const RUNNER_PROTOCOL_VERSION = 29;
 
 export * from "./runner-api-limits.ts";
+
+export const EnvironmentState = Schema.Literals([
+  "starting",
+  "running",
+  "stopping",
+  "stopped",
+  "error",
+]);
+export type EnvironmentState = typeof EnvironmentState.Type;
 
 const Uuid = Schema.String.check(Schema.isUUID());
 
 export const SessionId = Uuid.pipe(Schema.brand("SessionId"));
 export type SessionId = typeof SessionId.Type;
 
-export const ProjectId = Uuid.pipe(Schema.brand("ProjectId"));
-export type ProjectId = typeof ProjectId.Type;
-
 export const RunnerId = Uuid.pipe(Schema.brand("RunnerId"));
 export type RunnerId = typeof RunnerId.Type;
 
-export const UserId = Uuid.pipe(Schema.brand("UserId"));
-export type UserId = typeof UserId.Type;
 export const WorkspaceId = Uuid.pipe(Schema.brand("WorkspaceId"));
 export type WorkspaceId = typeof WorkspaceId.Type;
-
-export const RunnerRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-
-export const GitMutationRevision = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(0),
-  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-).pipe(Schema.brand("GitMutationRevision"));
-export type GitMutationRevision = typeof GitMutationRevision.Type;
-const InitialGitMutationRevision = GitMutationRevision.make(0);
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -80,127 +57,38 @@ export class RunnerCapacity extends Schema.Class<RunnerCapacity>("RunnerCapacity
   diskFreeMiB: NonNegativeInt,
 }) {}
 
-export const RunnerSessionState = Schema.Literals([
-  "created",
-  "provisioning",
-  "running",
-  "ready",
-  "stopped",
-  "error",
-]);
-export type RunnerSessionState = typeof RunnerSessionState.Type;
-
-const ModelProviderId = Schema.String.check(
-  Schema.isMinLength(1),
-  Schema.isMaxLength(64),
-  Schema.isPattern(/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/),
-);
-
-export const ModelReference = Schema.String.check(
-  Schema.isMaxLength(512),
-  Schema.makeFilter((value) => {
-    const separator = value.indexOf("/");
-    if (separator <= 0 || separator >= value.length - 1) {
-      return "Expected a provider/model reference.";
-    }
-    if (/\s/u.test(value.slice(separator + 1))) {
-      return "Model identifiers must not contain whitespace.";
-    }
-    const provider = Schema.decodeUnknownResult(ModelProviderId)(value.slice(0, separator));
-    return provider._tag === "Success" ? undefined : "Expected a valid model provider identifier.";
-  }),
-);
-
 export const OrbSize = Schema.Literals(["tiny", "small", "medium", "large", "xxlarge"]);
 export type OrbSize = typeof OrbSize.Type;
-
-export const RunnerSessionCreatedAt = Schema.String.check(
-  Schema.makeFilter((value) =>
-    Schema.decodeUnknownResult(Schema.DateTimeUtcFromString)(value)._tag === "Success"
-      ? undefined
-      : "Expected an ISO 8601 instant.",
-  ),
-);
-
-const InitialPromptPreview = Schema.String.check(
-  Schema.makeFilter((value) =>
-    value.length > 0 && value === collapseWhitespace(value) && Array.from(value).length <= 200
-      ? undefined
-      : "Initial prompt previews must contain 1 to 200 normalized Unicode code points.",
-  ),
-);
-
-export function initialPromptPreview(prompt: string): string {
-  return Array.from(collapseWhitespace(prompt)).slice(0, 200).join("").trimEnd();
-}
-
-export const ThinkingLevel = Schema.Literals(SESSION_THINKING_LEVELS);
-export type ThinkingLevel = typeof ThinkingLevel.Type;
-
-export class RunnerSessionSnapshot extends Schema.Class<RunnerSessionSnapshot>(
-  "RunnerSessionSnapshot",
-)({
-  id: SessionId,
-  /** Absent for a Session without a project, which has no checkout and no Git integration. */
-  projectId: Schema.optionalKey(ProjectId),
-  createdAt: RunnerSessionCreatedAt,
-  initialPromptPreview: InitialPromptPreview,
-  model: ModelReference,
-  initialThinkingLevel: ThinkingLevel,
-  orbSize: OrbSize,
-  state: RunnerSessionState,
-  agentState: AgentState,
-  environmentState: EnvironmentState,
-  issues: SessionIssues,
-}) {}
 
 /** An environment-only Session on a runner (ADR 0006). */
 export class RunnerEnvironmentSnapshot extends Schema.Class<RunnerEnvironmentSnapshot>(
   "RunnerEnvironmentSnapshot",
 )({
   sessionId: SessionId,
-  workspaceId: WorkspaceId,
-  createdAt: RunnerSessionCreatedAt,
-  orbSize: OrbSize,
   state: EnvironmentState,
-  /** A Stopping state interrupted by a runner restart needs an explicit forced restart. */
-  recovery: Schema.optionalKey(SessionEnvironmentRecoveryMode),
 }) {}
 
 const ObservedAt = NonNegativeInt;
 
-const SnapshotCompleteEvent = Schema.Struct({
-  type: Schema.Literal("snapshot.complete"),
-  revision: RunnerRevision,
-  environmentCount: NonNegativeInt,
-  observedAt: ObservedAt,
-  capacity: RunnerCapacity,
-});
-
-const RunnerObservedEvent = Schema.Struct({
-  type: Schema.Literal("runner.observed"),
-  revision: RunnerRevision,
-  observedAt: ObservedAt,
-  capacity: RunnerCapacity,
-});
-
-/** A runner's environments and capacity (ADR 0006); Sessions live in Session Durable Objects. */
+/**
+ * A runner's environments and capacity (ADR 0006), in order on one stream: the snapshot first,
+ * then changes. Sessions live in Session Durable Objects.
+ */
 export const RunnerStateEvent = Schema.Union([
-  SnapshotCompleteEvent,
-  RunnerObservedEvent,
   Schema.Struct({
-    type: Schema.Literal("snapshot.environment"),
-    environment: RunnerEnvironmentSnapshot,
+    type: Schema.Literal("snapshot"),
+    observedAt: ObservedAt,
+    capacity: RunnerCapacity,
+    environments: Schema.Array(RunnerEnvironmentSnapshot),
   }),
   Schema.Struct({
-    type: Schema.Literal("environment.updated"),
-    revision: RunnerRevision,
-    environment: RunnerEnvironmentSnapshot,
+    type: Schema.Literal("runner.observed"),
+    observedAt: ObservedAt,
+    capacity: RunnerCapacity,
   }),
   Schema.Struct({
-    type: Schema.Literal("environment.removed"),
-    revision: RunnerRevision,
-    sessionId: SessionId,
+    type: Schema.Literal("environment.changed"),
+    environment: RunnerEnvironmentSnapshot,
   }),
 ]);
 export type RunnerStateEvent = typeof RunnerStateEvent.Type;
@@ -285,21 +173,6 @@ export class GitAuthor extends Schema.Class<GitAuthor>("GitAuthor")({
   email: GitAuthorEmail,
 }) {}
 
-export class SessionModelRuntime extends Schema.Class<SessionModelRuntime>("SessionModelRuntime")({
-  model: ModelReference,
-  thinkingLevel: ThinkingLevel,
-  credential: Schema.Union([
-    Schema.Struct({
-      type: Schema.Literal("api_key"),
-      value: Secret,
-    }),
-    Schema.Struct({
-      type: Schema.Literal("access_token"),
-      value: Secret,
-    }),
-  ]),
-}) {}
-
 export const SessionRepositoryUrl = Schema.String.check(
   Schema.makeFilter((value) =>
     isCanonicalGitHubRepository(value)
@@ -307,145 +180,6 @@ export const SessionRepositoryUrl = Schema.String.check(
       : "Expected a canonical GitHub HTTPS repository URL.",
   ),
 );
-export const SessionGitReference = Schema.String.check(
-  Schema.makeFilter((value) =>
-    isSafeGitReference(value) ? undefined : "Expected a valid Git branch or tag reference.",
-  ),
-);
-export const SessionGitHead = Schema.String.check(
-  Schema.isPattern(/^[0-9a-f]{40,64}$/, {
-    message: "Expected a Git object identifier.",
-  }),
-);
-export const SessionGitFileAction = Schema.Literals(["stage", "unstage"]);
-export type SessionGitFileAction = typeof SessionGitFileAction.Type;
-
-export const SessionGitFileStatus = Schema.Literals(["added", "modified", "deleted", "renamed"]);
-export type SessionGitFileStatus = typeof SessionGitFileStatus.Type;
-
-export const SessionGitDiffState = Schema.Literals(["available", "binary", "truncated"]);
-export type SessionGitDiffState = typeof SessionGitDiffState.Type;
-
-function strictObject<F extends Schema.Struct.Fields>(schema: Schema.Struct<F>): Schema.Struct<F> {
-  // Reject undeclared keys even when this struct is nested in an RPC payload.
-  // Keep the Struct interface for Schema.Class without adding an impossible index signature.
-  const isExtra = (key: PropertyKey) => !Object.hasOwn(schema.fields, key);
-  return schema.rebuild(
-    Schema.StructWithRest(schema, [
-      Schema.Record(Schema.String.check(Schema.makeFilter(isExtra)), Schema.Never),
-      Schema.Record(Schema.Symbol.check(Schema.makeFilter(isExtra)), Schema.Never),
-    ]).ast,
-  );
-}
-
-const SessionGitPath = Schema.String.check(
-  Schema.isMinLength(1),
-  Schema.makeFilter((value) =>
-    Array.from(value).length <= MAX_SESSION_GIT_PATH_CHARACTERS
-      ? undefined
-      : `Git paths must contain at most ${MAX_SESSION_GIT_PATH_CHARACTERS} characters.`,
-  ),
-);
-const SessionGitFileBase = {
-  path: SessionGitPath,
-  displayPath: SessionGitPath,
-  diffState: SessionGitDiffState,
-} as const;
-const SessionGitTrackedFile = Schema.Union([
-  Schema.Struct({
-    ...SessionGitFileBase,
-    kind: Schema.Literal("tracked"),
-    status: Schema.Literals(["added", "modified", "deleted"]),
-  }).pipe(strictObject),
-  Schema.Struct({
-    ...SessionGitFileBase,
-    kind: Schema.Literal("tracked"),
-    status: Schema.Literal("renamed"),
-    previousPath: SessionGitPath,
-    previousDisplayPath: SessionGitPath,
-  }).pipe(strictObject),
-]);
-const SessionGitUntrackedFile = Schema.Struct({
-  ...SessionGitFileBase,
-  kind: Schema.Literal("untracked"),
-  status: Schema.Literal("added"),
-}).pipe(strictObject);
-export const SessionGitFile = Schema.Union([SessionGitTrackedFile, SessionGitUntrackedFile]);
-export type SessionGitFile = typeof SessionGitFile.Type;
-
-const SessionGitPatch = Schema.String.check(
-  Schema.makeFilter((value) =>
-    utf8Length(value) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES
-      ? undefined
-      : `Git Snapshot patch sections must be at most ${MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_BYTES} UTF-8 bytes.`,
-  ),
-  Schema.makeFilter((value) =>
-    utf8Length(JSON.stringify(value)) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES
-      ? undefined
-      : `Git Snapshot patch sections must fit within ${MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES} JSON bytes.`,
-  ),
-);
-const SessionGitStagedSection = Schema.Struct({
-  files: Schema.Array(SessionGitTrackedFile),
-  patch: SessionGitPatch,
-  fullPatchBytes: Schema.optionalKey(
-    NonNegativeInt.check(Schema.isLessThanOrEqualTo(MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES)),
-  ),
-  truncated: Schema.Boolean,
-}).pipe(strictObject);
-const SessionGitUnstagedSection = Schema.Struct({
-  files: Schema.Array(SessionGitFile),
-  patch: SessionGitPatch,
-  fullPatchBytes: Schema.optionalKey(
-    NonNegativeInt.check(Schema.isLessThanOrEqualTo(MAX_SESSION_GIT_SNAPSHOT_FULL_PATCH_BYTES)),
-  ),
-  truncated: Schema.Boolean,
-}).pipe(strictObject);
-const SessionGitSections = Schema.Struct({
-  staged: SessionGitStagedSection,
-  unstaged: SessionGitUnstagedSection,
-})
-  .pipe(strictObject)
-  .check(
-    Schema.makeFilter((value) => {
-      const files = [...value.staged.files, ...value.unstaged.files];
-      return files.length <= MAX_SESSION_GIT_SNAPSHOT_FILES &&
-        utf8Length(JSON.stringify(files)) <= MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES
-        ? undefined
-        : `Git Snapshot file metadata must fit within ${MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES} JSON bytes and ${MAX_SESSION_GIT_SNAPSHOT_FILES} rows.`;
-    }),
-    Schema.makeFilter((value) =>
-      utf8Length(value.staged.patch) + utf8Length(value.unstaged.patch) <=
-        MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES &&
-      utf8Length(
-        JSON.stringify({
-          staged: value.staged.patch,
-          unstaged: value.unstaged.patch,
-        }),
-      ) <= MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES
-        ? undefined
-        : `Git Snapshot patches must fit within ${MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES} JSON bytes.`,
-    ),
-  );
-
-export class SessionGitSnapshot extends Schema.Class<SessionGitSnapshot>("SessionGitSnapshot")(
-  Schema.Struct({
-    snapshotId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))),
-    mutationRevision: GitMutationRevision.pipe(
-      Schema.withDecodingDefaultKey(Effect.succeed(InitialGitMutationRevision)),
-      Schema.withConstructorDefault(Effect.succeed(InitialGitMutationRevision)),
-    ),
-    generatedAt: RunnerSessionCreatedAt,
-    branch: Schema.optionalKey(SessionGitReference),
-    head: Schema.optionalKey(SessionGitHead),
-    completeness: Schema.Literals(["complete", "incomplete"]),
-    stale: Schema.Boolean,
-    truncated: Schema.Boolean,
-    message: Schema.optionalKey(SafeMessage),
-    sections: SessionGitSections,
-  }).pipe(strictObject),
-) {}
-
 export class RunnerIdentityError extends Schema.TaggedError<RunnerIdentityError>()(
   "RunnerIdentityError",
   { message: SafeMessage },
@@ -478,10 +212,6 @@ function boundedString(minimumLength: number, maximumLength: number, label: stri
       message: `${label} must contain at most ${maximumLength} characters.`,
     }),
   );
-}
-
-function collapseWhitespace(value: string): string {
-  return value.trim().replace(/\s+/gu, " ");
 }
 
 export function isReservedSessionEnvironmentName(value: string): boolean {
@@ -533,20 +263,6 @@ function isCanonicalGitHubRepository(value: string): boolean {
     repository !== "." &&
     repository !== ".." &&
     value === `https://github.com/${owner}/${repository}.git`
-  );
-}
-
-export function isSafeGitReference(value: string): boolean {
-  return (
-    value.length > 0 &&
-    value.length <= 255 &&
-    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) &&
-    !value.includes("..") &&
-    !value.includes("//") &&
-    !value.includes("@{") &&
-    !value.endsWith("/") &&
-    !value.endsWith(".") &&
-    !value.endsWith(".lock")
   );
 }
 

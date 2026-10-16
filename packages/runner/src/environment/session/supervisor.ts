@@ -22,11 +22,7 @@ import {
   type EnvironmentLinkOptions,
   makeEnvironmentActor,
 } from "./actor.ts";
-import { EnvironmentDefinition, EnvironmentStore, type ReplayedEnvironment } from "./store.ts";
-
-export type EnvironmentChange =
-  | { readonly type: "updated"; readonly environment: RunnerEnvironmentSnapshot }
-  | { readonly type: "removed"; readonly sessionId: SessionId };
+import { EnvironmentDefinition, EnvironmentStore } from "./store.ts";
 
 export interface EnvironmentSupervisorOptions extends EnvironmentLinkOptions {
   readonly runnerId: RunnerId;
@@ -41,7 +37,7 @@ export interface EnvironmentSupervisor {
   readonly activeCount: () => number;
   readonly snapshots: () => readonly RunnerEnvironmentSnapshot[];
   /** Subscribe before reading `snapshots` so no change falls between them. */
-  readonly changes: Effect.Effect<Stream.Stream<EnvironmentChange>, never, Scope.Scope>;
+  readonly changes: Effect.Effect<Stream.Stream<RunnerEnvironmentSnapshot>, never, Scope.Scope>;
   readonly create: (
     payload: CreateEnvironmentPayload,
   ) => Effect.Effect<
@@ -51,10 +47,6 @@ export interface EnvironmentSupervisor {
   readonly control: (
     payload: ControlEnvironmentPayload,
   ) => Effect.Effect<EnvironmentControlled, EnvironmentNotFound | EnvironmentRejected>;
-  readonly attach: (
-    sessionId: SessionId,
-    nonce: string,
-  ) => Effect.Effect<void, EnvironmentNotFound | EnvironmentRejected>;
   readonly delete: (
     sessionId: SessionId,
   ) => Effect.Effect<void, EnvironmentRejected | DeleteFailed>;
@@ -69,16 +61,16 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
   const store = yield* EnvironmentStore;
   const dependencies = yield* Effect.context<EnvironmentStore | AgentEnvironmentProvider>();
   const admission = yield* Semaphore.make(1);
-  const published = yield* PubSub.unbounded<EnvironmentChange>();
+  const published = yield* PubSub.unbounded<RunnerEnvironmentSnapshot>();
   const actors = new Map<SessionId, EnvironmentActor>();
   const deleting = new Set<SessionId>();
 
-  const spawn = (replayed: ReplayedEnvironment) =>
-    makeEnvironmentActor(replayed, options, (environment) =>
-      PubSub.publish(published, { type: "updated", environment }).pipe(Effect.asVoid),
+  const spawn = (definition: EnvironmentDefinition) =>
+    makeEnvironmentActor(definition, options, (environment) =>
+      PubSub.publish(published, environment).pipe(Effect.asVoid),
     ).pipe(
       Effect.provide(dependencies),
-      Effect.tap((actor) => Effect.sync(() => actors.set(actor.sessionId, actor))),
+      Effect.tap((actor) => Effect.sync(() => actors.set(definition.sessionId, actor))),
     );
 
   yield* Effect.addFinalizer(() =>
@@ -88,17 +80,9 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
     }),
   );
 
-  // Every environment is restored eagerly: an actor holds no VM until it is started.
-  for (const sessionId of yield* store.list.pipe(Effect.orDie)) {
-    const replayed = yield* store.replay(sessionId).pipe(Effect.option);
-    if (replayed._tag === "None" || replayed.value === undefined) {
-      yield* Effect.logWarning("environment.restore-skipped").pipe(
-        Effect.annotateLogs({ component: "openorb-runner", sessionId }),
-      );
-      continue;
-    }
-    if (replayed.value.record.definition.runnerId !== options.runnerId) continue;
-    yield* spawn(replayed.value);
+  // Every environment is restored stopped: a runner restart leaves no VM.
+  for (const definition of yield* store.list.pipe(Effect.orDie)) {
+    if (definition.runnerId === options.runnerId) yield* spawn(definition);
   }
 
   const find = (sessionId: SessionId): Effect.Effect<EnvironmentActor, EnvironmentNotFound> => {
@@ -123,49 +107,37 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
         const existing = actors.get(sessionId);
         if (existing !== undefined) {
           // An uncertain delivery may repeat creation; the same definition is the same environment.
-          const snapshot = existing.snapshot();
-          if (
-            snapshot.workspaceId === payload.workspaceId &&
-            snapshot.orbSize === payload.orbSize &&
-            !deleting.has(sessionId)
-          )
-            return snapshot;
+          if (existing.definition.orbSize === payload.orbSize && !deleting.has(sessionId)) {
+            return existing.snapshot();
+          }
           return yield* new SessionConflict({
             sessionId,
             message: "Another environment already uses this session.",
           });
         }
-        const rejected = (message: string) => () => new EnvironmentRejected({ sessionId, message });
-        const disposition = yield* store
-          .ensure(sessionId)
-          .pipe(Effect.mapError(rejected("Environment storage could not be created.")));
+        const definition = new EnvironmentDefinition({
+          sessionId,
+          runnerId: options.runnerId,
+          orbSize: payload.orbSize,
+          ...(payload.repository === undefined ? {} : { repository: payload.repository }),
+        });
+        const disposition = yield* store.create(definition).pipe(
+          Effect.mapError(
+            () =>
+              new EnvironmentRejected({
+                sessionId,
+                message: "Environment storage could not be created.",
+              }),
+          ),
+        );
         if (disposition === "existing") {
           return yield* new SessionConflict({
             sessionId,
             message: "Storage for this session already exists on the runner.",
           });
         }
-        const definition = new EnvironmentDefinition({
-          sessionId,
-          workspaceId: payload.workspaceId,
-          runnerId: options.runnerId,
-          createdAt: new Date().toISOString(),
-          orbSize: payload.orbSize,
-          ...(payload.repository === undefined ? {} : { repository: payload.repository }),
-        });
-        yield* store.append(sessionId, 0, { type: "environment.created", definition }).pipe(
-          Effect.flatMap(() => store.replay(sessionId)),
-          Effect.flatMap((replayed) =>
-            replayed === undefined
-              ? Effect.die("The created environment vanished.")
-              : spawn(replayed),
-          ),
-          Effect.onError(() => store.remove(sessionId).pipe(Effect.ignore)),
-          Effect.mapError(rejected("The environment could not be recorded.")),
-        );
-        const snapshot = actors.get(sessionId)!.snapshot();
-        yield* PubSub.publish(published, { type: "updated", environment: snapshot });
-        return snapshot;
+        const actor = yield* spawn(definition);
+        return actor.snapshot();
       }),
     );
 
@@ -206,7 +178,6 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
           ),
         );
         deleting.delete(sessionId);
-        yield* PubSub.publish(published, { type: "removed", sessionId });
       }),
     );
 
@@ -214,14 +185,12 @@ export const makeEnvironmentSupervisor = Effect.fn("makeEnvironmentSupervisor")(
     activeCount: () => [...actors.values()].filter((actor) => actor.active).length,
     snapshots: () =>
       [...actors.values()]
-        .filter((actor) => !deleting.has(actor.sessionId))
+        .filter((actor) => !deleting.has(actor.definition.sessionId))
         .map((actor) => actor.snapshot()),
     changes: PubSub.subscribe(published).pipe(Effect.map(Stream.fromSubscription)),
     create,
     control: (payload) =>
       find(payload.sessionId).pipe(Effect.flatMap((actor) => actor.control(payload))),
-    attach: (sessionId, nonce) =>
-      find(sessionId).pipe(Effect.flatMap((actor) => actor.attach(nonce))),
     delete: remove,
   });
 });

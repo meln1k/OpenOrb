@@ -18,8 +18,9 @@ test("environment presentation uses its own lifecycle", () => {
   assertEquals(sessionVmPhaseLabel("sleeping"), "Sleeping");
 });
 
-test("Stop Session pauses a running agent even when its environment is stopped", () => {
+test("Stop Session stops a running agent even when its environment is stopped", () => {
   assertEquals(actionForState({ agentState: "running", environmentState: "stopped" }), "stop");
-  assertEquals(actionForState({ agentState: "paused", environmentState: "stopping" }), undefined);
-  assertEquals(actionForState({ agentState: "paused", environmentState: "stopped" }), "start");
+  assertEquals(actionForState({ agentState: "idle", environmentState: "running" }), "stop");
+  assertEquals(actionForState({ agentState: "idle", environmentState: "stopping" }), undefined);
+  assertEquals(actionForState({ agentState: "idle", environmentState: "stopped" }), "start");
 });

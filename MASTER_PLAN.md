@@ -6,11 +6,15 @@ The settled agent contracts follow the
 [Durable integration decision](docs/adr/0004-durable-agent-independent-environment.md), the
 [Session Durable Object harness placement](docs/adr/0005-agent-harness-in-session-durable-object.md),
 [Agent Environment Providers](docs/adr/0006-agent-environment-providers-behind-execution-env.md),
+the [built-in Sandbox provider](docs/adr/0007-built-in-sandbox-provider.md), the environments
+package, Pi-owned prompts, and Stop without pause
+([ADR 0008](docs/adr/0008-environment-package-pi-owned-prompts-and-stop-without-pause.md)),
 [domain vocabulary](CONTEXT.md), and [security boundaries](security.md). Where ADR 0004 or the
 [Published Media decision](docs/adr/0003-durable-published-media.md) describe runner-hosted agent
 work, runner-owned Harness State, or runner-owned media storage, ADR 0005 supersedes them. Where
 ADR 0005 leaves project setup/resume or Git Snapshots on the runner, ADR 0006 moves them into the
-Session Durable Object.
+Session Durable Object. ADR 0008 refines ADRs 0002, 0005, 0006, and 0007: it removes the
+recoverable pause, the runner's Session Journal, and the Environment Link attach procedure.
 Milestones and explicitly planned features below retain product goals, not alternative runtime
 contracts.
 
@@ -28,7 +32,7 @@ openorb-runner start \
 
 The runners may be on a home network, behind NAT or CGNAT, or on cloud VMs. They never require inbound ports. Each runner creates one Gondolin micro-VM per OpenOrb session. Pi runs in a per-Session Durable Object on the gateway and executes its file and shell tools inside Gondolin through a runner-relayed Environment Link, so conversations and published media stay available while a runner is offline.
 
-The runner is the first **Agent Environment Provider**. The Agent Harness sees only Pi's `ExecutionEnv`; providers supply compute, lifecycle, persistence, network policy, and the Environment Link, while repository clone, setup/resume, Git Snapshots, skill discovery, and Published Media run in the Session Durable Object over `ExecutionEnv`. Sandbox-vendor providers can be added later behind the same boundary.
+The runner is the first **Agent Environment Provider**. The Agent Harness sees only Pi's `ExecutionEnv`; providers supply compute, lifecycle, persistence, network policy, and the Environment Link, while repository clone, setup/resume, Git Snapshots, skill discovery, and Published Media run in the Session Durable Object over `ExecutionEnv`. The built-in Sandbox, a just-bash interpreter in an isolated Dynamic Worker, is a second provider for trying OpenOrb without a runner and for inspecting untrusted content. Sandbox-vendor providers can be added later behind the same boundary.
 
 The primary experience is a responsive web UI for starting, monitoring, reviewing, and continuing remote coding-agent sessions from desktop or mobile.
 
@@ -48,8 +52,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 8. **Useful remotely.** Chat, tools, diffs, files, terminals, and app previews must work without SSHing into a runner.
 9. **Mobile-capable.** The main workflows must be usable from a phone, not merely render on a narrow screen.
 10. **Web-standard interfaces.** Use HTTP, SSE, WebSockets, Fetch APIs, and versioned runtime-validated protocol types.
-11. **Native gateway persistence.** The native celld Workspace Durable Object owns SQLite-backed gateway configuration and the minimal Session catalog. One Session Durable Object per Session owns Harness State and Published Media records in its own SQLite storage; Published Media bytes live in an R2 bucket. Do not add Redis or a second configuration database/KV service. The Session Durable Object also caches Git Snapshots and Project Checkout facts. Runners owns rebuildable live connection/routing state; runners own environment state (root disk, Session Journal, logs). For the MVP, do not require an SDN, Kubernetes, or a multi-node control plane.
-12. **Workspace tenancy from the start.** Each user belongs directly to exactly one Workspace. Projects, secrets, provider/Git credentials, runners, enrollment credentials, session catalog rows, and deletion markers are owned by immutable `workspaceId`; composite foreign keys prevent cross-Workspace references. Passwords and Git author identity remain user-owned.
+11. **Native gateway persistence.** The native celld Workspace Durable Object owns SQLite-backed gateway configuration and the minimal Session catalog. One Session Durable Object per Session owns Harness State and Published Media records in its own SQLite storage; Published Media bytes live in an R2 bucket. Do not add Redis or a second configuration database/KV service. The Session Durable Object also caches Git Snapshots and Project Checkout facts. Runners owns rebuildable live connection/routing state; runners own environment state (environment definition, root disk, logs). For the MVP, do not require an SDN, Kubernetes, or a multi-node control plane.
+12. **Workspace tenancy from the start.** Each user belongs directly to exactly one Workspace. Projects, secrets, provider/Git credentials, runners, enrollment credentials, and session catalog rows are owned by immutable `workspaceId`; composite foreign keys prevent cross-Workspace references. Passwords and Git author identity remain user-owned.
 
 ## 3. Scope
 
@@ -85,8 +89,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - Batteries-included Gondolin guest image
 - Ephemeral guest package caches
 - Archive and explicit deletion
-- Minimal Workspace-owned gateway live-session catalog (project, creation time, trimmed initial prompt) plus Workspace-owned deleted-session ID/time markers; conversation content and Published Media records are Session Durable Object-backed, Published Media bytes are R2-backed, and environment data is runner-backed
-- Clean break from runner-hosted sessions: no migration, and runner protocol v27 is not backward compatible
+- Minimal Workspace-owned gateway live-session catalog (project, creation time, trimmed initial prompt); conversation content and Published Media records are Session Durable Object-backed, Published Media bytes are R2-backed, and environment data is runner-backed
+- Clean break from runner-hosted sessions: no migration, and runner protocol versions (currently v29) are not backward compatible
 
 ### 3.2 Explicit non-goals for MVP
 
@@ -115,7 +119,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 
 - **Gateway:** The self-hosted Remix web application, API, scheduler, secret store, runner gateway, and preview gateway.
 - **Runner:** A native Linux service and the first Agent Environment Provider. It manages Gondolin VMs and Persistent Root Disks, relays Environment Links, and mediates guest network credentials. It does not run Pi, clone repositories, run setup/resume hooks, or produce Git Snapshots.
-- **Agent Environment Provider:** The authority that creates, starts, stops, and deletes Agent Environments and opens Environment Links to them, such as an OpenOrb runner or a future sandbox vendor. It supplies compute, lifecycle, persistence, and network policy, never project behaviour, and declares its capabilities (persistence, Egress Secret Mediation, hibernatable link).
+- **Agent Environment Provider:** The authority that creates, starts, stops, and deletes Agent Environments and opens Environment Links to them, such as an OpenOrb runner or a future sandbox vendor. It supplies compute, lifecycle, persistence, and network policy, never project behaviour, and declares only what the Session acts on: how credentials reach the guest (Egress Secret Mediation, Guest Credential Opt-in, or none) and whether it runs Git. Providers live in `@openorb/environments`.
+- **Sandbox:** The built-in Agent Environment Provider ([ADR 0007](docs/adr/0007-built-in-sandbox-provider.md)) that runs just-bash, a TypeScript bash interpreter with a virtual filesystem, in an isolated Dynamic Worker hosted by the Session Durable Object. It needs no runner and has no project, Git, or network.
 - **Egress Secret Mediation:** Substitution of real credentials for guest-visible placeholders outside the guest, so the real values never enter it. The runner provides it through Gondolin.
 - **Guest Credential Opt-in:** A Project's explicit consent to place real Git credentials and Workspace secrets inside guests whose provider lacks Egress Secret Mediation.
 - **Runner Registry:** The Runners Durable Object: live runner connections, presence, command routing, and live environment projections.
@@ -136,11 +141,12 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 - **Agent Run:** A continuous period of agent activity, including Follow-ups and automatic continuations, ending when the agent settles.
 - **Follow-up:** Input added to the current Agent Run rather than starting another.
 - **Conversation View:** The current active transcript, queued input, agent configuration, usage, and live progress shown to a viewer.
-- **Session Journal:** Runner-owned infrastructure facts such as VM and disk lifecycle, separate from Harness State. Provisioning and checkout facts belong to the Session Durable Object.
+- **Environment definition:** The runner's only per-environment record, `environment.json`, written once at creation; the runner keeps no journal. Provisioning and checkout facts belong to the Session Durable Object.
 - **Agent Environment:** Live isolated compute capabilities and the Project Checkout available to the harness.
-- **Stop Session / Wake:** Recoverably pause agent work and durably stop compute / resume both.
+- **Stop Session:** An Abort together with a durable stop of compute. The conversation stays durable, so the next prompt continues it; there is no recoverable pause.
+- **Wake:** Restart of a stopped Session's compute, followed by its resume hook. It does not resume an unfinished Agent Run.
 - **Abort:** Cancel agent work and queued inputs without stopping the Agent Environment.
-- **Environment Control:** Agent-initiated start, stop, or restart of compute through its provider without pausing the harness.
+- **Environment Control:** Agent-initiated start, stop, or restart of compute through its provider while the agent keeps working.
 - **Lease:** A reason a VM must remain awake, such as active agent work, a terminal, project setup, or a preview.
 - **Managed preview:** A preview with a restart command that can wake and resume after VM Stop.
 - **Live-only preview:** A published port without a restart command; it expires when the VM Stops.
@@ -153,9 +159,9 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Initial audience | Single user on trusted user-owned compute |
 | VM mapping | One Agent Environment per session; one Gondolin VM per session on the runner provider |
 | Pi placement | Pi Durable runs in one gateway Session Durable Object per Session behind the Agent Harness interface; it never runs on the runner host |
-| Tool execution | Pi read/write/edit/bash operations use Pi's `ExecutionEnv`. Providers that run the static Environment Daemon (including the runner) share the vendored pi-env `RemoteExecutionEnv` client and differ only in Environment Link transport; a provider may instead return its own `ExecutionEnv` |
-| Agent Environment Provider | The OpenOrb runner is the first provider; providers supply compute, lifecycle (start/stop/restart/delete), persistence, network policy, and Environment Link opening, never project behaviour, and declare persistence (durable root disk, vendor snapshot, or ephemeral), Egress Secret Mediation, and hibernatable-link capabilities |
-| Provider selection | Workspace default; Project override; Session override at creation; immutable afterward. Only the runner provider exists; the Session record stores its provider kind and the Project's Guest Credential Opt-in, while Workspace/Project storage and UI for provider defaults are deferred until a second provider exists |
+| Tool execution | Pi read/write/edit/bash operations use Pi's `ExecutionEnv`. Providers that run the static Environment Daemon (including the runner) share upstream pi-env's unmodified `RemoteExecutionEnv` client and differ only in Environment Link transport (`@openorb/pi-env`'s `LinkConnection` for the runner); a provider may instead return its own `ExecutionEnv`, as the Sandbox does |
+| Agent Environment Provider | The OpenOrb runner and the built-in Sandbox are the providers, in `@openorb/environments` behind one `EnvironmentProvider` interface, bundled into the Worker and chosen by placement name; providers supply compute, lifecycle (start/stop/restart/delete), persistence, network policy, and Environment Link opening, never project behaviour, and declare only how credentials reach the guest (mediated, opt-in, or none) and whether they run Git |
+| Provider selection | Workspace default; Project override; Session override at creation; immutable afterward. Today the user picks the runner or the Sandbox in the composer, and Workspaces without runners default to the Sandbox; the Session record stores its placement (`{ provider: "runner", runnerId }` or `{ provider: "sandbox" }`) and the Project's Guest Credential Opt-in, while Workspace/Project storage and UI for provider defaults are deferred |
 | Project behaviour | Repository clone, `.agents/setup`/`.agents/resume`, Git Snapshots, skill discovery, and Published Media run in the Session Durable Object over `ExecutionEnv` |
 | Repository | Fresh clone per session, issued by the Session Durable Object and performed inside the guest |
 | Workspace storage | On the runner, a private per-session qcow2 root disk; `/workspace` and `.git` are untrusted guest bytes, not a host mount |
@@ -167,8 +173,8 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Edit last | Planned conversation-only edit; do not roll back files or VM state; Durable interface still to be designed |
 | While running | Normal send admits a Durable Submission with `whenBusy: "followUp"` |
 | Queued input | Owned durably by the harness; no separate OpenOrb handoff queue or per-item mutation API |
-| Offline/waking runner | Session Durable Object admission and model work need neither a connected runner nor a ready guest; the agent session is always available, and conversation, media, and the cached Git Snapshot remain viewable while the runner is offline. Guest tools fail immediately while the runner or provider is unreachable, without waiting, so the agent can choose another approach; they wait cancellably only while a reachable environment boots or runs setup/resume |
-| Stop / Wake / Abort | Session Durable Object pauses the harness recoverably before asking the runner to stop compute; Wake resumes checkpoints; Abort cancels conversation work without stopping compute |
+| Offline/waking runner | Session Durable Object admission and model work need neither a connected runner nor a ready guest; the agent session is always available, and conversation, media, and the cached Git Snapshot remain viewable while the runner is offline. Guest tools fail immediately, without waiting, while the runner or provider is unreachable or compute is not running, so the agent can choose another approach; Agent Runs wait cancellably only for queued environment operations (setup, start, stop) to settle, and proceed after a failed setup |
+| Stop / Wake / Abort | Session Durable Object queues the stop of compute, then aborts agent work and queued prompts; there is no recoverable pause. Wake restarts compute and runs the resume hook but does not resume an unfinished run; Abort cancels conversation work without stopping compute |
 | Model credentials | Centralized in gateway; resolved from the Workspace DO inside the gateway and never sent to runners; API keys first |
 | Git credentials | Centralized HTTPS tokens and SSH private keys |
 | Guest credentials | With Egress Secret Mediation (runner/Gondolin), the GitHub token and Workspace secrets stay outside the guest. On a provider without it, they enter the guest only with a per-Project Guest Credential Opt-in; otherwise the Session runs without them |
@@ -180,17 +186,17 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
 | Preview lifecycle | Managed previews wake/restart; live-only previews expire on sleep |
 | Runner OS | Native Linux first |
 | Gateway UI | Remix 3, end-to-end TypeScript |
-| Gateway persistence | Native celld Workspace DO SQLite, for configuration, a five-column Session catalog (`workspaceId` plus four catalog fields), and three-column deletion markers (`workspaceId`, `sessionId`, `deletedAt`); per-Session Session DO SQLite (pi-durable `storage/sqlite/cloudflare` adapter) for Harness State and Published Media metadata/quota; an R2 bucket for Published Media bytes; no Redis or secondary configuration store |
+| Gateway persistence | Native celld Workspace DO SQLite, for configuration and a five-column Session catalog (`workspaceId` plus four catalog fields); per-Session Session DO SQLite (pi-durable `storage/sqlite/cloudflare` adapter) for Harness State and Published Media metadata/quota; an R2 bucket for Published Media bytes; no Redis or secondary configuration store |
 | Tenant ownership | Direct `users.workspaceId`; Workspace RPC methods receive authenticated `workspaceId`, tenant uniqueness is composite with `workspaceId`, and foreign keys prevent cross-Workspace references. Passwords and Git author identity use `userId`. No memberships, new roles, tenant abstractions, or Workspace-selection UI |
-| Runner persistence | Private files for the infrastructure-only Session Journal (VM/disk lifecycle), logs, and root disk; no Harness State, conversation content, media, Git Snapshots, or checkout facts |
+| Runner persistence | Private files for each environment's definition (written once at creation), pinned guest-image release, logs, and root disk; no journal, Harness State, conversation content, media, Git Snapshots, or checkout facts |
 | Browser streaming | HTTP commands + Session DO SSE events + dedicated WebSockets for terminal/preview |
 | Runner transport | Outbound Effect RPC control WebSocket carrying only runner identification, the environment watch stream, and `environment.*` procedures; an authenticated bulk WebSocket carrying only identification and a heartbeat, reserved for planned terminal/preview tunnels; and one dedicated per-Session Environment Link WebSocket |
-| Migration | Clean break: runner-hosted Sessions are not migrated; runner protocol v26 was not backward compatible with v25, and v27, which removes every `session.*` procedure, rejects v26 runners |
+| Migration | Clean break: runner-hosted Sessions are not migrated; runner protocol versions are not backward compatible, and a v29 gateway rejects runners speaking any other version |
 | Pi workspace resources | Explicit trusted Durable registry; no project/global discovery or ambient credentials |
 | Project guidance | Repository skill metadata is discovered by the Session Durable Object over `ExecutionEnv` after project readiness; full instructions and other project files are available through guest tools. Pi does not load (in the gateway or on the runner host) `AGENTS.md`, `CLAUDE.md`, skills, prompts, packages, settings, or extensions |
 | Guest image | Batteries-included OpenOrb Gondolin image |
 | Caches | Guest package caches are tmpfs-backed and do not survive Stop; shared host caches are deferred |
-| Retention | No automatic deletion; explicit archive and delete; offline delete is represented by a durable minimal control-plane marker |
+| Retention | No automatic deletion; explicit archive and delete; offline delete removes the catalog row at once while the Session DO's alarm retries environment deletion |
 
 ## 6. High-level architecture
 
@@ -218,7 +224,7 @@ The primary experience is a responsive web UI for starting, monitoring, reviewin
                                  │             │
                                  │          Runner behind NAT (first Agent Environment Provider)
                                  │          ├── Effect RPC identity and state streams
-                                 │          ├── Persistent Root Disk storage and Session Journal
+                                 │          ├── Persistent Root Disks and environment definitions
                                  │          ├── Environment Link relay (verbatim frames)
                                  │          ├── GitHub/secret Egress Secret Mediation
                                  │          ├── Gondolin lifecycle manager
@@ -243,10 +249,14 @@ creation, `.agents/setup` and `.agents/resume`, Git Snapshots, skill discovery, 
 The runner supplies compute, the Persistent Root Disk, and Egress Secret Mediation, and relays
 Environment Daemon frames without interpreting them.
 
-The runner is one Agent Environment Provider. A future sandbox-vendor provider replaces the runner
-box above with vendor compute: if it can run the static Environment Daemon it reuses the vendored
-`RemoteExecutionEnv` and supplies only its link transport, otherwise it returns its own
-`ExecutionEnv`. Either way the Session Durable Object's project behaviour is unchanged.
+The runner is one Agent Environment Provider. The built-in Sandbox is another: it runs just-bash in
+an isolated Dynamic Worker that the Session Durable Object loads, returns its own `ExecutionEnv`
+over native RPC, and needs no runner or Environment Link. A future sandbox-vendor provider replaces
+the runner box above with vendor compute: if it can run the static Environment Daemon it reuses
+upstream `RemoteExecutionEnv` and supplies only its link transport, otherwise it returns its own
+`ExecutionEnv`. The Session Durable Object opens whichever provider its placement names and relays
+traffic addressed to the environment without knowing its kind, so its project behaviour is
+unchanged.
 
 ### 6.1 Why no SDN in MVP
 
@@ -265,11 +275,12 @@ packages/
   gateway/app/cells/runners/    live runner connections, capacity, and Environment Control routing
   gateway/app/cells/session/    Session DO: Agent Harness, provisioning, Git Snapshots, media, skills
   runner/                  published Linux runner CLI/service
-  protocol/                shared runtime schemas and wire types
+  protocol/                runner-boundary schemas: identities, capacity, environment payloads/states, enrollment
+  environments/            Agent Environment Providers: built-in Sandbox and runner provider/Environment Link
   result/                  small shared result helpers
   runner/src/environment/   Agent Environment interface, Gondolin provider, and Environment Link dialer/relay
-  runner/src/environment/session/  EnvironmentSupervisor/EnvironmentActor and the JSONL Session Journal
-  pi-env/                  vendored pi-env RemoteExecutionEnv client (WebSocket, Web APIs)
+  runner/src/environment/session/  EnvironmentSupervisor/EnvironmentActor and environment definition store
+  pi-env/                  LinkConnection transport for upstream pi-env RemoteExecutionEnv, and the daemon relay
 images/
   guest/                   OpenOrb Gondolin image build configuration
 scripts/                   build, release, and verification tasks
@@ -285,10 +296,13 @@ Published Media handling, repository clone, setup/resume, Git Snapshots, and ski
 the gateway Session Durable Object, beside the Workspace and Runners cells. The runner-hosted agent
 path, including `packages/runner/src/harness/**` and the runner's session actor, store, events,
 artifact store, provisioning, and Git Snapshots, has been removed. Runner code keeps only Agent
-Environments: environment lifecycle, the Session Journal, Persistent Root Disks, Egress Secret
-Mediation, and the Environment Link. `packages/pi-env` holds the vendored
-`RemoteExecutionEnv` client and the transport-free daemon relay shared by the Session DO and the
-runner.
+Environments: environment lifecycle, environment definitions, Persistent Root Disks, Egress Secret
+Mediation, and the Environment Link. `packages/environments` holds the gateway side of every
+provider (the Sandbox and the runner provider with its Environment Link). The guest `ExecutionEnv`
+is upstream `@earendil-works/pi-env`'s `RemoteExecutionEnv`, unmodified; `packages/pi-env` keeps
+only its `LinkConnection` transport over the Environment Link and the daemon relay the runner uses.
+`@openorb/protocol` holds only what crosses the runner boundary; the Session view, Session Events
+and issues, the Git Snapshot schema, and media types belong to the gateway's Session cell.
 
 Use a Deno-native workspace with strict TypeScript and require stable Deno 2.9.5 or newer for development,
 gateway builds, and source runners. Native celld executes gateway requests; Deno does not serve them.
@@ -325,9 +339,9 @@ Browser/gateway contracts should prefer Web APIs (`Request`, `Response`, `Readab
 - Workspace relational SQLite uses native `ctx.storage.sql`; `remix/data-table` declarations describe row shapes, while committed plain SQL migrations enforce the schema
 - Remix's migration journal/checksums run inside one native storage transaction, with `blockConcurrencyWhile` gating Workspace startup
 - Session DOs migrate OpenOrb's own tables with the same driver and journal when each object starts; Pi Durable versions its tables separately in `durable_schema`
-- Workspace owns configuration, browser identities/sessions, enrollment, the minimal Session catalog, deletion markers, and alarm-driven provider OAuth
-- Runners owns ephemeral control/bulk sockets, runner authentication, presence and capacity, live environment projections, and Environment Control routing by connection generation; it notifies Session DOs when an environment is updated, removed, unreachable, or revoked. Reconnecting runners' environment snapshots rebuild that state after restart or eviction. It closes a revoked runner's Environment Links. It does not route Sessions, hold reservations, or write the Session catalog
-- Session DOs own Session creation and deletion (including environment deletion retried by their alarm), Harness State, the Conversation View, viewer streams, Published Media records, Stop Session orchestration, provider selection, Project Checkout facts, the Git Snapshot cache, skill discovery, and clone/setup/resume over `ExecutionEnv`
+- Workspace owns configuration, browser identities/sessions, enrollment, the minimal Session catalog, and alarm-driven provider OAuth
+- Runners owns ephemeral control/bulk sockets, runner authentication, presence and capacity, and Environment Control routing: a Session DO addresses its runner by its placement's `runnerId`, and Runners calls that runner's current connection. It keeps no index of which runner hosts which Session; per connected runner it keeps only the Sessions to notify when that runner becomes unreachable or is revoked. It notifies Session DOs when an environment changes, and reconnecting runners' environment snapshots rebuild that state after restart or eviction. It closes a revoked runner's Environment Links. It does not hold reservations or write the Session catalog
+- Session DOs own Session creation and deletion (including environment deletion retried by their alarm), Harness State, the Conversation View, viewer streams, Published Media records, Stop Session orchestration, the provider placement, Project Checkout facts, the Git Snapshot cache, skill discovery, and clone/setup/resume over `ExecutionEnv`. They open the provider their placement names from a registry the gateway wires in `app/cells/session/environments.ts`
 - No PostgreSQL pool, secondary configuration store, or PostgreSQL/legacy KV import is used; the former integer-ledger bootstrap is unsupported
 
 Use the existing native DO boundaries and migration adapter. An exact dependency upgrade must be an intentional implementation task with tests.
@@ -337,7 +351,7 @@ Use the existing native DO boundaries and migration adapter. An exact dependency
 ```text
 Native celld Worker (server.ts)
 ├── runner control/bulk upgrades → Runners DO fetch → Effect RPC/bulk sockets
-├── Environment Link upgrades   → Session DO fetch (runner token + one-time attach nonce)
+├── Environment Link upgrades   → Session DO fetch (token of the Session's placement runner)
 ├── normal HTTP                 → Remix router → named Workspace/Runners/Session RPC
 ├── conversation commands       → authenticated Remix action → Session DO RPC
 ├── session event SSE           → authenticated Remix action → Session DO fetch
@@ -443,7 +457,7 @@ wss://openorb.example.com/api/runners/connect
 
 The runner opens the physical socket and serves `RunnerApi`; the gateway accepts the socket and acts
 as the RPC client. The API contains only typed identity, the runner/environment watch stream, and
-environment creation, control, attach, and deletion procedures (§22.2); prompt, abort, and
+environment creation, control, and deletion procedures (§22.2); prompt, abort, and
 thinking-level commands, clone, setup/resume, Git Snapshots, and media belong to the Session DO, not
 the runner. Effect owns framing, schema decoding, request correlation, stream
 acknowledgement, interruption, and ping/pong.
@@ -455,21 +469,20 @@ procedures are removed, because full Git Snapshot patches stay in the guest and 
 Environment Link, and Published Media is read by the Session DO. Generic terminal/preview tunneling
 is still planned; its flow-control design must preserve control-channel responsiveness.
 
-While a Session's Agent Environment runs, the runner also dials one dedicated outbound Environment
-Link WebSocket to that Session's Session DO, authenticated by its runner token plus a one-time
-attach nonce, and relays Environment Daemon frames verbatim (see §22.6). Environment traffic is not
-multiplexed over the control socket, so it never passes through the single Runners DO. The runner
-dials `/api/runners/environments/<sessionId>/link`.
+Whenever a Session's Agent Environment runs, the runner also dials one dedicated outbound
+Environment Link WebSocket to that Session's Session DO, authenticated by its runner token alone,
+and relays Environment Daemon frames verbatim (see §22.6). The Session DO never requests a link.
+Environment traffic is not multiplexed over the control socket, so it never passes through the
+single Runners DO. The runner dials `/api/runners/environments/<sessionId>/link`.
 
 ## 10. Runner storage
 
-This section describes the runner provider. The runner owns environment persistence only: the
-infrastructure Session Journal, the Persistent Root Disk, and logs. Harness State, conversation
-content, Published Media metadata, Git Snapshots, and Project Checkout facts (base commit, branch,
-remote, and setup state) live in the gateway Session DO; Published Media bytes live in R2. The
-Session Journal records VM and disk lifecycle facts, not `message.accepted` or any other
-conversation fact, nor provisioning, clone, setup, or checkout facts. Sensitive identity, token, and
-disk files use restrictive filesystem permissions.
+This section describes the runner provider. The runner owns environment persistence only: each
+environment's definition, the Persistent Root Disk, and logs. It keeps no journal. Harness State,
+conversation content, Published Media metadata, Git Snapshots, and Project Checkout facts (base
+commit, branch, remote, and setup state) live in the gateway Session DO; Published Media bytes live
+in R2. The definition records no conversation, provisioning, clone, setup, or checkout facts.
+Sensitive identity, token, and disk files use restrictive filesystem permissions.
 
 Environment storage layout (under the runner's working directory):
 
@@ -478,23 +491,26 @@ Environment storage layout (under the runner's working directory):
   images/
   environments/
     <session-id>/
-      events.jsonl         infrastructure Session Journal only (JSONL; VM/disk lifecycle)
+      environment.json     definition: sessionId, runnerId, orbSize, optional repository
       root-disk.qcow2
       runtime.json         pinned guest-image release for this disk
   environment-deletions/   environments being removed
 ```
 
-The runner's EnvironmentSupervisor owns one EnvironmentActor per directory. The former
-`sessions/<session-id>/` layout, including its Durable `harness/` database and artifact store, is not
-read.
+The runner's EnvironmentSupervisor owns one EnvironmentActor per directory. The definition is
+written once at creation, as a candidate file renamed into place, so a directory without one is an
+interrupted creation: at startup the runner removes a directory with neither a definition nor a
+disk, keeps a disk without a definition (including a pre-v29 journal directory, which is not
+converted) for an operator and skips it with a warning, and finishes interrupted deletions. A
+runner restart leaves no VM, so every environment it restores is stopped. Root-disk initialization
+is idempotent and runs on every boot. The former `sessions/<session-id>/` layout, including its
+Durable `harness/` database and artifact store, is not read.
 
 The runner is authoritative for environment data; the Workspace DO duplicates only the immutable
-Workspace owner and four catalog fields described below and retains minimal Workspace-owned
-deleted-session ID/time markers:
+Workspace owner and four catalog fields described below:
 
-- Environment definition: Session and Workspace identity, runner identity, orb size, and the
-  repository URL and Git author that scope credential mediation
-- Session Journal infrastructure facts, not a second agent task state machine
+- Environment definition: Session ID, runner ID, orb size, and, for a Session with a project, the
+  repository URL and Git author that scope credential mediation; never environment state
 - Working tree and Git objects on the root disk, treated as untrusted bytes by the host
 - Full file contents
 - Preview definitions, access policy, and capability hashes
@@ -507,7 +523,7 @@ The Session DO is authoritative for agent data:
   thinking configuration, inline conversation images, and recovery
 - Published Media metadata and quota accounting (bytes in R2)
 - Idle-timeout and Stop Session orchestration state
-- The selected Agent Environment Provider
+- The Session's provider placement
 - Project Checkout facts reported by guest Git (base commit, branch, remote, pushed state) and
   setup/resume progress, treated as untrusted data
 - The cached Git Snapshot, generated inside the guest
@@ -529,7 +545,7 @@ It also persists one deliberately minimal catalog row per session:
 interface SessionCatalogEntry {
   workspaceId: string
   id: string
-  projectId: string
+  projectId?: string // absent for a Session without a project (ADR 0007)
   createdAt: string
   initialPromptPreview: string
 }
@@ -537,11 +553,11 @@ interface SessionCatalogEntry {
 
 `initialPromptPreview` is derived from the initial textual prompt by collapsing whitespace and truncating to at most 200 Unicode code points. It excludes attachments and is display-only; it must never be used to reconstruct or replay a prompt.
 
-No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or root-disk state is persisted in the Workspace DO. Conversation content, model configuration, usage, Git Snapshots, and Git state live only in that Session's Session DO; files, logs, previews, capabilities, and root-disk state remain runner-owned. The only Workspace DO session record outside the live five-column catalog is a deleted-session marker containing immutable Workspace ID, session ID, and deletion time. The gateway writes the catalog row when it creates a Session, before the Session DO starts it; the runner assignment lives in the Session DO record. After authentication, each runner streams a complete bounded initial `WatchRunner` snapshot of its environments. The gateway derives the owner from the authenticated runner record, never from runner-supplied tenant data, and atomically installs a Workspace-scoped in-memory environment index only after the snapshot completion boundary. Runner snapshots never create, restore, or delete catalog rows; an environment reported for a deleted Session is ignored by its Session DO.
+No runner ID, title, status, branch, model selection, transcript, message, tool, event cursor, usage, diff, file, log, preview, capability, Git state, or root-disk state is persisted in the Workspace DO. Conversation content, model configuration, usage, Git Snapshots, and Git state live only in that Session's Session DO; files, logs, previews, capabilities, and root-disk state remain runner-owned. The Workspace DO keeps no session record outside the live five-column catalog: Sessions are created only by the gateway with fresh IDs, so a deleted Session cannot reappear and needs no tombstone. The gateway writes the catalog row when it creates a Session, before the Session DO starts it; the runner placement lives in the Session DO record. After authentication, each runner sends one `WatchRunner` snapshot of its environments' states. The gateway derives the owner from the authenticated runner record, never from runner-supplied tenant data, and the runner sends no Workspace identifiers. Runner snapshots never create, restore, or delete catalog rows; an environment reported for a deleted Session reaches no Session DO record and is ignored.
 
 ## 11. Domain model
 
-Workspace-owned project/configuration entities, the five-column `SessionCatalogEntry`, and minimal Workspace/session/time deletion markers are persisted by the Workspace DO. Passwords and Git author identity remain user-owned. Harness State, Submissions, Published Media records, the Session's provider selection and runner assignment, Project Checkout facts, and Git Snapshots are persisted by the Session DO. Agent Environment state, planned previews, and VM/disk lifecycle facts are persisted only by their owning runner and reported to the Session DO through the Runners DO.
+Workspace-owned project/configuration entities and the five-column `SessionCatalogEntry` are persisted by the Workspace DO. Passwords and Git author identity remain user-owned. Harness State, Submissions, Published Media records, the Session's provider placement, Project Checkout facts, and Git Snapshots are persisted by the Session DO. Runner environment definitions, root disks, and planned previews are persisted only by their owning runner; environment state is not stored there, and the runner reports it live to the Session DO through the Runners DO.
 
 ### 11.1 Project
 
@@ -581,9 +597,9 @@ Per-user Git author defaults are required. Project values may override them late
 
 A Workspace selects a default Agent Environment Provider and a Project may override it. A Project
 also records its Guest Credential Opt-in, which only matters on providers without Egress Secret
-Mediation. Only the runner provider exists today, so Workspace and Project storage and UI for the
-provider default, override, and opt-in are deferred until a second provider exists; their
-configuration shapes are To be decided.
+Mediation. The runner and the built-in Sandbox exist today, and the user picks between them in the
+composer; Workspace and Project storage and UI for the provider default, override, and opt-in remain
+deferred, and their configuration shapes are To be decided.
 
 ### 11.2 Runner
 
@@ -617,7 +633,7 @@ interface Runner {
 ```ts
 interface Session {
   id: string
-  projectId: string
+  projectId?: string
   runnerId?: string
   title?: string
   ref: string
@@ -634,17 +650,19 @@ interface Session {
 ```
 
 A Session may override the Project's provider at creation and is then pinned to that provider;
-`runnerId` applies only to the runner provider. The Session DO record stores the selected provider
-kind (only `runner` exists), the Project's Guest Credential Opt-in as of creation, the runner
-placement, and the Project Checkout facts (`baseCommit`, `branchName`, `branchPushed`).
+`runnerId` applies only to the runner provider. The Session DO record stores its placement, a tagged
+union of `{ provider: "runner", runnerId }` and `{ provider: "sandbox" }`, the Project's Guest
+Credential Opt-in as of creation, and the Project Checkout facts (`baseCommit`, `branchName`,
+`branchPushed`). A Session without a project has no checkout and loads no Git integration.
 
 ### 11.4 Orthogonal runtime state
 
-Do not create one giant state enum. The current wire contract exposes separate agent state
-(`idle`, `running`, `paused`, `error`), environment state (`starting`, `running`, `stopping`,
-`stopped`, `error`), checkout availability, provisioning stage, and bounded issues/recovery actions.
-See [the runtime schemas](packages/protocol/src/runner-api-session-events.ts). Agent work can be
-running while compute is stopped or starting. Runner connectivity and planned archive/preview
+Do not create one giant state enum. The Session view exposes separate agent state (`idle`,
+`running`), environment state (`starting`, `running`, `stopping`, `stopped`, `error`), checkout
+availability, provisioning stage, and bounded issues with retry actions (`retry-provisioning`,
+`restart-environment`). See [the Session view types](packages/gateway/app/cells/session/view.ts),
+plain gateway types the browser renders without re-validating. Agent work can be running while
+compute is stopped or starting. Runner connectivity and planned archive/preview
 state must not collapse those independent dimensions. The runner reports only environment state in
 its environment snapshots; the Session DO combines it with runner reachability, its own agent state,
 checkout availability, setup/resume stage, and issues.
@@ -694,7 +712,7 @@ Resource scheduling applies to the runner provider; a sandbox vendor's capacity 
 
 ### 12.1 Runner observation
 
-`WatchRunner` snapshot-complete and periodic observation events report actual allocatable capacity:
+The `WatchRunner` snapshot and periodic `runner.observed` events report actual allocatable capacity:
 
 ```ts
 interface RunnerCapacity {
@@ -705,10 +723,9 @@ interface RunnerCapacity {
 }
 ```
 
-The event also carries a monotonic runner revision and observation timestamp. Environment state is
-sent through the initial `snapshot.environment` elements and later
-`environment.updated`/`environment.removed` stream elements rather than embedded in a periodic
-transport message.
+Each also carries an observation timestamp; there are no revisions. Environment states are sent in
+the initial snapshot and later `environment.changed` stream elements rather than embedded in a
+periodic transport message.
 
 ### 12.2 Placement
 
@@ -724,7 +741,7 @@ Current placement:
    re-checks local resources authoritatively before creating durable state and rejects with
    `CapacityExceeded` when it cannot host the environment.
 6. Never retry an ambiguous creation handoff blindly; `environment.create` is idempotent for the same
-   Session, so an explicit retry is reconciled against durable runner state.
+   Session, so an explicit retry with the same definition finds the environment already created.
 
 A runner observation is advisory; `environment.create` acceptance is authoritative. Planned:
 labels, architecture requirements, draining, free-resource scoring, and trying the next candidate
@@ -753,10 +770,12 @@ pinned runner must reacquire resources. If unavailable:
 4. Sending the first prompt selects an online runner (§12.2). The Workspace DO stores only the
    Workspace owner and four catalog data fields with the trimmed prompt preview; the runner
    assignment is stored in the Session DO record, not the catalog row.
-5. The Session DO asks the runner to create the session's environment state (Persistent Root Disk,
-   Session Journal) through `environment.create`; the Session is then permanently assigned.
-7. The Session DO opens the Durable harness and admits the full initial input concurrently with
-   environment startup. Model work and trusted prompt preparation do not wait for guest readiness.
+5. The Session DO asks the runner to create the session's environment state (its definition and
+   Persistent Root Disk) through `environment.create`; the Session is then permanently assigned.
+7. The Session DO opens the Durable harness and submits the full initial input to Pi at once, so
+   Pi's durable queue, request-ID deduplication, and Abort apply to it. Its run waits in the Harness
+   `env` builder until the queued environment creation, start, and setup settle; trusted prompt
+   preparation never waits for the guest.
 8. The runner creates the persistent session root disk, boots Gondolin with requested resources,
    creates `/workspace` inside the guest, starts the Environment Daemon, and dials the Environment
    Link to the Session DO.
@@ -766,11 +785,14 @@ pinned runner must reacquire resources. If unavailable:
 10. Guest Git creates the local working branch.
 11. The Session DO stores the reported base/branch state in its SQLite storage as untrusted data.
 12. As soon as the session branch is checked out, the Session DO starts the one-time skill discovery
-    in the background, then runs `.agents/setup` once inside the guest. Guest
-    tools wait cancellably for that readiness while the environment is reachable and fail
-    immediately while it is not; Session DO-side Environment Control is available immediately.
+    in the background, then runs `.agents/setup` once inside the guest. The run proceeds once setup
+    settles, successfully or not, so the agent can repair a failed setup; Session DO-side
+    Environment Control is available immediately.
 
-The Session DO streams clone and setup output to the browser as Session Events.
+The Session DO writes each clone and setup step's output into the conversation transcript as an
+`openorb.setup` entry, redacted of the credentials the provider received and bounded to its last 32
+KiB. A failure's entry also carries a message for the model, which Pi places at the run's next
+boundary; a step that succeeded costs the model nothing. There is no separate live log stream.
 
 ### 13.2 Subsequent normal message
 
@@ -781,14 +803,14 @@ The Session DO streams clone and setup output to the browser as Session Events.
    only in memory.
 3. Durable admits the input with `whenBusy: "followUp"`; acceptance returns `clientRequestId` and
    `submissionId`, not completion of the Agent Run.
-4. If the Session was paused, harness opening and environment startup proceed independently. The
-   Session DO asks the runner to start compute; the runner reopens the same disk, recreates
-   transient policy/placeholders, and re-establishes the Environment Link, after which the Session
-   DO runs `.agents/resume` over `ExecutionEnv`.
+4. If compute is stopped, the Session DO queues a start of its environment ahead of the prompt's
+   run, unless an earlier failure awaits the user's retry action. The runner reopens the same disk,
+   recreates transient policy/placeholders, and dials the Environment Link, after which the Session
+   DO runs `.agents/resume` over `ExecutionEnv`; the run waits for both to settle.
 5. If the agent itself stopped compute through Environment Control, ordinary tools fail explicitly
    until the environment is started. If the runner or provider is unreachable, guest tools fail
-   immediately without waiting, so the agent can choose another approach. Admission and model work
-   never depend on a reachable runner or a ready guest.
+   immediately without waiting, so the agent can choose another approach. Admission never depends
+   on a reachable runner, and model work waits only for queued environment operations to settle.
 6. Do not automatically retry an ambiguous command outcome. Durable deduplicates admitted request
    IDs; explicit reconciliation must not enable scheduling merely to acknowledge a duplicate.
 7. Stream the Conversation View from the Session DO, refresh guest-generated Git Snapshots from the
@@ -799,7 +821,8 @@ The Session DO streams clone and setup output to the browser as Session Events.
 
 Normal send admits a Follow-up with its own Submission identity. Durable owns its persistence,
 delivery, and recovery. The browser renders the queue from the Conversation View rather than
-maintaining a second source of truth. Stop Session preserves unfinished work; Abort cancels it.
+maintaining a second source of truth. Stop Session and Abort both cancel unfinished work and queued
+input; the conversation itself stays durable.
 
 An explicit steering action remains a product goal requiring a Durable-based interface decision;
 it is not implemented by the current Agent Harness or runner RPC API. Do not expose the removed
@@ -842,32 +865,35 @@ Relevant activity resets the timer:
 - Preview WebSocket traffic
 - Setup/resume work
 
-At timeout, the Session DO uses the same recoverable Stop Session ordering as explicit Stop:
+At timeout, once no agent work remains, the Session DO stops compute through the same queued
+operation as explicit Stop. Explicit Stop queues that operation first and then aborts agent work and
+queued prompts, so a prompt admitted after the abort runs after the stop, on compute started again
+for it. Pi Durable has no recoverable pause.
 
-1. The Session DO closes Durable recoverably. Pausing happens before cancelling guest operations or
-   collecting the final Git Snapshot.
-2. The Session DO cancels its own guest operations (setup/resume), runs a final
-   controlled status/diff operation inside the guest over `ExecutionEnv`, and atomically stores the
-   Git Snapshot in its SQLite storage. If the environment is unreachable, it keeps the previous
-   snapshot and marks it stale.
+1. The Session DO queues the stop behind any environment operation already queued (setup, start).
+2. It runs a final controlled status/diff operation inside the guest over `ExecutionEnv` and
+   atomically stores the Git Snapshot in its SQLite storage. If the environment is unreachable, it
+   keeps the previous snapshot and marks it stale.
 3. The Session DO asks the runner to stop compute.
 4. As terminal/preview support is implemented, the runner stops new live-only streams, expires those
    previews, closes terminals, and stops managed services within a bounded deadline.
 5. Run guest `/bin/sync`.
 6. Explicitly stop and close the Gondolin VM without deleting `root-disk.qcow2`.
 7. Call host `fsync` on `root-disk.qcow2` and its session directory.
-8. Append `stop.completed` to the Session Journal and set environment state to `stopped`.
+8. Report environment state `stopped`; the runner stores no lifecycle record.
 
 Steps 4–8 describe the runner provider. What Stop retains on a provider with vendor-snapshot or
 ephemeral persistence, and how the Session DO restores a Project Checkout on Wake there, is To be
 decided.
 
-Wake resumes checkpointed agent work concurrently with opening the same disk in a new VM; the
-Session DO then runs `.agents/resume` over `ExecutionEnv`. RAM, processes, and tmpfs-backed guest paths do not survive Stop; the
-Environment Link closes with the VM. Abort instead cancels conversation work without stopping
-compute. The Session DO-side `environment` tool can stop or restart compute through the provider without
-pausing the agent; forced restart reports possible unsynced-data loss and must wait for exclusive
-disk ownership before attaching a replacement VM.
+Wake opens the same disk in a new VM; the Session DO then runs `.agents/resume` over
+`ExecutionEnv`. Wake does not resume an unfinished run, and a run that an earlier Stop paused, under
+the former recoverable pause, is aborted when its Session next opens. RAM, processes, and
+tmpfs-backed guest paths do not survive Stop; the Environment Link closes with the VM. Abort instead
+cancels conversation work without stopping compute. The Session DO-side `environment` tool can stop
+or restart compute through the provider while the agent keeps working; forced restart reports
+possible unsynced-data loss and must wait for exclusive disk ownership before attaching a
+replacement VM.
 
 ### 13.6 Archive and delete
 
@@ -876,16 +902,16 @@ Archive:
 - Stop the VM and retain its persistent root disk.
 - Expire preview access.
 - Hide the session from the active list.
-- Retain Harness State, Published Media, and the cached Git Snapshot (Session DO and R2), checkout, Session Journal, `root-disk.qcow2`, and logs.
+- Retain Harness State, Published Media, and the cached Git Snapshot (Session DO and R2), checkout, environment definition, `root-disk.qcow2`, and logs.
 
 Delete:
 
 - Require explicit confirmation.
-- In one native Workspace SQLite transaction, write a durable deleted-session marker containing only Workspace ID, session ID, and deletion time and remove the five-column catalog row.
-- The Session DO then marks itself deleting and aborts agent work. It deletes every object under the Session's R2 prefix `workspaces/{workspaceId}/sessions/{sessionId}/media/`, asks the provider to delete the environment (on the runner, `environment.delete` stops compute and removes the persistent root disk and its checkout, Session Journal, and environment directory), closes its Environment Links, and finally deletes its own storage (Harness State, Published Media records, Git Snapshot, Project Checkout facts, alarms).
+- Remove the five-column catalog row from the Workspace DO.
+- The Session DO then marks itself deleting and aborts agent work. It deletes every object under the Session's R2 prefix `workspaces/{workspaceId}/sessions/{sessionId}/media/`, asks the provider to delete the environment (on the runner, `environment.delete` stops compute and removes the persistent root disk and its checkout, environment definition, and environment directory), closes its Environment Links, and finally deletes its own storage (Harness State, Published Media records, Git Snapshot, Project Checkout facts, alarms).
 - If the R2 or environment deletion fails, for example because the runner is offline, the Session DO's alarm retries it; the Session is already gone from the control plane.
 - An environment that a runner later reports for a deleted Session is ignored by its Session DO, and runner reports never recreate the catalog entry.
-- Retain the deleted-session marker so the deleted Session ID can never be cataloged again.
+- Keep no tombstone: Sessions are created only by the gateway with fresh IDs, so a deleted Session ID is never cataloged again.
 
 ## 14. Pi integration
 
@@ -900,9 +926,19 @@ checkpoints, compaction, and recovery. OpenOrb does not implement another agent 
 There is no conversion or compatibility path for pre-migration or runner-hosted sessions.
 
 The scoped harness supports submit, explicit resume, conversation-wide abort, model/thinking
-configuration, and complete Conversation Views. Closing it pauses recoverably. Opening for
-observation alone does not resume scheduling. The Session DO serializes live harness access,
-idle view reads, close, and deletion.
+configuration, and complete Conversation Views. Pi Durable has no recoverable pause: Stop Session
+aborts agent work, and the durable conversation lets the next prompt continue it. After an
+eviction, the Session DO's recovery alarm lets Durable continue unfinished tasks; observation never
+starts compute. The Session DO serializes live harness access, idle view reads, close, and
+deletion.
+
+Pi owns every prompt from admission: the Session DO submits it to Pi at once, and Pi's durable
+queue, request-ID deduplication, and Abort apply to it. A prompt to a stopped Session also queues a
+start of its environment. Pi builds the guest `ExecutionEnv` for each model request and tool call
+through the Harness `env` option, which resolves once no environment operation (setup, start, or
+stop) is queued. Setup is never a precondition: a run proceeds after a failed setup so the agent can
+repair a running environment, and a model-only answer does not run while setup is in progress. The
+Session DO keeps no list of waiting prompts beside Pi's queue.
 
 Pi AI uses a per-open `InMemoryCredentialStore` in the Session DO, filled with provider credentials
 resolved from the Workspace DO inside the gateway; ambient environment/file authentication is
@@ -915,24 +951,25 @@ The explicit registry exposes guest-backed `read`, `write`, `edit`, and `bash`, 
 `publish_media` and Session DO-side `environment` control. The Agent Harness sees only Pi's
 `ExecutionEnv`, unchanged; the Session DO's own clone, setup/resume, Git Snapshot, skill-discovery,
 and Published Media work uses the same `ExecutionEnv`. The Agent Environment Provider supplies it.
-For providers that run the static Environment Daemon, including the runner, it is a vendored copy of
-`@earendil-works/pi-env`'s `RemoteExecutionEnv` client in `packages/pi-env`, using a WebSocket
-transport and Web APIs instead of the upstream SSH child process and Node built-ins; only the
-Environment Link transport is provider-specific. It talks to the unmodified static pi-env
-Environment Daemon inside the guest, so untrusted paths are interpreted only by guest processes and
-the environment conforms to Pi's `ExecutionEnv` contract. A provider with a suitable native API may
-instead return its own `ExecutionEnv`, which must also interpret paths only inside the guest.
+For providers that run the static Environment Daemon, including the runner, it is upstream
+`@earendil-works/pi-env`'s `RemoteExecutionEnv`, unmodified; `@openorb/pi-env` supplies only a
+`LinkConnection` subclass that carries frames over the Environment Link and pings only while
+requests are in flight. It talks to the unmodified static pi-env Environment Daemon inside the
+guest, so untrusted paths are interpreted only by guest processes and the environment conforms to
+Pi's `ExecutionEnv` contract. A provider with a suitable native API, such as the Sandbox, instead
+returns its own `ExecutionEnv`, which must also interpret paths only inside the guest.
 `NodeExecutionEnv`, host-filesystem fallbacks, and any gateway- or provider-host interpretation of
 guest paths are forbidden.
 
 Relative paths resolve from `/workspace`. Absolute paths address the guest filesystem, never the
-gateway or a provider host. While a reachable environment boots or runs setup/resume, guest
-operations wait cancellably. They fail explicitly while compute is stopped, and fail immediately,
-without waiting, while the runner or provider is unreachable or the Environment Link is down, so the
-agent can choose another approach while model work continues. The `environment` tool asks the
-provider to start, stop, or restart compute even while the guest is unavailable, without pausing
-the agent; it fails immediately when the provider is unreachable. Replacement VMs must not overlap
-disk ownership.
+gateway or a provider host. Guest operations never wait for an unavailable environment: they fail
+explicitly while compute is stopped, and fail immediately while the runner or provider is
+unreachable, so the agent can choose another approach while model work continues. While compute
+runs without a link, an operation waits a bounded time for the runner to dial one. Agent Runs wait
+only for queued environment operations (§14.1). The `environment` tool asks the provider to start,
+stop, or restart compute even while the guest is unavailable, while the agent keeps working; it
+fails immediately when the provider is unreachable. Replacement VMs must not overlap disk
+ownership.
 
 Losing the Environment Link closes the Environment Daemon and kills the processes it started, as
 upstream does; tools interrupted this way report possible partial execution.
@@ -989,15 +1026,20 @@ The Session DO projects the view and serves it to browsers. Inline model images 
 in Harness State/model context; browser stream frames carry Session artifact references only, and
 the authenticated media route serves those images from the Session DO's Harness State rather than
 through runner storage or the bulk socket. Unsupported images or publication failures become
-placeholders, never inline-byte fallback. Session infrastructure state remains separate Session
-Events that the Session DO emits itself, from its clone and setup/resume work and from the
-environment changes the runner reports through the Runners DO. Neither the Workspace DO,
-the Runners DO, nor the Session Journal maintains a second conversation transcript.
+placeholders, never inline-byte fallback. Clone, setup, and resume output is part of the
+transcript as `openorb.setup` entries (§13.1). Session infrastructure state (stage, agent and
+environment state, checkout availability, issues) remains separate Session Events that the Session
+DO emits itself, from its own operations and from the environment changes the runner reports
+through the Runners DO. Views and Session Events are plain gateway types
+(`packages/gateway/app/cells/session/view.ts`) that the browser renders without re-validating.
+Neither the Workspace DO, the Runners DO, nor runner storage maintains a second conversation
+transcript.
 
 ## 15. Gondolin integration
 
-This section describes the runner provider, apart from §15.3, which applies to every provider.
-The runner declares a durable root disk, Egress Secret Mediation, and a hibernatable link.
+This section describes the runner provider, apart from §15.3, which applies to every Session with
+a project. The runner declares mediated credentials (Egress Secret Mediation) and Git support; its
+durable root disk and hibernatable link are properties of the provider, not declared capabilities.
 
 ### 15.1 VM shape
 
@@ -1017,15 +1059,17 @@ The runner declares a durable root disk, Egress Secret Mediation, and a hibernat
 
 - One sparse 40 GiB `root-disk.qcow2` exists at a stable path in each Session directory.
 - `/workspace` and all other non-tmpfs root-disk paths persist on that disk.
-- For explicit and idle Stop Session, the Session DO closes Durable recoverably, collects the final
-  Git Snapshot over `ExecutionEnv`, and then asks the runner to stop compute; the runner runs guest
-  `/bin/sync`, then stops and closes the VM without deleting the disk.
+- For explicit and idle Stop Session, the Session DO queues the stop, aborts agent work (explicit
+  Stop only), collects the final Git Snapshot over `ExecutionEnv`, and then asks the runner to stop
+  compute; the runner runs guest `/bin/sync`, then stops and closes the VM without deleting the
+  disk.
 - Abort cancels agent work and queued inputs without stopping compute; Environment Control stops
-  or restarts compute without pausing the harness.
-- The runner calls host `fsync` on the disk and Session directory before journaling
-  `stop.completed`.
-- A runner interrupted in `Stopping` cannot confirm guest sync and VM exit, so it preserves the
-  disk and fails with `restart-environment`.
+  or restarts compute while the agent keeps working.
+- The runner calls host `fsync` on the disk and Session directory before reporting the environment
+  stopped.
+- A runner restart leaves no VM, so every environment it restores is stopped and the next start
+  reopens the preserved disk; root-disk initialization is idempotent and runs on every boot. A
+  start after a failed boot or stop first force-releases the failed VM.
 - Wake creates a new VM object over the same disk; the Session DO then runs `.agents/resume`.
 - RAM, processes, and tmpfs-backed paths such as `/root`, `/tmp`, and `/var/log` do not persist.
 - The Session remains pinned to the matching Gondolin guest assets/build ID.
@@ -1038,11 +1082,11 @@ The Session DO runs both hooks over `ExecutionEnv` for every provider; the runne
 them.
 
 - Run executable `.agents/setup` once after the Session DO's fresh clone and initial boot.
-- Stream stdout/stderr to viewers as Session Events from the Session DO. Whether hook output is
-  retained beyond the live stream is To be decided.
-- Surface a non-zero setup exit as a visible warning and release guest readiness so the agent can diagnose or repair the project.
-- Run executable `.agents/resume` on every environment wake before guest tools become ready; model
-  work may already be running concurrently in the Session DO.
+- Write each hook's redacted output, its last 32 KiB kept, into the conversation transcript as an
+  `openorb.setup` entry; only a failure's entry also carries a message for the model.
+- Surface a non-zero setup exit as a visible issue; the agent's run proceeds anyway so it can
+  diagnose or repair the project.
+- Run executable `.agents/resume` on every environment wake; Agent Runs wait for it to settle.
 - Use a bounded blocking period; surface failure rather than silently continuing.
 - Hooks execute inside the guest from `/workspace`.
 
@@ -1056,7 +1100,7 @@ Gondolin currently implements an Alpine boot-image pipeline, but it accepts an O
 - `apt` for repository-specific setup
 - The pinned native agent-browser CLI and browser runtime libraries
 - Gondolin guest helpers and its minimal init
-- The unmodified static pi-env Environment Daemon at `/usr/local/libexec/openorb/pi-env`, extracted from the SHA-256-pinned `@earendil-works/pi-env` npm tarball whose version matches the vendored client. The runner starts one daemon per Environment Link under the guest login shell, so commands see the same profile environment as before
+- The unmodified static pi-env Environment Daemon at `/usr/local/libexec/openorb/pi-env`, extracted from the SHA-256-pinned `@earendil-works/pi-env` npm tarball whose version matches the pinned `RemoteExecutionEnv` client. The runner starts one daemon per Environment Link under the guest login shell, so commands see the same profile environment as before
 
 The image does not embed Chromium. An OpenOrb wrapper serializes on-demand installation before the first browser command: it fetches current Stable Chrome for Testing with the guest's Gondolin-compatible `curl` on x86-64, while ARM64 installs snapshot-pinned Debian Chromium because Google does not publish a Linux ARM64 Chrome for Testing build. The browser lands in the writable copy-on-write rootfs. The image does not include Amp/E2B internals, Deno, Go, Rust, Java, host container/VM/database tooling, a package cache, service supervisor, SSH daemon, terminal service, or preview service.
 
@@ -1369,7 +1413,7 @@ Never accept arbitrary runner-side hostnames or ports from a browser request.
 
 ## 20. Browser API
 
-The browser API is internal and may evolve before a stable public API is declared. It still uses shared runtime schemas and explicit response types. Session-list/catalog responses may come from the four persisted metadata fields. Conversation reads and commands (stream, prompt, abort, thinking level, Stop, Wake), media reads, and cached Git Snapshot reads go to the Session DO and work without a connected runner. Guest-backed Git mutations and file reads also go to the Session DO, which runs them over `ExecutionEnv` and fails them immediately while the environment is unreachable. Terminals and previews require the owning runner to be connected and are proxied to that runner.
+The browser API is internal and may evolve before a stable public API is declared. It uses explicit gateway-owned request and response types; values the Session DO produces for browser pages are plain types the browser does not re-validate. Session-list/catalog responses may come from the four persisted metadata fields. Conversation reads and commands (stream, prompt, abort, thinking level, Stop, Wake), media reads, and cached Git Snapshot reads go to the Session DO and work without a connected runner. Guest-backed Git mutations and file reads also go to the Session DO, which runs them over `ExecutionEnv` and fails them immediately while the environment is unreachable. Terminals and previews require the owning runner to be connected and are proxied to that runner.
 
 The route tables below are product API sketches except for the current conversation routes in
 section 20.6. Implemented URLs are defined by
@@ -1444,7 +1488,8 @@ Create draft input:
 
 ```ts
 interface CreateSessionInput {
-  projectId: string
+  environment: "runner" | "sandbox"
+  projectId?: string
   ref?: string
   runnerId?: string
   model: string // provider/model, split only at the first slash
@@ -1453,11 +1498,11 @@ interface CreateSessionInput {
 }
 ```
 
-Creation may also override the Project's Agent Environment Provider; that field is deferred until a
-second provider exists, and its shape is To be decided. `runnerId` applies only when the runner
-provider is selected.
+`environment` selects the Agent Environment Provider; `runnerId` applies only when the runner
+provider is selected. A Sandbox Session never has a project, and the gateway ignores a submitted
+one.
 
-`DELETE /api/sessions/:sessionId` is available while the runner is offline. After explicit confirmation, it atomically records the minimal deletion marker and removes the catalog row, then the Session DO deletes the Session's R2 media prefix and its environment and finally its own storage (including its Git Snapshot and Project Checkout facts). While the runner is offline, the Session DO's alarm retries environment deletion.
+`DELETE /api/sessions/:sessionId` is available while the runner is offline. After explicit confirmation, it removes the catalog row, then the Session DO deletes the Session's R2 media prefix and its environment and finally its own storage (including its Git Snapshot and Project Checkout facts). While the runner is offline, the Session DO's alarm retries environment deletion.
 
 ### 20.6 Conversation and delivery
 
@@ -1478,9 +1523,9 @@ Prompt, abort, and thinking-level commands go to the Session DO, not the runner,
 runner does not reject them; ambiguous command outcomes are shown rather than automatically
 retried. Queued inputs belong to Harness State, not a separate pending-message API.
 
-Abort targets the Session's conversation. Stop is a Session DO-orchestrated recoverable pause plus
-durable compute stop by the runner. Opening the session page separately sends a CSRF-protected Wake
-request. Subscribing to or reconnecting the event stream never sends Wake or enables harness
+Abort targets the Session's conversation. Stop queues a durable compute stop by the runner, then
+aborts agent work and queued prompts. Opening the session page separately sends a CSRF-protected
+Wake request. Subscribing to or reconnecting the event stream never sends Wake or enables harness
 scheduling. Planned steering and edit-last controls need Durable-based contracts before routes are
 added.
 
@@ -1545,22 +1590,27 @@ Requirements:
 - Coalesce pending conversation updates to the latest view; compute each viewer's next delta from its last-delivered view
 - Keep infrastructure events in a separate bounded queue; overflow fails only that watch and SSE reconnect supplies a fresh baseline
 - Redact secrets and project inline images to private artifact references before diffing
-- Keep harness ownership serialized in the Session DO; observation never starts compute or resumes work
+- Keep harness ownership serialized in the Session DO; observation never starts compute
 - Harness State is the only conversation store; do not persist conversation/event history in the Workspace DO, Runners DO, or a runner transcript
 - Carry queue, usage, configuration, and progress in the Conversation View; keep infrastructure events separate
-- Browser snapshot replacement and validated structural application must not duplicate messages
+- Browser snapshot replacement and structural application must not duplicate messages
 
 The session list may use a separate lightweight global SSE stream for runner/session status, or poll initially. Do not overload every session stream with unrelated status.
 
 ## 22. Runner Effect RPC API
 
-Effect Schema declarations in `@openorb/protocol` are the sole runner wire contract. Effect RPC
+Effect Schema declarations in `@openorb/protocol` are the sole runner wire contract; the package
+holds only runner-boundary types (identities, capacity, environment payloads and states, and
+enrollment). Effect RPC
 owns JSON framing, runtime decoding, in-connection correlation, stream acknowledgement, remote
 interruption, and ping/pong. OpenOrb does not maintain a parallel wire contract or runtime path.
 
-The application protocol version is 27. ADR 0005 bumped it from 25 to 26, and completing ADRs 0005
-and 0006 bumped it to 27, removing every `session.*` procedure. Neither bump is backward compatible:
-a v27 gateway rejects v26 runners at admission, and runner-hosted Sessions are not migrated.
+The application protocol version is 29. ADR 0005 bumped it from 25 to 26; completing ADRs 0005
+and 0006 bumped it to 27, removing every `session.*` procedure; ADR 0007 bumped it to 28, making
+`environment.create`'s repository optional; and ADR 0008 bumped it to 29, removing
+`environment.attach`, watch revisions, and control recovery. No bump is backward compatible: a
+gateway admits only runners speaking its exact version, and runner-hosted Sessions are not
+migrated.
 
 Control payloads are UTF-8 JSON reassembled through bounded SchemaBinary framing: at most 1 MiB per
 binary WebSocket chunk and 16 MiB per logical frame. Decode only after complete reassembly; reject
@@ -1577,7 +1627,9 @@ acts as the RPC client. `IdentifyRunner` is the only call permitted before admis
    version.
 3. The gateway authenticates the token, requires the authenticated and claimed IDs to match, checks
    revocation and protocol compatibility, and then starts `WatchRunner`.
-4. Only a complete, reconciled initial runner snapshot is admitted to `RunnerRegistry`.
+4. The connection is admitted to `RunnerRegistry` only after the runner's first `snapshot` event
+   arrives; the gateway then re-authenticates the token, so a revocation that raced admission
+   closes the connection without a separate revoked set.
 
 Permanent authentication, identity, revocation, or application-version rejection closes with code
 `4401` and stops runner reconnect. Bootstrap timeout closes with code `4408` and remains transient.
@@ -1588,18 +1640,18 @@ Credentials never appear in the URL or WebSocket subprotocol and must be redacte
 | RPC name | Shape | Purpose |
 | --- | --- | --- |
 | `runner.identify` | Unary | Return identity and protocol version for admission |
-| `runner.watch` | Stream | Deliver `snapshot.environment` elements and a `snapshot.complete` boundary (revision, environment count, observation time, capacity), then `runner.observed`, `environment.updated`, and `environment.removed` |
-| `environment.create` | Unary | Idempotently create runner-owned environment state (Persistent Root Disk, Session Journal) for a Session after an authoritative capacity check; no clone or setup |
-| `environment.control` | Unary | Start, stop, or restart compute, with transient credentials for Egress Secret Mediation and optional recovery |
-| `environment.attach` | Unary | Start an Environment Daemon and dial the Session's Environment Link with a one-time attach nonce |
+| `runner.watch` | Stream | Deliver one `snapshot` (observation time, capacity, and every environment's `sessionId` and `state`), then `runner.observed` (observation time, capacity) and `environment.changed` |
+| `environment.create` | Unary | Idempotently create runner-owned environment state (definition and Persistent Root Disk) for a Session (`sessionId`, `orbSize`, optional `repository`) after an authoritative capacity check; no clone or setup |
+| `environment.control` | Unary | Start, stop, or restart compute, with transient credentials for Egress Secret Mediation |
 | `environment.delete` | Unary | Stop compute and remove the environment's runner-owned data |
 
 There are no `session.*` runner procedures. Prompt, thinking-level, and Abort commands go to the
 Session DO; it caches Git Snapshots and runs clone, setup/resume, stage/unstage, and other guest Git
 over `ExecutionEnv`, so the former provision, wake, stop, delete, watch, Git Snapshot, Git file,
 Git patch, and artifact procedures are removed. The Session DO reaches the `environment.*`
-procedures through the Runners DO, which routes them by the runner's current connection
-generation.
+procedures through the Runners DO, which routes them to the runner its placement names over that
+runner's current connection. There is no attach procedure: the runner dials the Environment Link
+itself whenever the environment runs (§22.6).
 
 Later archive and terminal/preview operations join the same typed RPC
 group. They are domain procedures, not generic command/result messages.
@@ -1612,11 +1664,11 @@ the Session ID of each environment command, each prompt `clientRequestId`, and e
 None is derived from an RPC request ID. There is no OpenOrb Agent Run identifier or transcript cursor.
 
 `environment.create` performs one short idempotent acceptance transaction: check capacity and
-conflicts, journal the environment definition under the process-owned EnvironmentSupervisor, and
+conflicts, write the environment definition once under the process-owned EnvironmentSupervisor, and
 return an environment snapshot. Clone and setup are not part of it; the Session DO runs them once
 the environment is started and its Environment Link is up. A disconnect after dispatch reports
-uncertain delivery. The gateway does not blindly retry; an explicit same-Session retry is reconciled
-against the runner's durable state, and a later `WatchRunner` snapshot can reveal successful
+uncertain delivery. The gateway does not blindly retry; an explicit same-Session retry with the same
+definition finds the same environment, and a later `WatchRunner` snapshot can reveal successful
 acceptance.
 
 Prompt admission is serialized per Session by its Session DO. The Session DO prompt command returns
@@ -1625,25 +1677,28 @@ admission observers. Duplicate acknowledgements only read the persisted Submissi
 duplicate `submit` would enable scheduling. The Session DO abort command takes only the Session and
 acts on the conversation.
 Neither command is automatically retried after timeout/disconnect. Surface uncertainty for explicit
-reconciliation. Checkpoint recovery on Wake is distinct from retrying an ambiguous gateway command;
-model requests may repeat and interrupted unsafe tools may report partial execution. There is no
+reconciliation. Durable's recovery of unfinished tasks after a Session DO eviction is distinct from
+retrying an ambiguous gateway command; model requests may repeat and interrupted unsafe tools may
+report partial execution. There is no
 exactly-once execution guarantee or reconstruction of harness queues from gateway state.
 
 ### 22.4 `WatchRunner`
 
-The runner subscribes to state changes before taking its bounded initial snapshot. The stream emits
-individual `snapshot.environment` elements, one `snapshot.complete` boundary carrying revision,
-environment count, observation time, and capacity, periodic `runner.observed` elements, and later
-`environment.updated`/`environment.removed` elements. The gateway accumulates and validates the
-initial elements, rejecting duplicates, miscounts, out-of-order elements, and other Workspaces'
-environments, and atomically commits the environment index only at the completion boundary. Invalid
-data never becomes partially live. The Runners DO notifies each affected Session DO of updates and
-removals, and marks a runner's environments unreachable when its watch ends. It never reads or writes
-the Session catalog.
+The runner subscribes to state changes before taking its initial snapshot. The stream emits one
+`snapshot` carrying observation time, capacity, and each environment's `sessionId` and `state`, then
+periodic `runner.observed` elements and `environment.changed` elements. There are no revisions,
+Workspace identifiers, or creation facts on the wire; the Workspace comes from the authenticated
+runner record. On admission the Runners DO tells each reported environment's Session DO that it is
+reachable again, and it forwards each later change. It routes control by the Session's
+`placement.runnerId` and keeps no index of which runner hosts which Session; per connected runner it
+keeps only the Sessions to notify when the runner becomes unreachable (its watch ends) or is
+revoked. A Session DO ignores a notice whose runner is not its placement's. The Runners DO never
+reads or writes the Session catalog.
 
 The gateway uses a stream inactivity timeout for domain liveness while Effect RPC ping/pong checks
-socket responsiveness. On reconnect, the complete stream restarts and rebuilds only live routing
-state in Runners DO; gateway storage is never used to reconstruct runner-owned environment data.
+socket responsiveness. On reconnect, the stream restarts with a fresh snapshot and rebuilds only
+live connection state in Runners DO; gateway storage is never used to reconstruct runner-owned
+environment data.
 
 ### 22.5 Session DO streams and SSE
 
@@ -1667,20 +1722,24 @@ only the matching viewer stream, not agent work.
 ### 22.6 Environment Link
 
 This section describes the runner provider's link. Other providers that run the static Environment
-Daemon share the vendored `RemoteExecutionEnv` and supply only their own link transport; a provider
-that returns its own `ExecutionEnv` needs no Environment Daemon link. A provider that cannot offer a
-hibernatable link keeps the Session DO awake while its link is open; whether the Session DO closes
-such links while the agent is idle is To be decided.
+Daemon share upstream `RemoteExecutionEnv` and supply only their own link transport; a provider
+that returns its own `ExecutionEnv`, such as the Sandbox, needs no Environment Daemon link. A
+provider that cannot offer a hibernatable link keeps the Session DO awake while its link is open;
+whether the Session DO closes such links while the agent is idle is To be decided.
 
 The runner's Environment Link is a dedicated per-Session WebSocket, separate from the control and bulk
-sockets. The runner dials it outbound to the Session DO and authenticates with its runner token
-plus a one-time attach nonce; it then relays Environment Daemon frames verbatim and never
-interprets them. Revoking a runner closes its Environment Links through the Runners DO.
+sockets. The runner dials it outbound to the Session DO whenever the environment runs; the Session
+DO never requests one, and there is no attach procedure or one-time nonce. The link authenticates
+in-band with the runner token alone, which must name the runner of the Session's placement in the
+Session's Workspace. The runner then relays Environment Daemon frames verbatim and never interprets
+them. While compute keeps running it redials a lost link with backoff starting at 1 second and
+doubling to at most 30 seconds, reset after a successful attach. A newer link replaces the previous
+one. Revoking a runner closes its Environment Links through the Runners DO.
 
 The link stays open while the Agent Environment runs. The Session DO accepts it as a hibernatable
 WebSocket so it can sleep while the agent is idle, and liveness never wakes it: the runner relay
 answers the daemon's pings locally, link pings use the Durable Object's automatic WebSocket
-response, and the vendored client sends protocol pings only while it has requests in flight. Losing
+response, and the `LinkConnection` sends protocol pings only while it has requests in flight. Losing
 the link closes the daemon and kills the processes it started; interrupted tools report possible
 partial execution. Multiplexing environment traffic over the control socket was rejected: it would
 route every tool byte through the single Runners DO, let large transfers delay control traffic,
@@ -1743,16 +1802,19 @@ only environment contracts.
 - [Agent Harness](packages/gateway/app/cells/session/agent.ts): the Session DO's Durable harness
   with an explicit registry, in-memory credentials, guest-backed tools, `publish_media`,
   `environment` control, and the `repository-skills` prompt section.
-- [Agent Environment Provider](packages/gateway/app/cells/session/environment/provider.ts) (gateway
-  side): binds a Session to its environment and supplies create, start/stop/restart control,
-  delete, declared capabilities (persistence, Egress Secret Mediation, hibernatable link), and Pi's
-  `ExecutionEnv` over the Environment Link. It carries no project behaviour. The
-  [runner provider](packages/gateway/app/cells/session/environment/runner-provider.ts) is the only
-  implementation.
-- Vendored pi-env `RemoteExecutionEnv` client (`packages/pi-env`): the guest `ExecutionEnv` shared by
-  every provider that runs the static Environment Daemon, with a provider-specific link transport;
-  readiness-aware and failing immediately while the link is unreachable, plus a separate Session
-  DO-side Environment Control callback that reaches the provider.
+- [Agent Environment Provider](packages/environments/src/environment.ts) (`@openorb/environments`):
+  one `EnvironmentProvider` interface that binds a Session to its environment and supplies create,
+  start/stop/restart control, delete, declared capabilities (credentials and Git), Pi's
+  `ExecutionEnv`, and relay hooks for traffic addressed to the environment (HTTP requests,
+  hibernatable WebSockets, and control-plane notices). It carries no project behaviour. The
+  [runner provider](packages/environments/src/runner/provider.ts) with its
+  [Environment Link endpoint](packages/environments/src/runner/link.ts) and the
+  [Sandbox provider](packages/environments/src/sandbox/provider.ts) are the implementations,
+  registered by placement name in `packages/gateway/app/cells/session/environments.ts`.
+- Upstream pi-env `RemoteExecutionEnv` client, unmodified: the guest `ExecutionEnv` shared by every
+  provider that runs the static Environment Daemon; `packages/pi-env` supplies its `LinkConnection`
+  transport. It fails immediately while the runner is unreachable or compute is stopped, beside a
+  separate Session DO-side Environment Control callback that reaches the provider.
 - Session DO project behaviour: clone and branch creation, `.agents/setup`/`.agents/resume`, Git
   Snapshot refresh and controlled Git operations, skill discovery, and Published Media, all over
   `ExecutionEnv`.
@@ -1761,10 +1823,12 @@ only environment contracts.
   runs lifecycle commands, starts the Environment Daemon, and stops.
 - [EnvironmentSupervisor](packages/runner/src/environment/session/supervisor.ts) and
   [EnvironmentActor](packages/runner/src/environment/session/actor.ts): one actor per
-  `environments/<sessionId>/` directory, journaling infrastructure facts in the JSONL Session Journal
-  and serving create, control, attach, and delete; the
-  [environment lifecycle](packages/runner/src/environment/session/lifecycle.ts) owns readiness,
-  guest operation cancellation, sync/stop, bounded restart, and exclusive disk attachment.
+  `environments/<sessionId>/` directory, whose
+  [store](packages/runner/src/environment/session/store.ts) holds only the definition written at
+  creation, serving create, control, and delete and dialing the Environment Link while compute runs;
+  the [environment lifecycle](packages/runner/src/environment/session/lifecycle.ts) owns readiness,
+  guest operation cancellation, sync/stop, bounded restart, force-release of a failed VM, and
+  exclusive disk attachment.
 - [Environment Link dialer](packages/runner/src/environment/link/dial.ts) and
   [relay](packages/runner/src/environment/link/relay.ts): the runner side of each Environment Link.
 - Git review and mutations execute only inside the guest, issued by the Session DO; cached
@@ -1796,13 +1860,15 @@ are declared in `packages/gateway/app/cells/workspace/schema.ts` and created by 
 - `projects`
 - `runners`
 - `runner_enrollment_tokens`
-- `sessions`, restricted to `workspaceId`, `id`, `projectId`, `createdAt`, and `initialPromptPreview`
-- `deleted_sessions`, restricted to `workspaceId`, `sessionId`, and `deletedAt`
+- `sessions`, restricted to `workspaceId`, `id`, nullable `projectId`, `createdAt`, and `initialPromptPreview`
+
+Migration `0003` dropped the former `deleted_sessions` tombstones: Sessions are created only by the
+gateway with fresh IDs, so a deleted Session cannot reappear.
 
 Passkey, project-specific secret assignment, Agent Environment Provider selection (Workspace default and Project override), Guest Credential Opt-in, and audit-event tables or columns remain planned, not current schema.
 Any future control-plane audit events must contain no Session content beyond the catalog identity.
 
-It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, root-disk state, runner commands containing prompt content, or deletion records beyond the minimal `deleted_sessions` markers.
+It must not add other session columns or contain session routes, pending messages, conversation messages, tool calls/results, event streams, usage, diffs, files, logs, previews, Git session state, root-disk state, runner commands containing prompt content, or deletion records.
 
 Each Session DO owns that Session's agent persistence in its own SQLite storage:
 
@@ -1812,29 +1878,29 @@ Each Session DO owns that Session's agent persistence in its own SQLite storage:
 - Published Media metadata and quota accounting (64 MiB per artifact, 1 GiB per Session); the bytes
   live in the R2 bucket under `workspaces/{workspaceId}/sessions/{sessionId}/media/`.
 - Idle-timeout alarm and Stop Session orchestration state.
-- The selected Agent Environment Provider kind, the Project's Guest Credential Opt-in as of
-  creation, the runner placement, Project Checkout facts (base commit, branch, remote, pushed
-  state), setup/resume progress, and the cached Git Snapshot. These replace the runner's former
-  checkout and provisioning journal facts.
+- The Session's provider placement, the Project's Guest Credential Opt-in as of creation, Project
+  Checkout facts (base commit, branch, remote, pushed state), setup/resume progress, and the cached
+  Git Snapshot. These replace the runner's former checkout and provisioning journal facts.
 
 Runner-owned persistence has separate authorities:
 
-- The JSONL Session Journal under `environments/<sessionId>/` owns infrastructure facts only:
-  `environment.created` (the environment definition), `disk.initialized`, `environment.changed`, and
-  `stop.completed`. It records no conversation facts, no provisioning, clone, setup, or checkout
-  facts, and is not another agent task state machine.
+- `environments/<sessionId>/environment.json` holds only the environment definition (`sessionId`,
+  `runnerId`, `orbSize`, optional `repository`), written once at creation through a candidate file
+  and rename, beside `root-disk.qcow2` and the pinned guest-image `runtime.json`. There is no
+  journal: environment state is not stored, and every environment a restarted runner restores is
+  stopped. It records no conversation, provisioning, clone, setup, or checkout facts.
 - Root disks and logs retain their own private storage. The runner has no Harness State, artifact
   store, conversation media, or Git Snapshot.
 - Planned preview definitions/capability hashes remain runner-local, never gateway conversation data.
 
-Runners DO keeps a Workspace-scoped in-memory environment index populated by complete, validated `WatchRunner` snapshots. After restart/eviction its sockets and projections are lost and the index starts empty; runners reconnect and rebuild live state. It never writes the Session catalog. While the owning runner is offline, the Session DO still serves the transcript, queued input, media, and the cached Git Snapshot and keeps admitting prompts, but runner assignment, environment status, files, previews, and guest-backed actions are unavailable until it reconnects; guest tools fail immediately. Explicit deletion remains available and writes the Workspace-owned control-plane marker without waiting for the runner.
+Runners DO keeps only live connections in memory: each connected runner's capacity and the Sessions to notify when that runner becomes unreachable or is revoked. It keeps no index of which runner hosts which Session; control is routed by the Session's placement. After restart/eviction its sockets are lost; runners reconnect and their snapshots rebuild live state. It never writes the Session catalog. While the owning runner is offline, the Session DO still serves the transcript, queued input, media, and the cached Git Snapshot and keeps admitting prompts, but runner assignment, environment status, files, previews, and guest-backed actions are unavailable until it reconnects; guest tools fail immediately. Explicit deletion remains available and removes the catalog row without waiting for the runner.
 
 Workspace SQLite guidelines:
 
 - Native celld storage owns the database and connection; do not add a PostgreSQL pool, Redis, or a second configuration database/KV service
 - Store domain identifiers as `TEXT`; use application-generated UUIDs, with UUIDv7 for Workspace/user/runner/enrollment identity
 - Foreign keys enabled
-- Tenant-owned projects, secrets, provider/Git credentials, runners, enrollment credentials, catalog rows, and deletion markers use immutable `workspaceId`; uniqueness is tenant-relative and composite foreign keys prevent cross-Workspace references
+- Tenant-owned projects, secrets, provider/Git credentials, runners, enrollment credentials, and catalog rows use immutable `workspaceId`; uniqueness is tenant-relative and composite foreign keys prevent cross-Workspace references
 - Workspace RPC methods require authenticated `workspaceId` for tenant list/read/write/delete operations and treat foreign-Workspace identifiers as not found; passwords and Git author configuration remain user-owned and require `userId`
 - Explicit SQL migrations committed to source; Remix owns the journal/checksums inside one native transaction, and `blockConcurrencyWhile` gates initialization
 - Use native storage transactions for atomic configuration changes; persist provider OAuth checkpoints and alarm changes together
@@ -1867,7 +1933,7 @@ Workspace SQLite guidelines:
 - Runner selector becomes read-only after first send.
 - Terminal can enter dedicated full-screen mode.
 - Durable queued input is visible through the Session DO's Conversation View, including while the runner is offline.
-- Distinguish recoverable Stop, Wake, and conversation-wide Abort; there are no current per-item queue mutation controls.
+- Distinguish Stop, Wake, and conversation-wide Abort; there are no current per-item queue mutation controls.
 - Preview opens in a new tab or dedicated embedded frame depending on browser limitations.
 
 ### 26.3 Session status communication
@@ -1881,7 +1947,6 @@ Always distinguish:
 - Waking VM
 - Agent running
 - Durable Follow-up queued
-- Agent paused, checkpointed work retained
 - Agent running with environment stopped or starting
 - Idle, VM awake
 - Stopped, persistent disk retained
@@ -1919,7 +1984,7 @@ Untrusted or constrained:
 
 - No inbound runner ports.
 - All runner traffic, including each Environment Link, uses authenticated outbound TLS.
-- Environment Links authenticate with the runner token plus a one-time attach nonce; revoking a runner closes its links.
+- Environment Links authenticate with the runner token alone, which must name the runner of the Session's placement in its Workspace; revoking a runner closes its links.
 - Model credentials are resolved from the Workspace DO inside the gateway, are never sent to runners or other providers, and never enter the guest.
 - Git credentials remain gateway/runner-side; guest sees placeholders or an SSH proxy. On a provider without Egress Secret Mediation they enter the guest only under the Project's Guest Credential Opt-in; otherwise the Session runs without them.
 - The session checkout and `.git` metadata are untrusted; native Git on the gateway or a provider host never consumes them.
@@ -1928,7 +1993,7 @@ Untrusted or constrained:
 - Workspace generic secrets use Gondolin placeholder substitution on the runner. Allowed
   destinations are optional; omission intentionally allows all public HTTP(S) hosts. The Guest
   Credential Opt-in rule applies to them on other providers.
-- Pi Durable runs in the Session DO with an explicit trusted registry and a guest-only `ExecutionEnv` (the vendored pi-env client, or a provider's own guest-only implementation); host execution fallbacks are forbidden.
+- Pi Durable runs in the Session DO with an explicit trusted registry and a guest-only `ExecutionEnv` (upstream pi-env's `RemoteExecutionEnv`, or a provider's own guest-only implementation such as the Sandbox's); host execution fallbacks are forbidden.
 - Pi AI credentials are in Session DO memory with ambient environment/file authentication disabled; no workspace/global settings or packages are loaded.
 - No project context, prompt, skill, theme, package, extension, or system-prompt resource is discovered in the gateway or on the runner host in the MVP.
 - Pi/the model can access project files and skill-associated scripts only through the guest `ExecutionEnv`; untrusted paths are interpreted only by guest processes.
@@ -2046,17 +2111,17 @@ on the owning runner is To be decided under ADR 0005:
 
 ### Runner disconnect
 
-- Mark the runner offline, remove its environments from the live index, and notify their Session DOs that the environments are unreachable.
+- Mark the runner offline and notify the Session DOs it hosted that their environments are unreachable.
 - Environment Links are separate sockets and may outlive a control-connection loss; a link that closes ends its Environment Daemon, which kills the processes it started, and interrupted tools report possible partial execution. Revocation closes the runner's links.
-- Session DOs keep serving the transcript, queued input, Published Media, inline images, and the cached Git Snapshot, and keep admitting prompts; model work continues. Guest tools and Environment Control fail immediately rather than waiting, so the agent can choose another approach. Files, Git mutations, terminals, previews, environment status, and other guest- or runner-backed actions become unavailable. Explicit deletion remains available through a control-plane deletion marker.
+- Session DOs keep serving the transcript, queued input, Published Media, inline images, and the cached Git Snapshot, and keep admitting prompts; model work continues. Guest tools and Environment Control fail immediately rather than waiting, so the agent can choose another approach. Files, Git mutations, terminals, previews, environment status, and other guest- or runner-backed actions become unavailable. Explicit deletion remains available; the Session DO's alarm retries environment deletion.
 - Do not reassign pinned sessions.
 - Return runner-offline status for environment-backed session and preview requests.
-- Re-authenticate, consume a complete `WatchRunner` snapshot, rebuild the environment index, and notify Session DOs of the reported environments after reconnect. A lost Environment Link is re-established on demand: the next guest operation while the environment runs makes the Session DO request a new `environment.attach` with a fresh nonce.
+- Re-authenticate, receive the runner's `WatchRunner` snapshot, and tell each reported environment's Session DO that it is reachable again. The runner redials a lost Environment Link itself while compute runs, with backoff from 1 second doubling to 30 seconds, reset after a successful attach.
 
 ### Gateway restart
 
 - Runner reconnects automatically with exponential backoff and jitter, answers `IdentifyRunner`, and starts a fresh `WatchRunner` stream.
-- Workspace DO retains configuration, minimal catalog rows, deletion markers, and provider OAuth checkpoints/alarms. Session DOs retain Harness State, Published Media records, Git Snapshots, Project Checkout facts, and idle alarms. Runners DO loses ephemeral sockets/projections and rebuilds its Workspace-scoped environment index after a complete validated `WatchRunner` snapshot; it never reconstructs runner-owned environment state or RPC operations from gateway storage, and never touches the catalog.
+- Workspace DO retains configuration, minimal catalog rows, and provider OAuth checkpoints/alarms. Session DOs retain Harness State, Published Media records, Git Snapshots, Project Checkout facts, and idle alarms. Runners DO loses ephemeral sockets and rebuilds live connection state from reconnecting runners' `WatchRunner` snapshots; it never reconstructs runner-owned environment state or RPC operations from gateway storage, and never touches the catalog.
 - Browser SSE reconnect replaces its baseline with a fresh Conversation View from the Session DO; it does not Wake the Session.
 - Stable domain IDs, Session DO Harness State, and runner-owned environment state support reconciliation; ambiguous prompt/Abort handoffs remain explicit.
 
@@ -2065,19 +2130,22 @@ on the owning runner is To be decided under ADR 0005:
 - Preserve the persistent root disk and diagnostics.
 - Mark VM failed without deleting data.
 - Surface image/backend/build-ID mismatch distinctly.
-- Permit explicit retry after remediation.
+- Permit explicit retry after remediation; the Session's `restart-environment` retry action simply
+  restarts the environment. A start after a failed boot or stop first force-releases the failed VM.
 
 ### Interrupted Stop
 
-- Reconcile a Session journaled as `Stopping` by preserving the disk, marking the Session failed,
-  and requiring the explicit `restart-environment` recovery action. Host `fsync` alone cannot prove
-  that guest sync and VM exit completed.
+- A runner restart leaves no VM, so the runner restores the environment as stopped over its
+  preserved disk and the next start reopens it. There is no separate recovery mode: guest sync
+  cannot be proved either way after an interruption, and a start over the preserved disk is the
+  only recovery.
 
 ### Setup/resume failure
 
-- The Session DO streams hook output and shows the exact failed hook.
-- Failed `.agents/setup` or `.agents/resume` emits a visible warning and releases guest readiness
-  so the agent can diagnose or repair the project. Session DO model work need not wait for either hook.
+- The Session DO writes hook output into the transcript as `openorb.setup` entries and shows the
+  exact failed hook as an issue.
+- Failed `.agents/setup` or `.agents/resume` also gives the model a message at its run's next
+  boundary; the run proceeds so the agent can diagnose or repair the project.
 - If the Environment Link drops during clone or a hook, the Session DO reports it as interrupted;
   whether it retries clone/setup or requires an explicit action is To be decided.
 
@@ -2097,8 +2165,9 @@ on the owning runner is To be decided under ADR 0005:
 
 - Admitted Submissions, Follow-ups, and task checkpoints survive in Session DO SQLite.
 - A runner-process crash closes its Environment Links and stops guest work started over them; it does not affect admitted Harness State.
-- Session DO restart and read-only observation do not automatically resume work; Wake does.
-- Never reconstruct harness queues from the gateway projection or the Session Journal.
+- After a Session DO eviction, Durable continues unfinished tasks from Session DO SQLite. Read-only
+  observation never starts compute, and Wake starts compute but never resumes a run Stop aborted.
+- Never reconstruct harness queues from the gateway projection or runner storage.
 - Resolve duplicate request IDs by reading existing Submissions, without scheduling through `submit`.
 - Report ambiguous command outcomes for explicit reconciliation rather than silently retrying.
 - Recovery is not exactly-once: model requests may repeat; interrupted unsafe tools report possible
@@ -2120,10 +2189,9 @@ on the owning runner is To be decided under ADR 0005:
 - Runner selection and capacity filtering
 - Resource accounting
 - Session state transitions
-- Deleted-session marker transaction and anti-resurrection guard
 - Durable request-ID deduplication and stable Submission identity, including Follow-ups
 - Duplicate acknowledgement does not call `submit` or enable scheduling
-- Recoverable Stop versus Abort versus independent Environment Control
+- Stop (queued compute stop, then abort) versus Abort versus independent Environment Control
 - Provider selection precedence: Session override, then Project override, then Workspace default
 - Credential delivery by provider capability and Guest Credential Opt-in
 - Path normalization and symlink escape protection
@@ -2132,7 +2200,7 @@ on the owning runner is To be decided under ADR 0005:
 - Git URL/repository policy
 - Controlled guest Git argument/environment construction
 - Cached Git Snapshot parsing and terminal-control sanitization
-- Conversation View projection, media redaction, and validated Chord operations
+- Conversation View projection, media redaction, and Chord operations
 - Explicit Durable registry ignores hostile workspace/global resources
 - In-memory credentials disable ambient environment/file authentication
 - Binary channel flow control
@@ -2140,15 +2208,15 @@ on the owning runner is To be decided under ADR 0005:
 ### 30.2 Contract tests
 
 - `IdentifyRunner` admission and rejection across application protocol versions
-- Idempotent `environment.create` reconciliation after a dropped RPC result
+- Idempotent `environment.create` retry after a dropped RPC result
 - Ambiguous prompt outcomes remain explicit without automatic command resubmission
-- Durable admission deduplication and checkpoint recovery in the Session DO
-- Environment Link attach with runner token plus one-time nonce, nonce reuse rejection, revocation closing links, and hibernation-safe liveness
+- Durable admission deduplication and recovery of unfinished tasks after Session DO eviction
+- Environment Link authentication by the token of the Session's placement runner, runner redial with bounded backoff, revocation closing links, and hibernation-safe liveness
 - Environment Link loss kills daemon-started processes and interrupted tools report possible partial execution
 - Guest tools and Environment Control fail immediately, without waiting, while the runner is unreachable
 - Shared `RemoteExecutionEnv` conformance to Pi's `ExecutionEnv` contract, independent of link transport
-- Runner protocol v26 is rejected by a v27 gateway
-- Complete `WatchRunner` snapshot validation and atomic in-memory environment index rebuilding, including rejection of duplicate, miscounted, out-of-order, or foreign-Workspace environments
+- A runner speaking another protocol version is rejected by a v29 gateway
+- `WatchRunner` snapshot admission, re-authentication after admission closing the revocation race, and control routed by the Session's placement without a runner-to-Session index
 - Binary open/data/window/end/reset behavior
 - Conversation updates coalesce for slow viewers; infrastructure overflow and SSE reconnect replace the baseline
 - Observation never wakes compute
@@ -2170,9 +2238,10 @@ Scenarios:
 - Stopped-session diff uses a final guest-generated Git Snapshot cached by the Session DO, survives runner absence, and wakes for refresh
 - Session DO clone and setup hook over `ExecutionEnv`; resume hook after Wake
 - Prompt → tools → settled → Stop → wake same disk → continue
-- Stop during active work → reopen → Wake resumes checkpoints and queued Follow-ups
+- Stop during active work aborts it and queued Follow-ups; a later prompt continues the conversation on restarted compute
+- Runner restart restores every environment stopped; the next start reopens the same disk
 - Abort cancels queued inputs and owned background work but leaves compute running
-- Model generation and environment control do not wait for guest boot/setup/resume
+- Agent Runs wait for queued setup/start/stop to settle and proceed after a failed setup; Environment Control never waits for the guest
 - Environment stop/restart leaves the harness running and prevents overlapping disk attachment
 - With the runner offline, the Session DO still serves the conversation, queued input, media, and cached Git Snapshot and admits prompts; model work continues, guest tools fail immediately, and runner-backed actions are unavailable
 - Ambiguous command handoff is visible; interrupted unsafe tools are not blindly repeated
@@ -2182,14 +2251,14 @@ Scenarios:
 - Managed preview wake/restart
 - Live-only preview expiration
 - Capability revocation
-- Deletion removes Session DO storage, the Session's R2 media prefix, and the runner environment; offline deletion removes the catalog card, records a minimal marker, and the Session DO's alarm deletes the environment once the runner reconnects
+- Deletion removes Session DO storage, the Session's R2 media prefix, and the runner environment; offline deletion removes the catalog card and the Session DO's alarm deletes the environment once the runner reconnects
 
 ### 30.4 Security tests
 
 - A hostile workspace containing `.pi/extensions`, `.pi/settings.json`, package resources, prompt/system-prompt files, context files, skills, and themes cannot execute host code or alter trusted resources/policies; only validated passive skill metadata is advertised through the guest-only loader
 - Gateway and runner source/build checks forbid host project discovery, ambient auth, and host execution adapters
 - Provider credentials never appear in runner RPC payloads, runner storage, or runner logs
-- Environment Link attach fails without a valid runner token and unused attach nonce, and for a revoked runner
+- Environment Link authentication fails without a valid runner token, for a runner other than the Session's placement runner or outside its Workspace, and for a revoked runner
 - Published Media writes respect the 64 MiB/artifact and 1 GiB/Session quotas, stay under the Session's R2 prefix, and are served only with allowlisted MIME types and `nosniff`
 - Pi/the model reaches workspace `AGENTS.md`, `CLAUDE.md`, and skill-associated scripts only through Gondolin-backed tools
 - Project Checkout traversal and escaping symlink denied
@@ -2269,8 +2338,8 @@ Milestones are dependency-ordered, not calendar estimates. Each milestone should
 - Runner provider lifecycle and Environment Link
 - Session DO guest-side public repository clone over `ExecutionEnv`, with no native host Git against the workspace
 - Session DO `.agents/setup`/`.agents/resume` over `ExecutionEnv`
-- Stop/wake lifecycle and interrupted-Stop reconciliation
-- Clone/setup output and infrastructure events
+- Stop/wake lifecycle and stopped restore after a runner restart
+- Clone/setup transcript entries and infrastructure events
 
 **Exit:** First prompt provisioning can boot Gondolin, have the Session DO clone inside the guest and
 run setup, Stop, wake from the same root disk, and preserve workspace state without model work yet.
@@ -2280,22 +2349,23 @@ run setup, Stop, wake from the same root disk, and preserve workspace state with
 - Pi Durable Agent Harness hosted in the per-Session Session DO
 - Gateway-internal model credential resolution, never sent to runners
 - Milestone 0's trusted registry and in-memory credentials, with no workspace/global discovery
-- Gondolin-backed Pi tools through the vendored pi-env client, Environment Link, and guest Environment Daemon
-- Session DO SQLite Harness State; separate runner infrastructure/configuration journal
+- Gondolin-backed Pi tools through upstream pi-env's `RemoteExecutionEnv`, the Environment Link, and guest Environment Daemon
+- Session DO SQLite Harness State; runner environment definitions only, with no journal
 - Complete Conversation View projection, snapshots and Chord operations, no second durable transcript
 - HTTP prompt API and Session DO SSE stream
 - Submission identity, durable Follow-ups, request-ID deduplication, and conversation-wide Abort
-- Recoverable Session DO-orchestrated Stop/Wake, idle alarm, and independent Environment Control
-- Model work concurrent with guest startup; cancellable guest readiness waits
+- Session DO-orchestrated Stop (abort plus durable compute stop)/Wake, idle alarm, and independent Environment Control
+- Pi-owned prompts whose runs wait cancellably for queued environment operations
 - Conversation and media available while the runner is offline
-- Ambiguous-command reporting, checkpoint recovery, and partial unsafe-tool execution warnings
+- Ambiguous-command reporting, eviction recovery, and partial unsafe-tool execution warnings
 - Model/thinking controls
 - Planned steering and edit-last semantics, pending Durable interface decisions
 
-**Exit:** User can complete, pause, Wake, and continue a streamed Durable Session from desktop/mobile,
-with queued work retained and reconnect replacing the Conversation View. Only the Workspace owner
-plus four live-session catalog fields and minimal Workspace/session/time deletion markers are
-stored by the Workspace DO; conversation content is stored only in the Session DO. Steering and edit-last remain explicit planned gaps until their contracts land.
+**Exit:** User can complete, Stop, Wake, and continue a streamed Durable Session from
+desktop/mobile, with queued work retained across reconnects, which replace the Conversation View.
+Only the Workspace owner plus four live-session catalog fields are stored by the Workspace DO;
+conversation content is stored only in the Session DO. Steering and edit-last remain explicit
+planned gaps until their contracts land.
 
 ### Milestone 5 — Review surfaces
 
@@ -2305,7 +2375,7 @@ stored by the Workspace DO; conversation content is stored only in the Session D
 - Read-only file browser
 - Session DO-owned active Conversation View without waking compute
 - Explicit unavailable state for guest- and runner-backed surfaces while the runner is offline
-- Session archive on the online owning runner, online/offline deletion with durable anti-resurrection markers, and disk reporting
+- Session archive on the online owning runner, online/offline deletion, and disk reporting
 
 **Exit:** The user can inspect the active Conversation View and the last guest-generated Git
 Snapshot from the Session DO at any time, without a pre-compaction archive promise.
@@ -2376,11 +2446,11 @@ A release is MVP-complete when all of the following are true:
 4. A Linux runner behind NAT enrolls using only gateway URL and enrollment token.
 5. Runner reports free CPU/memory/disk and accepts a requested session size.
 6. User can override the automatic runner before the first message and cannot move the session afterward.
-7. Session starts Durable work in its Session DO concurrently with isolated Gondolin boot and the Session DO's guest clone and setup; guest tools wait cancellably for readiness while the environment is reachable.
+7. Session starts Durable work in its Session DO while isolated Gondolin boots and the Session DO clones and runs setup in the guest; its runs wait cancellably for that setup to settle, successfully or not.
 8. Chat, thinking, tool calls, and tool output stream to desktop and mobile UI.
 9. While the agent is running, normal sends become durable Follow-ups with stable Submission IDs and visible queue state. Explicit steering remains planned and requires a Durable contract; there are no current per-item queue mutation controls.
 10. The Session DO admits sends, continues model work, and serves the conversation, media, and cached Git Snapshot while the assigned runner is offline; guest tools fail immediately instead of waiting. Admitted input and unfinished work persist in Session DO Harness State; request-ID deduplication does not promise exactly-once execution, and ambiguous commands are not silently retried.
-11. After 15 minutes idle, the Session DO alarm triggers Stop Session, which closes the harness recoverably and then has the runner durably stop compute; Wake resumes checkpointed work and the same root disk. Abort cancels conversation work without stopping compute, and Environment Control does not pause the agent.
+11. After 15 minutes idle, the Session DO alarm has the runner durably stop compute; explicit Stop Session also aborts agent work and queued prompts. Wake restarts compute on the same root disk, and the next prompt continues the conversation. Abort cancels conversation work without stopping compute, and Environment Control leaves the agent working.
 12. The user can review the Session DO-cached guest-generated aggregate diff while the VM is stopped or the runner is offline, and wake the VM to browse files, without native host Git interpreting the checkout.
 13. Browser terminal works without any inbound runner port.
 14. On the runner provider, the agent can fetch, commit, and push to a private repository without obtaining the real credential in the guest.
@@ -2388,7 +2458,7 @@ A release is MVP-complete when all of the following are true:
 16. Agent can publish a private managed preview that supports HTTP/WebSockets over the outbound tunnel.
 17. Managed preview wakes and restarts after Stop; live-only preview clearly expires.
 18. Capability preview links are revocable and do not expose gateway authentication to the guest.
-19. Archive operates on the online owning runner. Explicit deletion is available online or offline, atomically removes the five-column Workspace-owned catalog row, stores only a Workspace/session/time deletion marker, removes the Session DO storage and the Session's R2 media prefix, and has the Session DO delete the runner environment, retrying while the runner is offline; a later stale runner report never resurrects the Session.
+19. Archive operates on the online owning runner. Explicit deletion is available online or offline, removes the five-column Workspace-owned catalog row, removes the Session DO storage and the Session's R2 media prefix, and has the Session DO delete the runner environment, retrying while the runner is offline; a later stale runner report never resurrects the Session.
 20. Pi never discovers project settings, packages, extensions, skills, prompts, themes, context files, or system-prompt fragments in the gateway or on the runner host; Pi/the model accesses project files and scripts only through the guest `ExecutionEnv`.
 21. Model provider credentials never reach a runner.
 
@@ -2442,7 +2512,7 @@ exactly-once execution, and keep observation separate from Wake.
 Mediation, or hibernatable link, and project behaviour could drift if each provider reimplemented
 it.
 
-**Mitigation:** Keep project behaviour in the Session DO over `ExecutionEnv`, share the vendored
+**Mitigation:** Keep project behaviour in the Session DO over `ExecutionEnv`, share upstream
 `RemoteExecutionEnv` wherever the static Environment Daemon runs, have providers declare
 capabilities rather than promise the runner's guarantees, and admit credentials into unmediated
 guests only through an explicit per-Project Guest Credential Opt-in.
@@ -2451,18 +2521,20 @@ guests only through an explicit per-Project Guest Credential Opt-in.
 
 **Risk:** A dead runner makes its sessions' compute, checkout, Git operations, terminals, and previews unavailable. The conversation, Published Media, and last Git Snapshot remain available from the Session DO and R2, and the agent keeps working with guest tools failing immediately.
 
-**Mitigation:** Show an explicit unavailable state, reject runner-backed session operations while offline, permit marker-backed offline deletion, add runner-side backups/exports later, and defer migration rather than implementing unsafe partial movement.
+**Mitigation:** Show an explicit unavailable state, reject runner-backed session operations while offline, permit offline deletion, add runner-side backups/exports later, and defer migration rather than implementing unsafe partial movement.
 
 ### Workspace contention and runner persistence growth
 
 **Risk:** The single Workspace DO serializes configuration/catalog operations, so slow work can delay
-other calls. Session DO Durable databases, R2 media, and runner journals grow; a journal append may be incomplete after a crash.
+other calls. Session DO Durable databases, R2 media, and runner environment directories grow; a
+crash during creation may leave a directory without a definition.
 
 **Mitigation:** Keep full Session data and live runner connections out of Workspace; Session DOs own
 agent data, Runners owns live routing, and native SQLite transactions stay short. Environment
-traffic uses per-Session Environment Links rather than the single Runners DO. Let Durable own database recovery/compaction; keep infrastructure journal appends
-crash-checked and separate from conversation data. Do not claim the active view archives compacted
-entries. Broader retention and journal compaction remain explicit future policies.
+traffic uses per-Session Environment Links rather than the single Runners DO. Let Durable own
+database recovery/compaction; publish runner environment definitions by atomic rename, keep them
+separate from conversation data, and remove an unacknowledged creation at startup. Do not claim the
+active view archives compacted entries. Broader retention remains an explicit future policy.
 
 ### Disk growth
 

@@ -1,29 +1,20 @@
 import { test } from "vite-plus/test";
 import { assert, assertEquals, assertThrows } from "@jsr/std__assert";
-import { parseSafe } from "@remix-run/data-schema";
 import { Effect, Schema, type Scope, Stream } from "effect";
 import * as RpcTest from "effect/rpc/RpcTest";
 
-import { sessionGitSnapshotSchema } from "../src/browser-session-git-snapshot.ts";
 import {
-  AttachEnvironmentPayload,
   type CapacityExceeded,
   ControlEnvironmentPayload,
-  ConversationViewSchema,
   CreateEnvironmentPayload,
   DeleteEnvironmentPayload,
   type DeleteFailed,
-  EnvironmentAttachAccepted,
-  EnvironmentAttachNonce,
   EnvironmentControlled,
   EnvironmentCreated,
   EnvironmentDeleted,
   type EnvironmentNotFound,
   type EnvironmentRejected,
   GitAuthor,
-  GitMutationRevision,
-  MAX_SESSION_ISSUES,
-  ProjectId,
   RUNNER_PROTOCOL_VERSION,
   RunnerApi,
   RunnerCapacity,
@@ -31,26 +22,15 @@ import {
   RunnerId,
   RunnerIdentity,
   type RunnerIdentityError,
-  RunnerSessionSnapshot,
   type RunnerWatchError,
   type SessionConflict,
   SessionEnvironmentSecret,
   SessionEnvironmentSecrets,
-  SessionEvent,
-  SessionGitSnapshot,
   SessionId,
-  SessionIssue,
-  SessionIssues,
-  SessionModelRuntime,
-  WorkspaceId,
 } from "../src/runner-api.ts";
 import {
   MAX_RUNNER_RPC_FRAME_BYTES,
   MAX_SESSION_ENVIRONMENT_SECRETS_JSON_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
-  MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
 } from "../src/runner-api-limits.ts";
 
 type RunnerApiError =
@@ -63,8 +43,6 @@ type RunnerApiError =
   | SessionConflict;
 
 const SESSION_ID = SessionId.make("01989d78-65ee-7f6a-a97e-0f16ad134c09");
-const WORKSPACE_ID = WorkspaceId.make("01989d78-65ee-7f6a-a97e-0f16ad134c12");
-const PROJECT_ID = ProjectId.make("01989d78-65ee-7f6a-a97e-0f16ad134c10");
 const RUNNER_ID = RunnerId.make("01989d78-65ee-7f6a-a97e-0f16ad134c11");
 const RUNNER_TOKEN = `openorb_runner_${"a".repeat(43)}`;
 
@@ -88,14 +66,13 @@ test("RunnerApi schemas bound identity and stable domain identifiers", () => {
   );
   const created = Schema.decodeUnknownSync(CreateEnvironmentPayload)({
     sessionId: SESSION_ID,
-    workspaceId: WORKSPACE_ID,
     orbSize: "medium",
     repository: {
       url: "https://github.com/openorb/example.git",
       gitAuthor: { name: "OpenOrb User", email: "user@example.com" },
     },
   });
-  assertEquals(created.workspaceId, WORKSPACE_ID);
+  assertEquals(created.orbSize, "medium");
   const { repository: _repository, ...withoutProject } = created;
   // A Session without a project sends no repository at all, never half of one.
   assertEquals(
@@ -146,28 +123,7 @@ test("RunnerApi schemas bound identity and stable domain identifiers", () => {
   assertThrows(() =>
     Schema.decodeUnknownSync(ControlEnvironmentPayload)({ ...started, action: "suspend" }),
   );
-  assertEquals(RUNNER_PROTOCOL_VERSION, 28);
-});
-
-test("session model runtime accepts only explicit credential transports", () => {
-  const accessToken = Schema.decodeUnknownSync(SessionModelRuntime)({
-    ...modelRuntime(),
-    credential: { type: "access_token", value: "short-lived-access" },
-  });
-  assertEquals(accessToken.credential, {
-    type: "access_token",
-    value: "short-lived-access",
-  });
-  assertThrows(() =>
-    Schema.decodeUnknownSync(SessionModelRuntime)({
-      ...modelRuntime(),
-      credential: {
-        type: "oauth",
-        access: "access",
-        refresh: "refresh-must-not-cross-the-protocol",
-      },
-    }),
-  );
+  assertEquals(RUNNER_PROTOCOL_VERSION, 29);
 });
 
 test("environment secrets reserve enough room for the RPC request envelope", () => {
@@ -195,7 +151,6 @@ test("environment secrets reserve enough room for the RPC request envelope", () 
     action: "restart",
     githubToken: "\0".repeat(4_096),
     environmentSecrets: acceptedSecrets,
-    recovery: "restart-environment",
   });
   const frame = {
     _tag: "Request",
@@ -216,259 +171,6 @@ test("environment secrets reserve enough room for the RPC request envelope", () 
   assertThrows(() => Schema.decodeUnknownSync(SessionEnvironmentSecrets)(oversizedSecrets));
 });
 
-test("structural frames reject normalized events, host objects and malformed ops", () => {
-  const view = { conversation: { id: 0 }, entries: [], docs: {} };
-  assertEquals<unknown>(Schema.decodeUnknownSync(ConversationViewSchema)(view), view);
-  for (const invalid of [
-    { type: "assistant.text.delta", delta: "old" },
-    { type: "conversation.ops", ops: [["s", "compressed-path", 1]] },
-    { type: "conversation.ops", ops: [["s", ["__proto__", "polluted"], true]] },
-    { type: "conversation.ops", ops: [["r", { handle: () => {} }]] },
-    { type: "conversation.snapshot", view: { ...view, docs: { host: new Date() } } },
-    { type: "conversation.snapshot", view: { ...view, entries: [{ id: 1 }] } },
-  ])
-    assertThrows(() => Schema.decodeUnknownSync(SessionEvent)(invalid));
-  assertThrows(() =>
-    Schema.decodeUnknownSync(RunnerSessionSnapshot)({
-      ...sessionSnapshot(),
-      agentState: undefined,
-    }),
-  );
-});
-
-test("session issues are categorized, bounded, and carry explicit recovery", () => {
-  const issue = Schema.decodeUnknownSync(SessionIssue)({
-    category: "vm-stop",
-    severity: "failure",
-    message: "The VM disk could not be synchronized.",
-    diagnostics: "safe bounded diagnostics",
-    recovery: "restart-environment",
-  });
-  assertEquals(issue.recovery, "restart-environment");
-  assertEquals(
-    Schema.decodeUnknownSync(SessionIssues)(Array(MAX_SESSION_ISSUES).fill(issue)).length,
-    MAX_SESSION_ISSUES,
-  );
-  assertThrows(() =>
-    Schema.decodeUnknownSync(SessionIssues)(Array(MAX_SESSION_ISSUES + 1).fill(issue)),
-  );
-  assertThrows(() =>
-    Schema.decodeUnknownSync(SessionIssue)({ ...issue, message: "x".repeat(1_001) }),
-  );
-});
-
-test("SessionGitSnapshot rejects payloads that would exceed its JSON budgets", () => {
-  const largeFiles = Array.from({ length: 5_000 }, (_, index) => {
-    const path = `${index}-${"x".repeat(220)}`;
-    return {
-      kind: "tracked" as const,
-      path,
-      displayPath: path,
-      status: "modified" as const,
-      diffState: "available" as const,
-    };
-  });
-  assertEquals(largeFiles.length, 5_000);
-  assert(byteLength(JSON.stringify(largeFiles)) > MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES);
-  const oversizedFilesSnapshot = gitSnapshot({ unstagedFiles: largeFiles });
-  assertThrows(() => Schema.decodeUnknownSync(SessionGitSnapshot)(oversizedFilesSnapshot));
-  assertEquals(parseSafe(sessionGitSnapshotSchema, oversizedFilesSnapshot).success, false);
-
-  const escapingPatch = "\u001b".repeat(40_000);
-  assert(byteLength(escapingPatch) < MAX_SESSION_GIT_SNAPSHOT_PATCH_BYTES);
-  assert(
-    byteLength(JSON.stringify(escapingPatch)) > MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
-  );
-  const oversizedPatchSnapshot = gitSnapshot({
-    stagedPatch: escapingPatch,
-  });
-  assertThrows(() => Schema.decodeUnknownSync(SessionGitSnapshot)(oversizedPatchSnapshot));
-  assertEquals(parseSafe(sessionGitSnapshotSchema, oversizedPatchSnapshot).success, false);
-
-  const individuallyValidPatch = "\u001b".repeat(17_000);
-  assert(
-    byteLength(JSON.stringify(individuallyValidPatch)) <
-      MAX_SESSION_GIT_SNAPSHOT_PATCH_SECTION_JSON_BYTES,
-  );
-  assert(
-    byteLength(
-      JSON.stringify({
-        staged: individuallyValidPatch,
-        unstaged: individuallyValidPatch,
-      }),
-    ) > MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES,
-  );
-  const oversizedCombinedPatches = gitSnapshot({
-    stagedPatch: individuallyValidPatch,
-    unstagedPatch: individuallyValidPatch,
-  });
-  assertThrows(() => Schema.decodeUnknownSync(SessionGitSnapshot)(oversizedCombinedPatches));
-  assertEquals(parseSafe(sessionGitSnapshotSchema, oversizedCombinedPatches).success, false);
-});
-
-test("SessionGitSnapshot rejects excess keys at every nesting level despite permissive decoding", () => {
-  const snapshot = gitSnapshot();
-  const decode = Schema.decodeUnknownSync(SessionGitSnapshot, { onExcessProperty: "ignore" });
-  assertEquals<object>(Schema.encodeSync(SessionGitSnapshot)(decode(snapshot)), snapshot);
-  const sections = snapshot.sections;
-  for (const candidate of [
-    { ...snapshot, extra: true },
-    { ...snapshot, sections: { ...sections, extra: true } },
-    { ...snapshot, sections: { ...sections, staged: { ...sections.staged, extra: true } } },
-    { ...snapshot, sections: { ...sections, unstaged: { ...sections.unstaged, extra: true } } },
-    gitSnapshot({
-      unstagedFiles: [
-        {
-          kind: "tracked",
-          path: "src/main.ts",
-          displayPath: "src/main.ts",
-          status: "modified",
-          diffState: "available",
-          previousPath: "not-a-rename.ts",
-        },
-      ],
-    }),
-  ]) {
-    assertThrows(() => decode(candidate));
-  }
-});
-
-test("SessionGitSnapshot accepts only explicit section-owned file states", () => {
-  const oldFlatSnapshot = {
-    generatedAt: "2026-08-23T12:00:00Z",
-    completeness: "complete",
-    stale: false,
-    truncated: false,
-    summary: { changed: 1, staged: 1, unstaged: 0, untracked: 0 },
-    files: [],
-    patches: { staged: "", unstaged: "" },
-  };
-  const contradictoryTrackedFile = gitSnapshot({
-    unstagedFiles: [
-      {
-        kind: "tracked",
-        path: "src/main.ts",
-        displayPath: "src/main.ts",
-        status: "modified",
-        staged: "modified",
-        diffState: "available",
-      },
-    ],
-  });
-  const invalidUntrackedFile = gitSnapshot({
-    unstagedFiles: [
-      {
-        kind: "untracked",
-        path: "new.txt",
-        displayPath: "new.txt",
-        status: "modified",
-        diffState: "available",
-      },
-    ],
-  });
-  const stagedUntrackedFile = gitSnapshot({
-    stagedFiles: [
-      {
-        kind: "untracked",
-        path: "new.txt",
-        displayPath: "new.txt",
-        status: "added",
-        diffState: "available",
-      },
-    ],
-  });
-  const incompleteRename = gitSnapshot({
-    stagedFiles: [
-      {
-        kind: "tracked",
-        path: "new.ts",
-        displayPath: "new.ts",
-        status: "renamed",
-        diffState: "available",
-      },
-    ],
-  });
-
-  for (const candidate of [
-    oldFlatSnapshot,
-    contradictoryTrackedFile,
-    invalidUntrackedFile,
-    stagedUntrackedFile,
-    incompleteRename,
-  ]) {
-    assertThrows(() => Schema.decodeUnknownSync(SessionGitSnapshot)(candidate));
-    assertEquals(parseSafe(sessionGitSnapshotSchema, candidate).success, false);
-  }
-});
-
-test("Git Snapshot paths preserve exact mutation operands separately from display text", () => {
-  const path = "src/literal*\nname.ts";
-  const displayPath = "src/literal*\\u{A}name.ts";
-  const previousPath = "src/old?\nname.ts";
-  const previousDisplayPath = "src/old?\\u{A}name.ts";
-  const candidate = gitSnapshot({
-    stagedFiles: [
-      {
-        kind: "tracked",
-        path,
-        displayPath,
-        previousPath,
-        previousDisplayPath,
-        status: "renamed",
-        diffState: "available",
-      },
-    ],
-  });
-
-  const runnerSnapshot = Schema.decodeUnknownSync(SessionGitSnapshot)(candidate);
-  assertEquals(runnerSnapshot.sections.staged.files[0]?.path, path);
-  assertEquals(runnerSnapshot.sections.staged.files[0]?.displayPath, displayPath);
-  const browserSnapshot = parseSafe(sessionGitSnapshotSchema, candidate);
-  assert(browserSnapshot.success);
-  assertEquals(browserSnapshot.value.sections.staged.files[0]?.path, path);
-  assertEquals(browserSnapshot.value.sections.staged.files[0]?.displayPath, displayPath);
-});
-
-test("valid SessionGitSnapshot payloads fit one runner RPC frame and parse in the browser", () => {
-  const files: Array<{
-    kind: "tracked";
-    path: string;
-    displayPath: string;
-    status: "modified";
-    diffState: "available";
-  }> = [];
-  for (let index = 0; index < 1_000; index++) {
-    const path = `${index}-${"x".repeat(4_090 - String(index).length)}`;
-    const file = {
-      kind: "tracked" as const,
-      path,
-      displayPath: path,
-      status: "modified" as const,
-      diffState: "available" as const,
-    };
-    if (byteLength(JSON.stringify([...files, file])) > MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES)
-      break;
-    files.push(file);
-  }
-  const largestFileBytes = Math.max(...files.map((file) => byteLength(JSON.stringify(file)) + 1));
-  assert(
-    byteLength(JSON.stringify(files)) >
-      MAX_SESSION_GIT_SNAPSHOT_FILES_JSON_BYTES - largestFileBytes,
-  );
-
-  const patchJsonBudget = Math.floor((MAX_SESSION_GIT_SNAPSHOT_PATCH_JSON_BYTES - 64) / 2);
-  const patch = "\n".repeat(Math.floor((patchJsonBudget - 2) / 2));
-  assertEquals(byteLength(JSON.stringify(patch)), patchJsonBudget);
-  const candidate = gitSnapshot({
-    unstagedFiles: files,
-    stagedPatch: patch,
-    unstagedPatch: patch,
-  });
-  const snapshot = Schema.decodeUnknownSync(SessionGitSnapshot)(candidate);
-  assert(parseSafe(sessionGitSnapshotSchema, candidate).success);
-  assert(byteLength(JSON.stringify(snapshot)) < MAX_RUNNER_RPC_FRAME_BYTES);
-});
-
 test("RunnerApi exposes only runner and environment procedures through RpcTest", async () => {
   const identity = new RunnerIdentity({
     token: RUNNER_TOKEN,
@@ -477,15 +179,8 @@ test("RunnerApi exposes only runner and environment procedures through RpcTest",
     protocolVersion: RUNNER_PROTOCOL_VERSION,
   });
   const capacity = runnerCapacity();
-  const environment = new RunnerEnvironmentSnapshot({
-    sessionId: SESSION_ID,
-    workspaceId: WORKSPACE_ID,
-    createdAt: "2026-08-23T12:00:00Z",
-    orbSize: "small",
-    state: "stopped",
-  });
+  const environment = new RunnerEnvironmentSnapshot({ sessionId: SESSION_ID, state: "stopped" });
   assertEquals(Array.from(RunnerApi.requests.keys()).sort(), [
-    "environment.attach",
     "environment.control",
     "environment.create",
     "environment.delete",
@@ -496,14 +191,8 @@ test("RunnerApi exposes only runner and environment procedures through RpcTest",
     "runner.identify": () => Effect.succeed(identity),
     "runner.watch": () =>
       Stream.make(
-        { type: "snapshot.environment" as const, environment },
-        {
-          type: "snapshot.complete" as const,
-          revision: 1,
-          environmentCount: 1,
-          observedAt: 1,
-          capacity,
-        },
+        { type: "snapshot" as const, observedAt: 1, capacity, environments: [environment] },
+        { type: "environment.changed" as const, environment },
       ),
     "environment.create": () => Effect.succeed(new EnvironmentCreated({ environment })),
     "environment.control": ({ action }) =>
@@ -513,13 +202,11 @@ test("RunnerApi exposes only runner and environment procedures through RpcTest",
           forced: false,
         }),
       ),
-    "environment.attach": () => Effect.succeed(new EnvironmentAttachAccepted({})),
     "environment.delete": () => Effect.succeed(new EnvironmentDeleted({})),
   });
 
   const createPayload = new CreateEnvironmentPayload({
     sessionId: SESSION_ID,
-    workspaceId: WORKSPACE_ID,
     orbSize: "small",
     repository: {
       url: "https://github.com/acme/repo.git",
@@ -530,10 +217,6 @@ test("RunnerApi exposes only runner and environment procedures through RpcTest",
     sessionId: SESSION_ID,
     action: "start",
     githubToken: "github-token",
-  });
-  const attachPayload = new AttachEnvironmentPayload({
-    sessionId: SESSION_ID,
-    nonce: Schema.decodeUnknownSync(EnvironmentAttachNonce)("A".repeat(43)),
   });
   const deletePayload = new DeleteEnvironmentPayload({ sessionId: SESSION_ID });
 
@@ -546,29 +229,18 @@ test("RunnerApi exposes only runner and environment procedures through RpcTest",
           Array.from(yield* client["runner.watch"]().pipe(Stream.runCollect)).map(
             (event) => event.type,
           ),
-          ["snapshot.environment", "snapshot.complete"],
+          ["snapshot", "environment.changed"],
         );
         assertEquals(
           (yield* client["environment.create"](createPayload)).environment.sessionId,
           SESSION_ID,
         );
         assertEquals((yield* client["environment.control"](controlPayload)).state, "running");
-        assert(
-          (yield* client["environment.attach"](attachPayload)) instanceof EnvironmentAttachAccepted,
-        );
         assert((yield* client["environment.delete"](deletePayload)) instanceof EnvironmentDeleted);
       }),
     ),
   );
 });
-
-function modelRuntime() {
-  return {
-    model: "opencode-go/deepseek-v4-flash",
-    thinkingLevel: "high" as const,
-    credential: { type: "api_key" as const, value: "provider-secret" },
-  };
-}
 
 function runnerCapacity(): RunnerCapacity {
   return new RunnerCapacity({
@@ -577,53 +249,6 @@ function runnerCapacity(): RunnerCapacity {
     vmMemoryMiB: 8_192,
     diskFreeMiB: 100_000,
   });
-}
-
-function sessionSnapshot(): RunnerSessionSnapshot {
-  return new RunnerSessionSnapshot({
-    id: SESSION_ID,
-    projectId: PROJECT_ID,
-    createdAt: "2026-08-23T12:00:00Z",
-    initialPromptPreview: "Implement the change.",
-    model: "opencode-go/deepseek-v4-flash",
-    initialThinkingLevel: "max",
-    orbSize: "medium",
-    state: "ready",
-    agentState: "idle",
-    environmentState: "running",
-    issues: [],
-  });
-}
-
-function gitSnapshot(
-  overrides: {
-    readonly stagedFiles?: ReadonlyArray<object>;
-    readonly unstagedFiles?: ReadonlyArray<object>;
-    readonly stagedPatch?: string;
-    readonly unstagedPatch?: string;
-  } = {},
-) {
-  return {
-    mutationRevision: GitMutationRevision.make(0),
-    generatedAt: "2026-08-23T12:00:00Z",
-    branch: "openorb/session",
-    head: "0123456789abcdef0123456789abcdef01234567",
-    completeness: "complete",
-    stale: false,
-    truncated: false,
-    sections: {
-      staged: {
-        files: overrides.stagedFiles ?? [],
-        patch: overrides.stagedPatch ?? "",
-        truncated: false,
-      },
-      unstaged: {
-        files: overrides.unstagedFiles ?? [],
-        patch: overrides.unstagedPatch ?? "",
-        truncated: false,
-      },
-    },
-  };
 }
 
 function byteLength(value: string): number {

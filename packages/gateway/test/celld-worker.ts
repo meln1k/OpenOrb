@@ -13,6 +13,7 @@ export { ScriptedSession as Session } from "./session-fixture.ts";
 
 const environmentInput = Schema.Struct({
   workspaceId: WorkspaceId,
+  runnerId: Schema.String,
   sessionId: Schema.String,
   action: EnvironmentAction,
 });
@@ -50,20 +51,12 @@ export default {
       return Response.json(await env.RUNNERS.getByName("runners").getRunnerLiveState(id, runner));
     }
     // Disposable fixture only: explicit native RPC probes, never a production HTTP API.
-    if (url.pathname === "/__registry/environment") {
-      const id = Schema.decodeUnknownSync(WorkspaceId)(url.searchParams.get("workspaceId"));
-      return Response.json(
-        await env.RUNNERS.getByName("runners").getEnvironment(
-          id,
-          url.searchParams.get("sessionId")!,
-        ),
-      );
-    }
     if (url.pathname === "/__registry/environment/control" && request.method === "POST") {
       const input = Schema.decodeUnknownSync(environmentInput)(await request.json());
       return Response.json(
         await env.RUNNERS.getByName("runners").controlEnvironment({
           workspaceId: input.workspaceId,
+          runnerId: input.runnerId,
           sessionId: input.sessionId,
           payload: { action: input.action },
         }),
@@ -97,14 +90,26 @@ export default {
     if (url.pathname === "/__session/control" && request.method === "POST") {
       const input = await request.json();
       const session = env.SESSIONS.getByName(String(input.sessionId));
-      return Response.json(await session.controlEnvironment(input.action));
+      if (input.action === "stop") return Response.json(await session.stop());
+      // Wake starts compute in the background, setup first; report the state it settles in.
+      await (input.action === "restart" ? session.retry("restart-environment") : session.wake());
+      for (const deadline = Date.now() + 5 * 60_000; Date.now() < deadline;) {
+        const view = await session.view();
+        if (view === null) return Response.json({ error: "Session not found." }, { status: 404 });
+        const state = view.environmentState;
+        // A failed start settles with compute stopped; setup failures leave it running.
+        if (view.state === "error" || (state === "running" && view.state !== "provisioning")) {
+          return Response.json({ state });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      return Response.json({ error: "The environment did not settle." }, { status: 504 });
     }
     if (url.pathname === "/__session/submit" && request.method === "POST") {
       const input = await request.json();
       const session = env.SESSIONS.getByName(String(input.sessionId));
-      return Response.json(
-        await session.submit({ prompt: input.prompt, requestId: input.requestId }),
-      );
+      await session.submit({ prompt: input.prompt, requestId: input.requestId });
+      return Response.json({ status: "accepted" });
     }
     if (url.pathname === "/__workspace-credential-reads") {
       // SAFETY: the fixture's Workspace subclass adds this disposable probe.

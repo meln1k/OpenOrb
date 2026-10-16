@@ -11,9 +11,9 @@ export { Workspace } from "./app/cells/workspace/workspace.ts";
 export { Runners } from "./app/cells/runners/runner-registry-do.ts";
 export { Session } from "./app/cells/session/session.ts";
 import {
-  decodeSessionRpc,
   type MediaReader,
   type SessionApi,
+  sessionApiFromRpc,
   type SessionRpc,
 } from "./app/cells/session/api.ts";
 
@@ -99,7 +99,7 @@ function sessionApi(stub: ReturnType<Env["SESSIONS"]["getByName"]>): SessionApi 
   // in checker types.
   // oxlint-disable-next-line openorb/no-chained-type-assertions
   const rpc = stub as unknown as SessionRpc;
-  return decodeSessionRpc(rpc, async (original) => {
+  return sessionApiFromRpc(rpc, async (original) => {
     const request = new Request("https://session.internal/events", { signal: original.signal });
     // SAFETY: native Workers Request and Response, typed by Node only for local checking.
     // oxlint-disable-next-line openorb/no-chained-type-assertions

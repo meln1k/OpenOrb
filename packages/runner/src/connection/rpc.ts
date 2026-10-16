@@ -1,7 +1,6 @@
 import { runnerWebSocketLayer } from "./websocket.ts";
 import { Deferred, Effect, Layer, Stream } from "effect";
 import {
-  EnvironmentAttachAccepted,
   EnvironmentCreated,
   EnvironmentDeleted,
   RunnerApi,
@@ -74,13 +73,6 @@ export const runRunnerRpc = Effect.fn("runRunnerRpc")(function* (options: Runner
         environments
           .control(payload)
           .pipe(Effect.tapError(logRejection("environment.control", payload.sessionId))),
-      "environment.attach": (payload) =>
-        environments
-          .attach(payload.sessionId, payload.nonce)
-          .pipe(
-            Effect.as(new EnvironmentAttachAccepted({})),
-            Effect.tapError(logRejection("environment.attach", payload.sessionId)),
-          ),
       "environment.delete": (payload) =>
         environments
           .delete(payload.sessionId)

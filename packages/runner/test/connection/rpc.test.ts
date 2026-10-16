@@ -48,7 +48,6 @@ import {
 import { AgentEnvironmentProvider } from "../../src/environment/agent-environment.ts";
 import { environmentStoreLayer } from "../../src/environment/session/store.ts";
 import {
-  type EnvironmentChange,
   EnvironmentSupervisor,
   makeEnvironmentSupervisor,
 } from "../../src/environment/session/supervisor.ts";
@@ -66,7 +65,6 @@ const SESSION_ID = "018f47f2-39b1-7b30-8000-000000000011";
 const STOPPED_SESSION_ID = "018f47f2-39b1-7b30-8000-000000000012";
 const WORKSPACE_ID = WorkspaceId.make("018f47f2-39b1-7b30-8000-000000000000");
 const TOKEN = "openorb_runner_test-token";
-const NONCE = "A".repeat(43);
 const decode = Schema.decodeUnknownSync;
 const runnerId = decode(RunnerId)(RUNNER_ID);
 
@@ -78,13 +76,16 @@ const capacity = decode(RunnerCapacity)({
 });
 
 function environmentSnapshot(state: RunnerEnvironmentSnapshot["state"], sessionId = SESSION_ID) {
-  return new RunnerEnvironmentSnapshot({
-    sessionId: decode(SessionId)(sessionId),
-    workspaceId: WORKSPACE_ID,
-    createdAt: "2026-08-23T12:00:00Z",
-    orbSize: "small",
-    state,
-  });
+  return new RunnerEnvironmentSnapshot({ sessionId: decode(SessionId)(sessionId), state });
+}
+
+/** The state the gateway last told each Session about. */
+function reportedStates(notices: { sessionId: string; notice: EnvironmentNotice }[]) {
+  const states = new Map<string, string>();
+  for (const { sessionId, notice } of notices) {
+    if (notice.type === "changed") states.set(sessionId, notice.state);
+  }
+  return states;
 }
 
 test("runner requests TCP_NODELAY and streams large snapshots and Unicode payloads through gateway RPC", async () => {
@@ -102,7 +103,7 @@ test("runner requests TCP_NODELAY and streams large snapshots and Unicode payloa
   cleanup.defer(() => {
     NetSocket.prototype.setNoDelay = original;
   });
-  // Thousands of watch events cross the control socket, several MiB in total.
+  // The snapshot of thousands of environments crosses the control socket as one chunked message.
   const environmentCount = 20_000;
   const environments = Array.from({ length: environmentCount }, (_, index) =>
     environmentSnapshot(
@@ -129,35 +130,35 @@ test("runner requests TCP_NODELAY and streams large snapshots and Unicode payloa
           ...idleEnvironmentSupervisor,
           snapshots: () => environments,
           control: (payload) =>
-            Effect.sync(() => {
-              controls.push(payload);
-              return new EnvironmentControlled({ state: "running", forced: false });
-            }),
-          attach: (sessionId) =>
-            Effect.fail(new EnvironmentRejected({ sessionId, message: "The guest is busy." })),
+            payload.action === "stop"
+              ? Effect.fail(
+                  new EnvironmentRejected({
+                    sessionId: payload.sessionId,
+                    message: "The guest is busy.",
+                  }),
+                )
+              : Effect.sync(() => {
+                  controls.push(payload);
+                  return new EnvironmentControlled({ state: "running", forced: false });
+                }),
         });
-        const harness = yield* makeGatewayHarness(TOKEN);
+        const { notices, observer } = recordingObserver();
+        const harness = yield* makeGatewayHarness(TOKEN, observer);
         yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
           Effect.provideService(EnvironmentSupervisor, supervisor),
           Effect.forkScoped,
         );
         yield* pollEventually(
-          harness.gateway
-            .getEnvironment(WORKSPACE_ID, lastEnvironment.sessionId)
-            .pipe(Effect.map((routed) => routed !== null)),
+          Effect.sync(() => notices.length === environmentCount),
           "runner did not publish its environment snapshot",
         );
-        assertEquals(
-          yield* harness.gateway.getEnvironment(WORKSPACE_ID, environments[0]!.sessionId),
-          { runnerId: RUNNER_ID, environment: environments[0] },
-        );
-        assertEquals(
-          yield* harness.gateway.getEnvironment(WORKSPACE_ID, lastEnvironment.sessionId),
-          { runnerId: RUNNER_ID, environment: lastEnvironment },
-        );
+        const reported = reportedStates(notices);
+        assertEquals(reported.get(environments[0]!.sessionId), "running");
+        assertEquals(reported.get(lastEnvironment.sessionId), "stopped");
 
         const controlled = yield* harness.gateway.controlEnvironment({
           workspaceId: WORKSPACE_ID,
+          runnerId: RUNNER_ID,
           sessionId: lastEnvironment.sessionId,
           payload: { action: "start", githubToken: "github-secret", environmentSecrets: secrets },
         });
@@ -169,12 +170,13 @@ test("runner requests TCP_NODELAY and streams large snapshots and Unicode payloa
         assertEquals(controls[0]?.sessionId, lastEnvironment.sessionId);
         assertEquals(controls[0]?.environmentSecrets, secrets);
 
-        // A typed reply from another RPC proves the same control connection is still usable.
+        // A typed rejection proves the same control connection is still usable.
         assertEquals(
-          yield* harness.gateway.attachEnvironment({
+          yield* harness.gateway.controlEnvironment({
             workspaceId: WORKSPACE_ID,
+            runnerId: RUNNER_ID,
             sessionId: lastEnvironment.sessionId,
-            nonce: NONCE,
+            payload: { action: "stop" },
           }),
           { status: "rejected", message: "The guest is busy." },
         );
@@ -426,6 +428,7 @@ test("transient gateway restart keeps runner environments and re-reports them on
         const started = yield* originalGateway
           .controlEnvironment({
             workspaceId: WORKSPACE_ID,
+            runnerId: RUNNER_ID,
             sessionId: SESSION_ID,
             payload: { action: "start" },
           })
@@ -433,38 +436,27 @@ test("transient gateway restart keeps runner environments and re-reports them on
         yield* Deferred.await(bootStarted);
 
         const restartedNotices = recordingObserver();
-        const restartedGateway = yield* harness.restart(restartedNotices.observer);
+        yield* harness.restart(restartedNotices.observer);
         assertEquals((yield* Fiber.join(started)).status, "delivery-uncertain");
         assert(
           originalNotices.notices.some(
             ({ sessionId, notice }) => sessionId === SESSION_ID && notice.type === "revoked",
           ),
-          "revoking the old gateway's runner must close its environment routes",
+          "revoking the old gateway's runner must close its environments' links",
         );
 
         // The boot started before the restart completes while the runner is disconnected.
         yield* Deferred.succeed(releaseBoot, undefined);
         yield* pollEventually(
-          restartedGateway
-            .getEnvironment(WORKSPACE_ID, SESSION_ID)
-            .pipe(
-              Effect.map(
-                (routed) =>
-                  routed?.runnerId === RUNNER_ID && routed.environment.state === "running",
-              ),
-            ),
+          Effect.sync(() => reportedStates(restartedNotices.notices).get(SESSION_ID) === "running"),
           "the runner did not reconnect and re-report its running environment",
-        );
-        assertEquals(
-          (yield* restartedGateway.getEnvironment(WORKSPACE_ID, STOPPED_SESSION_ID))?.environment
-            .state,
-          "stopped",
         );
         assert(
           restartedNotices.notices.some(
             ({ sessionId, notice }) =>
               sessionId === STOPPED_SESSION_ID &&
-              notice.type === "updated" &&
+              notice.type === "changed" &&
+              notice.state === "stopped" &&
               notice.runnerId === RUNNER_ID,
           ),
           "the reconnect snapshot must tell each Session its environment is reachable again",
@@ -492,7 +484,7 @@ test("WatchRunner reports an environment change made during snapshot-to-live han
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const changes = yield* PubSub.unbounded<EnvironmentChange>();
+        const changes = yield* PubSub.unbounded<RunnerEnvironmentSnapshot>();
         let current = environmentSnapshot("stopped");
         const supervisor = EnvironmentSupervisor.of({
           ...idleEnvironmentSupervisor,
@@ -502,12 +494,13 @@ test("WatchRunner reports an environment change made during snapshot-to-live han
             if (taken.state === "stopped") {
               // The environment starts right after the snapshot was read, before the live phase.
               current = environmentSnapshot("running");
-              assert(PubSub.publishUnsafe(changes, { type: "updated", environment: current }));
+              assert(PubSub.publishUnsafe(changes, current));
             }
             return [taken];
           },
         });
-        const harness = yield* makeGatewayHarness(TOKEN);
+        const { notices, observer } = recordingObserver();
+        const harness = yield* makeGatewayHarness(TOKEN, observer);
         const launched = yield* runRunnerRpc(runnerOptions(harness.url)).pipe(
           Effect.provideService(EnvironmentSupervisor, supervisor),
           Effect.exit,
@@ -515,9 +508,7 @@ test("WatchRunner reports an environment change made during snapshot-to-live han
         );
 
         yield* pollEventually(
-          harness.gateway
-            .getEnvironment(WORKSPACE_ID, SESSION_ID)
-            .pipe(Effect.map((routed) => routed?.environment.state === "running")),
+          Effect.sync(() => reportedStates(notices).get(SESSION_ID) === "running"),
           "an environment change published during the WatchRunner handoff was not observed",
         );
         yield* Fiber.interrupt(launched);
@@ -649,6 +640,5 @@ const idleEnvironmentSupervisor = EnvironmentSupervisor.of({
   changes: Effect.succeed(Stream.never),
   create: () => Effect.die("unexpected environment create"),
   control: () => Effect.die("unexpected environment control"),
-  attach: () => Effect.die("unexpected environment attach"),
   delete: () => Effect.die("unexpected environment delete"),
 });

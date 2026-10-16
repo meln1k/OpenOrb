@@ -5,6 +5,8 @@ import { assert, assertEquals, assertStringIncludes } from "@jsr/std__assert";
 
 const RUNNER_SOURCE_ROOT = "packages/runner/src";
 const SESSION_SOURCE_ROOT = "packages/gateway/app/cells/session";
+const ENVIRONMENTS_SOURCE_ROOT = "packages/environments/src";
+const PI_ENV_SOURCE_ROOT = "packages/pi-env/src";
 
 test("runner source hosts no agent and launches only audited host processes", async () => {
   const hostProcessUsers: string[] = [];
@@ -81,9 +83,18 @@ test("the standalone Node runner retains its hardened OS security boundary", asy
 
 test("the Session Durable Object reaches the guest only through the provider ExecutionEnv", async () => {
   const harnessFactories: string[] = [];
-  for (const path of await typescriptSourcesUnder(SESSION_SOURCE_ROOT)) {
+  for (const path of [
+    ...(await typescriptSourcesUnder(SESSION_SOURCE_ROOT)),
+    ...(await typescriptSourcesUnder(ENVIRONMENTS_SOURCE_ROOT)),
+    ...(await typescriptSourcesUnder(PI_ENV_SOURCE_ROOT)),
+  ]) {
     const source = await readTextFile(path);
     assert(!source.includes("NodeExecutionEnv"), `${path} exposes host execution`);
+    // pi-env's own host-side helpers: a local daemon, SSH, and terminals.
+    for (const host of ["LocalExecutionEnv", "localDaemon", "connectSsh", "sshConnection"]) {
+      assert(!source.includes(host), `${path} uses pi-env's ${host}`);
+    }
+    assert(!source.includes("openTerminal"), `${path} opens a host terminal`);
     assert(!source.includes("DefaultResourceLoader"), `${path} loads host resources`);
     assert(!source.includes("pi-coding-agent"), `${path} imports the retired SDK`);
     assert(!source.includes("Deno.Command"), `${path} launches host processes`);
@@ -94,7 +105,7 @@ test("the Session Durable Object reaches the guest only through the provider Exe
 
   const agent = await readTextFile(`${SESSION_SOURCE_ROOT}/agent.ts`);
   assertStringIncludes(agent, "createRegistry()");
-  assertStringIncludes(agent, "env: () => options.env");
+  assertStringIncludes(agent, "return options.env;");
   // Neither ambient environment variables nor host files may supply model credentials.
   assertStringIncludes(agent, "env: () => Promise.resolve(undefined)");
   assertStringIncludes(agent, "fileExists: () => Promise.resolve(false)");
@@ -110,13 +121,13 @@ test("the Session Durable Object reaches the guest only through the provider Exe
 
 test("the sandbox runs in a capability-free isolate without network", async () => {
   // ADR 0007: an escape from just-bash must find no bindings, network, or shared isolate.
-  const provider = await readTextFile(`${SESSION_SOURCE_ROOT}/environment/sandbox-provider.ts`);
+  const provider = await readTextFile(`${ENVIRONMENTS_SOURCE_ROOT}/sandbox/provider.ts`);
   assertStringIncludes(provider, "env: {},");
   assertStringIncludes(provider, "globalOutbound: null,");
   assertStringIncludes(provider, 'credentials: "none",');
   assertStringIncludes(provider, "limits: { cpuMs: SANDBOX_CPU_MS }");
   assertStringIncludes(provider, "`openorb-sandbox:${sessionId}:${SANDBOX_WORKER.hash}`");
-  const sandboxRoot = `${SESSION_SOURCE_ROOT}/environment/sandbox`;
+  const sandboxRoot = `${ENVIRONMENTS_SOURCE_ROOT}/sandbox`;
   for (const path of await typescriptSourcesUnder(sandboxRoot)) {
     const source = await readTextFile(path);
     // Only the browser build: no host filesystem adapters, Python, JavaScript, or SQLite.

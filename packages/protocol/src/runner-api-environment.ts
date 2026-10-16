@@ -1,18 +1,18 @@
 import { Schema } from "effect";
 
-import { EnvironmentState, SessionEnvironmentRecoveryMode } from "./runner-api-session-events.ts";
 import {
+  EnvironmentState,
   GitAuthor,
   OrbSize,
   RunnerEnvironmentSnapshot,
   SessionEnvironmentSecrets,
   SessionId,
   SessionRepositoryUrl,
-  WorkspaceId,
 } from "./runner-api-schemas.ts";
 
 // Environment procedures serve Agent Environment Providers (ADR 0006): the runner supplies compute,
-// lifecycle, persistence, and Environment Links, but no agent or project behaviour.
+// lifecycle, persistence, and Environment Links, but no agent or project behaviour. A runner dials
+// the Session's Environment Link whenever its environment runs.
 
 const SafeMessage = Schema.String.check(
   Schema.isMinLength(1, { message: "Error messages must not be empty." }),
@@ -23,14 +23,6 @@ const Secret = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(4_096),
 );
-
-/** A one-time Environment Link attach nonce: 32 random bytes as unpadded base64url. */
-export const EnvironmentAttachNonce = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9_-]{43}$/, {
-    message: "Environment attach nonces must be 43 base64url characters.",
-  }),
-).pipe(Schema.brand("EnvironmentAttachNonce"));
-export type EnvironmentAttachNonce = typeof EnvironmentAttachNonce.Type;
 
 export const EnvironmentAction = Schema.Literals(["start", "stop", "restart"]);
 export type EnvironmentAction = typeof EnvironmentAction.Type;
@@ -49,7 +41,6 @@ export class CreateEnvironmentPayload extends Schema.Class<CreateEnvironmentPayl
   "CreateEnvironmentPayload",
 )({
   sessionId: SessionId,
-  workspaceId: WorkspaceId,
   orbSize: OrbSize,
   /** Absent for a Session without a project, whose guest gets no GitHub mediation. */
   repository: Schema.optionalKey(SessionRepository),
@@ -63,7 +54,6 @@ export class ControlEnvironmentPayload extends Schema.Class<ControlEnvironmentPa
   /** Transient credentials for egress mediation of the VM this action starts. */
   githubToken: Schema.optionalKey(Secret),
   environmentSecrets: Schema.optionalKey(SessionEnvironmentSecrets),
-  recovery: Schema.optionalKey(SessionEnvironmentRecoveryMode),
 }) {}
 
 export class EnvironmentControlled extends Schema.Class<EnvironmentControlled>(
@@ -73,17 +63,6 @@ export class EnvironmentControlled extends Schema.Class<EnvironmentControlled>(
   /** Whether stopping had to force termination and may have lost unsynced writes. */
   forced: Schema.Boolean,
 }) {}
-
-export class AttachEnvironmentPayload extends Schema.Class<AttachEnvironmentPayload>(
-  "AttachEnvironmentPayload",
-)({
-  sessionId: SessionId,
-  nonce: EnvironmentAttachNonce,
-}) {}
-
-export class EnvironmentAttachAccepted extends Schema.Class<EnvironmentAttachAccepted>(
-  "EnvironmentAttachAccepted",
-)({}) {}
 
 export class DeleteEnvironmentPayload extends Schema.Class<DeleteEnvironmentPayload>(
   "DeleteEnvironmentPayload",

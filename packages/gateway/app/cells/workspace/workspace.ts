@@ -7,11 +7,10 @@ import {
   MAX_SESSION_ENVIRONMENT_SECRETS,
   SessionEnvironmentSecret,
   SessionEnvironmentSecrets,
-  UserId,
   type WorkspaceId,
   WorkspaceId as WorkspaceIdSchema,
 } from "@openorb/protocol/runner-api";
-import { ok } from "@openorb/result";
+import { err, ok } from "@openorb/result";
 import { hashPassword, type PasswordHash, verifyPassword } from "../../utils/password.ts";
 import { loadMasterKey, type MasterKey } from "../../utils/master-key.ts";
 import { decryptSecret, type EncryptedSecret, encryptSecret } from "../../utils/secret-cipher.ts";
@@ -26,11 +25,11 @@ import {
   decodeWorkspaceArguments,
   type GitAuthorConfiguration,
   type Project,
-  type ReconciledSessionManifest,
   type SaveBrowserSession,
   type SaveProjectInput,
   type SessionCatalogEntry,
   type SessionNavigationEntry,
+  UserId,
   type WorkspaceApi,
 } from "./api.ts";
 import {
@@ -1064,98 +1063,46 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     });
   }
 
-  deleteSessionCatalogEntry(
+  addSessionCatalogEntry(
     workspaceId: WorkspaceId,
-    id: string,
-    deletedAt: string,
-  ): ReturnType<WorkspaceApi["deleteSessionCatalogEntry"]> {
+    entry: SessionCatalogEntry,
+  ): ReturnType<WorkspaceApi["addSessionCatalogEntry"]> {
     return this.#serialize(() => {
-      decodeWorkspaceArguments("deleteSessionCatalogEntry", [workspaceId, id, deletedAt]);
-      return this.#storage.transactionSync(() => {
-        if (
-          !this.#rows(
-            "DELETE FROM sessions WHERE workspaceId = ? AND id = ? RETURNING id",
-            workspaceId,
-            id,
-          ).length
-        )
-          return ok("not-found");
-        this.#rows(
-          "INSERT INTO deleted_sessions (workspaceId, sessionId, deletedAt) VALUES (?, ?, ?)",
+      decodeWorkspaceArguments("addSessionCatalogEntry", [workspaceId, entry]);
+      if (
+        entry.projectId !== undefined &&
+        !this.#rows(
+          "SELECT id FROM projects WHERE workspaceId = ? AND id = ?",
           workspaceId,
-          id,
-          deletedAt,
-        );
-        return ok("deleted");
-      });
+          entry.projectId,
+        ).length
+      )
+        return err(new Error("The session's project was not found."));
+      this.#rows(
+        `INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview)
+        VALUES (?, ?, ?, ?, ?)`,
+        workspaceId,
+        entry.id,
+        entry.projectId ?? null,
+        entry.createdAt,
+        entry.initialPromptPreview,
+      );
+      return ok(undefined);
     });
   }
 
-  reconcileSessionManifestEntries(
+  deleteSessionCatalogEntry(
     workspaceId: WorkspaceId,
-    entries: readonly SessionCatalogEntry[],
-  ): ReturnType<WorkspaceApi["reconcileSessionManifestEntries"]> {
+    id: string,
+  ): ReturnType<WorkspaceApi["deleteSessionCatalogEntry"]> {
     return this.#serialize(() => {
-      decodeWorkspaceArguments("reconcileSessionManifestEntries", [workspaceId, entries]);
-      const result: ReconciledSessionManifest = {
-        acceptedSessionIds: [],
-        tombstonedSessionIds: [],
-        rejected: [],
-      };
-      const pending = new Map<string, SessionCatalogEntry>();
-      for (const entry of entries) {
-        if (
-          this.#rows(
-            "SELECT sessionId FROM deleted_sessions WHERE workspaceId = ? AND sessionId = ?",
-            workspaceId,
-            entry.id,
-          ).length
-        ) {
-          result.tombstonedSessionIds.push(entry.id);
-          continue;
-        }
-        const existing = this.#catalogEntry(workspaceId, entry.id) ?? pending.get(entry.id);
-        if (
-          existing &&
-          (existing.projectId !== entry.projectId ||
-            existing.createdAt !== entry.createdAt ||
-            existing.initialPromptPreview !== entry.initialPromptPreview)
-        ) {
-          result.rejected.push({ sessionId: entry.id, reason: "catalog-conflict" });
-        } else if (
-          entry.projectId !== undefined &&
-          !this.#rows(
-            "SELECT id FROM projects WHERE workspaceId = ? AND id = ?",
-            workspaceId,
-            entry.projectId,
-          ).length
-        ) {
-          result.rejected.push({ sessionId: entry.id, reason: "project-not-found" });
-        } else {
-          result.acceptedSessionIds.push(entry.id);
-          pending.set(entry.id, {
-            id: entry.id,
-            ...(entry.projectId === undefined ? {} : { projectId: entry.projectId }),
-            createdAt: entry.createdAt,
-            initialPromptPreview: entry.initialPromptPreview,
-          });
-        }
-      }
-      if (result.rejected.length) return ok({ ...result, acceptedSessionIds: [] });
-      this.#storage.transactionSync(() => {
-        for (const entry of pending.values()) {
-          this.#rows(
-            `INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview)
-            VALUES (?, ?, ?, ?, ?) ON CONFLICT (workspaceId, id) DO NOTHING`,
-            workspaceId,
-            entry.id,
-            entry.projectId ?? null,
-            entry.createdAt,
-            entry.initialPromptPreview,
-          );
-        }
-      });
-      return ok(result);
+      decodeWorkspaceArguments("deleteSessionCatalogEntry", [workspaceId, id]);
+      const deleted = this.#rows(
+        "DELETE FROM sessions WHERE workspaceId = ? AND id = ? RETURNING id",
+        workspaceId,
+        id,
+      ).length;
+      return ok(deleted ? "deleted" : "not-found");
     });
   }
 

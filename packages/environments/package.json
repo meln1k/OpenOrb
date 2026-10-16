@@ -1,0 +1,20 @@
+{
+  "name": "@openorb/environments",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "exports": "./src/mod.ts",
+  "dependencies": {
+    "@earendil-works/chord": "1.2.0",
+    "@earendil-works/pi-durable": "1.2.0",
+    "@earendil-works/pi-env": "1.2.0",
+    "@jsr/std__path": "1.1.6",
+    "@openorb/pi-env": "*",
+    "@openorb/protocol": "*",
+    "@openorb/result": "*",
+    "effect": "4.0.0",
+    "just-bash": "3.6.0",
+    "modern-tar": "0.7.7"
+  }
+}

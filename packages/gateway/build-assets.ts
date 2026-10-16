@@ -22,12 +22,8 @@ export function createBuildAssetServer(development = false) {
     allowFiles: [
       "packages/gateway/app/**/public/**",
       "packages/gateway/app/routes.ts",
-      "packages/protocol/src/browser-session-git-snapshot.ts",
-      "packages/protocol/src/browser-session-events.ts",
-      "packages/protocol/src/conversation-frame.ts",
       "packages/protocol/src/model-provider.ts",
       "packages/protocol/src/orb-size.ts",
-      "packages/protocol/src/runner-api-limits.ts",
       "packages/protocol/src/thinking-level.ts",
       "packages/result/src/index.ts",
       "**/node_modules/@remix-run/data-schema/dist/**/*.js",
@@ -116,12 +112,27 @@ export async function buildGatewayAssets(
     urls.add(entry.href);
   }
 
-  for (const entry of [...Object.values(entries), ...workerEntries]) {
+  // Import maps include literal dynamic imports (Shiki grammars/themes/wasm, `import("@pierre/diffs")`),
+  // unlike preloads. A dynamically imported script is a root too: its static graph is not preloaded.
+  const scriptsByHref = new Map(
+    assets.flatMap((asset) =>
+      asset.type === "script" && asset.url && asset.filePath ? [[asset.url, asset.filePath]] : [],
+    ),
+  );
+  const pending = [...Object.values(entries), ...workerEntries];
+  const visited = new Set(pending.map((entry) => entry.href));
+  for (let entry = pending.pop(); entry !== undefined; entry = pending.pop()) {
     for (const href of entry.preloads) urls.add(href);
-    // Import maps include literal dynamic imports (Shiki grammars/themes/wasm), unlike preloads.
-    for (const href of Object.values(entry.importMap.imports)) urls.add(href);
-    for (const scope of Object.values(entry.importMap.scopes ?? {})) {
-      for (const href of Object.values(scope)) urls.add(href);
+    const mapped = [
+      ...Object.values(entry.importMap.imports),
+      ...Object.values(entry.importMap.scopes ?? {}).flatMap((scope) => Object.values(scope)),
+    ];
+    for (const href of mapped) {
+      urls.add(href);
+      const filePath = scriptsByHref.get(href);
+      if (filePath === undefined || visited.has(href)) continue;
+      visited.add(href);
+      pending.push(await server.getScriptEntry(filePath));
     }
   }
 

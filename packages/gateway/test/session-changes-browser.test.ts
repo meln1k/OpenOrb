@@ -3,7 +3,7 @@ import { assertEquals } from "@jsr/std__assert";
 import { Buffer } from "node:buffer";
 
 import { createBuildAssetServer } from "../build-assets.ts";
-import { MAX_RUNNER_BULK_CHUNK_BYTES } from "../../protocol/src/runner-api-limits.ts";
+import { MAX_GIT_PATCH_CHUNK_BYTES } from "../app/cells/session/git-snapshot-schema.ts";
 import { createTestServer } from "./http-test-server.ts";
 
 const browserEndpoint = process.env["OPENORB_BROWSER_TEST_CDP"];
@@ -165,7 +165,7 @@ test(
       }
       if (url.pathname.includes("/git-patch/")) {
         const offset = Number(url.pathname.split("/").at(-1));
-        const end = Math.min(offset + MAX_RUNNER_BULK_CHUNK_BYTES, patchBytes.byteLength);
+        const end = Math.min(offset + MAX_GIT_PATCH_CHUNK_BYTES, patchBytes.byteLength);
         offsets.push(offset);
         inFlight++;
         maxInFlight = Math.max(maxInFlight, inFlight);
@@ -199,7 +199,7 @@ test(
         { timeout: 15_000 },
       );
       assertEquals(await probe.getAttribute("data-has-end-marker"), "true");
-      assertEquals(offsets, [0, MAX_RUNNER_BULK_CHUNK_BYTES, MAX_RUNNER_BULK_CHUNK_BYTES * 2]);
+      assertEquals(offsets, [0, MAX_GIT_PATCH_CHUNK_BYTES, MAX_GIT_PATCH_CHUNK_BYTES * 2]);
       assertEquals(maxInFlight, 1);
       assertEquals(await page.getByText("openorb/browser-bulk-test").isVisible(), true);
       await page.getByLabel(`${addedLines} additions, 0 deletions`).waitFor({ state: "visible" });

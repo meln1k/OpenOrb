@@ -1,5 +1,5 @@
 import { DEFAULT_SESSION_THINKING_LEVEL, SESSION_THINKING_LEVELS } from "@openorb/protocol";
-import type { RunnerSessionSnapshot, SessionIssue } from "@openorb/protocol/runner-api";
+import type { SessionIssue, SessionView } from "../../cells/session/view.ts";
 import { Frame, type Handle } from "remix/component";
 
 import type { SessionCatalogEntry, SessionNavigationEntry } from "../../cells/workspace/api.ts";
@@ -45,7 +45,7 @@ interface SessionDetailFrameProps {
   csrfToken: string;
   error: string | undefined;
   session: SessionCatalogEntry;
-  snapshot: RunnerSessionSnapshot | null;
+  snapshot: SessionView | null;
 }
 
 export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
@@ -66,6 +66,7 @@ export function SessionDetailFrame(handle: Handle<SessionDetailFrameProps>) {
       initialState={state}
       initialAgentState={snapshot?.agentState ?? null}
       initialEnvironmentState={snapshot?.environmentState ?? null}
+      initialEnvironmentReachable={snapshot?.environmentReachable ?? true}
       initialIssues={[...issues]}
       initialThinkingLevel={initialThinkingLevel}
       sessionId={session.id}

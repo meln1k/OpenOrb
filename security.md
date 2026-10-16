@@ -30,12 +30,11 @@ not leave an orphan Workspace or create another administrator.
   runner, the built-in Sandbox, sandbox vendors later) supplies compute, lifecycle, persistence,
   network policy, and the Environment Link, never project behaviour: clone,
   `.agents/setup`/`.agents/resume`, Git Snapshots, skill discovery, and Published Media run in the
-  Session DO. Providers declare persistence, credentials (mediated, opt-in, or none),
-  hibernatable-link, and Git capabilities rather than inheriting the runner's guarantees; the
-  Session DO reads Workspace credentials only for providers that receive them. The Session record
-  stores its provider kind and the Project's Guest Credential Opt-in at creation; the user picks the
-  provider in the composer, and Workspaces without runners default to the Sandbox. Workspace
-  defaults and Project overrides are deferred.
+  Session DO. Providers declare credentials (mediated, opt-in, or none) and Git capabilities rather
+  than inheriting the runner's guarantees; the Session DO reads Workspace credentials only for
+  providers that receive them. The Session record stores its provider kind and the Project's Guest
+  Credential Opt-in at creation; the user picks the provider in the composer, and Workspaces without
+  runners default to the Sandbox. Workspace defaults and Project overrides are deferred.
 - The Sandbox ([ADR 0007](docs/adr/0007-built-in-sandbox-provider.md)) runs just-bash's browser
   build in a celld Worker Loader isolate per Session, loaded with no bindings (`env: {}`), no
   network (`globalOutbound: null`), and a per-call CPU limit, as a facet of the Session DO with its
@@ -62,21 +61,24 @@ not leave an orphan Workspace or create another administrator.
   for the Session and is recorded only in the conversation transcript's system prompt section; a
   failed first load is retried at the next start or reopen. Skill content remains untrusted
   guidance, never gateway or host code or policy. Model work and Environment Control never wait for
-  skill discovery or guest readiness.
-- File and shell tools use a vendored copy of pi-env's `RemoteExecutionEnv` client served by the
-  unmodified static pi-env Environment Daemon inside the guest; providers that run the daemon share
-  this client and differ only in link transport. A provider may instead return its own
-  `ExecutionEnv`, which must likewise interpret paths only in the guest. Untrusted paths are
-  interpreted only by guest processes; neither the Session DO nor a provider relay interprets them,
-  and `NodeExecutionEnv` or host-filesystem fallbacks are forbidden. While the runner or provider is
-  unreachable, guest tools fail immediately rather than waiting; prompt admission and model work
-  continue.
+  skill discovery. Prompts go to Pi at once; their runs wait for queued environment setup to settle,
+  successfully or not. Guest operations never wait for an unavailable environment and fail
+  immediately. Clone, setup, and resume output is redacted of the credentials the provider received
+  and bounded to its last 32 KiB before it is written to the transcript; only a failure's output is
+  also shown to the model.
+- File and shell tools use pi-env's unmodified `RemoteExecutionEnv` client served by the unmodified
+  static pi-env Environment Daemon inside the guest; providers that run the daemon share this client
+  and differ only in link transport. A provider may instead return its own `ExecutionEnv`, which
+  must likewise interpret paths only in the guest. Untrusted paths are interpreted only by guest
+  processes; neither the Session DO nor a provider relay interprets them, and `NodeExecutionEnv` or
+  host-filesystem fallbacks are forbidden. While the runner or provider is unreachable, guest tools
+  fail immediately rather than waiting; prompt admission and model work continue.
 - Each Session owns one Project Checkout and one isolated Agent Environment. On a runner, its
   private root disk, including the checkout and non-tmpfs guest state, persists together with the
-  runner-owned Session Journal (VM/disk lifecycle facts only) and logs; RAM and processes do not.
-  Harness State, Git Snapshot summaries and previews, and checkout facts live only in the Session
-  DO's SQLite storage; full Git Snapshot patches remain in the guest; runners store no conversation
-  content.
+  runner's environment definition (orb size and repository, written once at creation) and logs; RAM
+  and processes do not. Harness State, Git Snapshot summaries and previews, and checkout facts live
+  only in the Session DO's SQLite storage; full Git Snapshot patches remain in the guest; runners
+  store no conversation content.
 - Provider credentials persist encrypted in the Workspace DO and are resolved inside the gateway
   into the Session DO's in-memory credential store; they are never sent to runners or other Agent
   Environment Providers. The GitHub token and generic secrets are still sent to trusted runner
@@ -101,9 +103,9 @@ not leave an orphan Workspace or create another administrator.
   loopback, private, link-local, cloud-metadata, redirected, and DNS-rebinding targets while
   preserving guest-local loopback.
 - The celld Workspace Durable Object owns SQLite-backed configuration, browser sessions, runner
-  enrollment records, the minimal Session catalog, and deletion markers. Each Session DO owns its
-  Harness State, Conversation View, Published Media records, and Stop Session orchestration; runners
-  own environment state. The gateway webapp is the public Worker and no longer opens PostgreSQL.
+  enrollment records, and the minimal Session catalog. Each Session DO owns its Harness State,
+  Conversation View, Published Media records, and Stop Session orchestration; runners own
+  environment state. The gateway webapp is the public Worker and no longer opens PostgreSQL.
 - The public Worker enforces browser authentication, Workspace ownership, and CSRF before calling
   Workspace/Runners/Session native RPC. There is no public generic Workspace RPC endpoint. The
   Runners DO owns live control/bulk sockets, authenticates runner tokens against Workspace
@@ -117,13 +119,14 @@ not leave an orphan Workspace or create another administrator.
   alarm-driven polling, exchange, refresh, and revocation remain in Workspace; the Worker does not
   handle OAuth callbacks. PostgreSQL-to-DO data import is not implemented.
 - The runner's Environment Link is a dedicated per-Session WebSocket dialed by the runner to the
-  Session DO and authenticated by the runner token plus a one-time attach nonce. Other providers
-  supply their own link transport. The runner relays daemon frames verbatim. Revoking a runner
-  closes its Environment Links through the Runners DO. The Session DO accepts the link as a
-  hibernatable WebSocket; liveness never wakes it because the relay answers daemon pings locally,
-  link pings use the Durable Object's automatic response, and the client sends protocol pings only
-  while requests are in flight. Losing the link closes the daemon and kills the processes it
-  started; interrupted tools report possible partial execution.
+  Session DO whenever the environment runs, and authenticated by the runner token, which must name
+  the runner of the Session's placement in the Session's Workspace. Other providers supply their own
+  link transport. The runner relays daemon frames verbatim. Revoking a runner closes its Environment
+  Links through the Runners DO. The Session DO accepts the link as a hibernatable WebSocket;
+  liveness never wakes it because the relay answers daemon pings locally, link pings use the Durable
+  Object's automatic response, and the client sends protocol pings only while requests are in
+  flight. Losing the link closes the daemon and kills the processes it started; interrupted tools
+  report possible partial execution.
 - Published Media is read from `/workspace/.openorb/artifacts` over the Environment Link, validated
   by the Session DO, and written to an R2 bucket under the Session's
   `workspaces/{workspaceId}/sessions/{sessionId}/media/` prefix. Limits are 64 MiB per artifact and
@@ -183,16 +186,15 @@ durability guarantee still depends on the runner filesystem and physical storage
 
 The root disk always has the stable session path `root-disk.qcow2`. Its initial sparse 40 GiB file
 is file-synced and atomically published before first use. For Stop Session, including the idle
-timeout driven by its alarm, the Session DO closes the harness recoverably and collects the final
-Git Snapshot over `ExecutionEnv` before asking the runner to stop compute. The runner runs guest
+timeout driven by its alarm, the Session DO aborts any agent work and collects the final Git
+Snapshot over `ExecutionEnv` before asking the runner to stop compute. The runner runs guest
 `/bin/sync`, stops the VM, and calls host `fsync` on `root-disk.qcow2` and its directory before
-journaling `stop.completed`. Abort cancels agent work, queued inputs, and owned background work
-without stopping compute. Agent environment control leaves the harness running. Forced restart may
-lose unsynced writes and does not claim a graceful Stop; disk ownership is retained until the
+reporting the environment stopped. Abort cancels agent work, queued inputs, and owned background
+work without stopping compute. Agent environment control leaves the harness running. Forced restart
+may lose unsynced writes and does not claim a graceful Stop; disk ownership is retained until the
 previous VM has closed.
 
-After a runner interruption in `Stopping`, reconciliation cannot prove that the guest sync and VM
-exit finished, so the Session fails with the explicit `restart-environment` recovery action. The
-runner does not replace or delete the disk. Wake opens the same disk in a new VM, after which the
-Session DO runs `.agents/resume` over `ExecutionEnv`. RAM, processes, and tmpfs-backed paths such as
+A runner restart leaves no VM, so the runner reports every environment it restores as stopped; it
+does not replace or delete the disk. Wake opens the same disk in a new VM, after which the Session
+DO runs `.agents/resume` over `ExecutionEnv`. RAM, processes, and tmpfs-backed paths such as
 `/root`, `/tmp`, `/var/tmp`, `/var/cache`, and `/var/log` never persist across Stop.

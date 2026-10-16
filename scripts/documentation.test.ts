@@ -131,7 +131,7 @@ test("operations documentation records the recovery contract and release pins", 
   assert(release.includes('id: "release-1"'));
   assert(release.includes('id: "release-2"'));
   assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_2"));
-  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 28"));
+  assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 29"));
   for (const pin of ["26.11.1", "0.12.0", "1.2.0", "3.0.0"]) {
     assert(
       operations.includes(pin) &&

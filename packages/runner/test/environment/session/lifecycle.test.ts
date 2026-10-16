@@ -21,57 +21,39 @@ function guest(id: number, calls: string[]): AgentEnvironment {
   };
 }
 
-test("lazy guest waiters are cancellable without cancelling shared boot", () =>
+test("a start waits for readiness and a failed or timed-out boot is retried by the next start", () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const ready = yield* Deferred.make<void>();
-        const calls: string[] = [];
-        const lifecycle = yield* makeEnvironmentLifecycle({
-          boot: () => Deferred.await(ready).pipe(Effect.as(guest(0, calls))),
-          changed: () => Effect.void,
-          syncDisk: Effect.void,
-          warning: () => Effect.void,
-        });
-        yield* lifecycle.begin;
-        assert(lifecycle.active);
-        const cancelled = yield* lifecycle.proxy.run(["/bin/ls"]).pipe(Effect.forkChild);
-        const survivor = yield* lifecycle.proxy.run(["/bin/cat"]).pipe(Effect.forkChild);
-        yield* Fiber.interrupt(cancelled);
-        yield* Deferred.succeed(ready, undefined);
-        assertEquals(yield* Fiber.join(survivor), { exitCode: 0 });
-        assertEquals(yield* lifecycle.proxy.run(["/bin/ls"]), { exitCode: 0 });
-        assertEquals(calls, ["0:/bin/cat", "0:/bin/ls"]);
-        yield* lifecycle.stop;
-        assert(Exit.isFailure(yield* Effect.exit(lifecycle.proxy.run(["/bin/ls"]))));
-      }),
-    ),
-  ));
-
-test("failed and timed-out readiness fail tools finitely", () =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        for (const boot of [
+        for (const failure of [
           Effect.fail(new AgentEnvironmentError("failed", undefined)),
           Effect.never,
         ]) {
+          const states: string[] = [];
+          let boots = 0;
           const lifecycle = yield* makeEnvironmentLifecycle({
-            boot: () => boot,
+            boot: () => (++boots === 1 ? failure : Effect.succeed(guest(0, []))),
             readinessMs: 10,
-            changed: () => Effect.void,
+            changed: (state) =>
+              Effect.sync(() => {
+                states.push(state);
+              }),
             syncDisk: Effect.void,
             warning: () => Effect.void,
           });
-          yield* lifecycle.begin;
-          assert(Exit.isFailure(yield* Effect.exit(lifecycle.proxy.run(["/bin/true"]))));
+          assert(Exit.isFailure(yield* Effect.exit(lifecycle.control("start"))));
+          assertEquals(lifecycle.state, "error");
+          assert(lifecycle.active, "a failed boot keeps its instance until it is released");
+          assertEquals(yield* lifecycle.control("start"), { state: "running", forced: false });
+          assertEquals(boots, 2);
+          assertEquals(states, ["starting", "error", "stopping", "stopped", "starting", "running"]);
           yield* lifecycle.stop;
         }
       }),
     ),
   ));
 
-test("Stop interrupts startup and all guest waiters, without a late running transition", () =>
+test("Stop interrupts startup without a late running transition", () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -85,19 +67,17 @@ test("Stop interrupts startup and all guest waiters, without a late running tran
           syncDisk: Effect.void,
           warning: () => Effect.void,
         });
-        yield* lifecycle.begin;
-        const waiter = yield* Effect.exit(lifecycle.proxy.run(["/bin/true"])).pipe(
-          Effect.forkChild,
-        );
-        yield* lifecycle.stop;
-        assert(Exit.isFailure(yield* Fiber.join(waiter)));
+        const start = yield* Effect.exit(lifecycle.control("start")).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        assertEquals(yield* lifecycle.control("stop"), { state: "stopped", forced: false });
+        assert(Exit.isFailure(yield* Fiber.join(start)));
         assertEquals(states, ["starting", "stopping", "stopped"]);
         assertEquals(lifecycle.active, false);
       }),
     ),
   ));
 
-test("host restart bypasses a hung guest tool, forces hung sync, and binds new handles", () =>
+test("restart forces a hung sync and boots a new guest", () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -131,15 +111,12 @@ test("host restart bypasses a hung guest tool, forces hung sync, and binds new h
             }),
         });
         yield* lifecycle.control("start");
-        const tool = yield* Effect.exit(lifecycle.proxy.run(["hung"])).pipe(Effect.forkChild);
         assertEquals(yield* lifecycle.control("restart"), { state: "running", forced: true });
-        assert(Exit.isFailure(yield* Fiber.join(tool)));
-        yield* lifecycle.proxy.run(["/bin/true"]);
-        assertEquals(calls, ["1:stop", "host-sync", "2:/bin/true"]);
+        assertEquals(calls, ["1:stop", "host-sync"]);
         assert(warnings[0]?.includes("unsynced"));
         yield* lifecycle.stop;
-        assert(Exit.isFailure(yield* Effect.exit(lifecycle.proxy.run(["/bin/true"]))));
-        assertEquals(boots, 2, "ordinary tools never implicitly boot a stopped VM");
+        assertEquals(calls, ["1:stop", "host-sync", "2:/bin/sync", "2:stop", "host-sync"]);
+        assertEquals(boots, 2);
       }),
     ),
   ));
@@ -216,32 +193,6 @@ test("a timed-out uninterruptible detach remains owned until it actually complet
         yield* Deferred.succeed(detached, undefined);
         yield* lifecycle.control("restart");
         assertEquals(boots, 2);
-        yield* lifecycle.stop;
-      }),
-    ),
-  ));
-
-test("AbortSignal cancels one readiness waiter, not boot or other guest operations", () =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const ready = yield* Deferred.make<void>();
-        const lifecycle = yield* makeEnvironmentLifecycle({
-          boot: () => Deferred.await(ready).pipe(Effect.as(guest(0, []))),
-          changed: () => Effect.void,
-          syncDisk: Effect.void,
-          warning: () => Effect.void,
-        });
-        yield* lifecycle.begin;
-        const controller = new AbortController();
-        const waiter = yield* Effect.exit(
-          lifecycle.proxy.run(["/bin/true"], { signal: controller.signal }),
-        ).pipe(Effect.forkChild);
-        controller.abort();
-        assert(Exit.isFailure(yield* Fiber.join(waiter)));
-        assertEquals(lifecycle.state, "starting");
-        yield* Deferred.succeed(ready, undefined);
-        yield* lifecycle.proxy.run(["/bin/true"]);
         yield* lifecycle.stop;
       }),
     ),

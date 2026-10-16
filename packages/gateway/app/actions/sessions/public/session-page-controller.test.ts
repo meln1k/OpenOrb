@@ -15,6 +15,7 @@ test("session page controller publishes one lifecycle projection before session 
     stage: "resuming",
     agentState: "running",
     environmentState: "starting",
+    environmentReachable: true,
     checkoutState: "available",
     issues: [],
   });
@@ -25,6 +26,7 @@ test("session page controller publishes one lifecycle projection before session 
     sessionState: "provisioning",
     agentState: "running",
     environmentState: "starting",
+    environmentReachable: true,
     stage: "resuming",
     issues: [],
   });
@@ -42,6 +44,7 @@ test("session page controller keeps failures visible across runner disconnects",
     stage: "failed",
     agentState: "running",
     environmentState: "error",
+    environmentReachable: true,
     checkoutState: "unavailable",
     issues: [
       {
@@ -68,12 +71,13 @@ test("independent lifecycle and reconnect require a replacement snapshot", () =>
   controller.apply({
     type: "session.state",
     stage: "stopping",
-    agentState: "paused",
+    agentState: "idle",
     environmentState: "stopping",
+    environmentReachable: true,
     checkoutState: "available",
     issues: [],
   });
-  assertEquals(controller.projection.agentState, "paused");
+  assertEquals(controller.projection.agentState, "idle");
   assertEquals(controller.projection.environmentState, "stopping");
   controller.setConnectionInterrupted(true);
   controller.setConnectionInterrupted(false);

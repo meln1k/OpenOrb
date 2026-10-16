@@ -1,4 +1,4 @@
-import type { EnvironmentState } from "@openorb/protocol/browser-session-events";
+import type { EnvironmentState } from "../../../cells/session/view.ts";
 
 export type SessionVmPhase = "starting" | "active" | "stopping" | "sleeping" | "failed" | "offline";
 

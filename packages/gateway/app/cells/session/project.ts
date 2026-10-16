@@ -3,12 +3,11 @@ import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { DurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import type {
-  SessionEvent,
   SessionGitFileAction,
+  SessionGitPatchSection,
   SessionGitSnapshot,
-  SessionIssue,
-} from "@openorb/protocol/runner-api";
-import type { SessionGitPatchSection } from "@openorb/protocol/runner-bulk-api";
+} from "./git-snapshot-schema.ts";
+import type { SessionEvent, SessionIssue } from "./view.ts";
 import { tryAsync } from "@openorb/result";
 import { SessionError } from "./agent.ts";
 import {
@@ -44,7 +43,6 @@ const SKILL_DISCOVERY_TIMEOUT_MS = 10_000;
 
 /** The parts of the Session Durable Object a project's integration works through. */
 export interface ProjectHost {
-  /** The guest, without the readiness gate: project work is what the gate waits for. */
   readonly env: ExecutionEnv;
   readonly storage: DurableObjectSqliteStorage;
   readonly record: () => SessionRecord | undefined;
@@ -134,7 +132,7 @@ export class ProjectIntegration {
       this.#skills !== undefined ||
       this.#skillsScan !== undefined ||
       record?.checkoutState !== "available" ||
-      record.environmentState !== "running"
+      record.environment.state !== "running"
     )
       return this.#skillsScan ?? Promise.resolve();
     this.#skillsScan = (async () => {
@@ -174,8 +172,8 @@ export class ProjectIntegration {
     if (
       record === undefined ||
       record.checkoutState !== "available" ||
-      record.environmentState !== "running" ||
-      !record.environmentReachable ||
+      record.environment.state !== "running" ||
+      !record.environment.reachable ||
       record.operation !== undefined
     )
       return;
@@ -202,7 +200,7 @@ export class ProjectIntegration {
       throw new SessionError("This Git Snapshot was replaced; refresh the changes view.");
     }
     const record = this.#host.record();
-    if (record?.environmentState !== "running" || !record.environmentReachable) {
+    if (record?.environment.state !== "running" || !record.environment.reachable) {
       throw new SessionError("Start the environment to load the full diff.");
     }
     return await readGitPatchChunk(
