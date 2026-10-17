@@ -47,13 +47,17 @@ not leave an orphan Workspace or create another administrator.
   Work that needs secrets or a full toolchain belongs on a runner.
 - Pi Durable runs in one gateway Session Durable Object per Session with an explicit registry and
   in-memory credentials, never on the runner host. It discovers no gateway, runner, project, or
-  global Pi resources. Its codemode tool runs upstream Pi's QuickJS/WASM sandbox inline, with a 32
-  MiB QuickJS heap cap and 1,000 interrupt polls per invocation. Generated code can call the
+  global Pi resources. Its codemode tool
+  ([ADR 0009](docs/adr/0009-codemode-vm-in-a-loaded-facet.md)) runs upstream Pi's QuickJS/WASM VM
+  in a celld Worker Loader isolate per Session, as a facet loaded with no bindings (`env: {}`), no
+  network (`globalOutbound: null`), and a 5-second CPU limit per call, with a 32 MiB QuickJS heap
+  cap and 1,000 interrupt polls per invocation. Pi's host side, its tools, and replay stay in the
+  Session DO, which pulls the VM's messages and decodes each against Pi's message types, enforces
+  Pi's output caps again, and aborts the facet when it stops pulling. Generated code can call the
   conversation's registered tools but has no direct host filesystem, network, or credentials;
   codemode's optional model helpers are disabled. Upstream Pi owns deterministic replay and the
-  conversation store, and nested tools retain their own replay policies. Synchronous computation
-  blocks the Session thread until it yields or exhausts the interrupt budget; this is not a
-  millisecond deadline or a separate process boundary. The Session DO reads passive repository skill
+  conversation store, and nested tools retain their own replay policies. As for the Sandbox, the
+  boundary is a V8 isolate in the gateway process, not a VM. The Session DO reads passive repository skill
   metadata (YAML frontmatter only) from `/workspace/.agents/skills/**/SKILL.md` over the provider's
   `ExecutionEnv` once, as soon as the first checkout of the session branch exists; nothing is
   executed. The bounded (10 s) background scan publishes names, descriptions, and guest paths in the

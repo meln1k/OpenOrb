@@ -13,8 +13,8 @@ import {
   openDurableObjectSqliteStorage,
 } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
-import { InlineCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
-import { loadCodemodeWasm } from "./codemode-wasm.ts";
+import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
+import { CODEMODE_MEMORY_BYTES } from "./codemode/limits.ts";
 import {
   createBashTool,
   createEditTool,
@@ -61,6 +61,8 @@ export interface AgentOptions {
   readonly repositorySkills: () => string;
   /** Configured web search keys, read from the Workspace at each search. */
   readonly searchProviderKeys: WebToolOptions["searchProviderKeys"];
+  /** Runs codemode's VM outside the Session's isolate; tools stay here (ADR 0009). */
+  readonly codemode: CodemodeRemote;
 }
 
 export interface Agent {
@@ -183,11 +185,9 @@ export async function openAgent(
   const registry = createRegistry();
   registry.install(
     createCodemodeExtension({
-      sandbox: new InlineCodemodeSandbox({
-        wasm: await loadCodemodeWasm(),
-        memoryLimitBytes: 32 * 1024 * 1024,
-        // Inline computation blocks the Session thread; bound it even when timers cannot run.
-        interruptBudget: 1_000,
+      sandbox: new RemoteCodemodeSandbox({
+        remote: () => options.codemode,
+        memoryLimitBytes: CODEMODE_MEMORY_BYTES,
       }),
       models: false,
     }),

@@ -32,6 +32,7 @@ import {
   SessionError,
 } from "./agent.ts";
 import { WorkspaceCredentialStore } from "./credentials.ts";
+import { codemodeFacet } from "./codemode/facet.ts";
 import { environmentProviders } from "./environments.ts";
 import { migrateDurableObjectDatabase } from "../migrations.ts";
 import { sessionMigrations } from "./migrations.ts";
@@ -528,6 +529,11 @@ export class Session extends DurableObject<Env> {
         // Without a project there is no repository to discover skills in.
         repositorySkills: () => project?.skillsPrompt() ?? "",
         searchProviderKeys: () => this.#workspace.getSearchProviderKeys(record.workspaceId),
+        codemode: codemodeFacet({
+          loader: this.env.LOADER,
+          facets: ctx.facets,
+          sessionId: record.sessionId,
+        }),
       },
       context,
     );
