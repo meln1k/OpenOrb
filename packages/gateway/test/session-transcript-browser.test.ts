@@ -243,7 +243,9 @@ test(
       await page.getByRole("button", { name: "Stop Session", exact: true }).click();
       await stopRequest;
       state("idle", "stopping");
-      await page.getByText("Agent: idle · Environment: stopping", { exact: true }).waitFor();
+      await page
+        .getByRole("status", { name: "Agent: idle · Environment: stopping", exact: true })
+        .waitFor();
       releaseCommand.resolve();
       await page.getByRole("alert").filter({ hasText: "Acknowledgement lost" }).waitFor();
       assertEquals(commands, [

@@ -109,7 +109,9 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
       environmentReachable ? (page.projection.environmentState ?? "unknown") : "unreachable"
     }`;
     const actionTitle = canSubmit
-      ? actionLabel
+      ? action === "stop"
+        ? "Stop Session pauses the agent and stops its environment. Environment tools do not pause the agent."
+        : actionLabel
       : page.projection.connectionInterrupted
         ? "Session controls are unavailable while the connection is interrupted"
         : !environmentReachable
@@ -130,9 +132,6 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
             {actionError}
           </span>
         ) : null}
-        <span role="status" data-agent-environment-status>
-          {lifecycleLabel}
-        </span>
         <Tooltip>
           <TooltipTrigger
             role="status"
@@ -144,10 +143,7 @@ export function SessionVmControl(handle: Handle<SessionVmControlProps>) {
           >
             <span aria-hidden="true" data-slot="vm-state-indicator" />
           </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Stop Session pauses the agent and stops its environment. Environment tools do not pause
-            the agent.
-          </TooltipContent>
+          <TooltipContent side="bottom">{lifecycleLabel}</TooltipContent>
         </Tooltip>
         {action === undefined ? null : (
           <form
