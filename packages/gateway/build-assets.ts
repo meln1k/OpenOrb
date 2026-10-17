@@ -29,10 +29,8 @@ export function createBuildAssetServer(development = false) {
       "**/node_modules/@remix-run/data-schema/dist/**/*.js",
       "**/node_modules/remix/dist/data-schema.js",
       "**/node_modules/remix/dist/fetch-router/routes.js",
-      "**/node_modules/remix/dist/multiple-import-maps-polyfill.js",
       "**/node_modules/remix/dist/{component.js,component/*.js}",
       "**/node_modules/@remix-run/fetch-router/dist/**/*.js",
-      "**/node_modules/@remix-run/multiple-import-maps-polyfill/dist/**/*.js",
       "**/node_modules/@remix-run/route-pattern/dist/**/*.js",
       "**/node_modules/@remix-run/component/dist/**/*.js",
       "**/node_modules/@remix-run/ui/dist/**/*.js",
@@ -75,6 +73,8 @@ export async function buildGatewayAssets(
   const entries: Record<string, ScriptEntry> = {};
   const hrefs: Record<string, string> = {};
   const urls = new Set<string>();
+  // Scripts the document may load: client entries and the roots of their dynamic imports.
+  const documentScripts: string[] = [];
   const publicFiles: string[] = [];
   const styleUrls: string[] = [];
 
@@ -92,6 +92,7 @@ export async function buildGatewayAssets(
     if (asset.type === "style") styleUrls.push(hrefs[id]);
     if (asset.type !== "script") continue;
     entries[id] = await server.getScriptEntry(asset.filePath);
+    documentScripts.push(asset.filePath);
   }
 
   // new Worker(new URL(..., import.meta.resolve(...))) is outside Remix's import graph.
@@ -133,8 +134,12 @@ export async function buildGatewayAssets(
       if (filePath === undefined || visited.has(href)) continue;
       visited.add(href);
       pending.push(await server.getScriptEntry(filePath));
+      documentScripts.push(filePath);
     }
   }
+  // Every page renders this one complete import map, so client entries found later (frames,
+  // navigations) never need another map. Firefox cannot merge import maps added after load.
+  const importMap = await server.getImportMap(documentScripts);
 
   // This directory is dedicated to deployable public bytes; metadata stays outside it.
   await mkdir(outputDir, { recursive: true });
@@ -191,6 +196,7 @@ export async function buildGatewayAssets(
   );
   const metadata = {
     entries,
+    importMap,
     hrefs,
     assetUrls: [...urls].sort(),
     publicFiles: publicFiles.sort(),

@@ -1,20 +1,11 @@
-import {
-  detectMultipleImportMapSupport,
-  importModule,
-  preloadShim,
-} from "remix/multiple-import-maps-polyfill";
 import { type LoadModule, run } from "remix/component";
 
 const app = run({
   async loadModule(moduleUrl, exportName) {
-    const module = await importModule(moduleUrl);
+    // The document import map already covers every client entry; see build-assets.ts.
+    const module = await import(moduleUrl);
     // SAFETY: Remix hydration metadata names function exports produced by clientEntry().
     return module[exportName] as Awaited<ReturnType<LoadModule>>;
-  },
-  async processClientEntryPreloads(preloads) {
-    if (await detectMultipleImportMapSupport()) return preloads;
-    preloadShim(preloads);
-    return [];
   },
 });
 

@@ -1,5 +1,5 @@
 import manifest from "../dist/asset-manifest.json" with { type: "json" };
-import type { ScriptEntry } from "remix/assets";
+import type { ScriptEntry, ScriptImportMap } from "remix/assets";
 
 /** celld's assets.binding (ASSETS): no filesystem or compiler is needed in the Worker. */
 export interface AssetsBinding {
@@ -8,6 +8,7 @@ export interface AssetsBinding {
 
 interface AssetManifest {
   entries: Record<string, ScriptEntry>;
+  importMap: ScriptImportMap;
   hrefs: Record<string, string>;
   assetUrls: string[];
   publicFiles: string[];
@@ -85,4 +86,6 @@ export function createGatewayAssets(binding?: AssetsBinding) {
 // HTTP serving requires the explicitly injected instance above; never store env in a global.
 export const assetServer = createGatewayAssets();
 export const clientScriptEntry = getEntry("packages/gateway/app/public/client.ts");
+/** The complete import map for every client entry, rendered once per document. */
+export const documentImportMap: ScriptImportMap = structuredClone(metadata.importMap);
 export type GatewayAssets = ReturnType<typeof createGatewayAssets>;

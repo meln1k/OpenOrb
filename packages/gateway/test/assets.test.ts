@@ -4,7 +4,12 @@ import { test } from "vite-plus/test";
 import { assert, assertEquals, assertRejects } from "@jsr/std__assert";
 import { fileURLToPath as fromFileUrl } from "node:url";
 
-import { assetServer as resolver, clientScriptEntry, createGatewayAssets } from "../app/assets.ts";
+import {
+  assetServer as resolver,
+  clientScriptEntry,
+  createGatewayAssets,
+  documentImportMap,
+} from "../app/assets.ts";
 import metadata from "../dist/asset-manifest.json" with { type: "json" };
 
 const output = new URL("../dist/", import.meta.url);
@@ -32,7 +37,7 @@ test("serves browser UI dependencies without exposing server modules", async () 
   const clientScript = await assetServer.getScriptEntry(clientEntries[0]!);
   assertEquals(clientScript.href, "/assets/app/public/client.ts");
   assertEquals(clientScript, clientScriptEntry);
-  assert(Object.keys(clientScript.importMap.scopes ?? {}).length > 0);
+  assert(Object.keys(documentImportMap.scopes ?? {}).length > 0);
 
   const preloads = await assetServer.getPreloads(clientEntries);
 
@@ -155,6 +160,19 @@ test("build exports lazy graphs, portable worker, public files and no private so
     await readFile(new URL("../public/favicon.svg", import.meta.url)),
   );
   assertEquals(metadata.publicFiles, ["/favicon.svg"]);
+  // Browsers without multiple import maps (Firefox) resolve every client entry, including ones
+  // that frames load later, through the single document import map.
+  for (const id of Object.keys(metadata.entries)) {
+    const entry = await resolver.getScriptEntry(id);
+    for (const [specifier, href] of Object.entries(entry.importMap.imports)) {
+      assertEquals(documentImportMap.imports[specifier], href, `${id}: ${specifier}`);
+    }
+    for (const [scope, imports] of Object.entries(entry.importMap.scopes ?? {})) {
+      for (const [specifier, href] of Object.entries(imports)) {
+        assertEquals(documentImportMap.scopes?.[scope]?.[specifier], href, `${id}: ${specifier}`);
+      }
+    }
+  }
   const headers = await readTextFile(`${directory}/assets/_headers`);
   assert(headers.includes("Content-Type: text/javascript; charset=utf-8"));
   // Metadata is bundled into the Worker, never deployed as a public asset.
