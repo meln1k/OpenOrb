@@ -23,6 +23,7 @@ export function createRpcClient(url: string): WorkspaceApi {
             "deleteProject",
             "getEnvironmentSecrets",
             "getModelProviderApiKey",
+            "getSearchProviderKeys",
             "getGitHubToken",
             "deleteSessionCatalogEntry",
             "addSessionCatalogEntry",

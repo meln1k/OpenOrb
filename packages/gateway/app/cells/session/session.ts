@@ -527,6 +527,7 @@ export class Session extends DurableObject<Env> {
         publishMedia: (path, description) => this.#publishMedia(environment.env, path, description),
         // Without a project there is no repository to discover skills in.
         repositorySkills: () => project?.skillsPrompt() ?? "",
+        searchProviderKeys: () => this.#workspace.getSearchProviderKeys(record.workspaceId),
       },
       context,
     );

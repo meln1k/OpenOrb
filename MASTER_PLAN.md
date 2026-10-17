@@ -9,6 +9,7 @@ The settled agent contracts follow the
 the [built-in Sandbox provider](docs/adr/0007-built-in-sandbox-provider.md), the environments
 package, Pi-owned prompts, and Stop without pause
 ([ADR 0008](docs/adr/0008-environment-package-pi-owned-prompts-and-stop-without-pause.md)),
+gateway web search and fetch ([ADR 0009](docs/adr/0009-gateway-web-search-and-fetch.md)),
 [domain vocabulary](CONTEXT.md), and [security boundaries](security.md). Where ADR 0004 or the
 [Published Media decision](docs/adr/0003-durable-published-media.md) describe runner-hosted agent
 work, runner-owned Harness State, or runner-owned media storage, ADR 0005 supersedes them. Where
@@ -397,7 +398,7 @@ Use envelope-style application encryption:
 - A gateway master key is supplied through `OPENORB_MASTER_KEY` or equivalent deployment-time secret injection.
 - Workspace rejects a missing or invalid master key and never generates a replacement or stores it in its tables. Local development prepares private `.dev.vars` from operator-supplied `.env`/environment bindings; those secret files are not committed.
 - Import the 256-bit master key with Web Crypto and encrypt with `@std/crypto`'s `encryptAesGcm()`/`decryptAesGcm()`. Persist the returned nonce/ciphertext/tag bytes unchanged as one opaque value, store key version separately, and authenticate immutable `workspaceId`, credential key, and key version as AAD.
-- Store each secret as an `encrypted_secrets` row with composite primary key `(workspaceId, key)`, an explicit required purpose, and opaque ciphertext BLOBs. Provider API keys use `provider-api-key`; OpenAI Codex OAuth credentials use `provider-oauth`. Both are referenced by provider ID through `model_provider_credentials`; generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Workspace selects rows by both owner and purpose rather than key-prefix conventions. Provider identity never derives from an environment-variable-style secret name.
+- Store each secret as an `encrypted_secrets` row with composite primary key `(workspaceId, key)`, an explicit required purpose, and opaque ciphertext BLOBs. Provider API keys use `provider-api-key`; OpenAI Codex OAuth credentials use `provider-oauth`. Both are referenced by provider ID through `model_provider_credentials`, and web search keys (Exa, Brave Search, Tavily) use `provider-api-key` referenced through `search_provider_credentials` ([ADR 0009](docs/adr/0009-gateway-web-search-and-fetch.md)); generic secrets use `generic-secret`; rows referenced by `git_credentials` use `git-credential`. Workspace selects rows by both owner and purpose rather than key-prefix conventions. Provider identity never derives from an environment-variable-style secret name.
 - Never derive the server encryption key from the login password; the service must restart unattended.
 - Local backups are incomplete without the celld Workspace state and original master/session secrets. Stop celld and keep SQLite/WAL sidecars together; production fleet backup/restore remains undecided. See [gateway operations](docs/operations.md).
 - Secret values are never returned to the browser after creation; only metadata is returned.
@@ -948,7 +949,8 @@ guest files.
 ### 14.2 Guest tools and independent environment control
 
 The explicit registry exposes guest-backed `read`, `write`, `edit`, and `bash`, plus OpenOrb's
-`publish_media` and Session DO-side `environment` control. The Agent Harness sees only Pi's
+`publish_media`, Session DO-side `environment` control, and Session DO-side `web_search` and
+`web_fetch` ([ADR 0009](docs/adr/0009-gateway-web-search-and-fetch.md)). The Agent Harness sees only Pi's
 `ExecutionEnv`, unchanged; the Session DO's own clone, setup/resume, Git Snapshot, skill-discovery,
 and Published Media work uses the same `ExecutionEnv`. The Agent Environment Provider supplies it.
 For providers that run the static Environment Daemon, including the runner, it is upstream

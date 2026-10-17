@@ -170,6 +170,18 @@ is no Workspace-selection UI. In **Settings**, add the credentials and project:
   organization, administration, Actions, Packages, or account permissions. This supports clone,
   fetch, commit, and branch push. Add further permissions only if a separately reviewed workflow
   actually requires them. Store the repository's HTTPS `.git` URL in the project.
+- To give the agent `web_search`, save an Exa, Brave Search, or Tavily API key under
+  **Settings → Providers → Web search**. It uses the first configured provider in that order and
+  falls back to the next on failure. `web_fetch` needs no key.
+
+### Gateway egress for web fetch
+
+`web_fetch` requests model-chosen URLs from the gateway. The gateway rejects private, loopback,
+link-local, and metadata IP literals and internal host names, but the Worker runtime cannot pin the
+address a public name resolves to ([ADR 0009](adr/0009-gateway-web-search-and-fetch.md)). Run celld
+where its process cannot reach private, loopback (other than its own listener), link-local
+(including `169.254.169.254`), or metadata networks, for example with host firewall rules for its
+service user. The gateway needs only public HTTPS egress: runners dial in to it.
 
 Create an enrollment PSK in **Settings → Runners**, then follow the complete
 [Linux runner installation and enrollment guide](runner-installation.md). Give a NATed runner the

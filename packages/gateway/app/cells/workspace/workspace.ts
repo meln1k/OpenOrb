@@ -27,6 +27,7 @@ import {
   type Project,
   type SaveBrowserSession,
   type SaveProjectInput,
+  type SearchProviderCredential,
   type SessionCatalogEntry,
   type SessionNavigationEntry,
   UserId,
@@ -50,8 +51,10 @@ import type {
   ProviderAuthorizationRow,
   RunnerEnrollmentTokenRow,
   RunnerRow,
+  SearchProviderCredentialRow,
   User,
 } from "./schema.ts";
+import type { SearchProviderId } from "../../search-provider-catalog.ts";
 
 /** Native SQLite-backed DO storage; no host database or filesystem adapter. */
 export interface WorkspaceStorage {
@@ -88,6 +91,12 @@ interface Provider extends Omit<ModelProviderCredentialRow, "workspaceId" | "sec
 }
 
 type ProviderRow = Omit<Provider, "secret"> & SecretRow;
+
+interface SearchProvider extends Omit<SearchProviderCredentialRow, "workspaceId" | "secretKey"> {
+  secret: Secret;
+}
+
+type SearchProviderRow = Omit<SearchProvider, "secret"> & SecretRow;
 
 type Enrollment = Omit<RunnerEnrollmentTokenRow, "workspaceId">;
 
@@ -344,6 +353,63 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     return metadata;
   }
 
+  #searchProviders(workspaceId: WorkspaceId): SearchProvider[] {
+    return this.#rows<SearchProviderRow>(
+      `
+      SELECT p.providerId, s.key, s.workspaceId, s.keyVersion, s.ciphertext, s.allowedHosts,
+        p.createdAt, p.updatedAt
+      FROM search_provider_credentials p JOIN encrypted_secrets s
+        ON s.workspaceId = p.workspaceId AND s.key = p.secretKey
+      WHERE p.workspaceId = ?
+    `,
+      workspaceId,
+    ).map(({ providerId, createdAt, updatedAt, ...secret }) => ({
+      providerId,
+      createdAt,
+      updatedAt,
+      secret: secretFromRow({ ...secret, createdAt, updatedAt }),
+    }));
+  }
+
+  /**
+   * Encrypts `plaintext` under the existing secret's key, or a new one, and writes the secret and
+   * the row that references it in one transaction.
+   */
+  async #replaceReferencedSecret(
+    workspaceId: WorkspaceId,
+    existing: Secret | undefined,
+    plaintext: string,
+    purpose: EncryptedSecretRow["purpose"],
+    writeReference: (secret: Secret) => void,
+  ): Promise<Secret> {
+    const secret = await this.#encrypt(
+      workspaceId,
+      existing?.key ?? crypto.randomUUID(),
+      plaintext,
+      existing,
+    );
+    this.#storage.transactionSync(() => {
+      this.#writeSecret(secret, purpose);
+      writeReference(secret);
+    });
+    return secret;
+  }
+
+  /** Deletes the secret that `secretKeyQuery` selects; its reference row cascades. */
+  #deleteReferencedSecret(
+    workspaceId: WorkspaceId,
+    secretKeyQuery: string,
+    ...bindings: unknown[]
+  ): "deleted" | "not-found" {
+    return this.#rows(
+      `DELETE FROM encrypted_secrets WHERE workspaceId = ? AND key = (${secretKeyQuery}) RETURNING key`,
+      workspaceId,
+      ...bindings,
+    ).length
+      ? "deleted"
+      : "not-found";
+  }
+
   async #saveProvider(
     workspaceId: WorkspaceId,
     providerId: string,
@@ -353,43 +419,39 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       throw new WorkspaceInputError("Invalid provider");
     }
     const existing = this.#provider(workspaceId, providerId);
-    const secret = await this.#encrypt(
+    const id = existing?.id ?? crypto.randomUUID();
+    const credentialType = Schema.is(Schema.String)(credential) ? "api_key" : "oauth";
+    const secret = await this.#replaceReferencedSecret(
       workspaceId,
-      existing?.secret.key ?? crypto.randomUUID(),
-      Schema.is(Schema.String)(credential) ? credential : JSON.stringify(credential),
       existing?.secret,
+      Schema.is(Schema.String)(credential) ? credential : JSON.stringify(credential),
+      credentialType === "oauth" ? "provider-oauth" : "provider-api-key",
+      (secret) =>
+        this.#rows(
+          `
+          INSERT INTO model_provider_credentials
+            (workspaceId, id, providerId, credentialType, secretKey, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (workspaceId, providerId) DO UPDATE SET
+            credentialType = excluded.credentialType, updatedAt = excluded.updatedAt
+        `,
+          workspaceId,
+          id,
+          providerId,
+          credentialType,
+          secret.key,
+          existing?.createdAt ?? secret.createdAt,
+          secret.updatedAt,
+        ),
     );
-    const provider: Provider = {
-      id: existing?.id ?? crypto.randomUUID(),
+    return this.#providerMetadata({
+      id,
       providerId,
-      credentialType: Schema.is(Schema.String)(credential) ? "api_key" : "oauth",
+      credentialType,
       secret,
       createdAt: existing?.createdAt ?? secret.createdAt,
       updatedAt: secret.updatedAt,
-    };
-    this.#storage.transactionSync(() => {
-      this.#writeSecret(
-        secret,
-        provider.credentialType === "oauth" ? "provider-oauth" : "provider-api-key",
-      );
-      this.#rows(
-        `
-        INSERT INTO model_provider_credentials
-          (workspaceId, id, providerId, credentialType, secretKey, createdAt, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (workspaceId, providerId) DO UPDATE SET
-          credentialType = excluded.credentialType, updatedAt = excluded.updatedAt
-      `,
-        workspaceId,
-        provider.id,
-        providerId,
-        provider.credentialType,
-        secret.key,
-        provider.createdAt,
-        provider.updatedAt,
-      );
     });
-    return this.#providerMetadata(provider);
   }
 
   async #pollLogin(): Promise<void> {
@@ -753,19 +815,90 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       return this.#storage.transaction(async () => {
         if (id === "openai-codex") await this.#clearLogin(workspaceId);
         return {
-          status: this.#rows(
-            `DELETE FROM encrypted_secrets
-          WHERE workspaceId = ? AND key = (
-            SELECT secretKey FROM model_provider_credentials WHERE workspaceId = ? AND providerId = ?
-          ) RETURNING key`,
+          status: this.#deleteReferencedSecret(
             workspaceId,
+            "SELECT secretKey FROM model_provider_credentials WHERE workspaceId = ? AND providerId = ?",
             workspaceId,
             id,
-          ).length
-            ? "deleted"
-            : "not-found",
+          ),
         };
       });
+    });
+  }
+
+  listSearchProviderCredentials(
+    workspaceId: WorkspaceId,
+  ): ReturnType<WorkspaceApi["listSearchProviderCredentials"]> {
+    return this.#serialize(() => {
+      decodeWorkspaceArguments("listSearchProviderCredentials", [workspaceId]);
+      return this.#rows<SearchProviderCredential>(
+        "SELECT providerId, createdAt, updatedAt FROM search_provider_credentials WHERE workspaceId = ?",
+        workspaceId,
+      );
+    });
+  }
+
+  getSearchProviderKeys(
+    workspaceId: WorkspaceId,
+  ): ReturnType<WorkspaceApi["getSearchProviderKeys"]> {
+    return this.#serialize(async () => {
+      decodeWorkspaceArguments("getSearchProviderKeys", [workspaceId]);
+      const keys = await Promise.all(
+        this.#searchProviders(workspaceId).map(
+          async ({ providerId, secret }) => [providerId, await this.#decrypt(secret)] as const,
+        ),
+      );
+      return ok(Object.fromEntries(keys));
+    });
+  }
+
+  saveSearchProviderCredential(
+    workspaceId: WorkspaceId,
+    providerId: SearchProviderId,
+    apiKey: string,
+  ): ReturnType<WorkspaceApi["saveSearchProviderCredential"]> {
+    return this.#serialize(async () => {
+      decodeWorkspaceArguments("saveSearchProviderCredential", [workspaceId, providerId, apiKey]);
+      this.#requireWorkspace(workspaceId);
+      const existing = this.#searchProviders(workspaceId).find((p) => p.providerId === providerId);
+      const secret = await this.#replaceReferencedSecret(
+        workspaceId,
+        existing?.secret,
+        apiKey,
+        "provider-api-key",
+        (secret) =>
+          this.#rows(
+            `
+            INSERT INTO search_provider_credentials
+              (workspaceId, providerId, secretKey, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (workspaceId, providerId) DO UPDATE SET updatedAt = excluded.updatedAt
+          `,
+            workspaceId,
+            providerId,
+            secret.key,
+            secret.createdAt,
+            secret.updatedAt,
+          ),
+      );
+      return { providerId, createdAt: secret.createdAt, updatedAt: secret.updatedAt };
+    });
+  }
+
+  deleteSearchProviderCredential(
+    workspaceId: WorkspaceId,
+    providerId: SearchProviderId,
+  ): ReturnType<WorkspaceApi["deleteSearchProviderCredential"]> {
+    return this.#serialize(() => {
+      decodeWorkspaceArguments("deleteSearchProviderCredential", [workspaceId, providerId]);
+      return {
+        status: this.#deleteReferencedSecret(
+          workspaceId,
+          "SELECT secretKey FROM search_provider_credentials WHERE workspaceId = ? AND providerId = ?",
+          workspaceId,
+          providerId,
+        ),
+      };
     });
   }
 
@@ -837,40 +970,31 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       decodeWorkspaceArguments("saveGitHubCredential", [workspaceId, token]);
       this.#requireWorkspace(workspaceId);
       const existing = this.#gitCredential(workspaceId);
-      const secret = await this.#encrypt(
+      const id = existing?.id ?? crypto.randomUUID();
+      const secret = await this.#replaceReferencedSecret(
         workspaceId,
-        existing?.secret.key ?? crypto.randomUUID(),
-        token,
         existing?.secret,
+        token,
+        "git-credential",
+        (secret) =>
+          this.#rows(
+            `
+            INSERT INTO git_credentials (workspaceId, id, host, secretKey, createdAt, updatedAt)
+            VALUES (?, ?, 'github.com', ?, ?, ?)
+            ON CONFLICT (workspaceId, host) DO UPDATE SET updatedAt = excluded.updatedAt
+          `,
+            workspaceId,
+            id,
+            secret.key,
+            existing?.createdAt ?? secret.createdAt,
+            secret.updatedAt,
+          ),
       );
-      const value: Provider = {
-        id: existing?.id ?? crypto.randomUUID(),
-        providerId: "github",
-        credentialType: "api_key",
-        secret,
+      return {
+        id,
+        host: "github.com",
         createdAt: existing?.createdAt ?? secret.createdAt,
         updatedAt: secret.updatedAt,
-      };
-      this.#storage.transactionSync(() => {
-        this.#writeSecret(secret, "git-credential");
-        this.#rows(
-          `
-          INSERT INTO git_credentials (workspaceId, id, host, secretKey, createdAt, updatedAt)
-          VALUES (?, ?, 'github.com', ?, ?, ?)
-          ON CONFLICT (workspaceId, host) DO UPDATE SET updatedAt = excluded.updatedAt
-        `,
-          workspaceId,
-          value.id,
-          secret.key,
-          value.createdAt,
-          value.updatedAt,
-        );
-      });
-      return {
-        id: value.id,
-        host: "github.com",
-        createdAt: value.createdAt,
-        updatedAt: value.updatedAt,
       };
     });
   }
@@ -881,16 +1005,11 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
     return this.#serialize(() => {
       decodeWorkspaceArguments("deleteGitHubCredential", [workspaceId]);
       return {
-        status: this.#rows(
-          `DELETE FROM encrypted_secrets
-          WHERE workspaceId = ? AND key = (
-            SELECT secretKey FROM git_credentials WHERE workspaceId = ? AND host = 'github.com'
-          ) RETURNING key`,
+        status: this.#deleteReferencedSecret(
           workspaceId,
+          "SELECT secretKey FROM git_credentials WHERE workspaceId = ? AND host = 'github.com'",
           workspaceId,
-        ).length
-          ? "deleted"
-          : "not-found",
+        ),
       };
     });
   }

@@ -5,8 +5,10 @@ import type {
   GitCredential,
   ModelProviderCredential,
   RunnerEnrollmentToken,
+  SearchProviderCredential,
   SecretEntry,
 } from "../../cells/workspace/api.ts";
+import { SEARCH_PROVIDER_IDS, SEARCH_PROVIDER_NAMES } from "../../search-provider-catalog.ts";
 import type { ModelProviderOption } from "../../model-provider-catalog.ts";
 import { routes } from "../../routes.ts";
 import { Icon } from "../../ui/public/components/icons.tsx";
@@ -17,6 +19,7 @@ import { GenericSecrets } from "./secrets/generic-secrets.tsx";
 import { GitAuthorSection } from "./git-author/git-author.tsx";
 import { GitHubCredentialSection } from "./github/github-credential.tsx";
 import { ModelProviders } from "./providers/model-providers.tsx";
+import { SearchProviders } from "./providers/search-providers.tsx";
 import { RunnersSection } from "./runners/runners.tsx";
 import {
   SettingsNavigation,
@@ -42,6 +45,7 @@ export function ProvidersSettingsPage(
     error: string | undefined;
     providerOptions: readonly ModelProviderOption[];
     providers: Pick<ModelProviderCredential, "providerId" | "updatedAt">[];
+    searchProviders: Pick<SearchProviderCredential, "providerId" | "updatedAt">[];
   }>,
 ) {
   const dialogId = `${handle.id}-add-provider`;
@@ -60,6 +64,17 @@ export function ProvidersSettingsPage(
             handle.props.providerOptions.find((option) => option.id === provider.providerId)
               ?.name ?? provider.providerId,
           updatedAt: provider.updatedAt,
+        }))}
+      />
+      <SearchProviders
+        actionHref={routes.app.settings.providers.action.href()}
+        csrfToken={handle.props.csrfToken}
+        providers={SEARCH_PROVIDER_IDS.map((providerId) => ({
+          providerId,
+          name: SEARCH_PROVIDER_NAMES[providerId],
+          updatedAt: handle.props.searchProviders.find(
+            (configured) => configured.providerId === providerId,
+          )?.updatedAt,
         }))}
       />
     </SettingsLayout>
@@ -293,6 +308,9 @@ const settingsMainStyle = css({
   display: "flex",
   flex: "1",
   flexDirection: "column",
+  // Fill the row's height, which the row's flex-start alignment would otherwise leave to the
+  // content, so long sections scroll here instead of being clipped.
+  alignSelf: "stretch",
   gap: "8px",
   width: "100%",
   minWidth: 0,

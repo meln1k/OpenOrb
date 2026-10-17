@@ -34,3 +34,20 @@ export const configurationStatusStyle = css({
 export const dialogFormStyle = css({ display: "grid", gap: "20px" });
 
 export const listStyle = css({ display: "grid" });
+
+export const tableFrameStyle = css({
+  position: "relative",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-md)",
+});
+export const screenReaderOnlyStyle = css({
+  position: "absolute",
+  width: "1px",
+  height: "1px",
+  padding: 0,
+  margin: "-1px",
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+});

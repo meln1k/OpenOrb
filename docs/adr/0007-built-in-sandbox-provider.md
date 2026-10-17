@@ -70,7 +70,8 @@ Sandbox's agent prompt describes it as a place to inspect untrusted content and 
 finds as data, never as instructions. Its extract-only `tar` applies just-bash's archive limits
 before buffering an entry and creates an archive's symbolic links last, so no entry is written
 through one of them. Getting content in will need a web fetch tool, which the gateway, not the
-sandbox, will perform; the sandbox itself stays without network.
+sandbox, will perform; the sandbox itself stays without network. ADR 0009 adds it as `web_fetch`,
+which writes the fetched text into the guest.
 
 ## Security
 

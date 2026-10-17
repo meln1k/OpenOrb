@@ -1,4 +1,5 @@
 import { column as c, ColumnBuilder, table, type TableRow } from "remix/data-table";
+import { SEARCH_PROVIDER_IDS } from "../../search-provider-catalog.ts";
 
 export const encryptedSecretPurposes = {
   genericSecret: "generic-secret",
@@ -68,6 +69,18 @@ export const modelProviderCredentials = table({
     workspaceId: c.text().notNull(),
     providerId: c.text().notNull(),
     credentialType: c.enum(["api_key", "oauth"] as const).notNull(),
+    secretKey: c.text().notNull(),
+    createdAt: c.text().notNull(),
+    updatedAt: c.text().notNull(),
+  },
+});
+
+export const searchProviderCredentials = table({
+  name: "search_provider_credentials",
+  primaryKey: ["workspaceId", "providerId"],
+  columns: {
+    workspaceId: c.text().notNull(),
+    providerId: c.enum(SEARCH_PROVIDER_IDS).notNull(),
     secretKey: c.text().notNull(),
     createdAt: c.text().notNull(),
     updatedAt: c.text().notNull(),
@@ -179,6 +192,7 @@ export type User = TableRow<typeof users>;
 export type PasswordCredential = TableRow<typeof passwordCredentials>;
 export type EncryptedSecretRow = TableRow<typeof encryptedSecrets>;
 export type ModelProviderCredentialRow = TableRow<typeof modelProviderCredentials>;
+export type SearchProviderCredentialRow = TableRow<typeof searchProviderCredentials>;
 export type GitAuthorConfigurationRow = TableRow<typeof gitAuthorConfiguration>;
 export type GitCredentialRow = TableRow<typeof gitCredentials>;
 export type ProjectRow = TableRow<typeof projects>;

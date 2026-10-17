@@ -8,6 +8,7 @@ import {
   type WorkspaceId,
   WorkspaceId as WorkspaceIdSchema,
 } from "@openorb/protocol/runner-api";
+import { SEARCH_PROVIDER_IDS, type SearchProviderId } from "../../search-provider-catalog.ts";
 
 const Uuid = Schema.String.check(Schema.isUUID());
 export const UserId = Uuid.pipe(Schema.brand("UserId"));
@@ -68,6 +69,15 @@ export interface ModelProviderCredential {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface SearchProviderCredential {
+  providerId: SearchProviderId;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Configured web search keys by provider, decrypted only for the Session that searches. */
+export type SearchProviderKeys = Partial<Record<SearchProviderId, string>>;
 
 export interface GitAuthorConfiguration {
   authorName: string;
@@ -194,6 +204,17 @@ export interface WorkspaceApi {
     workspaceId: WorkspaceId,
     id: string,
   ): Promise<{ status: "deleted" | "not-found" }>;
+  listSearchProviderCredentials(workspaceId: WorkspaceId): Promise<SearchProviderCredential[]>;
+  getSearchProviderKeys(workspaceId: WorkspaceId): Promise<Result<SearchProviderKeys, Error>>;
+  saveSearchProviderCredential(
+    workspaceId: WorkspaceId,
+    providerId: SearchProviderId,
+    apiKey: string,
+  ): Promise<SearchProviderCredential>;
+  deleteSearchProviderCredential(
+    workspaceId: WorkspaceId,
+    providerId: SearchProviderId,
+  ): Promise<{ status: "deleted" | "not-found" }>;
   getGitAuthorConfiguration(userId: UserId): Promise<GitAuthorConfiguration | null>;
   saveGitAuthorConfiguration(
     userId: UserId,
@@ -244,6 +265,7 @@ export type WorkspaceOperation = keyof WorkspaceApi;
 
 const Text = Schema.NonEmptyString.check(Schema.isMaxLength(4096));
 const Identifier = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_.-]{1,100}$/));
+const SearchProvider = Schema.Literals(SEARCH_PROVIDER_IDS);
 const Owner = Schema.Tuple([WorkspaceIdSchema]);
 const OwnedIdentifier = Schema.Tuple([WorkspaceIdSchema, Identifier]);
 const BrowserData = Schema.mutable(
@@ -292,6 +314,10 @@ const WORKSPACE_ARGUMENTS: WorkspaceArgumentSchemas = {
   getModelProviderApiKey: OwnedIdentifier,
   saveModelProviderCredential: Schema.Tuple([WorkspaceIdSchema, Identifier, Text]),
   deleteModelProviderCredential: OwnedIdentifier,
+  listSearchProviderCredentials: Owner,
+  getSearchProviderKeys: Owner,
+  saveSearchProviderCredential: Schema.Tuple([WorkspaceIdSchema, SearchProvider, Text]),
+  deleteSearchProviderCredential: Schema.Tuple([WorkspaceIdSchema, SearchProvider]),
   getGitAuthorConfiguration: Schema.Tuple([UserId]),
   saveGitAuthorConfiguration: Schema.Tuple([
     UserId,

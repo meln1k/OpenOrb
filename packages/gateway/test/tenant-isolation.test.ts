@@ -27,6 +27,13 @@ test("separate Workspace objects isolate configuration, identity, runners, and c
     await workspace.saveSecret(workspaceId, "SERVICE_TOKEN", `secret-${workspaceId}`);
     await workspace.saveModelProviderCredential(workspaceId, "openai", `provider-${workspaceId}`);
     await workspace.saveGitHubCredential(workspaceId, `github-${workspaceId}`);
+    await workspace.saveSearchProviderCredential(workspaceId, "exa", `search-${workspaceId}`);
+    assertEquals(await workspace.listSearchProviderCredentials(foreignId), []);
+    assertEquals(await workspace.getSearchProviderKeys(foreignId), [{}, undefined]);
+    assertEquals(await workspace.deleteSearchProviderCredential(foreignId, "exa"), {
+      status: "not-found",
+    });
+    await assertRejects(() => workspace.saveSearchProviderCredential(foreignId, "exa", "hijack"));
     assertEquals(await workspace.listSecrets(foreignId), []);
     assertEquals(await workspace.getSecret(foreignId, "SERVICE_TOKEN"), null);
     assertEquals(await workspace.getEnvironmentSecrets(foreignId), [[], undefined]);
@@ -118,6 +125,10 @@ test("separate Workspace objects isolate configuration, identity, runners, and c
       undefined,
     ]);
     assertEquals(await restarted.getGitHubToken(workspaceId), [`github-${workspaceId}`, undefined]);
+    assertEquals(await restarted.getSearchProviderKeys(workspaceId), [
+      { exa: `search-${workspaceId}` },
+      undefined,
+    ]);
     assert(await restarted.getSecret(workspaceId, "SERVICE_TOKEN"));
     assertEquals(
       (await restarted.getGitAuthorConfiguration(administrator.userId))?.authorEmail,

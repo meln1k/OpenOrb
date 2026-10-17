@@ -7,6 +7,12 @@ import { media } from "../../ui/public/responsive.ts";
 export type SettingsSection = "providers" | "secrets" | "github" | "git-author" | "runners";
 export type SettingsModelProvider = { providerId: string; name: string; updatedAt: string };
 export type SettingsModelProviderOption = { id: string; name: string };
+export type SettingsSearchProvider = {
+  providerId: string;
+  name: string;
+  /** Absent when no key is configured. */
+  updatedAt: string | undefined;
+};
 export type SettingsSecret = {
   key: string;
   allowedHosts?: readonly string[];

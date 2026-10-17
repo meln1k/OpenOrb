@@ -19,6 +19,7 @@ import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
 import FileDiff from "lucide/dist/esm/icons/file-diff.mjs";
 import Folder from "lucide/dist/esm/icons/folder.mjs";
 import GitBranch from "lucide/dist/esm/icons/git-branch.mjs";
+import Globe from "lucide/dist/esm/icons/globe.mjs";
 import KeyRound from "lucide/dist/esm/icons/key-round.mjs";
 import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
 import LogOut from "lucide/dist/esm/icons/log-out.mjs";
@@ -58,6 +59,7 @@ export type IconName =
   | "dashboard"
   | "file-diff"
   | "folder"
+  | "globe"
   | "github"
   | "logout"
   | "message"
@@ -161,6 +163,7 @@ const iconNodes = {
   dashboard: LayoutDashboard,
   "file-diff": FileDiff,
   folder: Folder,
+  globe: Globe,
   github: GitBranch,
   logout: LogOut,
   message: MessageSquare,

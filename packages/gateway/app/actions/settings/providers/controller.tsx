@@ -16,6 +16,7 @@ import {
   OPENAI_CODEX_PROVIDER_ID,
 } from "../../../model-provider-catalog.ts";
 import type { AppContext } from "../../../router.ts";
+import { SEARCH_PROVIDER_IDS } from "../../../search-provider-catalog.ts";
 import { routes } from "../../../routes.ts";
 import { tryAsync } from "@openorb/result";
 
@@ -28,20 +29,36 @@ const modelProviderIdSchema = s
     "Select a model provider from the list.",
   );
 
+const apiKeyField = f.field(
+  s
+    .string()
+    .transform((value) => value.trim())
+    .refine((value) => value.length > 0, "The API key is required.")
+    .refine((value) => value.length <= 4096, "The API key is too long."),
+);
+
 const saveProviderSchema = f.object({
   intent: f.field(s.literal("save-provider")),
   providerId: f.field(modelProviderIdSchema),
-  apiKey: f.field(
-    s
-      .string()
-      .refine((value) => value.trim().length > 0, "The API key is required.")
-      .refine((value) => value.trim().length <= 4096, "The API key is too long."),
-  ),
+  apiKey: apiKeyField,
 });
 
 const deleteProviderSchema = f.object({
   intent: f.field(s.literal("delete-provider")),
   providerId: f.field(modelProviderIdSchema),
+});
+
+const searchProviderIdSchema = s.enum_(SEARCH_PROVIDER_IDS);
+
+const saveSearchProviderSchema = f.object({
+  intent: f.field(s.literal("save-search-provider")),
+  providerId: f.field(searchProviderIdSchema),
+  apiKey: apiKeyField,
+});
+
+const deleteSearchProviderSchema = f.object({
+  intent: f.field(s.literal("delete-search-provider")),
+  providerId: f.field(searchProviderIdSchema),
 });
 
 const authorizationAttemptIdSchema = s.string().refine((value) => value.length > 0);
@@ -118,43 +135,73 @@ export default createController(routes.app.settings.providers, {
           }
           return redirect(routes.app.settings.providers.index.href(), 303);
         }
-        case "save-provider": {
-          const parsed = s.parseSafe(saveProviderSchema, context.formData);
-          if (!parsed.success) {
-            return await renderProviders(
-              context,
-              parsed.issues[0]?.message ?? "Invalid model provider form submission.",
-              400,
-            );
-          }
-          await context.services.workspace.saveModelProviderCredential(
-            context.auth.identity.workspaceId,
-            parsed.value.providerId,
-            parsed.value.apiKey.trim(),
+        case "save-provider":
+          return await submitProviderForm(
+            context,
+            saveProviderSchema,
+            "Invalid model provider form submission.",
+            (value) =>
+              context.services.workspace.saveModelProviderCredential(
+                context.auth.identity.workspaceId,
+                value.providerId,
+                value.apiKey,
+              ),
           );
-          return redirect(routes.app.settings.providers.index.href(), 303);
-        }
-        case "delete-provider": {
-          const parsed = s.parseSafe(deleteProviderSchema, context.formData);
-          if (!parsed.success) {
-            return await renderProviders(
-              context,
-              parsed.issues[0]?.message ?? "Invalid model provider deletion.",
-              400,
-            );
-          }
-          await context.services.workspace.deleteModelProviderCredential(
-            context.auth.identity.workspaceId,
-            parsed.value.providerId,
+        case "delete-provider":
+          return await submitProviderForm(
+            context,
+            deleteProviderSchema,
+            "Invalid model provider deletion.",
+            (value) =>
+              context.services.workspace.deleteModelProviderCredential(
+                context.auth.identity.workspaceId,
+                value.providerId,
+              ),
           );
-          return redirect(routes.app.settings.providers.index.href(), 303);
-        }
+        case "save-search-provider":
+          return await submitProviderForm(
+            context,
+            saveSearchProviderSchema,
+            "Invalid web search provider form submission.",
+            (value) =>
+              context.services.workspace.saveSearchProviderCredential(
+                context.auth.identity.workspaceId,
+                value.providerId,
+                value.apiKey,
+              ),
+          );
+        case "delete-search-provider":
+          return await submitProviderForm(
+            context,
+            deleteSearchProviderSchema,
+            "Invalid web search provider deletion.",
+            (value) =>
+              context.services.workspace.deleteSearchProviderCredential(
+                context.auth.identity.workspaceId,
+                value.providerId,
+              ),
+          );
         default:
           return await renderProviders(context, "Invalid provider form submission.", 400);
       }
     },
   },
 });
+
+/** Validates one provider form, applies it, and returns to the page; invalid input re-renders it. */
+async function submitProviderForm<T>(
+  context: ProvidersContext,
+  schema: s.Schema<unknown, T>,
+  invalidMessage: string,
+  apply: (value: T) => Promise<object>,
+): Promise<Response> {
+  const parsed = s.parseSafe(schema, context.formData);
+  if (!parsed.success) {
+    return await renderProviders(context, parsed.issues[0]?.message ?? invalidMessage, 400);
+  }
+  await apply(parsed.value);
+  return redirect(routes.app.settings.providers.index.href(), 303);
+}
 
 async function renderProviders(
   context: ProvidersContext,
@@ -173,9 +220,10 @@ async function renderProviders(
   if (attemptId && authorizationStatus.status !== "pending") {
     context.session.unset(CHATGPT_AUTHORIZATION_ATTEMPT_SESSION_KEY);
   }
-  const providers = await context.services.workspace.listModelProviderCredentials(
-    context.auth.identity.workspaceId,
-  );
+  const [providers, searchProviders] = await Promise.all([
+    context.services.workspace.listModelProviderCredentials(context.auth.identity.workspaceId),
+    context.services.workspace.listSearchProviderCredentials(context.auth.identity.workspaceId),
+  ]);
   const chatGPTCredential = providers.find(
     (provider) =>
       provider.providerId === OPENAI_CODEX_PROVIDER_ID && provider.credentialType === "oauth",
@@ -203,6 +251,7 @@ async function renderProviders(
       }
       providerOptions={MODEL_PROVIDER_OPTIONS}
       providers={providers.filter((provider) => provider.credentialType === "api_key")}
+      searchProviders={searchProviders}
     />,
     { status, headers: { "cache-control": "no-store" } },
   );

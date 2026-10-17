@@ -1,6 +1,6 @@
 import type { SessionThinkingLevel } from "../../../../../protocol/src/thinking-level.ts";
 import { tryAsync, trySync } from "../../../../../result/src/index.ts";
-import { object, parseSafe, string } from "remix/data-schema";
+import { parseSafe, string } from "remix/data-schema";
 import { css, type Dispatched, type Handle, on } from "remix/component";
 
 import { routes } from "../../../routes.ts";
@@ -33,6 +33,7 @@ import {
   usageContextTokens,
 } from "./session-transcript-state.ts";
 import { SessionPageScope } from "./session-page-controller.tsx";
+import { toolIcon, toolLabel } from "./tool-presentation.ts";
 import { formatThinkingLevel } from "../../../ui/public/session-thinking-level.ts";
 import { createSessionThinkingLevelController } from "./session-thinking-level-controller.ts";
 
@@ -43,8 +44,6 @@ export type SessionTranscriptProps = {
   sessionId: string;
   thinkingLevels: readonly SessionThinkingLevel[];
 };
-const bashToolArgumentsSchema = object({ command: string() }, { unknownKeys: "passthrough" });
-const readToolArgumentsSchema = object({ path: string() }, { unknownKeys: "passthrough" });
 export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
   const page = handle.context.get(SessionPageScope);
   const agentControlState = (): SessionState => {
@@ -564,7 +563,7 @@ function renderTranscriptEntry(
       );
     }
     case "tool": {
-      const readPath = pathForReadTool(entry);
+      const readPath = entry.toolName === "read" ? toolLabel("read", entry.arguments) : undefined;
       return (
         <MessageScrollerItem
           key={`tool:${entry.toolCallId}`}
@@ -582,15 +581,7 @@ function renderTranscriptEntry(
               {entry.active ? (
                 <span data-slot="spinner" mix={spinnerStyle} />
               ) : (
-                <Icon
-                  name={
-                    entry.toolName === "bash"
-                      ? "terminal"
-                      : entry.toolName === "read"
-                        ? "book-open-text"
-                        : "wrench"
-                  }
-                />
+                <Icon name={toolIcon(entry.toolName)} />
               )}
             </MarkerIcon>
             <MarkerContent mix={markerDetailStyle}>
@@ -641,7 +632,9 @@ function setupSummary(entry: SetupEntry): string {
 }
 
 function ToolDetails(handle: Handle<{ entry: ToolEntry }>) {
-  let open = handle.props.entry.active && commandForBashTool(handle.props.entry) === undefined;
+  let open =
+    handle.props.entry.active &&
+    toolLabel(handle.props.entry.toolName, handle.props.entry.arguments) === undefined;
   const toggle = on<HTMLDetailsElement, "toggle">("toggle", (event) => {
     const nextOpen = event.currentTarget.open;
     if (open === nextOpen) return;
@@ -651,11 +644,11 @@ function ToolDetails(handle: Handle<{ entry: ToolEntry }>) {
 
   return () => {
     const entry = handle.props.entry;
-    const bashCommand = commandForBashTool(entry);
+    const summary = toolLabel(entry.toolName, entry.arguments);
     return (
       <details open={open} mix={toggle}>
-        <summary title={bashCommand}>{bashCommand ?? entry.toolName}</summary>
-        {bashCommand === undefined && entry.arguments ? (
+        <summary title={summary}>{summary ?? entry.toolName}</summary>
+        {summary === undefined && entry.arguments ? (
           <pre data-tool-arguments>{entry.arguments}</pre>
         ) : null}
         {entry.result === undefined && entry.partialResult ? (
@@ -669,30 +662,6 @@ function ToolDetails(handle: Handle<{ entry: ToolEntry }>) {
       </details>
     );
   };
-}
-
-function commandForBashTool(entry: ToolEntry): string | undefined {
-  const argumentsText = entry.arguments;
-  if (entry.toolName !== "bash" || argumentsText === undefined) return undefined;
-  const [argumentsValue, parseError] = trySync(
-    () => JSON.parse(argumentsText),
-    () => true,
-  );
-  if (parseError !== undefined) return undefined;
-  const parsed = parseSafe(bashToolArgumentsSchema, argumentsValue);
-  return parsed.success && parsed.value.command.length > 0 ? parsed.value.command : undefined;
-}
-
-function pathForReadTool(entry: ToolEntry): string | undefined {
-  const argumentsText = entry.arguments;
-  if (entry.toolName !== "read" || argumentsText === undefined) return undefined;
-  const [argumentsValue, parseError] = trySync(
-    () => JSON.parse(argumentsText),
-    () => true,
-  );
-  if (parseError !== undefined) return undefined;
-  const parsed = parseSafe(readToolArgumentsSchema, argumentsValue);
-  return parsed.success && parsed.value.path.length > 0 ? parsed.value.path : undefined;
 }
 
 function renderUsageStatus(

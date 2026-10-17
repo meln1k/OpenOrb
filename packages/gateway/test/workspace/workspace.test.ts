@@ -161,18 +161,19 @@ test("Workspace migrations preserve records, roll back failed upgrades, and reje
     { id: "0001" },
     { id: "0002" },
     { id: "0003" },
+    { id: "0004" },
   ]);
   const unchanged = storage.dump();
   assertEquals((await migrateWorkspaceDatabase(storage, workspaceMigrations)).applied, []);
   assertEquals(storage.dump(), unchanged);
 
   const upgrade = {
-    id: "0004",
+    id: "0005",
     name: "project_note",
     up: "ALTER TABLE projects ADD COLUMN note TEXT NOT NULL DEFAULT 'retained';",
   };
   const failed = {
-    id: "0005",
+    id: "0006",
     name: "migration_probe",
     up: "CREATE TABLE migration_probe (value TEXT); INSERT INTO missing_table VALUES ('fail');",
   };
@@ -196,7 +197,7 @@ test("Workspace migrations preserve records, roll back failed upgrades, and reje
   ];
   assertEquals(
     (await migrateWorkspaceDatabase(storage, migrations)).applied.map((m) => m.id),
-    ["0004", "0005"],
+    ["0005", "0006"],
   );
   assertEquals(storage.rows("SELECT id, note FROM projects"), [
     {

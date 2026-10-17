@@ -127,6 +127,25 @@ not leave an orphan Workspace or create another administrator.
   Object's automatic response, and the client sends protocol pings only while requests are in
   flight. Losing the link closes the daemon and kills the processes it started; interrupted tools
   report possible partial execution.
+- `web_search` and `web_fetch` run in the Session DO
+  ([ADR 0009](docs/adr/0009-gateway-web-search-and-fetch.md)), so they behave the same for every
+  provider and the Sandbox keeps no network. Exa, Brave Search, and Tavily keys are Workspace
+  provider credentials (`provider-api-key` rows referenced by `search_provider_credentials`), read
+  into Session memory at each search and never sent to runners; provider error text has the key
+  replaced before the model sees it. `web_fetch` sends no cookies or credentials and checks every
+  hop, including up to five manual redirects: only `http`/`https` on default ports without user
+  information, no single-label, `localhost`, or internal-suffix names, and no private, loopback,
+  link-local, metadata, or other non-global IP literals. Bodies are capped at 5 MiB and requests at
+  30 seconds. The Worker runtime cannot pin the address a public name resolves to, so a name that
+  resolves privately, or rebinds, passes these checks; deployments must deny gateway egress to
+  private networks as the [operations guide](docs/operations.md#gateway-egress-for-web-fetch)
+  describes. GitHub files, pull requests, and issues are read from `raw.githubusercontent.com`
+  and the unauthenticated GitHub REST API under the same policy. The full extracted text, or a
+  fetched image, is written to `/workspace/.openorb/web/` in the guest, behind a self-ignoring
+  `.gitignore` so it never enters Git status or commits; the 20 newest files are kept. Pages and
+  results are untrusted data rendered as plain text. An image reaches the model only when the agent
+  opens the saved file with `read`, like any guest image, and the transcript loads nothing from a
+  remote URL.
 - Published Media is read from `/workspace/.openorb/artifacts` over the Environment Link, validated
   by the Session DO, and written to an R2 bucket under the Session's
   `workspaces/{workspaceId}/sessions/{sessionId}/media/` prefix. Limits are 64 MiB per artifact and

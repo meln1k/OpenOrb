@@ -772,3 +772,60 @@ test("rejects unknown providers, unauthenticated access, and missing CSRF", asyn
     await client.server.close();
   }
 });
+
+test("web search keys are encrypted, ordered for fallback, and separate from model providers", async () => {
+  const client = await createAuthenticatedClient();
+  try {
+    const empty = await credentialsPage(client);
+    assertMatch(empty, /Web search/);
+    assertEquals(empty.match(/Not configured/g)?.length, 3);
+
+    // Keys are trimmed on save and returned by provider; the save order does not matter.
+    for (const [providerId, apiKey] of [
+      ["tavily", "tvly-secret-6a1f"],
+      ["exa", "exa-secret-93c2"],
+    ] as const) {
+      const response = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+        intent: "save-search-provider",
+        providerId,
+        apiKey: ` ${apiKey} `,
+      });
+      assertEquals(response.status, 303);
+    }
+    const invalid = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "save-search-provider",
+      providerId: "openai",
+      apiKey: "not-a-search-key",
+    });
+    assertEquals(invalid.status, 400);
+
+    const saved = await credentialsPage(client);
+    assertMatch(saved, /data-search-provider="exa"[\s\S]*?Configured · updated/);
+    assertMatch(saved, /data-search-provider="brave"[\s\S]*?Not configured/);
+    assertNotMatch(saved, /exa-secret-93c2|tvly-secret-6a1f/);
+    assert(!client.storage.dump().includes("exa-secret-93c2"));
+    assertEquals(await client.store.listModelProviderCredentials(client.workspaceId), []);
+    assertEquals(await client.store.getSearchProviderKeys(client.workspaceId), [
+      { exa: "exa-secret-93c2", tavily: "tvly-secret-6a1f" },
+      undefined,
+    ]);
+
+    const deleted = await submitCredentialsForm(client, PROVIDERS_SETTINGS_PATH, {
+      intent: "delete-search-provider",
+      providerId: "exa",
+    });
+    assertEquals(deleted.status, 303);
+    assertEquals(await client.store.getSearchProviderKeys(client.workspaceId), [
+      { tavily: "tvly-secret-6a1f" },
+      undefined,
+    ]);
+    // Deleting the reference row's secret leaves no orphaned ciphertext behind.
+    assertEquals(
+      client.storage.rows("SELECT key FROM encrypted_secrets WHERE purpose = 'provider-api-key'")
+        .length,
+      1,
+    );
+  } finally {
+    await client.server.close();
+  }
+});

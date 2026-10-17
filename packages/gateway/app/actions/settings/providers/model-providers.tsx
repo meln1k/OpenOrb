@@ -31,11 +31,14 @@ import {
   dialogFormStyle,
   formatSettingsDate,
   listStyle,
+  screenReaderOnlyStyle,
   sectionCopyStyle,
   sectionHeaderStyle,
   sectionHeadingStyle,
   settingsSectionStyle,
+  tableFrameStyle,
 } from "../settings-shared.ts";
+import { DeleteProviderKeyDialog, ProviderKeyDialog } from "./provider-key-dialogs.tsx";
 import type {
   SettingsModelProvider,
   SettingsModelProviderOption,
@@ -368,113 +371,43 @@ function ProviderRow(
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <EditProviderDialog
+        <ProviderKeyDialog
           actionHref={actionHref}
-          provider={provider}
           csrfToken={csrfToken}
           dialogId={editDialogId}
+          intent="save-provider"
+          providerId={provider.providerId}
+          title="Update provider key"
+          description={
+            <>
+              Replace the stored API key for <strong>{provider.name}</strong>. The new value will be
+              encrypted and cannot be shown again.
+            </>
+          }
+          label="New API key"
+          submitLabel="Save changes"
         />
-        <DeleteProviderDialog
+        <DeleteProviderKeyDialog
           actionHref={actionHref}
-          provider={provider}
           csrfToken={csrfToken}
           dialogId={deleteDialogId}
+          intent="delete-provider"
+          providerId={provider.providerId}
+          title="Delete provider credential?"
+          description={
+            <>
+              This will permanently delete the API key for <strong>{provider.name}</strong>. This
+              action cannot be undone.
+            </>
+          }
+          submitLabel="Delete provider"
         />
       </TableCell>
     </TableRow>
   );
 }
 
-function EditProviderDialog(
-  handle: Handle<{
-    actionHref: string;
-    provider: SettingsModelProvider;
-    csrfToken: string;
-    dialogId: string;
-  }>,
-) {
-  const { actionHref, provider, csrfToken, dialogId } = handle.props;
-  const titleId = `${dialogId}-title`;
-  const descriptionId = `${dialogId}-description`;
-
-  return () => (
-    <AlertDialog id={dialogId} aria-labelledby={titleId} aria-describedby={descriptionId}>
-      <AlertDialogHeader>
-        <AlertDialogTitle id={titleId}>Update provider key</AlertDialogTitle>
-        <AlertDialogDescription id={descriptionId}>
-          Replace the stored API key for <strong>{provider.name}</strong>. The new value will be
-          encrypted and cannot be shown again.
-        </AlertDialogDescription>
-      </AlertDialogHeader>
-      <form method="post" action={actionHref} mix={dialogFormStyle}>
-        <input type="hidden" name="_csrf" value={csrfToken} />
-        <input type="hidden" name="intent" value="save-provider" />
-        <input type="hidden" name="providerId" value={provider.providerId} />
-        <Field>
-          <FieldLabel for={`${dialogId}-value`}>New API key</FieldLabel>
-          <Input
-            id={`${dialogId}-value`}
-            type="password"
-            name="apiKey"
-            autoComplete="off"
-            required
-          />
-        </Field>
-        <AlertDialogFooter>
-          <Button type="button" variant="outline" commandFor={dialogId} command="close">
-            Cancel
-          </Button>
-          <Button type="submit">Save changes</Button>
-        </AlertDialogFooter>
-      </form>
-    </AlertDialog>
-  );
-}
-
-function DeleteProviderDialog(
-  handle: Handle<{
-    actionHref: string;
-    provider: SettingsModelProvider;
-    csrfToken: string;
-    dialogId: string;
-  }>,
-) {
-  const { actionHref, provider, csrfToken, dialogId } = handle.props;
-  const titleId = `${dialogId}-title`;
-  const descriptionId = `${dialogId}-description`;
-
-  return () => (
-    <AlertDialog id={dialogId} aria-labelledby={titleId} aria-describedby={descriptionId}>
-      <AlertDialogHeader>
-        <AlertDialogTitle id={titleId}>Delete provider credential?</AlertDialogTitle>
-        <AlertDialogDescription id={descriptionId}>
-          This will permanently delete the API key for <strong>{provider.name}</strong>. This action
-          cannot be undone.
-        </AlertDialogDescription>
-      </AlertDialogHeader>
-      <form method="post" action={actionHref}>
-        <input type="hidden" name="_csrf" value={csrfToken} />
-        <input type="hidden" name="intent" value="delete-provider" />
-        <input type="hidden" name="providerId" value={provider.providerId} />
-        <AlertDialogFooter>
-          <Button type="button" variant="outline" commandFor={dialogId} command="close">
-            Cancel
-          </Button>
-          <Button type="submit" variant="destructive">
-            Delete provider
-          </Button>
-        </AlertDialogFooter>
-      </form>
-    </AlertDialog>
-  );
-}
-
 const providerListStyle = css({ gap: "16px" });
-const tableFrameStyle = css({
-  position: "relative",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-md)",
-});
 const chatGPTCardStyle = css({
   display: "grid",
   gap: "12px",
@@ -584,15 +517,4 @@ const rowMenuContentStyle = css({
   width: "144px",
   minWidth: "144px",
   textAlign: "left",
-});
-const screenReaderOnlyStyle = css({
-  position: "absolute",
-  width: "1px",
-  height: "1px",
-  padding: 0,
-  margin: "-1px",
-  overflow: "hidden",
-  clip: "rect(0, 0, 0, 0)",
-  whiteSpace: "nowrap",
-  border: 0,
 });
