@@ -1,4 +1,4 @@
-import { test } from "vite-plus/test";
+import { afterEach, test, vi } from "vite-plus/test";
 import { assert, assertEquals, assertObjectMatch, assertStringIncludes } from "@jsr/std__assert";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createEnvConformance } from "@earendil-works/pi-durable/testing";
@@ -15,6 +15,8 @@ import type { SandboxRpc } from "../src/sandbox/rpc.ts";
 import { Sandbox } from "../src/sandbox/worker.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+afterEach(() => vi.useRealTimers());
 
 /** celld rejects SQLite strings and blobs from about 2 MB. */
 const CELLD_MAX_VALUE_BYTES = 2_000_000;
@@ -209,8 +211,14 @@ test("a stopped sandbox fails guest operations immediately and keeps its files",
   assertEquals(fixture.status().state, "stopped");
 });
 
-/** Real provider and sandbox RPC over SQLite, with the runtime's lazy facet factory. */
-function providerFixture(wrap: (rpc: SandboxRpc) => SandboxRpc = (rpc) => rpc) {
+/**
+ * Real provider and sandbox RPC over SQLite, with the runtime's lazy facet factory. A facet that
+ * `admit` refuses fails every call as celld's loader does at capacity.
+ */
+function providerFixture(
+  wrap: (rpc: SandboxRpc) => SandboxRpc = (rpc) => rpc,
+  admit: () => boolean = () => true,
+) {
   const previousCode = SANDBOX_WORKER.code;
   SANDBOX_WORKER.code = "fixture";
   let sql = memorySql();
@@ -221,7 +229,13 @@ function providerFixture(wrap: (rpc: SandboxRpc) => SandboxRpc = (rpc) => rpc) {
   // oxlint-disable-next-line openorb/no-chained-type-assertions
   const facets = {
     get: (_name: string, factory: Parameters<DurableObjectFacets["get"]>[1]) => {
+      const admitted = admit();
       const dispatch = () => {
+        if (!admitted) {
+          throw new Error(
+            'worker loader: too many loaded workers for script "gateway" in generation 1 (limit 255)',
+          );
+        }
         if (facet === undefined) {
           factory();
           facet = wrap(openSandbox(sql));
@@ -301,6 +315,52 @@ test("sandbox lifecycle is ordered and deletion cannot be undone", async () => {
   await environment.control("start");
   assertEquals(fixture.status().state, "stopped");
   assert(!(await environment.env.exists("durable.txt", context)).ok);
+});
+
+test("a sandbox the loader refuses is loaded again with backoff until a slot frees", async () => {
+  vi.useFakeTimers();
+  let loads = 0;
+  let free = false;
+  using fixture = providerFixture(undefined, () => (loads++, free || loads === 3));
+  const environment = fixture.open();
+  await environment.control("start");
+  // The third load is admitted: a refused facet stays refused, so each retry loads anew.
+  const written = environment.env.writeFile("kept.txt", "kept", context);
+  await vi.advanceTimersByTimeAsync(1_000);
+  assertEquals(await written, { ok: true, value: undefined });
+  assertEquals(loads, 3);
+
+  // A full gateway fails the call once backoff runs out, without loading the facet again after.
+  environment.release();
+  const refused = environment.env.exists("kept.txt", context);
+  await vi.advanceTimersByTimeAsync(60_000);
+  const result = await refused;
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "as many sandboxes as it can");
+  const attempts = loads;
+  await vi.advanceTimersByTimeAsync(60_000);
+  assertEquals(loads, attempts);
+
+  // Stop and abort end the wait at once rather than at the next attempt.
+  const stopped = environment.env.exists("kept.txt", context);
+  await vi.advanceTimersByTimeAsync(0);
+  await environment.control("stop");
+  assertObjectMatch(await stopped, {
+    ok: false,
+    error: { message: "The environment is stopped. Start it with the environment tool." },
+  });
+  await environment.control("start");
+  const abort = new AbortController();
+  const aborted = environment.env.exists("kept.txt", { ...context, abortSignal: abort.signal });
+  await vi.advanceTimersByTimeAsync(0);
+  abort.abort();
+  assertObjectMatch(await aborted, { ok: false, error: { code: "aborted" } });
+
+  free = true;
+  assertEquals(await environment.env.readTextFile("kept.txt", context), {
+    ok: true,
+    value: "kept",
+  });
 });
 
 test("idle release waits for cancellation and rechecks activity before retirement", async () => {
