@@ -501,16 +501,21 @@ function isThinkingLevel(value: string | null | undefined): value is SessionThin
 }
 
 const dialogStyle = css({
+  "--openorb-session-composer-height":
+    "min(320px, calc(var(--openorb-visual-viewport-height, 100dvh) - 24px))",
   anchorName: "--openorb-session-composer",
   position: "fixed",
-  inset: "var(--openorb-visual-viewport-center, 50%) auto auto 50%",
+  // Center without a transform: Firefox resolves the selector popovers' anchor() against the
+  // untransformed trigger boxes, which would offset every popover by the translation.
+  inset:
+    "calc(var(--openorb-visual-viewport-center, 50%) - var(--openorb-session-composer-height) / 2) 0 auto",
   zIndex: 60,
   display: "none",
   width: "min(calc(100% - 24px), 880px)",
-  height: "min(320px, calc(var(--openorb-visual-viewport-height, 100dvh) - 24px))",
+  height: "var(--openorb-session-composer-height)",
   maxWidth: "none",
   maxHeight: "none",
-  margin: 0,
+  margin: "0 auto",
   padding: 0,
   color: "var(--foreground)",
   background: "var(--background)",
@@ -519,7 +524,6 @@ const dialogStyle = css({
   boxShadow: "0 16px 48px rgb(0 0 0 / 0.24)",
   outline: "none",
   overflow: "hidden",
-  transform: "translate(-50%, -50%)",
   "&[open]": { display: "block" },
   "&[data-thinking-level='off']": { borderColor: "#9d9d9d" },
   "&[data-thinking-level='minimal']": { borderColor: "#ffffff" },
@@ -535,8 +539,9 @@ const dialogStyle = css({
   },
   "&::backdrop": { background: "rgb(0 0 0 / 0.5)" },
   [media.sm]: {
+    "--openorb-session-composer-height":
+      "min(320px, calc(var(--openorb-visual-viewport-height, 100dvh) - 32px))",
     width: "min(calc(100% - 32px), 880px)",
-    height: "min(320px, calc(var(--openorb-visual-viewport-height, 100dvh) - 32px))",
   },
 });
 const formStyle = css({
