@@ -117,6 +117,8 @@ export interface SessionCatalogEntry {
   projectId?: string;
   createdAt: string;
   initialPromptPreview: string;
+  /** The Session that created this Child Session (ADR 0010); absent for a top-level Session. */
+  parentSessionId?: string;
 }
 
 export interface SessionNavigationEntry {
@@ -125,6 +127,8 @@ export interface SessionNavigationEntry {
   projectId?: string;
   projectName?: string;
   initialPromptPreview: string;
+  /** The parent of a Child Session (ADR 0010), which the sidebar nests it under. */
+  parentSessionId?: string;
 }
 
 export interface OpenAICodexAuthorization {
@@ -349,6 +353,7 @@ const WORKSPACE_ARGUMENTS: WorkspaceArgumentSchemas = {
       projectId: Schema.optionalKey(ProjectId),
       createdAt: Schema.String,
       initialPromptPreview: InitialPromptPreview,
+      parentSessionId: Schema.optionalKey(SessionId),
     }),
   ]),
   deleteSessionCatalogEntry: OwnedIdentifier,

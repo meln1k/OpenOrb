@@ -77,7 +77,7 @@ export default {
     if (url.pathname === "/__session/create" && request.method === "POST") {
       const input = await request.json();
       const session = env.SESSIONS.getByName(String(input.sessionId));
-      return Response.json(await session.create(input));
+      return Response.json(await session.create({ origin: { kind: "user" }, ...input }));
     }
     if (url.pathname === "/__sandbox-reload-probe" && request.method === "POST") {
       // SAFETY: only the disposable ScriptedSession fixture exposes this probe.
@@ -108,7 +108,11 @@ export default {
     if (url.pathname === "/__session/submit" && request.method === "POST") {
       const input = await request.json();
       const session = env.SESSIONS.getByName(String(input.sessionId));
-      await session.submit({ prompt: input.prompt, requestId: input.requestId });
+      await session.submit({
+        origin: { kind: "user" },
+        prompt: input.prompt,
+        requestId: input.requestId,
+      });
       return Response.json({ status: "accepted" });
     }
     if (url.pathname === "/__workspace-credential-reads") {

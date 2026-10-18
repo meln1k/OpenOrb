@@ -11,9 +11,12 @@ test("Session tables are migrated once, journaled, and share the database with P
   const applied = await migrateDurableObjectDatabase(storage, sessionMigrations);
   assertEquals(
     applied.applied.map((migration) => migration.id),
-    ["0001"],
+    ["0001", "0002"],
   );
-  assertEquals(storage.rows("SELECT id FROM data_table_migrations"), [{ id: "0001" }]);
+  assertEquals(storage.rows("SELECT id FROM data_table_migrations"), [
+    { id: "0001" },
+    { id: "0002" },
+  ]);
   assertEquals(
     storage.rows(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'openorb_%' ORDER BY name",
@@ -23,6 +26,7 @@ test("Session tables are migrated once, journaled, and share the database with P
       { name: "openorb_inline_image" },
       { name: "openorb_media" },
       { name: "openorb_session" },
+      { name: "openorb_thread_access" },
     ],
   );
   assertEquals(readRecord(storage), undefined);

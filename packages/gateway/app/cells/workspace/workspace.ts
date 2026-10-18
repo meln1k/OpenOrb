@@ -105,10 +105,20 @@ type Login =
   | { status: "complete" | "error"; id: string };
 
 /** Catalog rows as SQLite returns them: a Session without a project has NULL project columns. */
-type CatalogRow = Omit<SessionCatalogEntry, "projectId"> & { projectId: string | null };
-type NavigationRow = Omit<SessionNavigationEntry, "projectId" | "projectName"> & {
+/** Child Sessions one Session may have at a time (ADR 0010); deleted children do not count. */
+export const MAX_CHILD_SESSIONS = 100;
+
+type CatalogRow = Omit<SessionCatalogEntry, "projectId" | "parentSessionId"> & {
+  projectId: string | null;
+  parentSessionId: string | null;
+};
+type NavigationRow = Omit<
+  SessionNavigationEntry,
+  "projectId" | "projectName" | "parentSessionId"
+> & {
   projectId: string | null;
   projectName: string | null;
+  parentSessionId: string | null;
 };
 
 /** A record the operation addresses does not exist in this Workspace. */
@@ -179,13 +189,17 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   /** The catalog entry, with the project left out for a Session without one. */
   #catalogEntry(workspaceId: WorkspaceId, id: string): SessionCatalogEntry | undefined {
     const row = this.#rows<CatalogRow>(
-      "SELECT id, projectId, createdAt, initialPromptPreview FROM sessions WHERE workspaceId = ? AND id = ?",
+      "SELECT id, projectId, createdAt, initialPromptPreview, parentSessionId FROM sessions WHERE workspaceId = ? AND id = ?",
       workspaceId,
       id,
     )[0];
     if (row === undefined) return undefined;
-    const { projectId, ...entry } = row;
-    return { ...entry, ...(projectId === null ? {} : { projectId }) };
+    const { projectId, parentSessionId, ...entry } = row;
+    return {
+      ...entry,
+      ...(projectId === null ? {} : { projectId }),
+      ...(parentSessionId === null ? {} : { parentSessionId }),
+    };
   }
 
   #requireWorkspace(workspaceId: WorkspaceId): void {
@@ -1160,14 +1174,15 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
       decodeWorkspaceArguments("listSessionNavigationEntries", [workspaceId]);
       return this.#rows<NavigationRow>(
         `
-        SELECT s.id, s.projectId, p.name AS projectName, s.initialPromptPreview
+        SELECT s.id, s.projectId, p.name AS projectName, s.initialPromptPreview, s.parentSessionId
         FROM sessions s LEFT JOIN projects p ON p.workspaceId = s.workspaceId AND p.id = s.projectId
         WHERE s.workspaceId = ? ORDER BY s.createdAt DESC
       `,
         workspaceId,
-      ).map(({ projectId, projectName, ...entry }) => ({
+      ).map(({ projectId, projectName, parentSessionId, ...entry }) => ({
         ...entry,
         ...(projectId === null || projectName === null ? {} : { projectId, projectName }),
+        ...(parentSessionId === null ? {} : { parentSessionId }),
       }));
     });
   }
@@ -1197,14 +1212,41 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
         ).length
       )
         return err(new Error("The session's project was not found."));
+      // Repeating an entry is harmless, so a retried create_thread records its child once.
+      const existing = this.#catalogEntry(workspaceId, entry.id);
+      if (existing !== undefined) {
+        return existing.projectId === entry.projectId &&
+          existing.parentSessionId === entry.parentSessionId
+          ? ok(undefined)
+          : err(new Error("Another session has this identifier."));
+      }
+      if (entry.parentSessionId !== undefined) {
+        // Children nest one level deep: the parent is a top-level Session of this Workspace.
+        const parent = this.#catalogEntry(workspaceId, entry.parentSessionId);
+        if (parent === undefined) return err(new Error("The parent was not found."));
+        if (parent.parentSessionId !== undefined) {
+          return err(new Error("A child cannot have children of its own."));
+        }
+        const [children] = this.#rows<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM sessions WHERE workspaceId = ? AND parentSessionId = ?",
+          workspaceId,
+          entry.parentSessionId,
+        );
+        if ((children?.count ?? 0) >= MAX_CHILD_SESSIONS) {
+          return err(
+            new Error(`At most ${MAX_CHILD_SESSIONS} children at a time; delete some first.`),
+          );
+        }
+      }
       this.#rows(
-        `INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview)
-        VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (workspaceId, id, projectId, createdAt, initialPromptPreview, parentSessionId)
+        VALUES (?, ?, ?, ?, ?, ?)`,
         workspaceId,
         entry.id,
         entry.projectId ?? null,
         entry.createdAt,
         entry.initialPromptPreview,
+        entry.parentSessionId ?? null,
       );
       return ok(undefined);
     });

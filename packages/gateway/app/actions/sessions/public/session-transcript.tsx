@@ -281,8 +281,15 @@ export function SessionTranscript(handle: Handle<SessionTranscriptProps>) {
                         {transcriptState.followUpQueue.length === 1 ? "" : "s"} queued
                       </strong>
                       <ol>
-                        {transcriptState.followUpQueue.map((prompt, index) => (
-                          <li key={`${index}:${prompt}`}>{prompt}</li>
+                        {transcriptState.followUpQueue.map(({ text, sender }, index) => (
+                          <li key={`${index}:${text}`}>
+                            {sender === undefined ? null : (
+                              <span data-queued-sender>
+                                From {sender.title || "Untitled session"}:{" "}
+                              </span>
+                            )}
+                            {text}
+                          </li>
                         ))}
                       </ol>
                     </MarkerContent>
@@ -519,6 +526,40 @@ function renderTranscriptEntry(
               </small>
             ) : null}
           </article>
+        </MessageScrollerItem>
+      );
+    case "thread":
+      return (
+        <MessageScrollerItem
+          key={`message:${entry.messageId}`}
+          messageId={`message:${entry.messageId}`}
+          scrollAnchor
+        >
+          <details
+            data-conversation-entry
+            data-role="thread"
+            data-relation={entry.relation}
+            mix={threadMessageStyle}
+          >
+            <summary>
+              <Icon name="messages" />
+              <span data-thread-sender>
+                Message from{" "}
+                <a
+                  href={routes.app.sessions.detail.href({ sessionId: entry.sessionId })}
+                  title={entry.relation === "parent" ? "Parent session" : "Child session"}
+                >
+                  {entry.title || "Untitled session"}
+                </a>
+              </span>
+              <span aria-hidden="true" mix={threadMessageChevronStyle}>
+                <Icon name="chevron-down" />
+              </span>
+            </summary>
+            <div mix={threadMessageBodyStyle}>
+              <AssistantMarkdown text={entry.text} completed sessionId={sessionId} />
+            </div>
+          </details>
         </MessageScrollerItem>
       );
     case "assistant": {
@@ -833,6 +874,49 @@ const userMessageStyle = css({
   },
   "&[data-delivery='failed'] [data-prompt-delivery]": { color: "var(--destructive)" },
 });
+const threadMessageStyle = css({
+  display: "grid",
+  gap: "8px",
+  minWidth: 0,
+  "& > summary": {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    minWidth: 0,
+    color: "var(--muted-foreground)",
+    fontSize: "14px",
+    cursor: "pointer",
+    listStyle: "none",
+  },
+  "& > summary::-webkit-details-marker": { display: "none" },
+  "& > summary > svg": { flexShrink: 0 },
+  "& [data-thread-sender]": {
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  "& [data-thread-sender] a": {
+    color: "var(--foreground)",
+    textDecorationColor: "color-mix(in oklab, var(--foreground) 40%, transparent)",
+    textUnderlineOffset: "3px",
+  },
+});
+const threadMessageChevronStyle = css({
+  display: "flex",
+  flexShrink: 0,
+  marginLeft: "auto",
+  transition: "transform 180ms ease",
+  // Remix css reads a key that starts with a letter as a property, so the selector opens with `:is`.
+  ":is(details:not([open])) > summary > &": { transform: "rotate(-90deg)" },
+});
+const threadMessageBodyStyle = css({
+  minWidth: 0,
+  padding: "12px 16px",
+  color: "var(--foreground)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+});
 const assistantMessageStyle = css({
   display: "grid",
   gap: "16px",
@@ -911,6 +995,7 @@ const queueDetailStyle = css({
   "& strong": { color: "var(--foreground)", fontWeight: 500 },
   "& ol": { display: "grid", gap: "4px", margin: 0, paddingLeft: "20px" },
   "& li": { whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+  "& [data-queued-sender]": { color: "var(--foreground)", fontWeight: 500 },
 });
 const emptyConversationStyle = css({
   margin: 0,

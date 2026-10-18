@@ -7,6 +7,11 @@ import type {
   SessionState as ViewState,
 } from "../../../cells/session/view.ts";
 import {
+  THREAD_MESSAGE_KIND,
+  threadMessageBody,
+  type ThreadMessageData,
+} from "../../../../../protocol/src/thread-message.ts";
+import {
   SESSION_THINKING_LEVELS,
   type SessionThinkingLevel,
 } from "../../../../../protocol/src/thinking-level.ts";
@@ -45,6 +50,19 @@ export interface UserEntry {
   readonly delivery?: "pending" | "failed";
   readonly deliveryError?: string;
 }
+/** A prompt another thread sent this one: its parent or one of its children (ADR 0010). */
+export interface ThreadMessageEntry extends ThreadMessageData {
+  readonly role: "thread";
+  readonly messageId: string;
+  /** What the sender wrote, without the label the model reads. */
+  readonly text: string;
+}
+/** A prompt waiting for the run to end: the user's follow-up, or a message from another thread. */
+export interface QueuedPrompt {
+  /** What the user or the sending thread wrote, without the label the model reads. */
+  readonly text: string;
+  readonly sender?: ThreadMessageData;
+}
 export interface AssistantEntry {
   readonly role: "assistant";
   readonly messageId?: string;
@@ -76,13 +94,19 @@ export interface SetupEntry {
   readonly exitCode: number;
   readonly output: string;
 }
-export type TranscriptEntry = UserEntry | AssistantEntry | ToolEntry | ActivityEntry | SetupEntry;
+export type TranscriptEntry =
+  | UserEntry
+  | ThreadMessageEntry
+  | AssistantEntry
+  | ToolEntry
+  | ActivityEntry
+  | SetupEntry;
 export interface SessionTranscriptState {
   readonly view: ConversationView | undefined;
   readonly status: string;
   readonly thinkingLevel: SessionThinkingLevel;
   readonly warningVisible: boolean;
-  readonly followUpQueue: readonly string[];
+  readonly followUpQueue: readonly QueuedPrompt[];
   readonly entries: readonly TranscriptEntry[];
   readonly latestUsage: SessionUsage | undefined;
   readonly contextUsage: SessionUsage | undefined;
@@ -262,7 +286,18 @@ export function projectConversation(
     }
   };
   for (const entry of view.entries) {
-    if (entry.kind === "pi.compaction") {
+    const sender = entry.kind === THREAD_MESSAGE_KIND ? threadSender(entry.data) : undefined;
+    if (sender !== undefined) {
+      (entry.model ?? []).forEach((item, index) => {
+        if (item.role !== "user") return message(item, `${entry.id}:${index}`, true);
+        entries.push({
+          role: "thread",
+          messageId: `${entry.id}:${index}`,
+          ...sender,
+          text: threadMessageBody(contentText(item.content), sender),
+        });
+      });
+    } else if (entry.kind === "pi.compaction") {
       entries.push({
         id: entry.id,
         label: "Context compacted",
@@ -315,8 +350,15 @@ export function projectConversation(
   const thinkingLevel =
     SESSION_THINKING_LEVELS.find((candidate) => candidate === level) ?? initialThinkingLevel;
   const followUpQueue = array(view.docs["pi.inbox"]?.items)
-    .filter((item) => object(item).mode !== "write")
-    .map((item) => contentText(object(item).content));
+    .map(object)
+    .filter((item) => item.mode !== "write")
+    .map((item): QueuedPrompt => {
+      // A queued input names the entry it will be placed as, so a thread message is known now.
+      const entry = object(item.entry);
+      const sender = entry.kind === THREAD_MESSAGE_KIND ? threadSender(entry.data) : undefined;
+      const text = contentText(item.content);
+      return sender === undefined ? { text } : { text: threadMessageBody(text, sender), sender };
+    });
   const ledger = object(view.docs["pi.usage"]);
   const totalUsage = emptyUsage();
   for (const bucket of [ledger.models, ledger.tools]) {
@@ -332,6 +374,14 @@ function normalizeText(value: string): string {
   return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
 }
 
+function threadSender(value: unknown): ThreadMessageData | undefined {
+  const data = object(value);
+  const relation =
+    data.relation === "parent" || data.relation === "child" ? data.relation : undefined;
+  const sessionId = string(data.sessionId);
+  if (relation === undefined || !sessionId) return undefined;
+  return { relation, sessionId, title: string(data.title) };
+}
 function object(value: unknown): JsonObject {
   // SAFETY: Every caller reads JSON from the ConversationView, never host objects.
   // oxlint-disable-next-line openorb/no-runtime-typeof -- Narrow the JSON union to its object member for presentation.

@@ -79,7 +79,13 @@ type SessionProjectGroup = {
   /** Empty for the group of Sessions without a project. */
   projectId: string;
   projectName: string;
-  sessions: SessionNavigationEntry[];
+  sessions: SessionNavigationNode[];
+};
+
+/** A top-level Session and the Child Sessions nested under it in the sidebar. */
+type SessionNavigationNode = {
+  session: SessionNavigationEntry;
+  children: SessionNavigationEntry[];
 };
 
 type AppShellNavigationProps = {
@@ -510,20 +516,38 @@ function renderSessionProjectGroups(props: AppNavigationProps): RemixNode {
         <span aria-hidden="true" mix={sessionProjectRuleStyle} />
       </h2>
       <SidebarMenu>
-        {sessions.map((session) => (
-          <SidebarMenuItem key={session.id}>
-            <SidebarMenuButton
-              href={routes.app.sessions.detail.href({ sessionId: session.id })}
-              navigation={{
-                target: SESSION_WORKSPACE_FRAME,
-                src: routes.app.sessions.frame.href({ sessionId: session.id }),
-              }}
-              active={props.selectedSessionId === session.id}
-              pending={props.pendingSessionId === session.id}
-              icon={<Icon name="message" />}
-            >
-              {sessionName(session)}
-            </SidebarMenuButton>
+        {sessions.map(({ session, children }) => (
+          <SidebarMenuItem
+            key={session.id}
+            mix={children.length > 0 ? parentSessionItemStyle : undefined}
+          >
+            {renderSessionButton(props, session)}
+            {children.length > 0 ? (
+              <details open mix={childSessionsStyle}>
+                <summary
+                  aria-label={`${children.length} child ${children.length === 1 ? "session" : "sessions"}`}
+                  mix={childSessionsToggleStyle}
+                >
+                  <span mix={childSessionsChevronStyle}>
+                    <Icon name="chevron-down" size={14} />
+                  </span>
+                  <span>{children.length}</span>
+                </summary>
+                <SidebarMenu mix={childSessionsMenuStyle}>
+                  {children.map((child) => (
+                    <SidebarMenuItem key={child.id}>
+                      {renderSessionButton(
+                        props,
+                        child,
+                        <span aria-hidden="true" mix={childSessionMarkerStyle}>
+                          <Icon name="corner-down-right" size={14} />
+                        </span>,
+                      )}
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </details>
+            ) : null}
           </SidebarMenuItem>
         ))}
       </SidebarMenu>
@@ -531,18 +555,52 @@ function renderSessionProjectGroups(props: AppNavigationProps): RemixNode {
   ));
 }
 
+function renderSessionButton(
+  props: AppNavigationProps,
+  session: SessionNavigationEntry,
+  icon?: RemixNode,
+): RemixNode {
+  return (
+    <SidebarMenuButton
+      href={routes.app.sessions.detail.href({ sessionId: session.id })}
+      navigation={{
+        target: SESSION_WORKSPACE_FRAME,
+        src: routes.app.sessions.frame.href({ sessionId: session.id }),
+      }}
+      active={props.selectedSessionId === session.id}
+      pending={props.pendingSessionId === session.id}
+      icon={icon}
+    >
+      {sessionName(session)}
+    </SidebarMenuButton>
+  );
+}
+
+/**
+ * Groups top-level Sessions by project, newest first, each with its Child Sessions. A child whose
+ * parent is no longer listed shows at the top level.
+ */
 function groupSessionsByProject(sessions: SessionNavigationEntry[]): SessionProjectGroup[] {
+  const listed = new Set(sessions.map((session) => session.id));
+  const children = Map.groupBy(
+    sessions.filter(
+      (session) => session.parentSessionId !== undefined && listed.has(session.parentSessionId),
+    ),
+    (session) => session.parentSessionId,
+  );
   const groups = new Map<string, SessionProjectGroup>();
 
   for (const session of sessions) {
+    if (session.parentSessionId !== undefined && listed.has(session.parentSessionId)) continue;
+    const node = { session, children: children.get(session.id) ?? [] };
     const projectId = session.projectId ?? "";
     const group = groups.get(projectId);
-    if (group) group.sessions.push(session);
+    if (group) group.sessions.push(node);
     else {
       groups.set(projectId, {
         projectId,
         projectName: session.projectName ?? "No project",
-        sessions: [session],
+        sessions: [node],
       });
     }
   }
@@ -662,6 +720,47 @@ const sessionProjectRuleStyle = css({
   minWidth: "16px",
   height: "1px",
   background: "var(--sidebar-border)",
+});
+const parentSessionItemStyle = css({
+  // Room for the child toggle, which sits over the end of the parent's row.
+  "& > [data-slot='sidebar-menu-button']": { paddingRight: "52px" },
+});
+const childSessionsStyle = css({ width: "100%" });
+const childSessionsToggleStyle = css({
+  position: "absolute",
+  top: "4px",
+  right: "4px",
+  display: "flex",
+  alignItems: "center",
+  gap: "2px",
+  height: "24px",
+  padding: "0 6px",
+  color: "color-mix(in srgb, var(--sidebar-foreground) 70%, transparent)",
+  borderRadius: "var(--radius-sm)",
+  outline: "none",
+  fontSize: "12px",
+  fontVariantNumeric: "tabular-nums",
+  lineHeight: 1,
+  listStyle: "none",
+  cursor: "pointer",
+  "&::-webkit-details-marker": { display: "none" },
+  "&:hover": {
+    color: "var(--sidebar-accent-foreground)",
+    background: "color-mix(in srgb, var(--sidebar-foreground) 10%, transparent)",
+  },
+  "&:focus-visible": { boxShadow: "0 0 0 2px var(--sidebar-ring)" },
+});
+const childSessionsChevronStyle = css({
+  display: "flex",
+  transition: "transform 180ms ease",
+  // Remix css reads a key that starts with a letter as a property, so the selector opens with `:is`.
+  ":is(details[open]) > summary > &": { transform: "rotate(180deg)" },
+});
+const childSessionsMenuStyle = css({ marginTop: "4px", paddingLeft: "8px" });
+const childSessionMarkerStyle = css({
+  display: "flex",
+  flexShrink: 0,
+  color: "color-mix(in srgb, var(--sidebar-foreground) 55%, transparent)",
 });
 const emptySessionsStyle = css({
   margin: "4px 8px",

@@ -57,3 +57,49 @@ test("session navigation groups projects by recent activity", async () => {
     assertEquals([...html.matchAll(new RegExp(`>${sessionName}<`, "g"))].length, 2);
   }
 });
+
+test("child sessions nest under their parent, behind a toggle with their count", async () => {
+  const html = await renderToString(
+    <AppShellNavigation
+      activeSection={undefined}
+      activeSessionId="child-new"
+      composer={{
+        projects: [],
+        models: [],
+        hasConfiguredRunner: false,
+        hasConnectedRunner: false,
+      }}
+      csrfToken="csrf-token"
+      sessions={[
+        { id: "child-new", initialPromptPreview: "Newest child", parentSessionId: "parent" },
+        { id: "orphan", initialPromptPreview: "Orphaned child", parentSessionId: "deleted" },
+        { id: "child-old", initialPromptPreview: "Older child", parentSessionId: "parent" },
+        { id: "parent", initialPromptPreview: "Parent session" },
+        { id: "single", initialPromptPreview: "Childless session" },
+      ]}
+      workspace={<main>Workspace</main>}
+    />,
+  );
+
+  // Each sidebar (desktop and mobile) renders the tree once.
+  const sidebar = html.slice(0, html.lastIndexOf(">Parent session<"));
+  const orphan = sidebar.indexOf(">Orphaned child<");
+  const parent = sidebar.indexOf(">Parent session<");
+  const toggle = sidebar.indexOf('aria-label="2 child sessions"', parent);
+  const newest = sidebar.indexOf(">Newest child<", toggle);
+  const older = sidebar.indexOf(">Older child<", newest);
+  const closed = sidebar.indexOf("</details>", older);
+  const single = sidebar.indexOf(">Childless session<");
+  assert(
+    orphan !== -1 &&
+      orphan < parent &&
+      parent < toggle &&
+      toggle < newest &&
+      newest < older &&
+      older < closed &&
+      closed < single,
+  );
+  // Only the parent has a toggle; the orphan, whose parent is gone, shows at the top level.
+  assertEquals([...sidebar.matchAll(/aria-label="\d+ child sessions?"/g)].length, 1);
+  assertEquals([...html.matchAll(/>Newest child</g)].length, 2);
+});

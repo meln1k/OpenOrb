@@ -150,6 +150,21 @@ not leave an orphan Workspace or create another administrator.
   results are untrusted data rendered as plain text. An image reaches the model only when the agent
   opens the saved file with `read`, like any guest image, and the transcript loads nothing from a
   remote URL.
+- Session-to-Session thread tools ([ADR 0010](docs/adr/0010-child-sessions-and-thread-tools.md))
+  run in the Session DO over native RPC between Session DOs. A Session may read the status and
+  transcript only of its Child Sessions and of Sessions whose URL the user pasted into a prompt
+  submitted from the browser; it may message only its parent and its children. Messages from other
+  Sessions, including a child's initial prompt, enter through a separate RPC method that never
+  grants access, so no agent can grant itself or another agent access, and naming a Session in a
+  tool argument grants nothing. Every call also requires the target in the caller's Workspace
+  catalog, the target checks the caller's Workspace ID, and a recipient checks that the sender is its
+  parent or child; anything else reads as not found. Every prompt names its origin, and only the
+  user's grant access. Children nest one level deep and number at most 100 per parent, enforced by
+  the Session and the Workspace catalog. A child inherits its parent's provider, placement, project, and
+  Guest Credential Opt-in, so it receives no credentials its parent could not. `read_thread` sends
+  the target's bounded transcript to the caller's model with the caller's credentials; transcripts,
+  statuses, and reader answers are untrusted content. Reader requests are not yet counted in the
+  calling Session's usage.
 - Published Media is read from `/workspace/.openorb/artifacts` over the Environment Link, validated
   by the Session DO, and written to an R2 bucket under the Session's
   `workspaces/{workspaceId}/sessions/{sessionId}/media/` prefix. Limits are 64 MiB per artifact and

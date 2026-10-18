@@ -30,6 +30,8 @@ export interface SessionProject {
 export interface SessionRecord {
   readonly workspaceId: WorkspaceId;
   readonly sessionId: string;
+  /** The Session that created this Child Session; absent for a top-level Session (ADR 0010). */
+  readonly parentSessionId?: string;
   /** Absent for a Session without a project: /workspace starts empty and Git is not loaded. */
   readonly project?: SessionProject;
   readonly createdAt: string;

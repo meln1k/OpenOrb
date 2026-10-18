@@ -25,6 +25,7 @@ export function createBuildAssetServer(development = false) {
       "packages/protocol/src/model-provider.ts",
       "packages/protocol/src/orb-size.ts",
       "packages/protocol/src/thinking-level.ts",
+      "packages/protocol/src/thread-message.ts",
       "packages/result/src/index.ts",
       "**/node_modules/@remix-run/data-schema/dist/**/*.js",
       "**/node_modules/remix/dist/data-schema.js",

@@ -676,6 +676,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
       model: MODEL,
       thinkingLevel: "max",
       initialPrompt: INITIAL_PROMPT,
+      origin: { kind: "user" },
     });
     assertEquals(new Date(create.createdAt).toISOString(), create.createdAt);
     const catalog = storage.rows(
@@ -1099,6 +1100,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     assert(firstSubmission);
     assertMatch(firstSubmission.requestId, /^[0-9a-f-]{36}$/);
     assertEquals(firstSubmission, {
+      origin: { kind: "user" },
       prompt: "Commit the reviewed changes and push the session branch.",
       requestId: firstSubmission.requestId,
     });
@@ -1118,6 +1120,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     assert(secondSubmission);
     assert(secondSubmission.requestId !== firstSubmission.requestId);
     assertEquals(secondSubmission, {
+      origin: { kind: "user" },
       prompt: "Think less about this one.",
       requestId: secondSubmission.requestId,
       thinkingLevel: "low",

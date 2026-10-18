@@ -109,7 +109,7 @@ test("compaction shrinks active transcript but usage remains the durable ledger"
   });
   assertEquals(state.entries, [{ id: 2, label: "Context compacted", detail: "Summary" }]);
   assertEquals(state.thinkingLevel, "max");
-  assertEquals(state.followUpQueue, ["Next"]);
+  assertEquals(state.followUpQueue, [{ text: "Next" }]);
   assertEquals(totalSessionUsage(state).totalTokens, 15);
   assertEquals(state.contextUsage, undefined);
 });
@@ -283,5 +283,71 @@ test("setup entries show their output to viewers, not the message written for th
   assertEquals(state.entries, [
     { role: "setup", id: 1, step: "setup", exitCode: 2, output: "npm ERR! missing script" },
     { role: "user", messageId: "2:0", text: "Fix the build" },
+  ]);
+});
+
+test("messages from other threads show their sender and text, not the label the model reads", () => {
+  const parent = "0b9e3f2c-5d41-4c7a-9a3e-2f6d8c1b7e40";
+  const state = reduceSessionTranscriptState(initial(), {
+    type: "conversation.snapshot",
+    view: view(
+      [
+        {
+          id: 1,
+          conversationId: 0,
+          kind: "openorb.thread-message",
+          data: { relation: "parent", sessionId: parent, title: "Instagram photo downloads" },
+          model: [
+            {
+              role: "user",
+              content: `Message from parent thread ${parent}:\n\nMessage from the user: keep this line`,
+              timestamp: 1,
+            },
+          ],
+        },
+        {
+          id: 2,
+          conversationId: 0,
+          kind: "openorb.thread-message",
+          data: { relation: "sibling", sessionId: parent },
+          model: [{ role: "user", content: "Unrecognised sender", timestamp: 1 }],
+        },
+      ],
+      {
+        "pi.inbox": {
+          items: [
+            { id: 3, mode: "followUp", content: "Next from the user" },
+            {
+              id: 4,
+              mode: "followUp",
+              content: `Message from parent thread ${parent}:\n\nQueued while busy`,
+              entry: {
+                kind: "openorb.thread-message",
+                data: { relation: "parent", sessionId: parent, title: "Instagram photo downloads" },
+              },
+            },
+          ],
+        },
+      },
+    ),
+  });
+  assertEquals(state.entries, [
+    {
+      role: "thread",
+      messageId: "1:0",
+      relation: "parent",
+      sessionId: parent,
+      title: "Instagram photo downloads",
+      text: "Message from the user: keep this line",
+    },
+    { role: "user", messageId: "2:0", text: "Unrecognised sender" },
+  ]);
+  // A message queued while this thread is busy is not shown as the user's follow-up.
+  assertEquals(state.followUpQueue, [
+    { text: "Next from the user" },
+    {
+      text: "Queued while busy",
+      sender: { relation: "parent", sessionId: parent, title: "Instagram photo downloads" },
+    },
   ]);
 });

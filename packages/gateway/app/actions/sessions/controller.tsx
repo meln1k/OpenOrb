@@ -18,7 +18,7 @@ import { redirect } from "remix/response/redirect";
 
 import { AppPage } from "../app/page.tsx";
 import { SessionDetailFrame, SessionDetailPage } from "./page.tsx";
-import { type Administrator, initialPromptPreview } from "../../cells/workspace/api.ts";
+import type { Administrator } from "../../cells/workspace/api.ts";
 import { isSafeGitReference } from "../../cells/session/git-snapshot-schema.ts";
 import { csrf } from "../../middleware/csrf.ts";
 import type { AppContext } from "../../router.ts";
@@ -31,6 +31,7 @@ import { isModelReference } from "../../model-provider-catalog.ts";
 import type { SessionComposerValues } from "../../ui/public/session-composer.tsx";
 import { SessionWorkspaceLoadError } from "../../ui/public/shell.tsx";
 import { currentSessionRecovery } from "../../utils/session-recovery.ts";
+import { startSession } from "../../cells/session/start.ts";
 
 const sessionIdSchema = s.string().refine(validateUuid, "Expected a session UUID.");
 /** Empty for a Session without a project. */
@@ -167,47 +168,32 @@ export default createController(routes.app.sessions, {
 
       const sessionId = crypto.randomUUID();
       const createdAt = new Date().toISOString();
-      // The catalog entry first, so a Session that fails to start is still visible and deletable.
-      const [, catalogError] = await workspace.addSessionCatalogEntry(workspaceId, {
-        id: sessionId,
-        ...(project === undefined ? {} : { projectId: project.id }),
+      const [, startError] = await startSession(workspace, context.services.sessions(sessionId), {
+        workspaceId,
+        sessionId,
+        ...(project === undefined || gitAuthor === null
+          ? {}
+          : {
+              project: {
+                id: project.id,
+                repositoryUrl: project.repositoryUrl,
+                ref: parsed.value.ref,
+                branchName: parsed.value.branchName,
+                gitAuthor: { name: gitAuthor.authorName, email: gitAuthor.authorEmail },
+              },
+            }),
         createdAt,
-        initialPromptPreview: initialPromptPreview(parsed.value.initialPrompt),
+        placement,
+        orbSize: parsed.value.orbSize,
+        model: parsed.value.model,
+        thinkingLevel: parsed.value.thinkingLevel ?? DEFAULT_SESSION_THINKING_LEVEL,
+        initialPrompt: parsed.value.initialPrompt,
+        origin: { kind: "user" },
       });
-      if (catalogError !== undefined) {
-        return await renderCreateError(
-          context,
-          "The session could not be recorded.",
-          500,
-          submitted,
-        );
-      }
-      const [, createError] = await sessionCall(
-        context.services.sessions(sessionId).create({
-          workspaceId,
-          sessionId,
-          ...(project === undefined || gitAuthor === null
-            ? {}
-            : {
-                project: {
-                  id: project.id,
-                  repositoryUrl: project.repositoryUrl,
-                  ref: parsed.value.ref,
-                  branchName: parsed.value.branchName,
-                  gitAuthor: { name: gitAuthor.authorName, email: gitAuthor.authorEmail },
-                },
-              }),
-          createdAt,
-          placement,
-          orbSize: parsed.value.orbSize,
-          model: parsed.value.model,
-          thinkingLevel: parsed.value.thinkingLevel ?? DEFAULT_SESSION_THINKING_LEVEL,
-          initialPrompt: parsed.value.initialPrompt,
-        }),
-      );
-      if (createError !== undefined) {
-        await workspace.deleteSessionCatalogEntry(workspaceId, sessionId);
-        return await renderCreateError(context, createError, 503, submitted);
+      if (startError !== undefined) {
+        return startError.stage === "record"
+          ? await renderCreateError(context, "The session could not be recorded.", 500, submitted)
+          : await renderCreateError(context, startError.message, 503, submitted);
       }
 
       return redirect(routes.app.sessions.detail.href({ sessionId }), 303);
@@ -246,6 +232,7 @@ export default createController(routes.app.sessions, {
       if (snapshot === null) return await sessionCommandError(context, "Session not found.", 404);
       const [, promptError] = await sessionCall(
         sessionApi.submit({
+          origin: { kind: "user" },
           prompt: parsed.value.prompt,
           requestId: crypto.randomUUID(),
           ...(parsed.value.thinkingLevel === undefined

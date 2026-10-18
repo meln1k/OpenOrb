@@ -13,6 +13,7 @@ import ChevronRight from "lucide/dist/esm/icons/chevron-right.mjs";
 import ChevronsUpDown from "lucide/dist/esm/icons/chevrons-up-down.mjs";
 import CircleMinus from "lucide/dist/esm/icons/circle-minus.mjs";
 import CirclePlus from "lucide/dist/esm/icons/circle-plus.mjs";
+import CornerDownRight from "lucide/dist/esm/icons/corner-down-right.mjs";
 import Cpu from "lucide/dist/esm/icons/cpu.mjs";
 import CreditCard from "lucide/dist/esm/icons/credit-card.mjs";
 import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
@@ -24,6 +25,7 @@ import KeyRound from "lucide/dist/esm/icons/key-round.mjs";
 import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
 import LogOut from "lucide/dist/esm/icons/log-out.mjs";
 import MessageSquare from "lucide/dist/esm/icons/message-square.mjs";
+import MessagesSquare from "lucide/dist/esm/icons/messages-square.mjs";
 import MemoryStick from "lucide/dist/esm/icons/memory-stick.mjs";
 import PanelLeft from "lucide/dist/esm/icons/panel-left.mjs";
 import PanelRight from "lucide/dist/esm/icons/panel-right.mjs";
@@ -53,6 +55,7 @@ export type IconName =
   | "chevrons-up-down"
   | "circle-minus"
   | "circle-plus"
+  | "corner-down-right"
   | "cpu"
   | "credit-card"
   | "secrets"
@@ -63,6 +66,7 @@ export type IconName =
   | "github"
   | "logout"
   | "message"
+  | "messages"
   | "memory"
   | "more-horizontal"
   | "panel-left"
@@ -157,6 +161,7 @@ const iconNodes = {
   "chevrons-up-down": ChevronsUpDown,
   "circle-minus": CircleMinus,
   "circle-plus": CirclePlus,
+  "corner-down-right": CornerDownRight,
   cpu: Cpu,
   "credit-card": CreditCard,
   secrets: KeyRound,
@@ -167,6 +172,7 @@ const iconNodes = {
   github: GitBranch,
   logout: LogOut,
   message: MessageSquare,
+  messages: MessagesSquare,
   memory: MemoryStick,
   "more-horizontal": Ellipsis,
   "panel-left": PanelLeft,

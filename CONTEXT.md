@@ -34,6 +34,11 @@ independent of any particular agent implementation or version. _Avoid_: Pi inter
 **Harness State**: The durable conversation, queued inputs, and unfinished agent work needed by an
 Agent Harness to continue a Session. _Avoid_: Conversation journal
 
+**Child Session**: A Session that another Session's agent created with `create_thread`. It inherits
+its parent's project, environment provider, and model, and cannot create Sessions itself. The agent
+itself is told "thread" and "child thread", after Amp's thread tools; everywhere else, say Session.
+_Avoid_: Sub-session, subagent
+
 **Submission**: One input admitted to a Session's conversation, with its own stable identity whether
 it starts work or becomes a Follow-up. _Avoid_: Run ID, acceptance receipt
 

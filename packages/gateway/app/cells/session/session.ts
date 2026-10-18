@@ -74,6 +74,14 @@ import type {
   SessionGitSnapshot,
 } from "./git-snapshot-schema.ts";
 import type { SessionEvent, SessionIssue, SessionView } from "./view.ts";
+import type { PeerThreadStatus, SessionPeer, ThreadContext } from "./api.ts";
+import { peerThreadStatus, ThreadHost } from "./threads/host.ts";
+import {
+  THREAD_MESSAGE_KIND,
+  threadMessage,
+  type ThreadMessageData,
+} from "@openorb/protocol/thread-message";
+import { conversationTranscript } from "./threads/transcript.ts";
 import { GIT_REFRESH_DEBOUNCE_MS, ProjectIntegration } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -120,7 +128,23 @@ export interface CreateSessionInput {
   readonly model: string;
   readonly thinkingLevel: ThinkingLevel;
   readonly initialPrompt: string;
+  /** Who wrote the initial prompt: the user, or a parent creating a Child Session (ADR 0010). */
+  readonly origin: SessionOrigin;
 }
+
+/** A prompt the user wrote; only these grant access to the Sessions they paste (ADR 0010). */
+export interface UserOrigin {
+  readonly kind: "user";
+}
+
+/** A parent creating a Child Session: its ID, and its Initial Prompt Preview, which names it. */
+export interface ParentOrigin {
+  readonly kind: "parent";
+  readonly sessionId: string;
+  readonly title: string;
+}
+
+export type SessionOrigin = UserOrigin | ParentOrigin;
 
 /** Where one transcript media item's bytes are: R2 for published media, Harness State inline. */
 export type SessionMedia =
@@ -192,6 +216,7 @@ export function nextAlarm({
 export class Session extends DurableObject<Env> {
   readonly #ctx: SessionContext;
   readonly #workspace: WorkspaceApi;
+  readonly #threads: ThreadHost;
   readonly #media: MediaBucket;
   readonly #subscribers = new Set<(event: SessionEvent) => void>();
   #providers: EnvironmentProviders | undefined;
@@ -214,7 +239,13 @@ export class Session extends DurableObject<Env> {
     this.#workspace = env.WORKSPACE.getByName("workspace") as unknown as WorkspaceApi;
     // SAFETY: the R2 binding implements this subset; its thenables differ only in checker types.
     // oxlint-disable-next-line openorb/no-chained-type-assertions
-    this.#media = env.MEDIA as unknown as MediaBucket;
+    this.#media = env.MEDIA;
+    this.#threads = new ThreadHost({
+      storage: ctx.storage,
+      workspace: this.#workspace,
+      record: () => this.#record!,
+      peer: (sessionId) => this.sessionPeer(sessionId),
+    });
     // Requests wait until the schema is current and the record and runtime are loaded.
     this.#runtime = ctx.blockConcurrencyWhile(async () => {
       await migrateDurableObjectDatabase(ctx.storage, sessionMigrations);
@@ -244,7 +275,19 @@ export class Session extends DurableObject<Env> {
         throw failure;
       }
     }
-    await this.#admit(await this.#required(), input.initialPrompt, input.sessionId);
+    const runtime = await this.#required();
+    if (input.origin.kind === "user") {
+      this.#threads.grantPastedSessions(input.initialPrompt);
+      await this.#admit(runtime, input.initialPrompt, input.sessionId);
+    } else {
+      const { sessionId, title } = input.origin;
+      await this.#admit(
+        runtime,
+        threadMessage("parent", sessionId, input.initialPrompt),
+        input.sessionId,
+        { relation: "parent", sessionId, title },
+      );
+    }
     return { created };
   }
 
@@ -257,6 +300,7 @@ export class Session extends DurableObject<Env> {
     const record: SessionRecord = {
       workspaceId: Schema.decodeUnknownSync(WorkspaceId)(input.workspaceId),
       sessionId: input.sessionId,
+      ...(input.origin.kind === "parent" ? { parentSessionId: input.origin.sessionId } : {}),
       ...(input.project === undefined
         ? {}
         : { project: { ...input.project, gitAuthor: new GitAuthor(input.project.gitAuthor) } }),
@@ -291,12 +335,14 @@ export class Session extends DurableObject<Env> {
     prompt: string;
     requestId: string;
     thinkingLevel?: ThinkingLevel;
+    origin: UserOrigin;
   }): Promise<void> {
     const runtime = await this.#required();
     if (!/^[A-Za-z0-9-]{1,100}$/.test(input.requestId) || !input.prompt.trim()) {
       throw new SessionError("A prompt and a request ID are required.");
     }
     if (input.thinkingLevel !== undefined) await this.setThinkingLevel(input.thinkingLevel);
+    if (input.origin.kind === "user") this.#threads.grantPastedSessions(input.prompt);
     await this.#admit(runtime, input.prompt, input.requestId);
   }
 
@@ -428,6 +474,47 @@ export class Session extends DurableObject<Env> {
     return found === undefined ? null : { kind: "inline", ...found };
   }
 
+  // --- Session-to-Session RPC (ADR 0010) --------------------------------------------------------
+
+  /** Lifecycle and the newest messages, for another Session's get_thread_status. */
+  async threadStatus(input: { workspaceId: string }): Promise<PeerThreadStatus> {
+    const { runtime, record } = await this.#peerTarget(input.workspaceId);
+    const { messages } = await runtime.agent.conversation.context(context);
+    return peerThreadStatus(record, this.#busy, messages);
+  }
+
+  /** The bounded transcript another Session's read_thread reads. */
+  async threadTranscript(input: { workspaceId: string; scope: ThreadContext }): Promise<string> {
+    const { runtime } = await this.#peerTarget(input.workspaceId);
+    return await conversationTranscript(runtime.agent.conversation, input.scope, context);
+  }
+
+  /** A message from this Session's parent or one of its children, admitted like a prompt. */
+  async receiveThreadMessage(input: {
+    workspaceId: string;
+    fromSessionId: string;
+    fromTitle: string;
+    message: string;
+    requestId: string;
+  }): Promise<void> {
+    const { runtime } = await this.#peerTarget(input.workspaceId);
+    const relation = this.#threads.sender(input.fromSessionId);
+    await this.#admit(
+      runtime,
+      threadMessage(relation, input.fromSessionId, input.message),
+      input.requestId,
+      { relation, sessionId: input.fromSessionId, title: input.fromTitle },
+    );
+  }
+
+  /** This Session's runtime and record, for a peer call from a Session of the same Workspace. */
+  async #peerTarget(workspaceId: string): Promise<{ runtime: Runtime; record: SessionRecord }> {
+    const runtime = await this.#required();
+    const record = this.#record!;
+    if (record.workspaceId !== workspaceId) throw new SessionError("Thread not found.");
+    return { runtime, record };
+  }
+
   // --- HTTP and WebSockets ----------------------------------------------------------------------
 
   /** Conversation events; anything else is the environment's, such as a runner's link upgrade. */
@@ -473,6 +560,14 @@ export class Session extends DurableObject<Env> {
   /** Model access with Workspace credentials; a seam for scripted test models. */
   protected agentModels(credentials: CredentialStore): Models {
     return createAgentModels(credentials);
+  }
+
+  /** Another Session Durable Object of this gateway; a seam for in-memory peers in tests. */
+  protected sessionPeer(sessionId: string): SessionPeer {
+    // SAFETY: the Session class implements this native RPC surface; platform thenables differ only
+    // in checker types.
+    // oxlint-disable-next-line openorb/no-chained-type-assertions
+    return this.env.SESSIONS.getByName(sessionId) as unknown as SessionPeer;
   }
 
   /** The Agent Environment Providers by placement name; a seam for test providers. */
@@ -534,6 +629,7 @@ export class Session extends DurableObject<Env> {
           facets: ctx.facets,
           sessionId: record.sessionId,
         }),
+        threads: this.#threads,
       },
       context,
     );
@@ -667,7 +763,13 @@ export class Session extends DurableObject<Env> {
    * Admits a prompt to Pi behind a queued start, so a stopped environment starts for it and its
    * run waits for that start and any setup before it. The recovery alarm is persisted first.
    */
-  async #admit(runtime: Runtime, prompt: string, requestId: string): Promise<void> {
+  async #admit(
+    runtime: Runtime,
+    prompt: string,
+    requestId: string,
+    /** Set for a prompt from another thread, which the transcript shows as its message. */
+    sender?: ThreadMessageData,
+  ): Promise<void> {
     this.#touch();
     this.#background(
       this.#operate(runtime, async () => {
@@ -681,7 +783,15 @@ export class Session extends DurableObject<Env> {
     );
     await this.#ctx.storage.setAlarm(Date.now() + RECOVERY_MS);
     await runtime.agent.conversation.submit(
-      { type: "input", content: prompt, requestId, whenBusy: "followUp" },
+      {
+        type: "input",
+        content: prompt,
+        requestId,
+        whenBusy: "followUp",
+        ...(sender === undefined
+          ? {}
+          : { entry: { kind: THREAD_MESSAGE_KIND, data: { ...sender } } }),
+      },
       context,
     );
     await this.#reconcile(runtime);
@@ -1027,6 +1137,8 @@ export class Session extends DurableObject<Env> {
           void watch.stop();
         };
         const abort = () => {
+          // A viewer that cancelled the stream already stopped it, and its controller is closed.
+          if (stopped) return;
           cleanup();
           controller.close();
         };

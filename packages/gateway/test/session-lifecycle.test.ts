@@ -130,6 +130,7 @@ function sessionFixture(
         model: "faux/demo",
         thinkingLevel: "off",
         initialPrompt: "Answer without guest tools.",
+        origin: { kind: "user" },
       }),
     drain: async () => {
       while (pending.size !== 0) await Promise.all([...pending]);
@@ -155,7 +156,11 @@ test("prompts admitted during setup run once it settles", async () => {
   const test = sessionFixture({ fake: environment.provider });
   await test.create();
   await setup.entered;
-  await test.session.submit({ prompt: "Follow up", requestId: "follow-up" });
+  await test.session.submit({
+    origin: { kind: "user" },
+    prompt: "Follow up",
+    requestId: "follow-up",
+  });
   await scheduled();
   // Pi holds both prompts; neither reaches the model before setup settles.
   assertEquals(test.submissions(), 2);
@@ -176,8 +181,8 @@ test("abort cancels every prompt admitted during setup", async () => {
   const test = sessionFixture({ fake: environment.provider });
   await test.create();
   await setup.entered;
-  await test.session.submit({ prompt: "Second", requestId: "second" });
-  await test.session.submit({ prompt: "Third", requestId: "third" });
+  await test.session.submit({ origin: { kind: "user" }, prompt: "Second", requestId: "second" });
+  await test.session.submit({ origin: { kind: "user" }, prompt: "Third", requestId: "third" });
   await scheduled();
   assertEquals(test.submissions("done"), 0);
   await test.session.abort();
@@ -213,7 +218,11 @@ test("Stop Session aborts queued prompts, and the next prompt starts compute", a
   assertEquals(test.session.view()?.state, "stopped");
   assertEquals(environment.actions, ["start", "stop"]);
 
-  await test.session.submit({ prompt: "Start again", requestId: "start-again" });
+  await test.session.submit({
+    origin: { kind: "user" },
+    prompt: "Start again",
+    requestId: "start-again",
+  });
   await test.drain();
   assertEquals(environment.actions, ["start", "stop", "start"]);
   assertEquals(test.submissions("done"), 1);
@@ -228,7 +237,11 @@ test("a prompt admitted during Stop runs after it, on started compute", async ()
   const stop = environment.hold("stop");
   const stopped = test.session.stop();
   await stop.entered;
-  await test.session.submit({ prompt: "After stop", requestId: "after-stop" });
+  await test.session.submit({
+    origin: { kind: "user" },
+    prompt: "After stop",
+    requestId: "after-stop",
+  });
   await scheduled();
   // It waits for the stop and the start queued behind it.
   assertEquals(test.submissions("done"), 1);
@@ -252,7 +265,11 @@ test("a prompt during an idle stop starts compute only after the stop", async ()
     alarm = test.session.alarm();
     await stop.entered;
   }
-  await test.session.submit({ prompt: "Resume", requestId: "resume-during-stop" });
+  await test.session.submit({
+    origin: { kind: "user" },
+    prompt: "Resume",
+    requestId: "resume-during-stop",
+  });
   assertEquals(environment.actions, ["start", "stop"]);
   stop.finish();
   await alarm;
@@ -333,8 +350,16 @@ test("concurrent admission persists recovery despite a held decision", async () 
     }
     return exec(query, ...bindings);
   };
-  const first = test.session.submit({ prompt: "First", requestId: "first" });
-  const second = test.session.submit({ prompt: "Second", requestId: "second" });
+  const first = test.session.submit({
+    origin: { kind: "user" },
+    prompt: "First",
+    requestId: "first",
+  });
+  const second = test.session.submit({
+    origin: { kind: "user" },
+    prompt: "Second",
+    requestId: "second",
+  });
   // Let both RPCs reach admission while the earlier decision is still held.
   await new Promise((resolve) => setTimeout(resolve, 0));
   finish.resolve();

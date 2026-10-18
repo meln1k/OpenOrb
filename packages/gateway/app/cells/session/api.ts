@@ -6,10 +6,10 @@ import type {
   SessionGitPatchSection,
   SessionGitSnapshot,
 } from "./git-snapshot-schema.ts";
-import type { CreateSessionInput, SessionMedia } from "./session.ts";
-import type { SessionView } from "./view.ts";
+import type { CreateSessionInput, SessionMedia, UserOrigin } from "./session.ts";
+import type { AgentState, SessionState, SessionView } from "./view.ts";
 
-export type { CreateSessionInput, SessionMedia } from "./session.ts";
+export type { CreateSessionInput, SessionMedia, SessionOrigin, UserOrigin } from "./session.ts";
 
 /** The Session Durable Object's native RPC surface used by browser routes. */
 export interface SessionApi {
@@ -20,6 +20,8 @@ export interface SessionApi {
     prompt: string;
     requestId: string;
     thinkingLevel?: ThinkingLevel;
+    /** Only the user's own prompts grant access to the Sessions they paste (ADR 0010). */
+    origin: UserOrigin;
   }): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<ThinkingLevel>;
   abort(): Promise<void>;
@@ -79,3 +81,38 @@ export interface MediaReader {
 
 /** Resolves a Session Durable Object by its gateway-generated identifier. */
 export type SessionDirectory = (sessionId: string) => SessionApi;
+
+/** Which transcript read_thread reads: the active context window or the whole history. */
+export type ThreadContext = "current" | "full";
+
+/** What a Session reports to another Session's get_thread_status (ADR 0010). */
+export interface PeerThreadStatus {
+  readonly sessionId: string;
+  readonly state: SessionState;
+  readonly agentState: AgentState;
+  readonly environmentState: EnvironmentState;
+  readonly createdAt: string;
+  readonly initialPromptPreview: string;
+  /** The newest user and assistant messages, shortened. */
+  readonly recentMessages: readonly string[];
+}
+
+/**
+ * The native RPC one Session Durable Object calls on another (ADR 0010). The calling Session checks
+ * its own access first; the target checks the Workspace and, for messages, the relation again.
+ */
+export interface SessionPeer extends Pick<SessionRpc, "create" | "view"> {
+  threadStatus(input: { readonly workspaceId: string }): Promise<PeerThreadStatus>;
+  threadTranscript(input: {
+    readonly workspaceId: string;
+    readonly scope: ThreadContext;
+  }): Promise<string>;
+  receiveThreadMessage(input: {
+    readonly workspaceId: string;
+    readonly fromSessionId: string;
+    /** The sender's Initial Prompt Preview, which the recipient's transcript names it by. */
+    readonly fromTitle: string;
+    readonly message: string;
+    readonly requestId: string;
+  }): Promise<void>;
+}

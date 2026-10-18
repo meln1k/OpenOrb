@@ -16,7 +16,7 @@ import {
 } from "../../app/cells/workspace/api.ts";
 import type { Env } from "../../app/env.ts";
 import httpWorker from "./http-worker.ts";
-import { Workspace } from "../../app/cells/workspace/workspace.ts";
+import { MAX_CHILD_SESSIONS, Workspace } from "../../app/cells/workspace/workspace.ts";
 import {
   migrateWorkspaceDatabase,
   workspaceMigrations,
@@ -162,18 +162,19 @@ test("Workspace migrations preserve records, roll back failed upgrades, and reje
     { id: "0002" },
     { id: "0003" },
     { id: "0004" },
+    { id: "0005" },
   ]);
   const unchanged = storage.dump();
   assertEquals((await migrateWorkspaceDatabase(storage, workspaceMigrations)).applied, []);
   assertEquals(storage.dump(), unchanged);
 
   const upgrade = {
-    id: "0005",
+    id: "0006",
     name: "project_note",
     up: "ALTER TABLE projects ADD COLUMN note TEXT NOT NULL DEFAULT 'retained';",
   };
   const failed = {
-    id: "0006",
+    id: "0007",
     name: "migration_probe",
     up: "CREATE TABLE migration_probe (value TEXT); INSERT INTO missing_table VALUES ('fail');",
   };
@@ -197,7 +198,7 @@ test("Workspace migrations preserve records, roll back failed upgrades, and reje
   ];
   assertEquals(
     (await migrateWorkspaceDatabase(storage, migrations)).applied.map((m) => m.id),
-    ["0005", "0006"],
+    ["0006", "0007"],
   );
   assertEquals(storage.rows("SELECT id, note FROM projects"), [
     {
@@ -466,6 +467,74 @@ test("catalog entries need their project and are deleted once", async () => {
     undefined,
   ]);
   assertEquals(await restarted.getSessionCatalogEntry(workspaceId, entry.id), null);
+});
+
+test("a Session has at most 100 Child Sessions at a time", async () => {
+  const { workspace, workspaceId } = await configured();
+  const projectless = () => {
+    const { projectId: _projectId, ...entry } = snapshot(crypto.randomUUID());
+    return entry;
+  };
+  const parent = projectless();
+  await workspace.addSessionCatalogEntry(workspaceId, parent);
+  const children = Array.from({ length: MAX_CHILD_SESSIONS }, () => ({
+    ...projectless(),
+    parentSessionId: parent.id,
+  }));
+  for (const child of children) {
+    assertEquals(await workspace.addSessionCatalogEntry(workspaceId, child), [
+      undefined,
+      undefined,
+    ]);
+  }
+  const extra = { ...projectless(), parentSessionId: parent.id };
+  const [, refused] = await workspace.addSessionCatalogEntry(workspaceId, extra);
+  assert(refused instanceof Error);
+  // A retried start of an existing child still succeeds at the limit.
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, children[0]!), [
+    undefined,
+    undefined,
+  ]);
+  // Deleted children no longer count.
+  await workspace.deleteSessionCatalogEntry(workspaceId, children[0]!.id);
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, extra), [undefined, undefined]);
+});
+
+test("Child Sessions name a top-level parent in the same Workspace", async () => {
+  const { workspace, workspaceId } = await configured();
+  const projectless = () => {
+    const { projectId: _projectId, ...entry } = snapshot(crypto.randomUUID());
+    return entry;
+  };
+  const parent = projectless();
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, parent), [undefined, undefined]);
+  const child = { ...projectless(), parentSessionId: parent.id };
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, child), [undefined, undefined]);
+  assertEquals(await workspace.getSessionCatalogEntry(workspaceId, child.id), child);
+  // The sidebar nests the child under its parent; a top-level Session names none.
+  const entries = await workspace.listSessionNavigationEntries(workspaceId);
+  assertEquals(entries.find(({ id }) => id === child.id)?.parentSessionId, parent.id);
+  assert(!("parentSessionId" in entries.find(({ id }) => id === parent.id)!));
+  // Children nest one level deep, and a parent from another Workspace is not found.
+  const [, grandchild] = await workspace.addSessionCatalogEntry(workspaceId, {
+    ...projectless(),
+    parentSessionId: child.id,
+  });
+  assert(grandchild instanceof Error);
+  const other = await configured();
+  const [, foreign] = await other.workspace.addSessionCatalogEntry(other.workspaceId, {
+    ...projectless(),
+    parentSessionId: parent.id,
+  });
+  assert(foreign instanceof Error);
+  // Repeating an entry is harmless; reusing its ID for a different Session is not.
+  assertEquals(await workspace.addSessionCatalogEntry(workspaceId, child), [undefined, undefined]);
+  const { parentSessionId: _parent, ...topLevel } = child;
+  const [, reused] = await workspace.addSessionCatalogEntry(workspaceId, topLevel);
+  assert(reused instanceof Error);
+  // Deleting the parent leaves its child in place.
+  await workspace.deleteSessionCatalogEntry(workspaceId, parent.id);
+  assertEquals(await workspace.getSessionCatalogEntry(workspaceId, child.id), child);
 });
 
 test("Workspace preserves protocol limits", async () => {
