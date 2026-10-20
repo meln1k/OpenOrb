@@ -131,6 +131,16 @@ export interface SessionNavigationEntry {
   parentSessionId?: string;
 }
 
+/**
+ * Workspace-wide Session facts the sidebar follows. Live only: each stream opens with the catalog
+ * as it stands when the stream subscribes, so nothing created after that snapshot is missed.
+ */
+export type WorkspaceEvent =
+  | { readonly type: "sessions.snapshot"; readonly sessions: SessionNavigationEntry[] }
+  | { readonly type: "session.created"; readonly session: SessionNavigationEntry }
+  /** The Session's Agent Run settled: the agent finished its work and is idle. */
+  | { readonly type: "session.settled"; readonly sessionId: string };
+
 export interface OpenAICodexAuthorization {
   readonly id: string;
   readonly userCode: string;
@@ -252,6 +262,8 @@ export interface WorkspaceApi {
     workspaceId: WorkspaceId,
     id: string,
   ): Promise<Result<"deleted" | "not-found", Error>>;
+  /** A Session reports that its Agent Run settled, for the Workspace's event streams. */
+  sessionSettled(workspaceId: WorkspaceId, id: string): Promise<void>;
   startProviderLogin(workspaceId: WorkspaceId): Promise<OpenAICodexAuthorization>;
   getProviderLoginStatus(
     workspaceId: WorkspaceId,
@@ -357,6 +369,7 @@ const WORKSPACE_ARGUMENTS: WorkspaceArgumentSchemas = {
     }),
   ]),
   deleteSessionCatalogEntry: OwnedIdentifier,
+  sessionSettled: Schema.Tuple([WorkspaceIdSchema, SessionId]),
   startProviderLogin: Owner,
   getProviderLoginStatus: OwnedIdentifier,
   cancelProviderLogin: OwnedIdentifier,

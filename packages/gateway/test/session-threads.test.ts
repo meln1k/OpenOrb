@@ -24,6 +24,8 @@ import { sessionMigrations } from "../app/cells/session/migrations.ts";
 import type { SessionRecord } from "../app/cells/session/record.ts";
 import type { SessionView } from "../app/cells/session/view.ts";
 import type { Env } from "../app/env.ts";
+import type { SessionNavigationEntry, WorkspaceEvent } from "../app/cells/workspace/api.ts";
+import { workspaceEventsFrom } from "../app/cells/workspace/events.ts";
 import { projectConversation } from "../app/actions/sessions/public/session-transcript-state.ts";
 import { createWorkspace, MemoryStorage } from "./workspace/storage.ts";
 
@@ -41,8 +43,20 @@ function text(message: Message | undefined): string {
   return message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 }
 
+/** A prompt `HOLD <thread ID>` keeps its run busy until `release`, then checks that thread. */
+let held: { reached: () => void; release: Promise<void> } | undefined;
+
 function respond(context: TranscriptContext) {
   const last = context.messages.at(-1);
+  const hold = /^HOLD (\S+)$/.exec(text(last));
+  if (hold !== null && held !== undefined) {
+    held.reached();
+    return held.release.then(() =>
+      fauxAssistantMessage(fauxToolCall("get_thread_status", { thread: hold[1]! }), {
+        stopReason: "toolUse",
+      }),
+    );
+  }
   if (JSON.stringify(context.messages[0]).includes(READER)) {
     // The reader proves what it was shown: the markers in its transcript.
     const shown = context.messages.map(text).join("\n");
@@ -287,6 +301,43 @@ test("a parent creates a Child Session, messages it, and reads it; the child can
   assert(grandchild instanceof Error);
 });
 
+test("a message to a busy thread joins its run after the current tool calls", async () => {
+  const sessions = await cluster();
+  const parent = await sessions.start(call("create_thread", { prompt: "MARKER-child" }));
+  const child = await sessions.childOf(parent);
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  held = { reached: reached.resolve, release: release.promise };
+  try {
+    await sessions.session(parent).submit({
+      prompt: `HOLD ${child}`,
+      requestId: crypto.randomUUID(),
+      origin: { kind: "user" },
+    });
+    await reached.promise;
+    // The child's reply, as its send_thread_message delivers it, while the parent's model works.
+    await sessions.session(parent).receiveThreadMessage({
+      workspaceId: sessions.workspaceId,
+      fromSessionId: child,
+      fromTitle: "MARKER-child",
+      message: "MARKER-steered",
+      requestId: crypto.randomUUID(),
+    });
+    release.resolve();
+    await sessions.drain();
+  } finally {
+    held = undefined;
+  }
+  const transcript = await sessions.transcript(parent);
+  const run = transcript.slice(transcript.indexOf(`HOLD ${child}`));
+  // A follow-up would wait for the model to answer the tool result first, in a turn of its own.
+  const status = run.indexOf("get_thread_status");
+  const message = run.indexOf(`Message from child thread ${child}:\n\nMARKER-steered`);
+  assert(status !== -1 && status < message, run);
+  assert(!run.includes("get_thread_status returned"), run);
+  assertStringIncludes(run.slice(message), "Answered: Message from child thread");
+});
+
 test("only Child Sessions and Sessions the user pasted are readable", async () => {
   const sessions = await cluster();
   const other = await sessions.start("MARKER-other");
@@ -405,6 +456,64 @@ test("a Child Session's grants come only from its user, and it reaches only its 
     transcript,
     `send_thread_message returned: Sent to parent thread ${parent}.`,
   );
+});
+
+test("the Workspace stream reports a child its parent creates and each Agent Run that settles", async () => {
+  const sessions = await cluster();
+  const earlier = await sessions.start("Before the stream");
+  const viewer = new AbortController();
+  const response = await workspaceEventsFrom(sessions.workspace)(
+    sessions.workspaceId,
+    viewer.signal,
+  );
+  assertEquals(response.headers.get("Content-Type"), "text/event-stream");
+  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  const read = async (count: number) => {
+    while (buffer.split("\n\n").length <= count) {
+      const { value, done } = await reader.read();
+      assert(!done, "the event stream ended early");
+      buffer += value;
+    }
+    return buffer
+      .split("\n\n")
+      .slice(0, count)
+      .map((frame): WorkspaceEvent => {
+        assertStringIncludes(frame, "event: workspace\n");
+        return JSON.parse(frame.slice(frame.indexOf("data: ") + "data: ".length));
+      });
+  };
+
+  // Live only: the earlier Session's settled run is not replayed, but the snapshot lists it.
+  const [snapshot] = await read(1);
+  assertEquals(snapshot, {
+    type: "sessions.snapshot",
+    sessions: [{ id: earlier, initialPromptPreview: "Before the stream" }],
+  });
+
+  const parent = await sessions.start(call("create_thread", { prompt: "MARKER-streamed" }));
+  const child = await sessions.childOf(parent);
+  const events = (await read(5)).slice(1).map((event) => JSON.stringify(event));
+  const { initialPromptPreview } = (await sessions.session(parent).view())!;
+  const created = (session: SessionNavigationEntry) =>
+    JSON.stringify({ type: "session.created", session });
+  const settled = (id: string) => JSON.stringify({ type: "session.settled", sessionId: id });
+  const order = [
+    created({ id: parent, initialPromptPreview }),
+    created({ id: child, initialPromptPreview: "MARKER-streamed", parentSessionId: parent }),
+    settled(parent),
+    settled(child),
+  ].map((event) => events.indexOf(event));
+  assertEquals(events.length, 4);
+  assert(!order.includes(-1), events.join("\n"));
+  // The child is created during its parent's run, and settles after it is created.
+  assert(
+    order[0]! < order[1]! && order[1]! < order[2]! && order[1]! < order[3]!,
+    events.join("\n"),
+  );
+
+  viewer.abort();
+  assert((await reader.read()).done, "the stream outlived its viewer");
 });
 
 test("a repeated create_thread call starts its child once", async () => {

@@ -22,7 +22,9 @@ export class Workspace extends ConfigurationWorkspace {
     return this.#credentialReads;
   }
 
-  fetch(): never {
+  /** Only the event stream crosses HTTP; everything else must use named RPC methods. */
+  override fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === "/events") return super.fetch(request);
     throw new Error("DO fetch forwarding is forbidden: the Worker must call named RPC methods");
   }
 }

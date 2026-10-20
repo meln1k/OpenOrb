@@ -222,6 +222,8 @@ export async function openAgent(
         return options.env;
       },
       settings: {
+        // Thread messages that arrived together, such as children's replies, land together.
+        steeringMode: "all",
         stream: {
           headers: options.model.startsWith("opencode-go/")
             ? { "x-opencode-session": options.sessionId }

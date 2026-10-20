@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import type { Cookie } from "remix/cookie";
 import type { SessionStorage } from "remix/session";
 import type { MediaReader, SessionDirectory } from "../app/cells/session/api.ts";
+import { Workspace } from "../app/cells/workspace/workspace.ts";
+import { workspaceEventsFrom } from "../app/cells/workspace/events.ts";
 import {
   type AppServices,
   createAppServices as createWorkspaceAppServices,
@@ -61,6 +63,11 @@ export function createAppServices(
     }),
     sessions,
     media,
+    // An in-process Workspace serves its own streams; other fixtures have none.
+    workspaceEvents:
+      workspace instanceof Workspace
+        ? workspaceEventsFrom(workspace)
+        : () => Promise.resolve(new Response("Not found", { status: 404 })),
   });
 }
 

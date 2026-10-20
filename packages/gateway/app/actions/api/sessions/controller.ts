@@ -47,6 +47,12 @@ const gitPatchChunkParamsSchema = Schema.Struct({
 export default createController(routes.api.sessions, {
   middleware: [sessionApiTelemetry(), requireAuth<Administrator>(), sessionCsrfStage(), csrf()],
   actions: {
+    async updates(context) {
+      sessionStage("updates");
+      return await sessionSpan("updates.subscribe", () =>
+        context.services.workspaceEvents(context.auth.identity.workspaceId, context.request.signal),
+      );
+    },
     async wake(context) {
       sessionStage("wake.validate");
       const workspaceId = context.auth.identity.workspaceId;

@@ -33,6 +33,7 @@ import {
   UserId,
   type WorkspaceApi,
 } from "./api.ts";
+import { WorkspaceEventStreams } from "./events.ts";
 import {
   type DeviceLogin,
   type OAuthCredential,
@@ -142,6 +143,7 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   readonly #storage: WorkspaceStorage;
   readonly #masterKey: Promise<MasterKey>;
   readonly #ready: Promise<void>;
+  readonly #events = new WorkspaceEventStreams();
   #tail: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -179,6 +181,21 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
 
   alarm(): Promise<void> {
     return this.#pollLogin();
+  }
+
+  /** Workspace events as Server-Sent Events; celld streams only over HTTP, not native RPC. */
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname !== "/events") return new Response("Not found", { status: 404 });
+    const workspaceId = Schema.decodeUnknownSync(WorkspaceIdSchema)(
+      url.searchParams.get("workspaceId"),
+    );
+    // The catalog queue orders the snapshot before every Session added after it.
+    return await this.#events.open(workspaceId, request.signal, (attach) =>
+      this.#serialize(() =>
+        attach({ type: "sessions.snapshot", sessions: this.#navigationEntries(workspaceId) }),
+      ),
+    );
   }
 
   #rows<T>(query: string, ...bindings: unknown[]): T[] {
@@ -1172,19 +1189,26 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
   ): ReturnType<WorkspaceApi["listSessionNavigationEntries"]> {
     return this.#serialize(() => {
       decodeWorkspaceArguments("listSessionNavigationEntries", [workspaceId]);
-      return this.#rows<NavigationRow>(
-        `
-        SELECT s.id, s.projectId, p.name AS projectName, s.initialPromptPreview, s.parentSessionId
-        FROM sessions s LEFT JOIN projects p ON p.workspaceId = s.workspaceId AND p.id = s.projectId
-        WHERE s.workspaceId = ? ORDER BY s.createdAt DESC
-      `,
-        workspaceId,
-      ).map(({ projectId, projectName, parentSessionId, ...entry }) => ({
-        ...entry,
-        ...(projectId === null || projectName === null ? {} : { projectId, projectName }),
-        ...(parentSessionId === null ? {} : { parentSessionId }),
-      }));
+      return this.#navigationEntries(workspaceId);
     });
+  }
+
+  /** The Workspace's Sessions newest first, or only the one with `id`. */
+  #navigationEntries(workspaceId: WorkspaceId, id?: string): SessionNavigationEntry[] {
+    return this.#rows<NavigationRow>(
+      `
+      SELECT s.id, s.projectId, p.name AS projectName, s.initialPromptPreview, s.parentSessionId
+      FROM sessions s LEFT JOIN projects p ON p.workspaceId = s.workspaceId AND p.id = s.projectId
+      WHERE s.workspaceId = ? AND (? IS NULL OR s.id = ?) ORDER BY s.createdAt DESC
+    `,
+      workspaceId,
+      id ?? null,
+      id ?? null,
+    ).map(({ projectId, projectName, parentSessionId, ...entry }) => ({
+      ...entry,
+      ...(projectId === null || projectName === null ? {} : { projectId, projectName }),
+      ...(parentSessionId === null ? {} : { parentSessionId }),
+    }));
   }
 
   getSessionCatalogEntry(
@@ -1248,6 +1272,9 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
         entry.initialPromptPreview,
         entry.parentSessionId ?? null,
       );
+      const [session] = this.#navigationEntries(workspaceId, entry.id);
+      if (session !== undefined)
+        this.#events.publish(workspaceId, { type: "session.created", session });
       return ok(undefined);
     });
   }
@@ -1264,6 +1291,15 @@ export class Workspace extends DurableObject<Env> implements WorkspaceApi {
         id,
       ).length;
       return ok(deleted ? "deleted" : "not-found");
+    });
+  }
+
+  sessionSettled(workspaceId: WorkspaceId, id: string): ReturnType<WorkspaceApi["sessionSettled"]> {
+    return this.#serialize(() => {
+      decodeWorkspaceArguments("sessionSettled", [workspaceId, id]);
+      if (this.#catalogEntry(workspaceId, id) !== undefined) {
+        this.#events.publish(workspaceId, { type: "session.settled", sessionId: id });
+      }
     });
   }
 

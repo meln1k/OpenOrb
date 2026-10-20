@@ -40,6 +40,7 @@ import {
 } from "./components/index.ts";
 import { media } from "./responsive.ts";
 import { SessionComposerClient, type SessionComposerProps } from "./session-composer.tsx";
+import { sessionNavigation } from "./session-navigation.ts";
 
 export type AppShellLayoutProps = {
   activeSection?: "projects";
@@ -152,7 +153,7 @@ export const AppShellNavigationBehavior = clientEntry<
 
   function sessionForUrl(url: string) {
     const destination = new URL(url);
-    return handle.props.sessions.find((session) => {
+    return sessionNavigation.sessions(handle.props.sessions).find((session) => {
       const href = new URL(routes.app.sessions.detail.href({ sessionId: session.id }), destination);
       return href.pathname === destination.pathname && href.search === destination.search;
     });
@@ -230,6 +231,7 @@ export const AppShellNavigationBehavior = clientEntry<
         if (!completed || completed.generation !== navigationGeneration) return;
         activeSessionNavigation = undefined;
         selectedSessionId = completed.sessionId;
+        sessionNavigation.select(completed.sessionId);
         restoring = false;
         updateSessionButtons();
       },
@@ -252,9 +254,9 @@ export const AppShellNavigationBehavior = clientEntry<
             return;
 
           activeSessionNavigation = undefined;
-          const committed = handle.props.sessions.find(
-            (session) => session.id === selectedSessionId,
-          );
+          const committed = sessionNavigation
+            .sessions(handle.props.sessions)
+            .find((session) => session.id === selectedSessionId);
           if (!committed || restoring) {
             restoring = false;
             updateSessionButtons();
@@ -282,12 +284,17 @@ export const AppShellNavigationBehavior = clientEntry<
     const activeSessionId = handle.props.activeSessionId;
     handle.queueTask((signal) => {
       if (signal.aborted || activeSessionNavigation) return;
-      const activeSession = handle.props.sessions.find((session) => session.id === activeSessionId);
+      // A page outside any Session, such as Projects, leaves none open.
+      if (activeSessionId === undefined) sessionNavigation.select(undefined);
+      const activeSession = sessionNavigation
+        .sessions(handle.props.sessions)
+        .find((session) => session.id === activeSessionId);
       if (!activeSession || sessionForUrl(globalThis.location.href)?.id !== activeSession.id) {
         return;
       }
 
       selectedSessionId = activeSession.id;
+      sessionNavigation.select(activeSession.id);
       restoring = false;
       updateSessionButtons();
       updateCurrentEntry(activeSession);
@@ -417,10 +424,11 @@ function AppNavigation(handle: Handle<AppNavigationProps>) {
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup aria-label="Session history">
-          {renderSessionProjectGroups(handle.props)}
-          {handle.props.sessions.length === 0 ? (
-            <p mix={emptySessionsStyle}>No sessions yet.</p>
-          ) : null}
+          <SessionHistory
+            selectedSessionId={handle.props.selectedSessionId}
+            pendingSessionId={handle.props.pendingSessionId}
+            sessions={handle.props.sessions}
+          />
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
@@ -476,6 +484,32 @@ function AppNavigation(handle: Handle<AppNavigationProps>) {
   );
 }
 
+type SessionHistoryProps = Pick<
+  AppNavigationProps,
+  "selectedSessionId" | "pendingSessionId" | "sessions"
+>;
+
+/** The sidebar's Sessions, kept current by the Workspace event stream. */
+export const SessionHistory = clientEntry<SessionHistoryProps>(
+  import.meta.url,
+  function SessionHistory(handle) {
+    handle.queueTask(() => sessionNavigation.subscribe(() => handle.update(), handle.signal));
+    return () => {
+      const props = {
+        ...handle.props,
+        selectedSessionId: sessionNavigation.selectedSessionId(handle.props.selectedSessionId),
+        sessions: sessionNavigation.sessions(handle.props.sessions),
+      };
+      return (
+        <>
+          {renderSessionProjectGroups(props)}
+          {props.sessions.length === 0 ? <p mix={emptySessionsStyle}>No sessions yet.</p> : null}
+        </>
+      );
+    };
+  },
+);
+
 export function SessionWorkspaceLoading(handle: Handle<{ title: string }>) {
   return () => (
     <AppWorkspaceLayout topBarTitle={handle.props.title}>
@@ -502,7 +536,7 @@ function sessionName(session: SessionNavigationEntry): string {
   return session.initialPromptPreview || "Untitled session";
 }
 
-function renderSessionProjectGroups(props: AppNavigationProps): RemixNode {
+function renderSessionProjectGroups(props: SessionHistoryProps): RemixNode {
   return groupSessionsByProject(props.sessions).map(({ projectId, projectName, sessions }) => (
     <section
       key={projectId}
@@ -556,7 +590,7 @@ function renderSessionProjectGroups(props: AppNavigationProps): RemixNode {
 }
 
 function renderSessionButton(
-  props: AppNavigationProps,
+  props: SessionHistoryProps,
   session: SessionNavigationEntry,
   icon?: RemixNode,
 ): RemixNode {
@@ -569,6 +603,7 @@ function renderSessionButton(
       }}
       active={props.selectedSessionId === session.id}
       pending={props.pendingSessionId === session.id}
+      {...(sessionNavigation.settled(session.id) ? { badge: "Done" } : {})}
       icon={icon}
     >
       {sessionName(session)}

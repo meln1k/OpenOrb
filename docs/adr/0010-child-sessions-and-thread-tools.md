@@ -66,8 +66,10 @@ target that is not accessible reads as "not found", whether or not it exists.
 ## Messages
 
 `send_thread_message` admits the message to the recipient like a prompt, labelled with the sender's
-relation and Session ID, or as a follow-up when the recipient is busy, and starts its environment
-when it is stopped. It returns at once; a reply is another `send_thread_message` from the recipient.
+relation and Session ID, and starts its environment when it is stopped. A busy recipient takes it
+as a steer, not a follow-up: it joins the running Agent Run after its current tool calls, and every
+message waiting then lands together, so a parent collecting its children's replies reads them as
+they arrive instead of one extra turn each. The user's own prompts remain follow-ups. It returns at once; a reply is another `send_thread_message` from the recipient.
 The request ID is derived from the sender's Session ID and tool call ID, so a repeated delivery is
 admitted once.
 

@@ -1,5 +1,6 @@
 import { createAppServices } from "./app/middleware/services.ts";
 import type { WorkspaceApi } from "./app/cells/workspace/api.ts";
+import { workspaceEventsFrom } from "./app/cells/workspace/events.ts";
 import { createAppRouter, createSessionCookie } from "./app/router.ts";
 import { createGatewayAssets } from "./app/assets.ts";
 import { routes } from "./app/routes.ts";
@@ -55,9 +56,10 @@ export default {
           if (!env.SESSION_SECRET) {
             return new Response("Gateway is not configured", { status: 500 });
           }
+          const workspaceStub = env.WORKSPACE.getByName("workspace");
           // SAFETY: native RPC implements WorkspaceApi; platform thenables differ only in checker types.
           // oxlint-disable-next-line openorb/no-chained-type-assertions
-          const workspace = env.WORKSPACE.getByName("workspace") as unknown as WorkspaceApi;
+          const workspace = workspaceStub as unknown as WorkspaceApi;
           const services = createAppServices(workspace, runners, undefined, {
             assets: createGatewayAssets(env.ASSETS),
             ...(env.PUBLIC_URL ? { publicUrl: env.PUBLIC_URL } : {}),
@@ -65,6 +67,7 @@ export default {
             // SAFETY: the R2 binding implements this read subset; only checker types differ.
             // oxlint-disable-next-line openorb/no-chained-type-assertions
             media: env.MEDIA as unknown as MediaReader,
+            workspaceEvents: workspaceEvents(workspaceStub),
           });
           cache = { services, bySecureCookie: new Map() };
           routers.set(env, cache);
@@ -104,5 +107,16 @@ function sessionApi(stub: ReturnType<Env["SESSIONS"]["getByName"]>): SessionApi 
     // SAFETY: native Workers Request and Response, typed by Node only for local checking.
     // oxlint-disable-next-line openorb/no-chained-type-assertions
     return (await stub.fetch(request as unknown as WorkerRequest)) as unknown as Response;
+  });
+}
+
+/** The Workspace Durable Object's event stream, which uses HTTP, as celld requires. */
+function workspaceEvents(stub: ReturnType<Env["WORKSPACE"]["getByName"]>) {
+  return workspaceEventsFrom({
+    async fetch(request) {
+      // SAFETY: native Workers Request and Response, typed by Node only for local checking.
+      // oxlint-disable-next-line openorb/no-chained-type-assertions
+      return (await stub.fetch(request as unknown as WorkerRequest)) as unknown as Response;
+    },
   });
 }

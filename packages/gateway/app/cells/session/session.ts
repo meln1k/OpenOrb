@@ -678,7 +678,13 @@ export class Session extends DurableObject<Env> {
           event.type === "run_end";
       }
       if (before !== this.#busy) this.#publishState();
-      if (before && !this.#busy) this.#background(this.#reconcile(runtime));
+      if (before && !this.#busy) {
+        this.#background(this.#reconcile(runtime));
+        const record = this.#record;
+        if (record !== undefined) {
+          this.#background(this.#workspace.sessionSettled(record.workspaceId, record.sessionId));
+        }
+      }
       if (boundary) runtime.project?.scheduleRefresh(GIT_REFRESH_DEBOUNCE_MS);
       return Promise.resolve();
     });
@@ -787,7 +793,8 @@ export class Session extends DurableObject<Env> {
         type: "input",
         content: prompt,
         requestId,
-        whenBusy: "followUp",
+        // The user's prompts wait for the run to end; another thread's message steers the run.
+        whenBusy: sender === undefined ? "followUp" : "steer",
         ...(sender === undefined
           ? {}
           : { entry: { kind: THREAD_MESSAGE_KIND, data: { ...sender } } }),

@@ -5,7 +5,7 @@ import { ProjectId } from "../../app/cells/workspace/api.ts";
 import { createRpcClient } from "./rpc-client.ts";
 import { WorkspaceSessionStorage } from "../../app/data/workspace-session-storage.ts";
 
-// Run against the isolated celld-worker fixture, whose DO fetch() deliberately throws.
+// Run against the isolated celld-worker fixture, whose DO fetch() throws for all but events.
 const url = process.env["OPENORB_TEST_WORKSPACE_URL"];
 
 test("HTTP test driver alone decodes Result/void undefined and omits optional arguments", async () => {

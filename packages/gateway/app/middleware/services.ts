@@ -6,6 +6,7 @@ import type { SessionStorage } from "remix/session";
 import type { DurableObjectStub } from "@cloudflare/workers-types";
 import type { Runners } from "../cells/runners/runner-registry-do.ts";
 import type { MediaReader, SessionDirectory } from "../cells/session/api.ts";
+import type { WorkspaceId } from "@openorb/protocol/runner-api";
 import { TokenBucketRateLimiter } from "../utils/token-bucket-rate-limiter.ts";
 import { assetServer, type GatewayAssets } from "../assets.ts";
 
@@ -26,6 +27,8 @@ export interface AppServices {
   readonly sessions: SessionDirectory;
   /** Published media in R2, read only after a Session confirmed the object is its own. */
   readonly media: MediaReader;
+  /** The Workspace's Session events as Server-Sent Events, for an authenticated Workspace. */
+  readonly workspaceEvents: (workspaceId: WorkspaceId, signal: AbortSignal) => Promise<Response>;
 }
 
 export const AppServicesKey = createContextKey<AppServices>();
@@ -45,7 +48,7 @@ export function createAppServices(
   workspace: WorkspaceApi,
   runnerConnections: AppServices["runnerConnections"],
   sessionStorage: SessionStorage | undefined,
-  options: Pick<AppServices, "sessions" | "media"> &
+  options: Pick<AppServices, "sessions" | "media" | "workspaceEvents"> &
     Pick<Partial<AppServices>, "assets" | "publicUrl">,
 ): AppServices {
   return {

@@ -39,6 +39,7 @@ export const routes = route({
       connectBulk: get("connect/bulk"),
     }),
     sessions: route("sessions", {
+      updates: get("updates"),
       wake: post(":sessionId/wake"),
       changes: post(":sessionId/changes"),
       events: get(":sessionId/events"),

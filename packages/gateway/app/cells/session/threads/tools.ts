@@ -39,7 +39,7 @@ export function threadTools(threads: Threads): ToolRegistration[] {
     defineTool({
       name: "send_thread_message",
       description:
-        "Send a message to this thread's parent or one of its child threads. It arrives as a prompt, or as a follow-up when that thread is busy, and starts its environment if it is stopped. Returns at once; a reply arrives only if the recipient sends one.",
+        "Send a message to this thread's parent or one of its child threads. It arrives as a prompt, or, when that thread is busy, after its current tool calls, and starts its environment if it is stopped. Returns at once; a reply arrives only if the recipient sends one.",
       parameters: Type.Object({ thread, message }),
       async execute(input, api) {
         return text(await threads.send(input.thread, input.message, api.callId));
