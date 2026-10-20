@@ -16,8 +16,8 @@
     "build:test:workspace": "node build-worker.ts --workspace-test",
     "prepare:dev": "node --env-file=.env prepare.ts",
     "generate-types": "npm run build && WRANGLER_SEND_METRICS=false wrangler types --include-runtime=false --strict-vars=false",
-    "dev": "npm run prepare:dev && npm run build && celld dev wrangler.jsonc --host 127.0.0.1 --port 44100 --logs",
-    "start": "celld dev wrangler.jsonc --host 127.0.0.1 --port 44100 --logs"
+    "dev": "npm run prepare:dev && npm run build && CELLD_V8_HEAP_LIMIT_MB=512 celld dev wrangler.jsonc --host 127.0.0.1 --port 44100 --logs",
+    "start": "CELLD_V8_HEAP_LIMIT_MB=512 celld dev wrangler.jsonc --host 127.0.0.1 --port 44100 --logs"
   },
   "dependencies": {
     "@earendil-works/chord": "1.2.0",
