@@ -6,9 +6,9 @@
   "type": "module",
   "exports": "./src/mod.ts",
   "dependencies": {
-    "@earendil-works/chord": "1.2.0",
-    "@earendil-works/pi-durable": "1.2.0",
-    "@earendil-works/pi-env": "1.2.0",
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/pi-env": "1.4.0",
     "@jsr/std__path": "1.1.6",
     "@openorb/pi-env": "*",
     "@openorb/protocol": "*",

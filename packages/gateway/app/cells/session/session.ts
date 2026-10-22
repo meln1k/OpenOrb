@@ -3,7 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import type { CredentialStore, Models } from "@earendil-works/pi-ai";
-import { type EntryId, LiveDoc, watchEvents } from "@earendil-works/pi-durable";
+import { type EntryId, watchEvents } from "@earendil-works/pi-durable";
 import type { DurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
@@ -88,7 +88,7 @@ const context = BACKGROUND_CONTEXT;
 /** Deadman alarm: a crash during startup or an alarm leaves another wake behind. */
 const RECOVERY_MS = 30_000;
 const IDLE_STOP_MS = 15 * 60_000;
-/** A deferred or retried model request further out than this lets the object sleep until then. */
+/** A sleeping task (a model retry or deferred poll) further out than this lets the object sleep until then. */
 const SLEEP_AFTER_MS = 60_000;
 /** Bounds this object's wait for the agent, not the durable turn; an alarm renews it. */
 const HOST_WAIT_MS = 10 * 60_000;
@@ -175,7 +175,7 @@ export interface AlarmInputs {
   readonly record: Pick<SessionRecord, "environment" | "operation" | "lastActivityAt" | "deleting">;
   /** Unsettled harness tasks. */
   readonly tasks: number;
-  /** When a deferred or retried model request is due, if the agent waits for one. */
+  /** When the earliest sleeping task is due, if any (`harness.wake().at`). */
   readonly resumeAt: number | undefined;
   /** This object is already waiting for the agent to settle. */
   readonly hostWait: boolean;
@@ -223,6 +223,7 @@ export class Session extends DurableObject<Env> {
   #record: SessionRecord | undefined;
   #runtime: Promise<Runtime | undefined>;
   #busy = false;
+  #wakeAt: number | undefined;
   /** Orders idle and alarm decisions; never waits for the agent or for compute. */
   #decisions: Promise<unknown> = Promise.resolve();
   /** Runs environment operations one at a time: setup, start, and stop. */
@@ -630,6 +631,13 @@ export class Session extends DurableObject<Env> {
           sessionId: record.sessionId,
         }),
         threads: this.#threads,
+        onWake: (wake) => {
+          // A new earliest sleep needs its alarm; reconcile re-arms from `harness.wake()`.
+          if (wake.at === this.#wakeAt) return;
+          this.#wakeAt = wake.at;
+          this.#background(this.#runtime.then((current) => current && this.#reconcile(current)));
+        },
+        onReport: (error, info) => console.error("pi-durable", info, error),
       },
       context,
     );
@@ -722,22 +730,23 @@ export class Session extends DurableObject<Env> {
       // A deleted Session's harness makes no more decisions.
       if ((await this.#runtime) !== runtime) return;
       const { harness, conversation } = runtime.agent;
-      const { tasks, scheduling } = await harness.inspect(context);
+      const inspection = await harness.inspect(context);
+      const { scheduling } = inspection;
+      // A task parked by the restart limit waits for `retryTask`; it needs no recovery.
+      const tasks = inspection.tasks.filter(
+        (task) => !(task.state.kind === "blocked" && task.state.reason === "restart_limit"),
+      );
       const record = this.#record;
       if (scheduling === "closing" || record === undefined) return;
       if (tasks.length === 0 && !this.#busy && !record.deleting && record.operation === undefined) {
         runtime.environment.release();
       }
-      const live =
-        tasks.length === 0 || this.#hostWait !== undefined
-          ? undefined
-          : await harness.snapshot(LiveDoc, conversation.id, context);
       const now = Date.now();
       const alarm = nextAlarm({
         now,
         record,
         tasks: tasks.length,
-        resumeAt: live?.generation?.deferred?.pollAt ?? live?.generation?.retry?.at,
+        resumeAt: harness.wake().at,
         hostWait: this.#hostWait !== undefined,
       });
       if (alarm === undefined) await this.#ctx.storage.deleteAlarm();

@@ -32,7 +32,7 @@ and OAuth alarm changes commit together in awaited storage transactions.
 Runner Registry state is ephemeral: normal accepted sockets keep the object live, not hibernating.
 Restart/eviction disconnects runners; runner reconnect and environment snapshots rebuild live state.
 Agent work runs in the Session DOs, not on runners. Pi AI, Pi Durable, Pi Env, and Chord are pinned
-to 1.2.0; the Workspace configuration object does not create a Pi harness.
+to 1.4.0; the Workspace configuration object does not create a Pi harness.
 
 Orb setup installs celld 0.6.2 and esbuild 0.28.2. Run `amp orb services ensure`, or outside an orb
 `npm run dev:gateway`, to build and start the single public gateway Worker. Dev state lives in
@@ -86,7 +86,7 @@ The exact runtime and application pins in this release graph are:
 | celld / esbuild                     | 0.6.2 / 0.28.2                                   |
 | Gondolin                            | 0.12.0                                           |
 | OpenOrb guest image                 | `release-2` (Debian snapshot `20260803T000000Z`) |
-| Pi AI / Pi Durable / Pi Env / Chord | 1.2.0                                            |
+| Pi AI / Pi Durable / Pi Env / Chord | 1.4.0                                            |
 | Remix                               | 3.0.0                                            |
 | Runner protocol                     | 29                                               |
 

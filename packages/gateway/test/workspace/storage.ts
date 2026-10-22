@@ -42,7 +42,11 @@ export class MemoryStorage implements WorkspaceStorage {
             ),
           ) as Record<string, SqlStorageValue>[];
       }
-      return { toArray: () => structuredClone(rows) };
+      const cursor = rows[Symbol.iterator]();
+      return {
+        toArray: () => structuredClone(rows),
+        next: () => structuredClone(cursor.next()),
+      };
     },
   };
 

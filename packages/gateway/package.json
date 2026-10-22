@@ -20,10 +20,10 @@
     "start": "CELLD_V8_HEAP_LIMIT_MB=512 celld dev wrangler.jsonc --host 127.0.0.1 --port 44100 --logs"
   },
   "dependencies": {
-    "@earendil-works/chord": "1.2.0",
-    "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-codemode": "1.2.0",
-    "@earendil-works/pi-durable": "1.2.0",
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-codemode": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
     "@jsr/std__crypto": "1.1.0",
     "@jsr/std__encoding": "1.0.11",
     "@jsr/std__streams": "1.1.2",

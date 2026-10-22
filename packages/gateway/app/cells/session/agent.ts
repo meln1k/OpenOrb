@@ -6,6 +6,7 @@ import {
   createRegistry,
   defineTool,
   Harness,
+  type HarnessOptions,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import {
@@ -66,6 +67,9 @@ export interface AgentOptions {
   readonly codemode: CodemodeRemote;
   /** Session-to-Session operations, checked against this Session's access (ADR 0010). */
   readonly threads: Threads;
+  /** Pi's `onWake`: the Session arms its alarm instead of Pi keeping timers that block hibernation. */
+  readonly onWake: NonNullable<HarnessOptions["onWake"]>;
+  readonly onReport: NonNullable<HarnessOptions["onReport"]>;
 }
 
 export interface Agent {
@@ -217,6 +221,8 @@ export async function openAgent(
     {
       models,
       registry,
+      onWake: options.onWake,
+      onReport: options.onReport,
       env: async (_target, context) => {
         await options.setupSettled(context);
         return options.env;
