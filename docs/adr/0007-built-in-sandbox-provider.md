@@ -39,7 +39,7 @@ environment remains logically running: the next guest operation lazily loads a f
 and restores the filesystem from SQLite. Readers, shell memory, and `/tmp` do not survive this
 release; persisted files do. The no-bindings, no-network, and CPU-limit settings are unchanged.
 
-celld caps the Workers one script may hold loaded on a node (255 in celld 0.6.2), so at most that
+celld caps the Workers one script may hold loaded on a node (255 in celld 0.6.3), so at most that
 many Sessions per node can have a loaded sandbox at once. A refused load fails the facet's first
 RPC before any sandbox code runs, and the refused facet stays refused. The Session therefore drops
 it and loads again with jittered exponential backoff, from 250 ms up to 5 s, until a Session going

@@ -145,7 +145,7 @@ test("operations documentation records the recovery contract and release pins", 
   assertStringIncludes(await readTextFile(".tool-versions"), "nodejs 26.11.1");
   const installer = await readTextFile("scripts/install-celld.sh");
   for (const [tool, pin] of [
-    ["celld", "0.6.2"],
+    ["celld", "0.6.3"],
     ["esbuild", "0.28.2"],
   ] as const) {
     assertStringIncludes(installer, `${tool}_version=${pin}`);

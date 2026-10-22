@@ -55,7 +55,7 @@ npm run release:acceptance
 ```
 
 Install Node.js 26.11.1 and the locked npm workspace dependencies (`npm ci`, Vite+ 1.1.0) first.
-`release:acceptance` additionally requires Linux x64, writable hardware KVM, the pinned celld 0.6.2
+`release:acceptance` additionally requires Linux x64, writable hardware KVM, the pinned celld 0.6.3
 and esbuild 0.28.2 tools installed by `bash scripts/install-celld.sh`, and Chromium installed for
 Playwright 1.55.0. No PostgreSQL server/client or database URL is required. The script builds the
 production gateway task, copies `packages/gateway/wrangler.jsonc`, `dist/worker.js`, and

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reviewed releases: https://github.com/denoland/celld/releases/tag/v0.6.2
+# Reviewed releases: https://github.com/denoland/celld/releases/tag/v0.6.3
 # and https://github.com/evanw/esbuild/releases/tag/v0.28.2.
 # Follow https://celld.dev/install.sh's versioned release layout, with pinned
 # GitHub asset digests instead of executing a mutable remote installer.
 # esbuild's official standalone install: https://esbuild.github.io/getting-started/#download-a-build
-celld_version=0.6.2
+celld_version=0.6.3
 esbuild_version=0.28.2
 
 as_root() {
@@ -20,13 +20,13 @@ as_root() {
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)
     celld_target=x86_64-unknown-linux-gnu
-    celld_checksum=ce0ee3552cc8d55dde3998dc3b1b0c8f547bbcb4bc803d2a94842368b047646c
+    celld_checksum=5084a083472cf036551a7eac63fa24d22bb9a56323c517f63205724c12783047
     esbuild_target=linux-x64
     esbuild_checksum=e314d9af5154992a105b85c85a68addedcd0ad44d933e3773f45d5f3144e298179d177c8ef178ef74fb56d9bcdc3122e7d0f610d0551247e588603d517c03f1d
     ;;
   Linux-aarch64 | Linux-arm64)
     celld_target=aarch64-unknown-linux-gnu
-    celld_checksum=4eca87c6797590000a344c1b768364e9696e8817f5fbc16193f459d2edac7cd0
+    celld_checksum=6d617cdf9f049e43ca6a4e37c4cce5d8e35395c8e86b371c984d32ba7d803bf5
     esbuild_target=linux-arm64
     esbuild_checksum=a56e000b43f78adf1cedda3d315338a79d45cc7cdd33f4d9adeaeeae045c1c9d964dad55435088ab5f319dc7e9049c38a23922659aca5b6c8805604ff768fa52
     ;;

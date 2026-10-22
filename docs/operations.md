@@ -34,7 +34,7 @@ Restart/eviction disconnects runners; runner reconnect and environment snapshots
 Agent work runs in the Session DOs, not on runners. Pi AI, Pi Durable, Pi Env, and Chord are pinned
 to 1.4.0; the Workspace configuration object does not create a Pi harness.
 
-Orb setup installs celld 0.6.2 and esbuild 0.28.2. Run `amp orb services ensure`, or outside an orb
+Orb setup installs celld 0.6.3 and esbuild 0.28.2. Run `amp orb services ensure`, or outside an orb
 `npm run dev:gateway`, to build and start the single public gateway Worker. Dev state lives in
 `packages/gateway/.celld/dev` and persists across restarts. The former
 `packages/workspace/.celld/dev` is not migrated or deleted; the relocated config starts fresh. The
@@ -83,7 +83,7 @@ The exact runtime and application pins in this release graph are:
 | ----------------------------------- | ------------------------------------------------ |
 | Node.js / standalone runner SEA     | 26.11.1                                          |
 | Vite+                               | 1.1.0                                            |
-| celld / esbuild                     | 0.6.2 / 0.28.2                                   |
+| celld / esbuild                     | 0.6.3 / 0.28.2                                   |
 | Gondolin                            | 0.12.0                                           |
 | OpenOrb guest image                 | `release-2` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi Durable / Pi Env / Chord | 1.4.0                                            |

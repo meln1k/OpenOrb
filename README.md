@@ -14,12 +14,12 @@ No S3 bucket, Tailscale, or QEMU is needed for this local setup.
 ### 1. Install
 
 Choose an [official celld installation option](https://github.com/denoland/celld#install).
-OpenOrb uses celld 0.6.2.
+OpenOrb uses celld 0.6.3.
 
 **Native binary:**
 
 ```sh
-curl -fsSL https://celld.dev/install.sh | CELLD_VERSION=v0.6.2 sh
+curl -fsSL https://celld.dev/install.sh | CELLD_VERSION=v0.6.3 sh
 export PATH="$HOME/.local/bin:$PATH"
 celld --version
 ```
@@ -27,7 +27,7 @@ celld --version
 **Or Docker** (requires Docker):
 
 ```sh
-docker run --rm ghcr.io/denoland/celld:0.6.2 --version
+docker run --rm ghcr.io/denoland/celld:0.6.3 --version
 ```
 
 Then clone OpenOrb:
@@ -64,7 +64,7 @@ npm run build --workspace @openorb/gateway
 docker run --rm --user "$(id -u):$(id -g)" \
   -p 127.0.0.1:44100:44100 \
   -v "$(pwd)/packages/gateway:/app" -w /app \
-  ghcr.io/denoland/celld:0.6.2 \
+  ghcr.io/denoland/celld:0.6.3 \
   dev wrangler.jsonc --no-watch --host 0.0.0.0 --port 44100 --logs
 ```
 

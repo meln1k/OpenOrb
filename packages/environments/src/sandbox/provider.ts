@@ -37,7 +37,7 @@ const SANDBOX_GUEST_PROMPT = [
 ];
 
 /**
- * celld refuses to load a Dynamic Worker beyond its per-node cap (255 per script in celld 0.6.2).
+ * celld refuses to load a Dynamic Worker beyond its per-node cap (255 per script in celld 0.6.3).
  * The refusal arrives on the facet's first RPC, before any sandbox code runs, and the refused facet
  * stays refused, so a retry must load it again.
  */

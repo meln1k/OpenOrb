@@ -13,7 +13,7 @@ session-cookie and encryption secrets in the ignored `packages/gateway/.env`. Do
 existing file or generate a replacement master key for existing state:
 
 ```sh
-curl -fsSL https://celld.dev/install.sh | CELLD_VERSION=v0.6.2 sh
+curl -fsSL https://celld.dev/install.sh | CELLD_VERSION=v0.6.3 sh
 export PATH="$HOME/.local/bin:$PATH"
 npm ci
 test -f packages/gateway/.env || cp packages/gateway/.env.example packages/gateway/.env
