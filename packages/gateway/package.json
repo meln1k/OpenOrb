@@ -41,7 +41,7 @@
     "lucide": "1.31.0",
     "marked": "18.0.5",
     "quickjs-wasi": "3.6.2",
-    "remix": "3.0.0",
+    "remix": "^3.1.0",
     "turndown": "7.2.4",
     "unpdf": "1.9.0"
   }

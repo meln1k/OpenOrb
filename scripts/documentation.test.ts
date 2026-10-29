@@ -89,7 +89,7 @@ test("operations documentation records the recovery contract and release pins", 
     "persistent root disk",
     "mutates the persistent root disk in place",
     "Contents: Read and write",
-    "opencode-go/deepseek-v4-flash",
+    "opencode-go/deepseek-v4.1-flash",
     "Node",
     "Vite+",
     "Gondolin",
@@ -132,7 +132,7 @@ test("operations documentation records the recovery contract and release pins", 
   assert(release.includes('id: "release-2"'));
   assert(release.includes("GUEST_IMAGE_RELEASE = RELEASE_2"));
   assert(protocol.includes("RUNNER_PROTOCOL_VERSION = 29"));
-  for (const pin of ["26.11.1", "0.12.0", "1.4.0", "3.0.0"]) {
+  for (const pin of ["26.11.1", "0.12.0", "1.4.0", "3.1.0"]) {
     assert(
       operations.includes(pin) &&
         (rootConfiguration.includes(pin) ||

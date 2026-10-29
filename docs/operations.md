@@ -87,7 +87,7 @@ The exact runtime and application pins in this release graph are:
 | Gondolin                            | 0.12.0                                           |
 | OpenOrb guest image                 | `release-2` (Debian snapshot `20260803T000000Z`) |
 | Pi AI / Pi Durable / Pi Env / Chord | 1.4.0                                            |
-| Remix                               | 3.0.0                                            |
+| Remix                               | 3.1.0                                            |
 | Runner protocol                     | 29                                               |
 
 The lockfile is authoritative for the complete transitive graph. The image's architecture-specific
@@ -163,7 +163,7 @@ enrollment PSKs belong to the Workspace; passwords and Git author identity belon
 is no Workspace-selection UI. In **Settings**, add the credentials and project:
 
 - For OpenCode Go, obtain an API key from your OpenCode Go account and save it as provider ID
-  `opencode-go`. The default model is `opencode-go/deepseek-v4-flash`; never put the key in the
+  `opencode-go`. The default model is `opencode-go/deepseek-v4.1-flash`; never put the key in the
   runner environment or guest.
 - Prefer a fine-grained GitHub personal access token restricted to the one selected private
   repository. Grant **Contents: Read and write** (metadata read access is implicit); grant no

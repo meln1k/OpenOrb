@@ -41,7 +41,7 @@ const MODEL_PROVIDER_KEY = "browser-provisioning-model-key";
 const ENVIRONMENT_SECRET_VALUE = "browser-provisioning-environment-secret";
 const ENVIRONMENT_SECRET_HOSTS = ["api.example.com", "*.service.example"] as const;
 const PROVIDER_ID = "opencode-go";
-const MODEL = `${PROVIDER_ID}/deepseek-v4-flash`;
+const MODEL = `${PROVIDER_ID}/deepseek-v4.1-flash`;
 const OPENAI_PROVIDER_ID = "openai";
 const OPENAI_MODEL = `${OPENAI_PROVIDER_ID}/gpt-4.1`;
 const OPENAI_PROVIDER_KEY = "browser-provisioning-openai-key";
@@ -582,7 +582,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     assertMatch(createHtml, /aria-label="Search models"/);
     assertMatch(
       createHtml,
-      /<input[^>]*type="hidden"[^>]*name="model"[^>]*value="[^"]*deepseek-v4-flash"/,
+      /<input[^>]*type="hidden"[^>]*name="model"[^>]*value="[^"]*deepseek-v4\.1-flash"/,
     );
     assertMatch(
       createHtml,
@@ -599,7 +599,7 @@ test("browser form waits for Session creation, catalogs first, rolls back failur
     assertNotMatch(maxThinkingOption, /hidden/);
     assertMatch(createHtml, /<input[^>]*name="thinkingLevel"[^>]*value="high"/);
     assertMatch(createHtml, /aria-keyshortcuts="Enter"/);
-    assertMatch(createHtml, /deepseek-v4-flash/);
+    assertMatch(createHtml, /deepseek-v4\.1-flash/);
     assertNotMatch(createHtml, /name="apiKey"/);
     const projectControl = createHtml.indexOf('name="projectId"');
     const orbControl = createHtml.indexOf('name="orbSize"');
@@ -1485,7 +1485,7 @@ test("session routes enforce auth, CSRF, project ownership, and runner ownership
       headers: { Cookie: client.cookie },
     });
     const html = await page.text();
-    assertMatch(html, /DeepSeek V4 Flash/);
+    assertMatch(html, /DeepSeek V4\.1 Flash/);
     assertMatch(html, /GPT-4\.1/);
     const sessionsIndex = await fetch(new URL(routes.app.sessions.index.href(), server.baseUrl), {
       redirect: "manual",
